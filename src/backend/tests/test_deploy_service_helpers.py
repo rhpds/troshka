@@ -1786,13 +1786,13 @@ class TestPickDiskDvStatus:
             ],
         }
 
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch(
-            "app.services.providers.kubevirt._project_ns"
-        ) as mock_ns, patch(
-            "app.services.deploy_service._collect_ceph_restore_progress",
-            return_value=[],
+        with (
+            patch("app.services.providers.kubevirt._get_k8s_clients") as mock_k8s,
+            patch("app.services.providers.kubevirt._project_ns") as mock_ns,
+            patch(
+                "app.services.deploy_service._collect_ceph_restore_progress",
+                return_value=[],
+            ),
         ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
@@ -4471,9 +4471,10 @@ class TestUpdateDeployProgress:
     def test_basic_step(self, mock_set, mock_notify):
         from app.services.deploy_service import _update_deploy_progress
 
-        with patch("app.services.deploy_service._DP_SL", create=True), patch(
-            "app.core.database.SessionLocal"
-        ) as mock_sl:
+        with (
+            patch("app.services.deploy_service._DP_SL", create=True),
+            patch("app.core.database.SessionLocal") as mock_sl,
+        ):
             mock_session = MagicMock()
             mock_sl.return_value = mock_session
             mock_session.get.return_value = MagicMock()
@@ -7039,10 +7040,12 @@ class TestCollectDvProgress:
         provider = MagicMock()
         topology = {"nodes": []}
 
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch(
-            "app.services.providers.kubevirt._project_ns", return_value="troshka-proj-1"
+        with (
+            patch("app.services.providers.kubevirt._get_k8s_clients") as mock_k8s,
+            patch(
+                "app.services.providers.kubevirt._project_ns",
+                return_value="troshka-proj-1",
+            ),
         ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
@@ -8188,6 +8191,44 @@ class TestOcpUpdateStatusDbPath:
         ):
             # Should not raise
             _ocp_update_status("proj-1", "error")
+
+
+class TestResumeOpsPodMonitorTerminalFailure:
+    """Genuine install failures must not flap error↔monitoring on periodic scan."""
+
+    def test_skips_recover_when_clusters_already_finalized_error(self):
+        from app.services.deploy_service import _resume_one_ops_pod_monitor
+
+        db = MagicMock()
+        project = MagicMock()
+        project.ocp_status = "monitoring"  # flap residue
+        project.host_id = "host-1"
+        project.id = "12345678-aaaa-bbbb-cccc-dddddddddddd"
+        project.deployed_topology = {
+            "clusters": [{"id": "ocp", "ocpInstallStatus": "error"}]
+        }
+        project.topology = project.deployed_topology
+        db.query.return_value.filter_by.return_value.first.return_value = MagicMock()
+
+        with (
+            patch("app.services.template_loader.ocp_install_via", return_value="pod"),
+            patch(
+                "app.services.deploy_service._clusters_for_ocp_install",
+                return_value=[{"id": "ocp"}],
+            ),
+            patch(
+                "app.services.deploy_service._ocp_clusters",
+                return_value=[{"id": "ocp"}],
+            ),
+            patch(
+                "app.services.deploy_service._start_ops_pod_install_monitor"
+            ) as start_mon,
+        ):
+            _resume_one_ops_pod_monitor(db, project)
+
+        assert project.ocp_status == "error"
+        start_mon.assert_not_called()
+        db.commit.assert_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -9663,9 +9704,10 @@ class TestCollectDvProgressPartialException:
         provider = MagicMock()
         topology = {"nodes": []}
 
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+        with (
+            patch("app.services.providers.kubevirt._get_k8s_clients") as mock_k8s,
+            patch("app.services.providers.kubevirt._project_ns") as mock_ns,
+        ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
             mock_ns.return_value = "troshka-proj-1"
@@ -9726,9 +9768,10 @@ class TestCollectDvProgressPartialException:
             ]
         }
 
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+        with (
+            patch("app.services.providers.kubevirt._get_k8s_clients") as mock_k8s,
+            patch("app.services.providers.kubevirt._project_ns") as mock_ns,
+        ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
             mock_ns.return_value = "troshka-proj-1"
@@ -11515,11 +11558,12 @@ class TestCollectDvProgressSkipUnfriendly:
         provider = MagicMock()
         topology = {"nodes": []}
 
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch(
-            "app.services.providers.kubevirt._project_ns",
-            return_value="troshka-proj-1234",
+        with (
+            patch("app.services.providers.kubevirt._get_k8s_clients") as mock_k8s,
+            patch(
+                "app.services.providers.kubevirt._project_ns",
+                return_value="troshka-proj-1234",
+            ),
         ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, None, None)
@@ -12114,20 +12158,26 @@ class TestWaitOrClaimSharedCache:
 
         ic = {"item_id": "i", "name": "n"}
         pool = MagicMock(id="p1")
-        with patch(
-            "app.services.deploy_service._check_shared_cache",
-            return_value=("downloading", None),
-        ), patch(
-            "app.services.deploy_service._wait_for_shared_cache", return_value=True
+        with (
+            patch(
+                "app.services.deploy_service._check_shared_cache",
+                return_value=("downloading", None),
+            ),
+            patch(
+                "app.services.deploy_service._wait_for_shared_cache", return_value=True
+            ),
         ):
             assert _wait_or_claim_shared_cache(MagicMock(), pool, MagicMock(), ic) == (
                 "waited"
             )
-        with patch(
-            "app.services.deploy_service._check_shared_cache",
-            return_value=("downloading", None),
-        ), patch(
-            "app.services.deploy_service._wait_for_shared_cache", return_value=False
+        with (
+            patch(
+                "app.services.deploy_service._check_shared_cache",
+                return_value=("downloading", None),
+            ),
+            patch(
+                "app.services.deploy_service._wait_for_shared_cache", return_value=False
+            ),
         ):
             assert (
                 _wait_or_claim_shared_cache(MagicMock(), pool, MagicMock(), ic)

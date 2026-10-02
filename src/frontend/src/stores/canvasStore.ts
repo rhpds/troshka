@@ -874,7 +874,9 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
 
   Precedence:
   - live ``failed``/cancelled/timeout → error
-  - stored ``error`` or ``monitoring`` wins over a stale live ``complete``
+  - stored ``error`` wins over stale live ``waiting``/``complete`` (held ops pod
+    can keep publishing in-progress frames after a real failure)
+  - stored ``monitoring`` wins over a stale live ``complete``
     (rebuild clears stamps to monitoring but WS phases can linger as complete)
   - live ``complete`` → ready (covers finalize before topology WS lands)
   - otherwise stored ready / in-progress phase → monitoring
@@ -893,7 +895,10 @@ export function resolveClusterOcpInstallStatus(
   }
 
   const stored = cluster?.ocpInstallStatus;
-  if (stored === "error" || stored === "monitoring") {
+  if (stored === "error") {
+    return "error";
+  }
+  if (stored === "monitoring") {
     return stored;
   }
   if (phase === "complete") return "ready";

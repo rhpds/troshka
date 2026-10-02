@@ -5801,15 +5801,44 @@ def _monitor_ops_pod_install(
     )
 
 
+def _ops_pod_logs_show_terminal_failure(host, project_id: str, clusters: list) -> bool:
+    """True when a live install.log already has a fatal Troshka/installer marker.
+
+    Used by :func:`_resume_one_ops_pod_monitor` so a genuine failure (ops pod
+    held for log inspection) is not flipped error→monitoring on every periodic
+    scan — that flap disables Republish and makes the canvas bounce Deploying.
+    """
+    from app.services.ocp.ops_pod_install import (
+        PHASE_FAILED,
+        _phase_from_input,
+    )
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    keys = [_ops_cluster_key(c) for c in clusters]
+    logs = _read_ops_pod_cluster_logs(
+        host,
+        _ops_pod_container_name(project_id),
+        keys,
+        OPS_POD_WORKDIR,
+        project_id,
+    )
+    return any(_phase_from_input(log or "") == PHASE_FAILED for log in logs.values())
+
+
 def _resume_one_ops_pod_monitor(db, p) -> None:
     """Re-attach the ops-pod monitor for one stranded project (see
     :func:`resume_ops_pod_monitors`).
 
     ``monitoring`` projects resume unconditionally. An ``error`` project only
-    recovers if its ops pod is STILL alive — a false failure (e.g. flagged
-    during a slow pod start) self-heals by flipping back to ``monitoring`` and
-    re-attaching the idempotent monitor; a genuinely-failed install (pod gone or
-    terminal) is left ``error``.
+    recovers if its ops pod is STILL alive and the install log has not already
+    recorded a terminal failure — a false failure (e.g. flagged during a slow
+    pod start, empty/partial logs) self-heals by flipping back to ``monitoring``
+    and re-attaching the idempotent monitor. A genuine failure (pod gone, or
+    pod held with ``] install failed`` / fatal markers in the log) is left
+    ``error`` so periodic scans cannot flap the UI.
     """
     from app.models.host import Host
     from app.services.template_loader import ocp_install_via
@@ -5824,9 +5853,25 @@ def _resume_one_ops_pod_monitor(db, p) -> None:
     if not host:
         return
 
+    # Finalized per-cluster error is terminal until the next rebuild stamps
+    # monitoring. A held ops pod + periodic resume used to flip project
+    # ocp_status back to monitoring every scan (canvas Deploying / Republish off).
+    cluster_statuses = [
+        c.get("ocpInstallStatus")
+        for c in (topo.get("clusters") or [])
+        if c.get("ocpInstallStatus")
+    ]
+    if cluster_statuses and all(s == "error" for s in cluster_statuses):
+        if p.ocp_status != "error":
+            p.ocp_status = "error"
+            db.commit()
+        return
+
     if p.ocp_status == "error":
         if not _ops_pod_running(host, _ops_pod_container_name(p.id), p.id):
             return  # genuinely failed — leave it error
+        if _ops_pod_logs_show_terminal_failure(host, p.id, clusters):
+            return  # real install failure; pod held for logs — do not flap
         logger.info(
             "Auto-recovering ops-pod monitor for errored project %s (pod alive)",
             p.id[:8],

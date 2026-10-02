@@ -66,6 +66,19 @@ describe("resolveClusterOcpInstallStatus", () => {
       resolveClusterOcpInstallStatus(cluster, "ocp", { ocp: "failed" }),
     ).toBe("error");
   });
+
+  it("keeps stored error over a stale waiting phase", () => {
+    const cluster = {
+      id: "ocp-08a6aa",
+      name: "ocp",
+      ocpInstallStatus: "error",
+    } as ClusterConfig;
+    expect(
+      resolveClusterOcpInstallStatus(cluster, "ocp-08a6aa", {
+        "ocp-08a6aa": "waiting",
+      }),
+    ).toBe("error");
+  });
 });
 
 describe("clusterIsRecertPath", () => {

@@ -174,11 +174,11 @@
     
     
     echo 'Waiting for cluster installation to complete...'
-    # Clear Continuous Cd + eject ISO at disk-write 100% (before guest reboot).
+    # Clear Continuous Cd + eject ISO at disk-write 100%; ForceRestart after Rebooting.
     (
       for _dw in $(seq 1 360); do
         if grep -q 'Writing image to disk: 100%' /home/cloud-user/ocp-install/install.log 2>/dev/null; then
-          echo 'Disk image written — clearing Continuous Cd + ejecting ISO + ForceRestart so live boots disk'
+          echo 'Disk image written — clearing Continuous Cd + ejecting ISO'
       for BMC_IP in 192.168.100.10 192.168.100.11; do
         echo "Ejecting agent ISO from BMC $BMC_IP..."
         SYS_ID=""
@@ -192,6 +192,23 @@
           -H 'Content-Type: application/json' \
           -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Disabled\", \"BootSourceOverrideTarget\": \"Hdd\"}}" >/dev/null 2>&1 || true
         curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+      done
+          echo 'Waiting for assisted Rebooting stage before ForceRestart (avoid cutting pivot short)...'
+          for _rb in $(seq 1 36); do
+        if grep -qE 'installation stage Rebooting|reached installation stage Rebooting' /home/cloud-user/ocp-install/install.log 2>/dev/null; then
+          echo 'Assisted reported Rebooting — ForceRestart so live boots disk'
+          break
+        fi
+        sleep 5
+          done
+          # Timeout: still ForceRestart so a soft-reboot cannot keep live CDROM.
+      for BMC_IP in 192.168.100.10 192.168.100.11; do
+        SYS_ID=""
+        for _try in $(seq 1 12); do
+          SYS_ID=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+          sleep 5
+        done
+        [ -z "$SYS_ID" ] && continue
         echo "  ForceRestart $BMC_IP so live domain drops CDROM (inactive already disk-first)"
         curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \
           -H 'Content-Type: application/json' \

@@ -351,11 +351,13 @@ def test_redfish_eject_clears_continuous_cd_override():
 
 
 def test_disk_write_eject_watch_clears_cd_before_reboot():
-    """Watcher greps disk-write 100% then clears Continuous + ejects (ae766856).
+    """Watcher ejects at disk-write 100%, ForceRestarts after Rebooting.
 
     EjectMedia only rewrites inactive libvirt XML; the live domain keeps the
     agent ISO at boot order 1. Assisted then soft-reboots into the installer
-    again. ForceRestart (destroy+create) is required so live matches disk-first.
+    again. ForceRestart (destroy+create) is required so live matches disk-first,
+    but must wait for assisted Rebooting (or timeout) — immediate ForceRestart
+    at 100% can cut the pivot short (bare RHCOS, no kube-apiserver).
     """
     from app.services.ocp.agent_template import (
         _start_disk_write_eject_watch_cmd,
@@ -370,10 +372,15 @@ def test_disk_write_eject_watch_clears_cd_before_reboot():
     assert "clearing Continuous Cd" in start
     assert "VirtualMedia.EjectMedia" in start
     assert "Disabled" in start
-    # Live sync: must ForceRestart after eject (not only redefine inactive XML).
-    assert "live boots disk" in start
+    assert "Waiting for assisted Rebooting stage" in start
+    assert "installation stage Rebooting" in start
+    # Live sync after Rebooting wait (not only redefine inactive XML).
+    assert "live boots disk" in start or "live domain drops CDROM" in start
     assert 'ResetType\\": \\"ForceRestart' in start
     assert start.index("VirtualMedia.EjectMedia") < start.index(
+        'ResetType\\": \\"ForceRestart'
+    )
+    assert start.index("Waiting for assisted Rebooting stage") < start.index(
         'ResetType\\": \\"ForceRestart'
     )
     stop = _stop_disk_write_eject_watch_cmd("  ")

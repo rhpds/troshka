@@ -174,7 +174,16 @@ export default function ProjectCanvasPage() {
         setAutoStopped(!!data.auto_stopped);
         setClockTarget(data.clock_target ?? null);
         setGuestExecEnabled(data.guest_exec_enabled !== false);
-        if (data.ocp_status) setOcpStatus(data.ocp_status);
+        const clusterStatuses = (
+          (data.deployed_topology || data.topology)?.clusters || []
+        )
+          .map((c: { ocpInstallStatus?: string }) => c.ocpInstallStatus)
+          .filter(Boolean) as string[];
+        const allClusterError =
+          clusterStatuses.length > 0 && clusterStatuses.every((s) => s === "error");
+        // Project ocp_status can lag at monitoring after a real cluster failure.
+        if (allClusterError) setOcpStatus("error");
+        else if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
       })
@@ -330,8 +339,19 @@ export default function ProjectCanvasPage() {
   const [chainRetrying, setChainRetrying] = useState(false);
   const [chainCancelling, setChainCancelling] = useState(false);
 
+  const storeClusters = useCanvasStore((s) => s.clusters);
+
   // Block disruptive actions while OCP install or topology workloads are in flight.
+  // Prefer per-cluster stamps when present: project ocp_status can lag at
+  // "monitoring" after a finalized cluster error (held ops-pod resume flap).
+  const clusterInstallStatuses = storeClusters
+    .map((c) => c.ocpInstallStatus)
+    .filter((s): s is string => !!s);
+  const clustersTerminal =
+    clusterInstallStatuses.length > 0 &&
+    clusterInstallStatuses.every((s) => s === "ready" || s === "error");
   const ocpBusy =
+    !clustersTerminal &&
     !!ocpStatus &&
     !["ready", "error", "warning", "none", "complete"].includes(ocpStatus);
   const disruptiveActionsDisabled = !!inflightWorkload || ocpBusy;
@@ -467,7 +487,14 @@ export default function ProjectCanvasPage() {
     else if (ws.ocpHealth?.phase === "warning") setOcpStatus("warning");
     else if (ws.ocpHealth?.phase === "error") setOcpStatus("error");
     else if (ws.ocpHealth?.phase === "timeout") setOcpStatus("monitoring");
-    else if (ws.ocpHealth && ocpStatus !== "ready" && ocpStatus !== "warning") {
+    // Never demote a finalized install error to monitoring — a held ops pod
+    // can still publish in-progress health frames and would flap Republish off.
+    else if (
+      ws.ocpHealth &&
+      ocpStatus !== "ready" &&
+      ocpStatus !== "warning" &&
+      ocpStatus !== "error"
+    ) {
       setOcpStatus("monitoring");
     }
   }, [ws.ocpHealth, ocpStatus]);
@@ -475,7 +502,6 @@ export default function ProjectCanvasPage() {
   // Project-level ready means no cluster is still monitoring — heal canvas stamps
   // that were left on "monitoring" when finalize wrote ready without a live WS push.
   // Re-run when clusters load (ocpStatus can be ready before loadProject finishes).
-  const storeClusters = useCanvasStore((s) => s.clusters);
   useEffect(() => {
     if (ocpStatus !== "ready") return;
     const store = useCanvasStore.getState();
@@ -546,6 +572,11 @@ export default function ProjectCanvasPage() {
         status === "monitoring" &&
         projectState !== "deploying"
       ) {
+        return c;
+      }
+      // Stored error is terminal until the next rebuild stamps monitoring —
+      // do not let stale waiting frames flap the canvas back to Deploying.
+      if (c.ocpInstallStatus === "error" && status === "monitoring") {
         return c;
       }
       if (c.ocpInstallStatus === status) return c;
