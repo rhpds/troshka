@@ -26,6 +26,7 @@ helm upgrade --install "${RELEASE}" "${REPO_ROOT}/deploy/helm" \
   --set postgres.deploy=true \
   --set s4.deploy=true \
   --set auth.oauthEnabled=false \
+  --set appUpdate.mode=image \
   --set redis.deploy=true \
   --set worker.replicas=2 \
   --set backend.image.tag="${IMAGE_TAG}" \

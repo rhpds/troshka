@@ -76,4 +76,8 @@ data:
         core_workloads: {{ .Values.workloads.defaultRefs.coreWorkloads | quote }}
         demo_workloads: {{ .Values.workloads.defaultRefs.demoWorkloads | quote }}
         namespaced_workloads: {{ .Values.workloads.defaultRefs.namespacedWorkloads | quote }}
+    {{- if .Values.appUpdate }}
+    app_update:
+      mode: {{ .Values.appUpdate.mode | default "auto" | quote }}
+    {{- end }}
 {{- end }}

@@ -120,6 +120,8 @@ Install seeds an EC2 provider (`ec2-<cluster>`) and provisions one host:
 
 Agent install continues in the background after the script exits — watch **Admin → Hosts** until `connected`. Compute VPC/SG are created via Troshka `create-vpc` (separate from the EKS VPC). IAM user `<cluster>-compute` + Secrets Manager `<cluster>/compute` hold the provider keys. Console is seeded as **sslip.io** (VNC via Let's Encrypt HTTP-01; no Route53) — skip with `TROSHKA_SKIP_CONSOLE=1`, override domain with `TROSHKA_CONSOLE_DOMAIN`.
 
+Admins see a top-bar **Apply update** when Quay `:latest` digests move (image mode), and an **Update host agents** banner when a connected host’s troshkad is behind the version shipped in the backend image.
+
 Library: install also registers an `s4-library` provider (in-cluster S4) and imports **Fedora Cloud 43** via `import-url` (troshkad on the seeded host pulls the official Fedora URL into S4). Skip with `TROSHKA_SKIP_FEDORA_IMAGE=1`. Override URL/name via `TROSHKA_FEDORA_QCOW_URL` / `TROSHKA_FEDORA_LIBRARY_NAME`.
 
 Getting Started’s `test-web.yaml` prefers a RHEL library image (+ Binary DVD when present) and falls back to **Fedora Cloud 43**. A subscribed RHEL qcow cannot be auto-fetched; upload it to the library yourself if you want the RHEL path (name it `Prebuilt RHEL 10.2 Bastion`, or change the template).

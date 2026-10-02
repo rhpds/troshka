@@ -96,6 +96,12 @@ auth:
 ocp:
   previewVersionsEnabled: true
 
+# In-app Apply update (backend/frontend image digests). Default auto: in-cluster
+# non-Argo → image; laptop oauth-off → dev; ArgoCD-managed → disabled.
+# EKS quickstart pins mode: image via values-eks.yaml.
+# appUpdate:
+#   mode: auto
+
 secrets:
   databaseUrl: ""
   jwtSecret: ""

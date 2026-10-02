@@ -53,13 +53,69 @@ def test_resolve_mode_dev_when_oauth_off(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: False)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: False)
+    monkeypatch.setattr(app_updater, "_compose_update_enabled", lambda: False)
     assert app_updater.resolve_mode() == "dev"
+
+
+def test_resolve_mode_image_when_oauth_off_in_cluster(monkeypatch):
+    # EKS quickstart: basic auth / oauth_enabled=false but still image mode.
+    _reset()
+    monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
+    monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: False)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: True)
+    monkeypatch.setattr(app_updater, "_compose_update_enabled", lambda: False)
+    monkeypatch.setattr(app_updater, "_read_own_deployment_meta", lambda: ({}, {}))
+    assert app_updater.resolve_mode() == "image"
+
+
+def test_resolve_mode_compose_when_env_set(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
+    monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: False)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: False)
+    monkeypatch.setattr(app_updater, "_compose_update_enabled", lambda: True)
+    assert app_updater.resolve_mode() == "compose"
+
+
+def test_apply_compose_writes_request(monkeypatch, tmp_path):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "compose")
+    monkeypatch.setattr(app_updater, "_compose_dir", lambda: tmp_path)
+    result = app_updater.apply_update(initiated_by="admin@test")
+    assert result == {"status": "rolling_out"}
+    assert (tmp_path / "update-request").is_file()
+    assert (tmp_path / "update-status").read_text().strip() == "rolling_out"
+
+
+def test_build_compose_snapshot(monkeypatch, tmp_path):
+    _reset()
+    (tmp_path / "running-digests").write_text(
+        "backend=sha256:aaa\nfrontend=sha256:bbb\ntag=latest\n", encoding="utf-8"
+    )
+    (tmp_path / "update-status").write_text("idle\n", encoding="utf-8")
+    monkeypatch.setattr(app_updater, "_compose_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        app_updater,
+        "_fetch_registry_digest",
+        lambda image, tag: {
+            "redhat-gpte/troshka-backend": "sha256:ccc",
+            "redhat-gpte/troshka-frontend": "sha256:bbb",
+        }.get(image),
+    )
+    snap = app_updater._build_compose_snapshot()
+    assert snap["up_to_date"] is False
+    assert snap["rolling_out"] is False
+    assert snap["components"]["backend"]["available"] == "sha256:ccc"
+    assert snap["components"]["frontend"]["current"] == "sha256:bbb"
+    assert snap["stale_key"].startswith("compose:latest:")
 
 
 def test_resolve_mode_image_when_deployed_no_argo(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: True)
     monkeypatch.setattr(app_updater, "_read_own_deployment_meta", lambda: ({}, {}))
     assert app_updater.resolve_mode() == "image"
 
@@ -68,6 +124,7 @@ def test_resolve_mode_disabled_when_argo(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: True)
     monkeypatch.setattr(
         app_updater,
         "_read_own_deployment_meta",
@@ -81,6 +138,7 @@ def test_resolve_mode_disabled_when_argo_annotation_only(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: True)
     monkeypatch.setattr(
         app_updater,
         "_read_own_deployment_meta",
@@ -98,6 +156,7 @@ def test_resolve_mode_disabled_and_uncached_on_label_error(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(app_updater, "_running_in_cluster", lambda: True)
 
     def _boom():
         raise RuntimeError("in-cluster API unavailable")

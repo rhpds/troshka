@@ -22,6 +22,7 @@ Defaults:
 - In-cluster Postgres + S4 + Redis
 - OAuth **off** (dev auto-admin) for the blog happy path
 - Image tag: `latest` (override with `TROSHKA_IMAGE_TAG`)
+- `appUpdate.mode=image` — top-bar **Apply update** when Quay digests move; **Update host agents** when troshkad is behind the backend image
 
 The script prints the Route URL when ready.
 

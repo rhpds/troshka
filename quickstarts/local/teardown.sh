@@ -44,6 +44,9 @@ COMPOSE_CMD="$(detect_compose)"
 "${_script_dir}/../lib/wipe-workloads.sh"
 "${_script_dir}/../lib/verify-clean.sh"
 
+echo "Stopping compose image updater..."
+"${_script_dir}/compose-updater.sh" stop || true
+
 echo "Stopping Compose stack and removing volumes..."
 # shellcheck disable=SC2086
 ${COMPOSE_CMD} -f "${COMPOSE_DIR}/compose.yaml" --env-file "${ENV_FILE}" down -v

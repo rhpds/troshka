@@ -45,6 +45,36 @@ def _oauth_enabled() -> bool:
     return bool(config.auth.oauth_enabled)
 
 
+def _running_in_cluster() -> bool:
+    """True when the backend is running inside a Kubernetes pod.
+
+    Used so oauth-off (EKS basic-auth quickstart, local helm) still gets image
+    digest updates, while laptop ``./dev-services.sh`` keeps source-hash ``dev``
+    mode when oauth is disabled.
+    """
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return True
+    try:
+        return Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace").is_file()
+    except Exception:
+        return False
+
+
+def _compose_update_enabled() -> bool:
+    """Local Compose quickstart: host helper + shared updater dir."""
+    return os.environ.get("TROSHKA_COMPOSE_UPDATE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _compose_dir() -> Path:
+    return Path(
+        os.environ.get("TROSHKA_COMPOSE_DIR", "/var/lib/troshka/compose-updater")
+    )
+
+
 def _get_own_namespace() -> str:
     ns = os.environ.get("POD_NAMESPACE")
     if ns:
@@ -88,7 +118,12 @@ def _compute_mode() -> str:
     configured = _configured_mode()
     if configured != "auto":
         return configured
-    if not _oauth_enabled():
+    # Local Compose quickstart (host helper for pull+up) before oauth-off→dev.
+    if _compose_update_enabled() and not _running_in_cluster():
+        return "compose"
+    # Laptop / ./dev-services.sh: oauth-off → source-hash "dev" mode.
+    # In-cluster (EKS basic-auth, etc.): skip this so digest updates still run.
+    if not _oauth_enabled() and not _running_in_cluster():
         return "dev"
     # Let a failed metadata read propagate so resolve_mode() does not cache a
     # failure-derived "image" mode on an ArgoCD-managed cluster.
@@ -605,10 +640,89 @@ def _build_image_snapshot() -> dict:
     }
 
 
+def _read_compose_kv_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        out[key.strip()] = val.strip()
+    return out
+
+
+def _compose_tag() -> str:
+    kv = _read_compose_kv_file(_compose_dir() / "running-digests")
+    return kv.get("tag") or os.environ.get("TROSHKA_IMAGE_TAG") or _rolling_tag()
+
+
+def _read_compose_status_line() -> tuple[bool, str | None]:
+    """Return (rolling_out, rollout_error) from the host helper status file."""
+    path = _compose_dir() / "update-status"
+    try:
+        line = path.read_text(encoding="utf-8").strip().splitlines()[0]
+    except (OSError, IndexError):
+        return False, None
+    if line == "rolling_out":
+        return True, None
+    if line.startswith("error:"):
+        return False, line[len("error:") :].strip() or "compose update failed"
+    return False, None
+
+
+def _build_compose_snapshot() -> dict:
+    kv = _read_compose_kv_file(_compose_dir() / "running-digests")
+    tag = _compose_tag()
+    rolling, rollout_error = _read_compose_status_line()
+    # Pending request also means a rollout is in flight (helper may not have
+    # flipped status yet).
+    if (_compose_dir() / "update-request").is_file():
+        rolling = True
+    comps: dict = {}
+    up_to_date = True
+    for name, suffix in COMPONENTS.items():
+        available = _fetch_registry_digest(f"{_repo()}/{suffix}", tag)
+        current = kv.get(name) or None
+        if current == "":
+            current = None
+        comps[name] = {
+            "current": current,
+            "available": available,
+            "deploy_tag": tag,
+            "compare_tag": tag,
+        }
+        if current and available and current != available:
+            up_to_date = False
+    return {
+        "up_to_date": up_to_date,
+        "rolling_out": rolling,
+        "rollout_error": rollout_error,
+        "components": comps,
+        "stale_key": f"compose:{tag}:{_compose_components_key(comps)}",
+    }
+
+
+def _compose_components_key(comps: dict) -> str:
+    """Stable dismiss key fragment from component digest pairs."""
+    parts = []
+    for name in sorted(comps):
+        c = comps[name] or {}
+        parts.append(f"{name}:{c.get('current') or ''}:{c.get('available') or ''}")
+    return "|".join(parts)
+
+
 def _poll() -> None:
     global _snapshot
     try:
-        _snapshot = _build_image_snapshot()
+        mode = resolve_mode()
+        if mode == "compose":
+            _snapshot = _build_compose_snapshot()
+        else:
+            _snapshot = _build_image_snapshot()
     except Exception:
         logger.exception("app update poll failed")
 
@@ -623,7 +737,7 @@ def _next_poll_sleep() -> int:
 def _poller_loop() -> None:
     time.sleep(10)
     mode = resolve_mode()
-    if mode != "image":
+    if mode not in ("image", "compose"):
         logger.info("app_updater: mode=%s, polling disabled", mode)
         return
     _poll()
@@ -695,7 +809,7 @@ def get_status() -> dict:
             "rolling_out": False,
             "components": {},
         }
-    if mode == "image" and not _snapshot:
+    if mode in ("image", "compose") and not _snapshot:
         try:
             _poll()
         except Exception:
@@ -706,7 +820,7 @@ def get_status() -> dict:
         "rollout_error": None,
         "components": {},
     }
-    return {"mode": "image", **snap}
+    return {"mode": mode, **snap}
 
 
 def _rolling_image_ref(suffix: str) -> str:
@@ -920,6 +1034,25 @@ def _spawn_dev_services_restart(
         log_fd.close()
 
 
+def _apply_compose() -> dict:
+    """Ask the host compose-updater helper to pull and recreate containers."""
+    d = _compose_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ValueError(f"compose updater dir not writable: {d}") from e
+    req = d / "update-request"
+    status = d / "update-status"
+    try:
+        status.write_text("rolling_out\n", encoding="utf-8")
+        req.write_text(f"{time.time()}\n", encoding="utf-8")
+    except OSError as e:
+        raise ValueError(f"failed to request compose update: {e}") from e
+    global _snapshot
+    _snapshot = {**(_snapshot or {}), "rolling_out": True, "rollout_error": None}
+    return {"status": "rolling_out"}
+
+
 def apply_update(
     initiated_by: str | None = None,
     client_ip: str | None = None,
@@ -931,6 +1064,8 @@ def apply_update(
     audit(f"apply_update mode={mode} initiated_by={initiated_by or 'unknown'}")
     if mode == "image":
         return _apply_image()
+    if mode == "compose":
+        return _apply_compose()
     if mode == "dev":
         return _apply_dev(
             initiated_by=initiated_by,

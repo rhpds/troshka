@@ -22,6 +22,9 @@ example_templates/**/*.generated.troshka.yml
 *.local.yaml
 config.local.yaml
 
+# Local Compose updater IPC (host helper ↔ backend)
+deploy/compose/updater/
+
 # Database
 *.db
 *.sqlite3

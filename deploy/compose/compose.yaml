@@ -65,6 +65,9 @@ services:
         condition: service_completed_successfully
     ports:
       - "${TROSHKA_API_PORT:-8200}:8200"
+    volumes:
+      # Host compose-updater.sh writes digests / applies pull+up via these files.
+      - ./updater:/var/lib/troshka/compose-updater
     environment:
       TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:${POSTGRES_PASSWORD}@postgres:5432/troshka
       TROSHKA_REDIS__URL: redis://redis:6379/0
@@ -76,6 +79,8 @@ services:
       TROSHKA_AWS__ACCESS_KEY_ID: ${S3_ACCESS_KEY}
       TROSHKA_AWS__SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
       TROSHKA_APP__EXTERNAL_URL: http://localhost:${TROSHKA_UI_PORT:-3100}
+      TROSHKA_COMPOSE_UPDATE: "1"
+      TROSHKA_COMPOSE_DIR: /var/lib/troshka/compose-updater
 
   worker:
     image: quay.io/redhat-gpte/troshka-backend:${TROSHKA_IMAGE_TAG:-latest}

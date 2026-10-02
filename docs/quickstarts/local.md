@@ -23,6 +23,8 @@ This starts Postgres, Redis, MinIO, backend, worker, and frontend, then prints:
 
 Dev auth is on (auto-admin). Secrets are generated once in `deploy/compose/.env`.
 
+Install also starts a host-side `compose-updater` helper. When Quay `:latest` digests move, the UI shows a top-bar **Apply update** (pull + recreate). When a connected host’s troshkad is behind the backend image, an **Update host agents** banner appears. Teardown stops the helper.
+
 ## Compute (where lab VMs run)
 
 Troshka needs compute after the UI is up. Pick any:

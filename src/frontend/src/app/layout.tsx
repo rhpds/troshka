@@ -29,7 +29,7 @@ import SunIcon from "@patternfly/react-icons/dist/esm/icons/sun-icon";
 import MoonIcon from "@patternfly/react-icons/dist/esm/icons/moon-icon";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import SignOutAltIcon from "@patternfly/react-icons/dist/esm/icons/sign-out-alt-icon";
-import { ConfirmHost } from "@/lib/confirm";
+import { ConfirmHost, appConfirm } from "@/lib/confirm";
 
 interface UserInfo {
   id: string;
@@ -149,6 +149,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }, [pathname, showGettingStartedShine]);
 
   const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; hostsAgent: boolean; pools: boolean }>({ hosts: false, hostsAgent: false, pools: false });
+  const [staleHostIds, setStaleHostIds] = useState<string[]>([]);
+  const [agentUpdating, setAgentUpdating] = useState(false);
+  const [agentUpdateError, setAgentUpdateError] = useState<string | null>(null);
+  const [dismissedAgentBanner, setDismissedAgentBanner] = useState(false);
   useEffect(() => {
     if (!isAdmin) return;
     const check = () => {
@@ -163,6 +167,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         let hostWarn = false;
         let hostAgentWarn = false;
         let poolWarn = false;
+        const stale: string[] = [];
         for (const h of hosts) {
           for (const w of (h.storage_warnings || [])) {
             if (w.mount?.includes("/shared") && h.storage_pool_id) poolWarn = true;
@@ -174,9 +179,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           if (typeof usedPct === "number" && usedPct >= 80) hostWarn = true;
           // A connected host running an agent that doesn't match the current
           // troshkad source needs an update/reinstall.
-          if (expected && h.agent_status === "connected" && h.agent_version && h.agent_version !== expected) hostAgentWarn = true;
+          if (expected && h.agent_status === "connected" && h.agent_version && h.agent_version !== expected) {
+            hostAgentWarn = true;
+            stale.push(h.id);
+          }
         }
         setNavWarnings({ hosts: hostWarn, hostsAgent: hostAgentWarn, pools: poolWarn });
+        setStaleHostIds(stale);
+        if (stale.length === 0) {
+          setDismissedAgentBanner(false);
+          setAgentUpdateError(null);
+        }
       }).catch(() => {});
     };
     check();
@@ -211,7 +224,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // only hides the banner until the next code change, not permanently.
   const updateTargetKey =
     updateStatus?.stale_key ??
-    (updateStatus?.mode === "image"
+    (updateStatus?.mode === "image" || updateStatus?.mode === "compose"
       ? JSON.stringify(updateStatus?.components || {})
       : null);
   const showUpdate =
@@ -547,6 +560,67 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </span>
               )}
               <Button variant="link" isInline onClick={dismissUpdate}>Dismiss</Button>
+            </div>
+          )}
+          {isAdmin && navWarnings.hostsAgent && staleHostIds.length > 0 && !dismissedAgentBanner && (
+            <div style={{
+              background: "rgba(245, 158, 11, 0.15)",
+              border: "1px solid rgba(245, 158, 11, 0.4)",
+              color: "#fbbf24",
+              padding: "8px 16px",
+              fontSize: 13,
+              textAlign: "center",
+              fontWeight: 500,
+              display: "flex",
+              gap: 12,
+              justifyContent: "center",
+              alignItems: "center",
+            }}>
+              <span>
+                {staleHostIds.length === 1
+                  ? "A host agent update is available."
+                  : `${staleHostIds.length} host agents need an update.`}
+              </span>
+              <Button
+                variant="primary"
+                isDisabled={agentUpdating}
+                isLoading={agentUpdating}
+                onClick={async () => {
+                  if (agentUpdating) return;
+                  const ok = await appConfirm({
+                    message: `Update agent on ${staleHostIds.length} host(s)?`,
+                    confirmLabel: "Update",
+                  });
+                  if (!ok) return;
+                  setAgentUpdating(true);
+                  setAgentUpdateError(null);
+                  try {
+                    const results = await Promise.all(
+                      staleHostIds.map((id) =>
+                        fetch(`/api/v1/hosts/${id}/update-agent`, { method: "POST" }),
+                      ),
+                    );
+                    const failed = results.filter((r) => !r.ok).length;
+                    if (failed > 0) {
+                      setAgentUpdateError(
+                        failed === results.length
+                          ? "Host agent update failed. Check Admin → Hosts."
+                          : `${failed} of ${results.length} host agent updates failed.`,
+                      );
+                    }
+                  } catch {
+                    setAgentUpdateError("Host agent update failed. Check Admin → Hosts.");
+                  } finally {
+                    setAgentUpdating(false);
+                  }
+                }}
+              >
+                {agentUpdating ? "Updating…" : "Update host agents"}
+              </Button>
+              {agentUpdateError && (
+                <span style={{ color: "#fca5a5", fontWeight: 500 }}>{agentUpdateError}</span>
+              )}
+              <Button variant="link" isInline onClick={() => setDismissedAgentBanner(true)}>Dismiss</Button>
             </div>
           )}
           {!authChecked && !isConsolePage ? null : isDenied ? (

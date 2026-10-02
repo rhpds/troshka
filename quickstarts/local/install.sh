@@ -61,8 +61,12 @@ ensure_env
 set -a && source "${ENV_FILE}" && set +a
 
 echo "Starting Troshka control plane with: ${COMPOSE_CMD}"
+mkdir -p "${COMPOSE_DIR}/updater"
 # shellcheck disable=SC2086
 ${COMPOSE_CMD} -f "${COMPOSE_DIR}/compose.yaml" --env-file "${ENV_FILE}" up -d
+
+echo "Starting compose image updater (host helper for Apply update)..."
+"${_script_dir}/compose-updater.sh" start
 
 export TROSHKA_API_URL="http://localhost:${API_PORT}"
 "${_script_dir}/../lib/wait-for-api.sh"
@@ -73,6 +77,9 @@ Troshka is up (dev auth — auto-admin).
 
   UI:  http://localhost:${UI_PORT}
   API: http://localhost:${API_PORT}
+
+Apply update: when Quay digests move, the UI shows a top-bar button (host helper pulls + recreates).
+Host agents: a separate banner appears when troshkad is behind the backend image.
 
 Next — pick compute (lab VMs need somewhere to run):
   1. Local/near-local host:  ${_script_dir}/bootstrap-host.sh   (Linux, or inside macOS guest / WSL2)
