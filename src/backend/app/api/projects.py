@@ -6470,6 +6470,48 @@ def cancel_redeploy(
     return {"status": "cancelled"}
 
 
+class RedeployRequest(PydanticBaseModel):
+    """Optional body for project redeploy.
+
+    When the project has OCP clusters, ``ocp_mode`` is required:
+    ``rebuild`` (wipe markers + disks, fresh install) or ``recert``
+    (keep disks, best-effort in-place recert — prefer Save as Pattern).
+    """
+
+    ocp_mode: str | None = None
+
+
+def _resolve_redeploy_ocp_mode(project, ocp_mode: str | None) -> str | None:
+    """Validate/normalize ocp_mode for projects with OpenShift clusters."""
+    from app.services.redeploy_ocp import (
+        OCP_MODE_RECERT,
+        VALID_OCP_MODES,
+        all_ocp_clusters_ready,
+        topology_has_ocp_clusters,
+    )
+
+    topo = project.deployed_topology or project.topology or {}
+    if not topology_has_ocp_clusters(topo):
+        return None
+    if ocp_mode not in VALID_OCP_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "ocp_mode is required for projects with OpenShift clusters "
+                "(rebuild or recert)"
+            ),
+        )
+    if ocp_mode == OCP_MODE_RECERT and not all_ocp_clusters_ready(topo):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Re-cert requires all OpenShift clusters to be ready. "
+                "Use rebuild to wipe disks and reinstall from scratch."
+            ),
+        )
+    return ocp_mode
+
+
 @router.post(
     "/{project_id}/redeploy", responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}}
 )
@@ -6477,8 +6519,12 @@ def redeploy_project(
     project_id: str,
     user: CurrentUser,
     db: DbSession,
+    body: RedeployRequest | None = None,
 ):
-    """Destroy existing infrastructure and redeploy with current topology."""
+    """Destroy existing infrastructure and redeploy with current topology.
+
+    OCP projects must pass ``ocp_mode=rebuild|recert`` (see RedeployRequest).
+    """
     project = db.query(Project).filter_by(id=project_id).with_for_update().first()
     if not project:
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
@@ -6498,10 +6544,13 @@ def redeploy_project(
     if reqs["vm_count"] == 0:
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
-    # Capture destroy context before resetting state
+    ocp_mode = _resolve_redeploy_ocp_mode(project, (body.ocp_mode if body else None))
+
+    # Capture destroy context before resetting state. Recert keeps disks —
+    # skip destroy entirely and re-run ops-pod recert in place.
     destroy_ctx = None
     old_host_id = project.host_id
-    if project.host_id:
+    if ocp_mode != "recert" and project.host_id:
         old_host = db.query(Host).filter_by(id=old_host_id).first()
         if not old_host or not old_host.ip_address:
             raise HTTPException(
@@ -6509,19 +6558,28 @@ def redeploy_project(
                 detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.",
             )
         destroy_ctx = _build_destroy_context(project)
+        destroy_ctx["wipe_all_disks"] = True
 
     # Cancel any in-flight deploy thread for this project
     from app.services.deploy_service import _mark_deploy_cancelled
 
     _mark_deploy_cancelled(project.id)
 
+    if ocp_mode == "rebuild":
+        from app.services.redeploy_ocp import apply_ocp_rebuild_to_project
+
+        apply_ocp_rebuild_to_project(project)
+
     # Set state to deploying and return immediately
     project.state = "deploying"
     project.host_id = old_host_id
-    project.vni_map = None
+    if ocp_mode != "recert":
+        project.vni_map = None
+        project.ocp_status = None
+        project.ocp_install_elapsed = None
+    else:
+        project.ocp_status = "monitoring"
     project.deploy_error = None
-    project.ocp_status = None
-    project.ocp_install_elapsed = None
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
 
@@ -6533,11 +6591,12 @@ def redeploy_project(
         project.id,
         destroy_ctx,
         old_host_id,
+        ocp_mode,
         project_id=project.id,
         host_id=old_host_id,
     )
 
-    return {"status": "deploying"}
+    return {"status": "deploying", "ocp_mode": ocp_mode}
 
 
 @router.post("/{project_id}/undeploy", responses={403: {}, 404: {}})

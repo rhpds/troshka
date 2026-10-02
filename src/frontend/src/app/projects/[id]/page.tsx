@@ -28,7 +28,14 @@ import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
+import RedeployOcpModal from "@/components/RedeployOcpModal";
 import { appConfirm } from "@/lib/confirm";
+import {
+  allOcpClustersReady,
+  collectOcpClusters,
+  type OcpClusterStatus,
+  type OcpRedeployMode,
+} from "@/lib/redeployOcp";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
@@ -90,6 +97,10 @@ export default function ProjectCanvasPage() {
   const [guestExecEnabled, setGuestExecEnabled] = useState(true);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [redeployOcpModal, setRedeployOcpModal] = useState<{
+    clusters: OcpClusterStatus[];
+    allReady: boolean;
+  } | null>(null);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -880,15 +891,13 @@ export default function ProjectCanvasPage() {
     }
   };
 
-  const handleRepublish = async (message: string) => {
-    if (!(await appConfirm({
-      title: "Republish",
-      message,
-      confirmLabel: "Republish",
-      variant: "danger",
-    }))) return;
+  const doRedeploy = async (ocpMode?: OcpRedeployMode) => {
     setProjectState("deploying");
-    const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" });
+    const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, {
+      method: "POST",
+      headers: ocpMode ? { "Content-Type": "application/json" } : undefined,
+      body: ocpMode ? JSON.stringify({ ocp_mode: ocpMode }) : undefined,
+    });
     if (r.ok) {
       useCanvasStore.setState({ deployedVmIds: new Set() });
       setDeployError(null);
@@ -897,6 +906,28 @@ export default function ProjectCanvasPage() {
       const err = await r.json().catch(() => ({ detail: "Redeploy failed" }));
       setAlertMsg(err.detail || "Redeploy failed");
     }
+  };
+
+  const handleRepublish = async (message: string) => {
+    const store = useCanvasStore.getState();
+    const clusters = collectOcpClusters({
+      clusters: store.clusters,
+      nodes: store.nodes,
+    });
+    if (clusters.length > 0) {
+      setRedeployOcpModal({
+        clusters,
+        allReady: allOcpClustersReady(clusters),
+      });
+      return;
+    }
+    if (!(await appConfirm({
+      title: "Republish",
+      message,
+      confirmLabel: "Republish",
+      variant: "danger",
+    }))) return;
+    await doRedeploy();
   };
 
   const stateColors: Record<string, string> = {
@@ -1921,6 +1952,17 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         </div>
+      )}
+      {redeployOcpModal && (
+        <RedeployOcpModal
+          clusters={redeployOcpModal.clusters}
+          allReady={redeployOcpModal.allReady}
+          onCancel={() => setRedeployOcpModal(null)}
+          onChoose={(mode) => {
+            setRedeployOcpModal(null);
+            void doRedeploy(mode);
+          }}
+        />
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
       {showDeleteModal && (

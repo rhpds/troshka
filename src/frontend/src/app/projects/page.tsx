@@ -1206,13 +1206,24 @@ export default function ProjectsPage() {
                   )}
                   {allDeployed && (
                     <Button variant="secondary" size="sm" onClick={async () => {
+                      const ocpSelected = selected.filter((p) => p.ocp_status && p.ocp_status !== "none");
+                      const msg = ocpSelected.length
+                        ? `Republish ${selected.length} project(s)? ${ocpSelected.length} have OpenShift clusters — they will be rebuilt from scratch (disks wiped). Re-cert is only available from the project page when all clusters are ready.`
+                        : `Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`;
                       if (!(await appConfirm({
                         title: "Republish",
-                        message: `Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`,
-                        confirmLabel: "Republish",
+                        message: msg,
+                        confirmLabel: "Rebuild",
                         variant: "danger",
                       }))) return;
-                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }); }
+                      for (const p of selected) {
+                        const hasOcp = !!(p.ocp_status && p.ocp_status !== "none");
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, {
+                          method: "POST",
+                          headers: hasOcp ? { "Content-Type": "application/json" } : undefined,
+                          body: hasOcp ? JSON.stringify({ ocp_mode: "rebuild" }) : undefined,
+                        });
+                      }
                       setSelectedProjects(new Set());
                       fetchProjects();
                       pollUntilSettled();
@@ -1444,15 +1455,28 @@ export default function ProjectsPage() {
       {republishTarget && (
         <ConfirmModal
           title="Republish Project"
-          message={`Republish project "${republishTarget.name}"? This will destroy and recreate all VMs.`}
-          confirmLabel="Republish"
+          message={
+            republishTarget.ocp_status && republishTarget.ocp_status !== "none"
+              ? `Republish "${republishTarget.name}"? OpenShift clusters will be rebuilt from scratch (all disks wiped). For re-cert when clusters are ready, open the project page.`
+              : `Republish project "${republishTarget.name}"? This will destroy and recreate all VMs.`
+          }
+          confirmLabel={
+            republishTarget.ocp_status && republishTarget.ocp_status !== "none"
+              ? "Rebuild"
+              : "Republish"
+          }
           variant="danger"
           onCancel={() => setRepublishTarget(null)}
           onConfirm={() => {
             const p = republishTarget;
             setRepublishTarget(null);
             setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-            fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
+            const hasOcp = !!(p.ocp_status && p.ocp_status !== "none");
+            fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, {
+              method: "POST",
+              headers: hasOcp ? { "Content-Type": "application/json" } : undefined,
+              body: hasOcp ? JSON.stringify({ ocp_mode: "rebuild" }) : undefined,
+            }).then(r => r.json()).then(d => {
               if (d.status === "deploying") { pollUntilSettled(); }
               else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
             });

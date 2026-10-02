@@ -153,10 +153,17 @@ def job_cache_and_start_vm(project_id: str, host_id: str, vm_id: str):
         s.close()
 
 
-def job_redeploy_bg(project_id: str, destroy_ctx: dict | None, old_host_id: str | None):
+def job_redeploy_bg(
+    project_id: str,
+    destroy_ctx: dict | None,
+    old_host_id: str | None,
+    ocp_mode: str | None = None,
+):
     """Full project redeploy: destroy old, place new, deploy.
 
-    Previously a closure in projects.py.
+    ``ocp_mode=recert`` skips destroy and re-runs ops-pod recert in place so
+    OCP disks stay intact. ``rebuild`` (or non-OCP) destroys everything —
+    including all disks — then deploys fresh.
     """
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -164,6 +171,11 @@ def job_redeploy_bg(project_id: str, destroy_ctx: dict | None, old_host_id: str 
     from app.services.deploy_service import deploy_project_async, destroy_project_sync
     from app.services.gc_service import sync_host_capacity
     from app.services.placement import place_project
+    from app.services.redeploy_ocp import OCP_MODE_RECERT, run_inplace_ocp_recert
+
+    if ocp_mode == OCP_MODE_RECERT:
+        run_inplace_ocp_recert(project_id)
+        return
 
     s = SessionLocal()
     try:
