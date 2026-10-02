@@ -146,7 +146,7 @@ rules:
     verbs: ["patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["create", "get", "list"]
+    verbs: ["create", "get", "list", "patch", "update"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     resourceNames: ["troshka-operator"]
