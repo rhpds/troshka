@@ -120,6 +120,18 @@ def test_from_template_persists_install_via_bastion():
     pid = resp.json()["id"]
     proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
     assert proj["topology"]["ocpInstallVia"] == "bastion"
+    # Bastionless templates must materialize a bastion VM when install_via=bastion.
+    bastion = next(
+        (
+            n
+            for n in proj["topology"]["nodes"]
+            if n.get("type") == "vmNode" and n.get("data", {}).get("name") == "bastion"
+        ),
+        None,
+    )
+    assert bastion is not None
+    assert bastion["data"].get("cloudInit") is True
+    assert bastion["data"].get("ciUserData")
 
 
 from pathlib import Path as _Path

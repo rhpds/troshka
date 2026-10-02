@@ -1036,6 +1036,15 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         _bake_single_cluster_bastion(
             topology, config, template_id, api_vip, ingress_vip
         )
+        if not any(
+            n.get("type") == "vmNode" and n.get("data", {}).get("name") == "bastion"
+            for n in topology.get("nodes", [])
+        ):
+            raise ValueError(
+                "install_via='bastion' requires a bastion VM in the topology "
+                "(templates without one are injected at project create — "
+                "re-create the project or add a bastion VM)."
+            )
     # else: install_via == "pod" — ops pod consumes per-cluster _generated*
     # configs (no bastion bake; DNS + port-forwards still apply to every
     # cluster above).

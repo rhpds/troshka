@@ -170,6 +170,142 @@ def ocp_install_via(topology: dict) -> str:
     return _normalize_install_via(raw)
 
 
+# Canonical bastion shape used when stock OCP templates are bastionless but the
+# project opts into ``install_via: bastion`` (Plan 4b retained that path).
+_BASTION_PREFERRED_HOST = 50
+_BASTION_VM_DEFAULTS = {
+    "role": "bastion",
+    "vcpus": 2,
+    "ram_gb": 4,
+    "os": "rhel",
+    "disks": [{"size_gb": 80}],
+}
+_BASTION_TERMINAL_TAB = {
+    "name": "Bastion Terminal",
+    "type": "terminal",
+    "vm": "bastion",
+    "network": "cluster",
+}
+
+
+def _resolved_has_bastion_vm(vms: dict) -> bool:
+    if "bastion" in vms:
+        return True
+    return any(cfg.get("role") == "bastion" for cfg in vms.values())
+
+
+def _cluster_and_bmc_net_names(networks: dict) -> tuple[str, str]:
+    """Return (cluster_net_name, bmc_net_name) from a template networks dict."""
+    cluster_name = ""
+    bmc_name = ""
+    for name, cfg in (networks or {}).items():
+        cfg = cfg or {}
+        if cfg.get("type") == "bmc" or name == "bmc":
+            if not bmc_name:
+                bmc_name = name
+            continue
+        if not cluster_name or cfg.get("gateway"):
+            cluster_name = name
+    if not cluster_name:
+        raise ValueError(
+            "install_via='bastion' requires a cluster network in the template"
+        )
+    if not bmc_name:
+        raise ValueError("install_via='bastion' requires a BMC network in the template")
+    return cluster_name, bmc_name
+
+
+def _collect_used_host_ips(resolved: dict, network_name: str) -> set[str]:
+    """IPs already claimed on ``network_name`` (VM NICs + OCP VIPs + DNS)."""
+    used: set[str] = set()
+    for vm_cfg in (resolved.get("vms") or {}).values():
+        for nic in vm_cfg.get("nics") or []:
+            if nic.get("network") == network_name and nic.get("ip"):
+                used.add(str(nic["ip"]))
+    for cluster in normalize_ocp_section(resolved.get("ocp")):
+        for key in ("api_vip", "ingress_vip"):
+            if cluster.get(key):
+                used.add(str(cluster[key]))
+    net_cfg = (resolved.get("networks") or {}).get(network_name) or {}
+    for rec in net_cfg.get("dns_records") or []:
+        if rec.get("ip"):
+            used.add(str(rec["ip"]))
+    return used
+
+
+def _pick_bastion_cluster_ip(resolved: dict, cluster_net: str) -> str:
+    """Prefer .50 on the cluster CIDR; otherwise the first free host address."""
+    import ipaddress
+
+    net_cfg = (resolved.get("networks") or {}).get(cluster_net) or {}
+    cidr = net_cfg.get("cidr") or "10.0.0.0/24"
+    network = ipaddress.ip_network(cidr, strict=False)
+    used = _collect_used_host_ips(resolved, cluster_net)
+    preferred = ipaddress.ip_address(
+        f"{network.network_address + _BASTION_PREFERRED_HOST}"
+    )
+    if preferred in network and str(preferred) not in used:
+        return str(preferred)
+    for host in network.hosts():
+        if str(host) not in used:
+            return str(host)
+    raise ValueError(f"No free IP on {cluster_net} ({cidr}) for an injected bastion VM")
+
+
+def _rewrite_showroom_tabs_for_bastion(resolved: dict, cluster_net: str) -> None:
+    """Swap bastionless cluster-terminal tabs for a bastion SSH terminal tab."""
+    showroom = resolved.get("showroom")
+    if not isinstance(showroom, dict):
+        return
+    tabs = showroom.get("tabs")
+    if not isinstance(tabs, list):
+        return
+    tab = {**_BASTION_TERMINAL_TAB, "network": cluster_net}
+    new_tabs: list = []
+    replaced = False
+    for t in tabs:
+        if isinstance(t, dict) and (
+            t.get("target") == "clusters"
+            or (t.get("type") == "terminal" and t.get("vm") == "bastion")
+        ):
+            if not replaced:
+                new_tabs.append(tab)
+                replaced = True
+            continue
+        new_tabs.append(t)
+    if not replaced:
+        new_tabs.insert(0, tab)
+    showroom["tabs"] = new_tabs
+
+
+def ensure_bastion_for_install_via(resolved: dict, install_via: str) -> bool:
+    """Inject a bastion VM def when ``install_via=bastion`` and none exists.
+
+    Stock OCP templates are bastionless (ops-pod default). Selecting Bastion in
+    the wizard must still materialize the classic bastion shape so image/ISO
+    attach + cloud-init bake have a VM to target. Idempotent when a bastion is
+    already declared. Returns True when a VM was injected.
+    """
+    if _normalize_install_via(install_via) != "bastion":
+        return False
+    vms = resolved.setdefault("vms", {})
+    if not isinstance(vms, dict):
+        raise ValueError("template vms must be a mapping")
+    if _resolved_has_bastion_vm(vms):
+        return False
+    cluster_net, bmc_net = _cluster_and_bmc_net_names(resolved.get("networks") or {})
+    bastion_ip = _pick_bastion_cluster_ip(resolved, cluster_net)
+    vms["bastion"] = {
+        **_BASTION_VM_DEFAULTS,
+        "nics": [
+            {"network": cluster_net, "ip": bastion_ip},
+            {"network": bmc_net},
+        ],
+    }
+    _rewrite_showroom_tabs_for_bastion(resolved, cluster_net)
+    return True
+
+
 _CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 32768, "disk": 120}
 _WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
 

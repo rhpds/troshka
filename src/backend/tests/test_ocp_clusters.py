@@ -1071,6 +1071,140 @@ def test_resolve_install_via_explicit_bastion():
     assert resolve_install_via({"install_via": "bastion"}) == "bastion"
 
 
+def _bastionless_ocp_resolved():
+    """Minimal bastionless OCP template dict (mirrors stock ocp-standard shape)."""
+    return {
+        "name": "ocp-test",
+        "category": "openshift",
+        "install_via": "pod",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24", "gateway": True},
+            "bmc": {"type": "bmc", "cidr": "192.168.100.0/24"},
+        },
+        "ocp": [
+            {
+                "name": "ocp",
+                "type": "sno",
+                "api_vip": "10.0.0.10",
+                "ingress_vip": "10.0.0.10",
+            }
+        ],
+        "vms": {
+            "cp-0": {
+                "role": "control-plane",
+                "vcpus": 4,
+                "ram_gb": 16,
+                "os": "rhcos",
+                "nics": [{"network": "cluster", "ip": "10.0.0.10"}],
+            }
+        },
+        "showroom": {
+            "enabled": True,
+            "tabs": [
+                {
+                    "type": "terminal",
+                    "target": "clusters",
+                    "name": "OpenShift Cluster Terminal",
+                },
+                {
+                    "type": "proxy",
+                    "cluster": "ocp",
+                    "proxy_port": 443,
+                    "proxy_tls": True,
+                },
+            ],
+        },
+    }
+
+
+def test_ensure_bastion_injects_vm_when_install_via_bastion():
+    from app.services.template_loader import ensure_bastion_for_install_via
+
+    resolved = _bastionless_ocp_resolved()
+    assert ensure_bastion_for_install_via(resolved, "bastion") is True
+    bastion = resolved["vms"]["bastion"]
+    assert bastion["role"] == "bastion"
+    assert bastion["os"] == "rhel"
+    assert bastion["vcpus"] == 2
+    assert bastion["ram_gb"] == 4
+    nics = bastion["nics"]
+    assert nics[0]["network"] == "cluster"
+    assert nics[0]["ip"] == "10.0.0.50"
+    assert nics[1]["network"] == "bmc"
+    # Cluster-terminal showroom tab becomes bastion SSH.
+    tabs = resolved["showroom"]["tabs"]
+    assert tabs[0] == {
+        "name": "Bastion Terminal",
+        "type": "terminal",
+        "vm": "bastion",
+        "network": "cluster",
+    }
+    assert tabs[1]["type"] == "proxy"
+
+
+def test_ensure_bastion_noop_for_pod():
+    from app.services.template_loader import ensure_bastion_for_install_via
+
+    resolved = _bastionless_ocp_resolved()
+    assert ensure_bastion_for_install_via(resolved, "pod") is False
+    assert "bastion" not in resolved["vms"]
+
+
+def test_ensure_bastion_idempotent_when_already_present():
+    from app.services.template_loader import ensure_bastion_for_install_via
+
+    resolved = _bastionless_ocp_resolved()
+    resolved["vms"]["bastion"] = {
+        "role": "bastion",
+        "vcpus": 8,
+        "ram_gb": 16,
+        "os": "rhel",
+        "nics": [
+            {"network": "cluster", "ip": "10.0.0.99"},
+            {"network": "bmc"},
+        ],
+    }
+    assert ensure_bastion_for_install_via(resolved, "bastion") is False
+    assert resolved["vms"]["bastion"]["vcpus"] == 8
+    assert resolved["vms"]["bastion"]["nics"][0]["ip"] == "10.0.0.99"
+
+
+def test_ensure_bastion_picks_free_ip_when_dot50_taken():
+    from app.services.template_loader import ensure_bastion_for_install_via
+
+    resolved = _bastionless_ocp_resolved()
+    resolved["vms"]["extra"] = {
+        "role": "worker",
+        "nics": [{"network": "cluster", "ip": "10.0.0.50"}],
+    }
+    assert ensure_bastion_for_install_via(resolved, "bastion") is True
+    assert resolved["vms"]["bastion"]["nics"][0]["ip"] != "10.0.0.50"
+
+
+def test_generate_topology_with_injected_bastion():
+    from app.services.template_loader import (
+        ensure_bastion_for_install_via,
+        generate_topology_from_template,
+    )
+
+    resolved = _bastionless_ocp_resolved()
+    resolved["gateway"] = {"external_access": True}
+    ensure_bastion_for_install_via(resolved, "bastion")
+    topo = generate_topology_from_template(resolved, external_access=True)
+    bastion = next(
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "vmNode" and n.get("data", {}).get("name") == "bastion"
+    )
+    assert bastion["data"]["tags"]["AnsibleGroup"] == "bastions,showroom"
+    assert len(bastion["data"]["nics"]) == 2
+    gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
+    forwards = gw["data"].get("portForwards") or []
+    assert any(
+        pf.get("extPort") == "2222" and pf.get("intPort") == "22" for pf in forwards
+    )
+
+
 def test_resolve_install_via_explicit_pod():
     from app.services.template_loader import resolve_install_via
 

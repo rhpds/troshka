@@ -950,21 +950,29 @@ def create_project_from_template(
     if not block_outbound:
         resolved.setdefault("gateway", {}).pop("outbound_ports", None)
 
+    # Per-project OCP install method (bastion vs in-cluster ops pod). Body wins
+    # over the template; both fall back to the config default ("pod"). Inject a
+    # bastion VM into bastionless OCP templates BEFORE topology generation so
+    # NIC/disk/port-forward/showroom materialization sees it.
+    from app.services.template_loader import (
+        ensure_bastion_for_install_via,
+        resolve_install_via,
+    )
+
+    install_via = resolve_install_via(
+        body if body.get("install_via") is not None else resolved
+    )
+    try:
+        ensure_bastion_for_install_via(resolved, install_via)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     _resolve_template_library_items(db, user, resolved.get("vms", {}))
 
     topology = generate_topology_from_template(
         resolved,
         bmc_password=common_password,
         external_access=external_access,
-    )
-
-    # Per-project OCP install method (bastion vs in-cluster ops pod). Body wins
-    # over the template; both fall back to the config default ("pod"). Persist it
-    # on the topology so deploy-time code (and customize_topology below) see it.
-    from app.services.template_loader import resolve_install_via
-
-    install_via = resolve_install_via(
-        body if body.get("install_via") is not None else resolved
     )
     topology["ocpInstallVia"] = install_via
 
@@ -1178,8 +1186,10 @@ def import_template(
     db: DbSession,
 ):
     from app.services.template_loader import (
+        ensure_bastion_for_install_via,
         generate_topology_from_template,
         resolve_inline_template,
+        resolve_install_via,
     )
 
     project = db.query(Project).filter_by(id=project_id).first()
@@ -1194,13 +1204,20 @@ def import_template(
 
     template_yaml = body.get("template_yaml")
     template_yaml = _validate_template_yaml(template_yaml)
-    _resolve_template_library_items(db, user, template_yaml.get("vms", {}))
 
     try:
         resolved = resolve_inline_template(template_yaml)
+        install_via = resolve_install_via(
+            body if body.get("install_via") is not None else resolved
+        )
+        ensure_bastion_for_install_via(resolved, install_via)
+        _resolve_template_library_items(db, user, resolved.get("vms", {}))
         topology = generate_topology_from_template(resolved)
+        topology["ocpInstallVia"] = install_via
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid template: {e}") from e
 
     common_password = body.get("common_password", "") or ""
     _, ssh_key_ids, ssh_keys = _resolve_ssh_keys(db, user, body)
