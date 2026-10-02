@@ -161,6 +161,50 @@ resolve_host_ami() {
   echo "Host AMI: ${HOST_AMI} (${AMI_FLAVOR})"
 }
 
+# Fresh IAM access keys are eventually consistent — CreateVpc via the provider
+# can 500 for a minute after key creation. Wait until STS accepts them.
+wait_compute_creds_usable() {
+  local deadline=$((SECONDS + ${TROSHKA_IAM_WAIT:-120}))
+  local attempt=0
+  echo "Checking compute IAM credentials propagate..."
+  while (( SECONDS < deadline )); do
+    attempt=$((attempt + 1))
+    if AWS_ACCESS_KEY_ID="${COMPUTE_AK}" AWS_SECRET_ACCESS_KEY="${COMPUTE_SK}" \
+      AWS_SESSION_TOKEN="" AWS_PROFILE="" aws sts get-caller-identity \
+      --region "${REGION}" >/dev/null 2>&1; then
+      echo "Compute IAM credentials usable (attempt ${attempt})."
+      return 0
+    fi
+    echo "  IAM not ready yet (attempt ${attempt}); sleeping 5s..."
+    sleep 5
+  done
+  echo "error: compute IAM credentials not usable within ${TROSHKA_IAM_WAIT:-120}s" >&2
+  return 1
+}
+
+# Retry create-vpc: IAM race + transient AWS/API failures must not leave a
+# provider with credentials but no VPC/image/host (install only warns).
+create_vpc_with_retry() {
+  local provider_id="$1"
+  local max="${TROSHKA_CREATE_VPC_ATTEMPTS:-8}"
+  local attempt out ec
+  for attempt in $(seq 1 "${max}"); do
+    echo "Creating Troshka compute VPC (create-vpc attempt ${attempt}/${max})..."
+    set +e
+    out="$(api_post "/api/v1/providers/${provider_id}/create-vpc" 2>&1)"
+    ec=$?
+    set -e
+    if [[ "${ec}" -eq 0 ]]; then
+      echo "VPC ready: $(echo "${out}" | jq -r '.vpc_id // empty')"
+      return 0
+    fi
+    echo "  create-vpc failed (exit ${ec}): ${out}" >&2
+    sleep $((attempt * 5))
+  done
+  echo "error: create-vpc failed after ${max} attempts" >&2
+  return 1
+}
+
 # --- Troshka API seed ---
 seed_provider_and_host() {
   local providers provider_id host_count
@@ -193,8 +237,7 @@ seed_provider_and_host() {
   vpc="$(api_get "/api/v1/providers/" | jq -r --arg id "${provider_id}" \
     '.[] | select(.id==$id) | .vpc_id // empty')"
   if [[ -z "${vpc}" || "${vpc}" == "null" ]]; then
-    echo "Creating Troshka compute VPC (create-vpc)..."
-    api_post "/api/v1/providers/${provider_id}/create-vpc" >/dev/null
+    create_vpc_with_retry "${provider_id}"
   else
     echo "Provider already has VPC ${vpc}."
   fi
@@ -224,6 +267,7 @@ seed_provider_and_host() {
 
 echo "Seeding compute (provider=${PROVIDER_NAME}, flavor=${AMI_FLAVOR})..."
 ensure_compute_iam
+wait_compute_creds_usable
 resolve_host_ami
 seed_provider_and_host
 echo "Compute seed done."

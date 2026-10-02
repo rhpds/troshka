@@ -513,7 +513,11 @@ if start_backend_port_forward "${NAMESPACE}"; then
   unset TROSHKA_BASIC_USER TROSHKA_BASIC_PASSWORD || true
   export PRODUCTION CLUSTER_NAME REGION
   if ! "${_script_dir}/../lib/seed-compute.sh"; then
-    echo "warning: compute seed failed — UI is up; add provider/host manually (docs/install-aws.md)" >&2
+    echo "warning: compute seed failed once — retrying after 30s (IAM key propagation)..." >&2
+    sleep 30
+    if ! "${_script_dir}/../lib/seed-compute.sh"; then
+      echo "warning: compute seed failed — UI is up; add provider/host manually (docs/install-aws.md)" >&2
+    fi
   fi
   if ! NAMESPACE="${NAMESPACE}" "${_script_dir}/../lib/seed-fedora-image.sh"; then
     echo "warning: Fedora library image seed failed — upload manually from Admin → Library" >&2
