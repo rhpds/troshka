@@ -3,8 +3,9 @@
 import React, { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
+import type { NetworkNodeData } from "@/stores/canvasStore";
+import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 import {
   findRouteForForward,
   formatEipAccessUrl,
@@ -52,6 +53,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const [fwdExpanded, setFwdExpanded] = useState(false);
   const [routesOpen, setRoutesOpen] = useState(false);
   const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const hasShowroom = useCanvasStore((s) => s.nodes.some((n) => isShowroomContainer(n)));
   const isDirty = React.useMemo(() => {
@@ -71,7 +73,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
       style={(() => {
         const colors = {
           router:  { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",  glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
-          gateway: { bg: "rgba(255,255,255,0.08)", border: "rgba(255,255,255,0.55)", glow: "rgba(255,255,255,0.22)", selected: "#f8fafc" },
+          gateway: { bg: "var(--troshka-gateway-bg)", border: "var(--troshka-gateway-border)", glow: "var(--troshka-accent-glow)", selected: "var(--troshka-text)" },
           network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
           bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
           loadbalancer: { bg: "rgba(120,53,15,0.12)", border: "rgba(180,83,9,0.6)", glow: "rgba(180,83,9,0.25)", selected: "#d97706" },
@@ -82,7 +84,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           background: "var(--troshka-surface)",
           borderColor: selected ? c.selected : c.border,
           boxShadow: selected ? `0 0 0 3px ${c.glow}` : `inset 0 0 0 1px ${c.bg}`,
-          opacity: projectState === "draft" ? 0.55 : 1,
+          opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
           transition: "opacity 0.3s",
         };
       })()}

@@ -38,6 +38,8 @@ interface UserInfo {
   display_name?: string;
 }
 
+const THEME_BOOTSTRAP = `(function(){try{if(localStorage.getItem("troshka-theme")==="light"){document.documentElement.classList.remove("pf-v6-theme-dark");}else{document.documentElement.classList.add("pf-v6-theme-dark");}}catch(e){document.documentElement.classList.add("pf-v6-theme-dark");}})();`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -297,8 +299,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   if (isConsolePage || isPortalPage) {
     return (
-      <html lang="en">
-        <head><title>{isPortalPage ? "Lab Portal" : "Console"}</title></head>
+      <html lang="en" className={isDark ? "pf-v6-theme-dark" : undefined} suppressHydrationWarning>
+        <head>
+          <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+          <title>{isPortalPage ? "Lab Portal" : "Console"}</title>
+        </head>
         {/* Portal page sets its own title via document.title */}
         <body style={{ margin: 0, padding: 0, overflow: "hidden" }}>{children}</body>
       </html>
@@ -474,8 +479,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   ) : undefined;
 
   return (
-    <html lang="en">
+    <html lang="en" className={isDark ? "pf-v6-theme-dark" : undefined} suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
         <title>Troshka</title>
         <link rel="icon" href="/images/troshka-logo-32.png" />
       </head>

@@ -157,7 +157,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
           ? "0 0 0 3px var(--troshka-accent-glow)"
           : "none",
         // Translucent boundary — must not capture pointer events over children.
-        background: "rgba(59,130,246,0.06)",
+        background: "var(--troshka-cluster-fill)",
         pointerEvents: "none",
         // Sit behind member VM nodes so they stay interactive.
         zIndex: 0,

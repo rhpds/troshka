@@ -6,12 +6,14 @@ import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, requestDuplicateVM, stableNodeData, stableStringify, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
+import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 
 function VMNodeComponent({ id, data, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   const nodes = useCanvasStore((s) => s.nodes);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const updateNodeInternals = useUpdateNodeInternals();
@@ -173,7 +175,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         boxShadow: selected
           ? "0 0 0 3px var(--troshka-accent-glow)"
           : "0 2px 8px rgba(0,0,0,0.2)",
-        opacity: projectState === "draft" ? 0.55 : 1,
+        opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
         transition: "opacity 0.3s",
       }}
     >

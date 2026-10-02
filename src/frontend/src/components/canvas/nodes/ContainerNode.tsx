@@ -6,6 +6,7 @@ import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { ContainerNodeData } from "@/stores/canvasStore";
+import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 import {
   getShowroomReadiness,
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
@@ -14,6 +15,7 @@ import { getPodDisplayPorts } from "@/lib/showroomTabs";
 
 function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const updateNodeInternals = useUpdateNodeInternals();
@@ -74,7 +76,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           selected && isPod && !isShowroom
             ? "0 0 0 3px rgba(168, 85, 247, 0.3)"
             : undefined,
-        opacity: projectState === "draft" ? 0.55 : 1,
+        opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
         transition: "opacity 0.3s",
       }}
     >

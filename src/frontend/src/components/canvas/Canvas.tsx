@@ -61,6 +61,7 @@ import {
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
   SHOWROOM_GATEWAY_TARGET_HANDLE,
 } from "@/lib/showroomValidation";
+import { useIsDarkTheme } from "@/hooks/useIsDarkTheme";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -99,6 +100,7 @@ interface CanvasProps {
 export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
+  const isDark = useIsDarkTheme();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenuState | null>(null);
   const [selectedNodes, setSelectedNodes] = useState<Node[]>([]);
@@ -985,6 +987,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         connectionMode={ConnectionMode.Loose}
         defaultEdgeOptions={{ type: "smoothstep" }}
         connectionLineType={ConnectionLineType.SmoothStep}
+        colorMode={isDark ? "dark" : "light"}
         fitView
         deleteKeyCode={canvasLocked ? null : ["Backspace", "Delete"]}
         proOptions={{ hideAttribution: true }}
@@ -993,7 +996,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           variant={BackgroundVariant.Dots}
           gap={24}
           size={1}
-          color="rgba(255,255,255,0.06)"
+          color="var(--troshka-canvas-dots)"
         />
         <CanvasToolbar />
         {showMinimap && (
@@ -1005,7 +1008,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
               background: "var(--troshka-surface)",
               borderRadius: 8,
             }}
-            maskColor="rgba(0,0,0,0.3)"
+            maskColor="var(--troshka-minimap-mask)"
           />
         )}
       </ReactFlow>

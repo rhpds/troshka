@@ -7,6 +7,7 @@ body {
    Troshka Canvas Editor — CSS Variables & Component Styles
    ============================================================ */
 
+/* Dark defaults (app boots dark; html.pf-v6-theme-dark is set ASAP). */
 :root {
   --troshka-bg: #1a1b2e;
   --troshka-surface: #222440;
@@ -16,6 +17,8 @@ body {
   --troshka-accent-glow: rgba(108, 99, 255, 0.3);
   --troshka-green: #4ade80;
   --troshka-gateway-edge: rgba(74, 222, 128, 0.5);
+  --troshka-gateway-bg: rgba(255, 255, 255, 0.08);
+  --troshka-gateway-border: rgba(255, 255, 255, 0.55);
   --troshka-red: #f87171;
   --troshka-yellow: #fbbf24;
   --troshka-storage-edge: rgba(251, 191, 36, 0.6);
@@ -24,6 +27,36 @@ body {
   --troshka-purple: #a855f7;
   --troshka-text: #e2e8f0;
   --troshka-text-dim: #94a3b8;
+  --troshka-canvas-dots: rgba(255, 255, 255, 0.06);
+  --troshka-minimap-mask: rgba(0, 0, 0, 0.3);
+  --troshka-node-fill: rgba(108, 99, 255, 0.06);
+  --troshka-cluster-fill: rgba(59, 130, 246, 0.06);
+}
+
+/* Light theme — PatternFly removes pf-v6-theme-dark on <html>. */
+html:not(.pf-v6-theme-dark) {
+  --troshka-bg: #eef0f4;
+  --troshka-surface: #ffffff;
+  --troshka-surface2: #f0f2f5;
+  --troshka-border: #c8cdd4;
+  --troshka-accent: #5a54e8;
+  --troshka-accent-glow: rgba(90, 84, 232, 0.2);
+  --troshka-green: #16a34a;
+  --troshka-gateway-edge: rgba(22, 163, 74, 0.55);
+  --troshka-gateway-bg: rgba(15, 23, 42, 0.04);
+  --troshka-gateway-border: rgba(15, 23, 42, 0.45);
+  --troshka-red: #dc2626;
+  --troshka-yellow: #ca8a04;
+  --troshka-storage-edge: rgba(202, 138, 4, 0.55);
+  --troshka-orange: #ea580c;
+  --troshka-cyan: #0891b2;
+  --troshka-purple: #9333ea;
+  --troshka-text: #1e293b;
+  --troshka-text-dim: #64748b;
+  --troshka-canvas-dots: rgba(15, 23, 42, 0.12);
+  --troshka-minimap-mask: rgba(15, 23, 42, 0.12);
+  --troshka-node-fill: #ffffff;
+  --troshka-cluster-fill: rgba(59, 130, 246, 0.08);
 }
 
 /* ---- Full-screen canvas layout ---- */
@@ -436,12 +469,13 @@ body {
 
 .vm-node-card {
   width: 180px;
-  background: rgba(108, 99, 255, 0.06);
+  background: var(--troshka-node-fill);
   border: 1.5px solid var(--troshka-border);
   border-radius: 12px;
   overflow: hidden;
   font-family: inherit;
   color: var(--troshka-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .vm-node-header {
@@ -536,6 +570,11 @@ body {
   border-radius: 4px;
   background: rgba(251,191,36,0.15);
   color: var(--troshka-yellow);
+}
+
+html:not(.pf-v6-theme-dark) .vm-node-warning {
+  background: rgba(202, 138, 4, 0.12);
+  color: #92400e;
 }
 
 .vm-node-footer {
@@ -687,7 +726,7 @@ body {
 
 .storage-node-card {
   width: 160px;
-  background: rgba(251, 191, 36, 0.06);
+  background: var(--troshka-node-fill);
   border: 1.5px solid rgba(251, 191, 36, 0.3);
   border-radius: 12px;
   padding: 10px 12px;
@@ -695,6 +734,7 @@ body {
   align-items: center;
   gap: 10px;
   color: var(--troshka-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .storage-node-icon {
@@ -727,7 +767,7 @@ body {
 
 .canvas-node {
   width: 180px;
-  background: rgba(108, 99, 255, 0.06);
+  background: var(--troshka-node-fill);
   border: 1.5px solid var(--troshka-border);
   border-radius: 12px;
   overflow: hidden;

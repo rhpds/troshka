@@ -7,8 +7,7 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
-  useInternalNode,
-  useViewport,
+  ConnectionMode,
   applyNodeChanges,
   type Node,
   type Edge,
@@ -19,12 +18,29 @@ import "@xyflow/react/dist/style.css";
 import VMNode from "./nodes/VMNode";
 import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
+import { ContainerNode } from "./nodes/ContainerNode";
+import ClusterNode from "./nodes/ClusterNode";
+import CephClusterNode from "./nodes/CephClusterNode";
+import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import ReadOnlyPropertiesPanel from "./ReadOnlyPropertiesPanel";
+import { CanvasDisplayProvider } from "@/components/canvas/CanvasDisplayContext";
+import { useIsDarkTheme } from "@/hooks/useIsDarkTheme";
+import {
+  CLUSTER_ANCHOR_EDGE_TYPE,
+  isClusterAnchorEdge,
+} from "@/lib/clusterAnchorEdge";
 
 const nodeTypes = {
   vmNode: VMNode,
   networkNode: NetworkNode,
   storageNode: StorageNode,
+  containerNode: ContainerNode,
+  clusterNode: ClusterNode,
+  cephClusterNode: CephClusterNode,
+};
+
+const edgeTypes = {
+  [CLUSTER_ANCHOR_EDGE_TYPE]: ClusterAnchorEdge,
 };
 
 interface PatternPreviewModalProps {
@@ -33,101 +49,32 @@ interface PatternPreviewModalProps {
   onClose: () => void;
 }
 
-function getAnchorPoint(
-  node: { internals: { positionAbsolute: { x: number; y: number } }; measured?: { width?: number; height?: number } },
-  handle: string | undefined,
-  role: "source" | "target",
-  otherNode: { internals: { positionAbsolute: { x: number; y: number } } },
-) {
-  const w = node.measured?.width || 200;
-  const h = node.measured?.height || 100;
-  const x = node.internals.positionAbsolute.x;
-  const y = node.internals.positionAbsolute.y;
-
-  if (handle?.includes("-top")) return { px: x + w / 2, py: y, dir: "top" as const };
-  if (handle?.includes("-bottom")) return { px: x + w / 2, py: y + h, dir: "bottom" as const };
-  if (handle?.includes("-left") || handle === "left") return { px: x, py: y + h / 2, dir: "left" as const };
-  if (handle?.includes("-right") || handle === "right") return { px: x + w, py: y + h / 2, dir: "right" as const };
-  if (handle === "top") return { px: x + w / 2, py: y, dir: "top" as const };
-  if (handle === "bottom") return { px: x + w / 2, py: y + h, dir: "bottom" as const };
-
-  const ox = otherNode.internals.positionAbsolute.x;
-  const oy = otherNode.internals.positionAbsolute.y;
-  const dx = ox - x;
-  const dy = oy - y;
-  if (Math.abs(dx) > Math.abs(dy)) {
-    return dx > 0
-      ? { px: x + w, py: y + h / 2, dir: "right" as const }
-      : { px: x, py: y + h / 2, dir: "left" as const };
-  }
-  return dy > 0
-    ? { px: x + w / 2, py: y + h, dir: "bottom" as const }
-    : { px: x + w / 2, py: y, dir: "top" as const };
-}
-
-function EdgeLine({ sourceId, targetId, sourceHandle, targetHandle }: {
-  sourceId: string; targetId: string; sourceHandle?: string; targetHandle?: string;
-}) {
-  const sourceNode = useInternalNode(sourceId);
-  const targetNode = useInternalNode(targetId);
-
-  if (!sourceNode || !targetNode) return null;
-
-  const src = getAnchorPoint(sourceNode, sourceHandle, "source", targetNode);
-  const tgt = getAnchorPoint(targetNode, targetHandle, "target", sourceNode);
-
-  const isNic = sourceHandle?.includes("nic-") || targetHandle?.includes("nic-");
-  const stroke = isNic ? "rgba(56,189,248,0.6)" : "rgba(251,191,36,0.6)";
-
-  const offset = 60;
-  let c1x = src.px, c1y = src.py, c2x = tgt.px, c2y = tgt.py;
-  if (src.dir === "right") c1x += offset;
-  if (src.dir === "left") c1x -= offset;
-  if (src.dir === "top") c1y -= offset;
-  if (src.dir === "bottom") c1y += offset;
-  if (tgt.dir === "right") c2x += offset;
-  if (tgt.dir === "left") c2x -= offset;
-  if (tgt.dir === "top") c2y -= offset;
-  if (tgt.dir === "bottom") c2y += offset;
-
-  return (
-    <path
-      d={`M ${src.px} ${src.py} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tgt.px} ${tgt.py}`}
-      fill="none"
-      stroke={stroke}
-      strokeWidth={2}
-      strokeDasharray="6 4"
-    />
-  );
-}
-
-function EdgeOverlay({ edges }: { edges: Edge[] }) {
-  const { x, y, zoom } = useViewport();
-  return (
-    <svg
-      className="react-flow__edge-overlay"
-      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}
-    >
-      <g transform={`translate(${x}, ${y}) scale(${zoom})`}>
-        {edges.map((edge, i) => (
-          <EdgeLine
-            key={edge.id || `e-${i}`}
-            sourceId={edge.source}
-            targetId={edge.target}
-            sourceHandle={edge.sourceHandle ?? undefined}
-            targetHandle={edge.targetHandle ?? undefined}
-          />
-        ))}
-      </g>
-    </svg>
-  );
+/** Match project-canvas edge routing (smoothstep) and preserve stored stroke styles. */
+function normalizePreviewEdges(edges: Edge[]): Edge[] {
+  return edges.map((edge) => {
+    if (isClusterAnchorEdge(edge)) {
+      return { ...edge, type: CLUSTER_ANCHOR_EDGE_TYPE };
+    }
+    return {
+      ...edge,
+      type: "smoothstep",
+      style: {
+        stroke: "rgba(56,189,248,0.5)",
+        strokeWidth: 2,
+        strokeDasharray: "6 4",
+        ...edge.style,
+      },
+    };
+  });
 }
 
 function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; initialEdges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
+  const stableEdgeTypes = useMemo(() => edgeTypes, []);
+  const isDark = useIsDarkTheme();
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
-  const [showEdges, setShowEdges] = useState(false);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const edges = useMemo(() => normalizePreviewEdges(initialEdges), [initialEdges]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds));
@@ -142,29 +89,39 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
   }, []);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div className="canvas-wrapper" style={{ position: "relative", width: "100%", height: "100%" }}>
       <ReactFlow
         nodes={nodes}
-        edges={[]}
+        edges={edges}
         onNodesChange={onNodesChange}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         nodeTypes={stableNodeTypes}
+        edgeTypes={stableEdgeTypes}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={true}
         panOnDrag={true}
         zoomOnScroll={true}
+        connectionMode={ConnectionMode.Loose}
+        defaultEdgeOptions={{ type: "smoothstep" }}
+        colorMode={isDark ? "dark" : "light"}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
-        onInit={() => {
-          setTimeout(() => setShowEdges(true), 300);
-        }}
       >
-        {showEdges && <EdgeOverlay edges={initialEdges} />}
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-        <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={20}
+          size={1}
+          color="var(--troshka-canvas-dots)"
+        />
+        <MiniMap
+          pannable={false}
+          zoomable={false}
+          style={{ height: 80, width: 120, background: "var(--troshka-surface)", borderRadius: 8 }}
+          maskColor="var(--troshka-minimap-mask)"
+        />
       </ReactFlow>
       {selectedNode && (
         <ReadOnlyPropertiesPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
@@ -221,14 +178,16 @@ export default function PatternPreviewModal({ patternId, patternName, onClose }:
             ✕
           </button>
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minHeight: 0 }}>
           {loading ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
               Loading topology...
             </div>
           ) : topology ? (
             <ReactFlowProvider>
-              <PreviewCanvas initialNodes={topology.nodes} initialEdges={topology.edges} />
+              <CanvasDisplayProvider isPreview>
+                <PreviewCanvas initialNodes={topology.nodes} initialEdges={topology.edges} />
+              </CanvasDisplayProvider>
             </ReactFlowProvider>
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>

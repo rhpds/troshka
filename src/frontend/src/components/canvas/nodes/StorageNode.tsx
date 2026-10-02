@@ -3,10 +3,12 @@
 import React, { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useCanvasStore, stableNodeData, stableStringify, type StorageNodeData } from "@/stores/canvasStore";
+import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 
 function StorageNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as StorageNodeData;
   const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
@@ -28,7 +30,7 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
         boxShadow: selected
           ? "0 0 0 3px rgba(251,191,36,0.2)"
           : "none",
-        opacity: projectState === "draft" ? 0.55 : 1,
+        opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
         transition: "opacity 0.3s",
       }}
     >
