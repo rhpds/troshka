@@ -4,6 +4,8 @@ import {
   findInflightRun,
   findFailedChainRun,
   formatWorkloadChipLabel,
+  parseWorkloadChain,
+  workloadChainEntryStatus,
   type WorkloadRunSummary,
 } from "../workloadStatus";
 
@@ -149,5 +151,51 @@ describe("formatWorkloadChipLabel", () => {
       succeededRoles: new Set(),
     });
     expect(label).toEqual({ headline: "Workload", detail: "operators" });
+  });
+});
+
+describe("parseWorkloadChain", () => {
+  it("keeps order and runOnce flags", () => {
+    expect(
+      parseWorkloadChain([
+        { role: "a.once", runOnce: true },
+        "b.always",
+        { name: "c.named", runOnce: false },
+      ]),
+    ).toEqual([
+      { role: "a.once", runOnce: true },
+      { role: "b.always", runOnce: false },
+      { role: "c.named", runOnce: false },
+    ]);
+  });
+});
+
+describe("workloadChainEntryStatus", () => {
+  it("prefers running, then succeeded, then failed, then done stamp", () => {
+    const runs: WorkloadRunSummary[] = [
+      {
+        id: "1",
+        role_fqcn: "a.role",
+        status: "running",
+        created_at: "2026-09-24T10:00:00Z",
+      },
+    ];
+    expect(workloadChainEntryStatus("a.role", runs, new Set())).toBe("running");
+    expect(
+      workloadChainEntryStatus(
+        "a.role",
+        [{ ...runs[0], status: "succeeded" }],
+        new Set(),
+      ),
+    ).toBe("succeeded");
+    expect(
+      workloadChainEntryStatus(
+        "a.role",
+        [{ ...runs[0], status: "error" }],
+        new Set(),
+      ),
+    ).toBe("failed");
+    expect(workloadChainEntryStatus("a.role", [], new Set(["a.role"]))).toBe("done");
+    expect(workloadChainEntryStatus("a.role", [], new Set())).toBe("pending");
   });
 });

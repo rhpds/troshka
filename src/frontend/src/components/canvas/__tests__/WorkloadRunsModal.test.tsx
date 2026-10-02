@@ -106,4 +106,39 @@ describe("WorkloadRunsModal", () => {
     render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={() => {}} />);
     await waitFor(() => expect(screen.getByText("web1, db1")).toBeInTheDocument());
   });
+
+  it("shows the template workload chain from the canvas store", async () => {
+    useCanvasStore.setState({
+      clusters: [],
+      nodes: [],
+      edges: [],
+      topologyWorkloads: [
+        { role: "rhpds.demo.operators", runOnce: true },
+        "rhpds.demo.network",
+      ],
+      topologyWorkloadsDone: ["rhpds.demo.operators"],
+    } as never);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve([]),
+        } as Response),
+      ),
+    );
+
+    render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("workload-chain-section")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Template chain")).toBeInTheDocument();
+    expect(screen.getAllByTestId("workload-chain-entry")).toHaveLength(2);
+    expect(screen.getByText("operators")).toBeInTheDocument();
+    expect(screen.getByText("network")).toBeInTheDocument();
+    expect(screen.getByText("Done (runOnce)")).toBeInTheDocument();
+    expect(screen.getByText("Pending")).toBeInTheDocument();
+  });
 });

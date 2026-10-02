@@ -87,3 +87,51 @@ export function succeededRoleSet(runs: WorkloadRunSummary[]): Set<string> {
   }
   return out;
 }
+
+export type WorkloadChainEntry = {
+  role: string;
+  runOnce: boolean;
+};
+
+/** Template ``workloads:`` entries with optional ``runOnce`` flag. */
+export function parseWorkloadChain(
+  workloads: unknown[] | null | undefined,
+): WorkloadChainEntry[] {
+  const out: WorkloadChainEntry[] = [];
+  for (const entry of workloads || []) {
+    if (typeof entry === "string" && entry.trim()) {
+      out.push({ role: entry.trim(), runOnce: false });
+      continue;
+    }
+    if (entry && typeof entry === "object") {
+      const rec = entry as Record<string, unknown>;
+      const name = rec.name || rec.role || rec.role_fqcn;
+      if (typeof name === "string" && name.trim()) {
+        out.push({ role: name.trim(), runOnce: !!rec.runOnce });
+      }
+    }
+  }
+  return out;
+}
+
+export type WorkloadChainEntryStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "done";
+
+/** Derive display status for one chain role from runs + workloadsDone. */
+export function workloadChainEntryStatus(
+  role: string,
+  runs: WorkloadRunSummary[],
+  done: Set<string>,
+): WorkloadChainEntryStatus {
+  const forRole = runs.filter((r) => r.role_fqcn === role);
+  if (forRole.some((r) => INFLIGHT.has(r.status))) return "running";
+  if (forRole.some((r) => r.status === "succeeded")) return "succeeded";
+  const failed = forRole.filter((r) => FAILED.has(r.status));
+  if (failed.length) return "failed";
+  if (done.has(role)) return "done";
+  return "pending";
+}

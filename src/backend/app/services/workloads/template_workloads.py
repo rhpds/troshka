@@ -53,6 +53,74 @@ def workloads_done_set(topology: dict | None) -> set[str]:
     return {str(x).strip() for x in raw if isinstance(x, str) and x.strip()}
 
 
+def clear_workloads_done(topology: dict | None) -> bool:
+    """Drop ``workloadsDone`` so runOnce roles can auto-run again.
+
+    Returns True when the topology dict was changed.
+    """
+    if not isinstance(topology, dict) or "workloadsDone" not in topology:
+        return False
+    topology.pop("workloadsDone", None)
+    return True
+
+
+def reset_template_workloads_for_redeploy(db, project) -> None:
+    """Allow the template workload chain to replay after redeploy/rebuild/recert.
+
+    Clears ``workloadsDone`` on both topologies and cancels any in-flight runs
+    from the prior deploy. Prior ``succeeded`` runs are kept for history but
+    ignored by :func:`maybe_enqueue_template_workloads` once ``deploy_started_at``
+    advances (see ``_succeeded_roles_for_current_deploy``).
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.workload_run import WorkloadRun
+
+    for attr in ("topology", "deployed_topology"):
+        topo = getattr(project, attr, None)
+        if not isinstance(topo, dict):
+            continue
+        # Mutate a copy so SQLAlchemy JSONB change tracking sees a new object.
+        topo = dict(topo)
+        if clear_workloads_done(topo):
+            setattr(project, attr, topo)
+            try:
+                flag_modified(project, attr)
+            except AttributeError:
+                # Non-ORM test doubles have no SQLAlchemy state.
+                pass
+
+    pid = getattr(project, "id", None)
+    if not pid:
+        return
+    active = (
+        db.query(WorkloadRun)
+        .filter(
+            WorkloadRun.project_id == pid,
+            WorkloadRun.status.in_(tuple(_ACTIVE_STATUSES)),
+        )
+        .all()
+    )
+    for run in active:
+        run.status = "cancelled"
+        run.error = "Cancelled: project redeployed"
+
+
+def _succeeded_roles_for_current_deploy(db, project) -> set[str]:
+    """Succeeded role FQCNs that count for auto-skip in this deploy cycle.
+
+    Only runs created at/after ``deploy_started_at`` block replay — older
+    history from a previous deploy/redeploy must not prevent re-enqueue.
+    """
+    from app.models.workload_run import WorkloadRun
+
+    q = db.query(WorkloadRun).filter_by(project_id=project.id, status="succeeded")
+    cutoff = getattr(project, "deploy_started_at", None)
+    if cutoff is not None:
+        q = q.filter(WorkloadRun.created_at >= cutoff)
+    return {r.role_fqcn for r in q.all() if r.role_fqcn}
+
+
 def mark_run_once_roles_done(
     topology: dict, *, roles: set[str] | None = None
 ) -> set[str]:
@@ -270,13 +338,7 @@ def maybe_enqueue_template_workloads(project_id: str) -> str | None:
         if inflight:
             return None
 
-        succeeded = {
-            r.role_fqcn
-            for r in db.query(WorkloadRun)
-            .filter_by(project_id=project_id, status="succeeded")
-            .all()
-            if r.role_fqcn
-        }
+        succeeded = _succeeded_roles_for_current_deploy(db, project)
         next_role = next_auto_workload_role(
             topo.get("workloads"),
             succeeded=succeeded,

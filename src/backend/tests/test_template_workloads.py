@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 from app.services.workloads.template_workloads import (
     _project_workload_ready,
+    clear_workloads_done,
     mark_run_once_roles_done,
     next_auto_workload_role,
     normalize_workload_roles,
+    reset_template_workloads_for_redeploy,
     resolve_template_workload_chain,
     run_once_roles,
     workloads_done_set,
@@ -90,6 +92,52 @@ def test_mark_run_once_roles_done_stamps_topology():
 def test_workloads_done_set():
     assert workloads_done_set({"workloadsDone": ["a", "b", ""]}) == {"a", "b"}
     assert workloads_done_set({}) == set()
+
+
+def test_clear_workloads_done_keeps_workloads_list():
+    topo = {
+        "workloads": [{"role": "a.once", "runOnce": True}, "b.always"],
+        "workloadsDone": ["a.once"],
+    }
+    assert clear_workloads_done(topo) is True
+    assert "workloadsDone" not in topo
+    assert topo["workloads"] == [{"role": "a.once", "runOnce": True}, "b.always"]
+    assert clear_workloads_done(topo) is False
+
+
+def test_reset_template_workloads_for_redeploy_clears_done_and_cancels_inflight():
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDb:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def query(self, model):
+            return FakeQuery(self._rows)
+
+    inflight = SimpleNamespace(status="running", error=None)
+    project = SimpleNamespace(
+        id="proj-1",
+        topology={
+            "workloads": ["role.a"],
+            "workloadsDone": ["role.a"],
+        },
+        deployed_topology={"workloadsDone": ["role.a"]},
+    )
+    reset_template_workloads_for_redeploy(FakeDb([inflight]), project)
+    assert "workloadsDone" not in project.topology
+    assert project.topology["workloads"] == ["role.a"]
+    assert "workloadsDone" not in project.deployed_topology
+    assert inflight.status == "cancelled"
+    assert "redeployed" in (inflight.error or "").lower()
 
 
 def test_project_workload_ready_accepts_milestone_or_ocp_ready():

@@ -6604,6 +6604,13 @@ def redeploy_project(
     # so the Deploying overlay does not show stale detail until new steps arrive.
     project.deploy_progress = None
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
+    # Template workloads must replay after redeploy (runOnce stamps + prior
+    # succeeded runs would otherwise skip the whole chain).
+    from app.services.workloads.template_workloads import (
+        reset_template_workloads_for_redeploy,
+    )
+
+    reset_template_workloads_for_redeploy(db, project)
     db.commit()
     _delete_deploy_progress(project.id)
 

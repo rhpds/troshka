@@ -1,8 +1,14 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { formatWorkloadStatusLabel } from "@/components/canvas/WorkloadRunDetailModal";
+import {
+  parseWorkloadChain,
+  shortRoleLabel,
+  workloadChainEntryStatus,
+  type WorkloadChainEntryStatus,
+} from "@/components/canvas/workloadStatus";
 
 interface RunItem {
   id: string;
@@ -21,11 +27,33 @@ interface Props {
   onOpenRun: (runId: string) => void;
 }
 
+const CHAIN_STATUS_STYLE: Record<
+  WorkloadChainEntryStatus,
+  { label: string; color: string }
+> = {
+  pending: { label: "Pending", color: "rgba(148,163,184,0.95)" },
+  running: { label: "Running", color: "rgba(56,189,248,0.95)" },
+  succeeded: { label: "Succeeded", color: "rgba(74,222,128,0.95)" },
+  failed: { label: "Failed", color: "rgba(248,113,113,0.95)" },
+  done: { label: "Done (runOnce)", color: "rgba(167,139,250,0.95)" },
+};
+
 export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Props) {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const clusters = useCanvasStore((s) => s.clusters);
+  const topologyWorkloads = useCanvasStore((s) => s.topologyWorkloads);
+  const topologyWorkloadsDone = useCanvasStore((s) => s.topologyWorkloadsDone);
+
+  const chain = useMemo(
+    () => parseWorkloadChain(topologyWorkloads),
+    [topologyWorkloads],
+  );
+  const doneSet = useMemo(
+    () => new Set((topologyWorkloadsDone || []).filter(Boolean)),
+    [topologyWorkloadsDone],
+  );
 
   const refresh = async () => {
     try {
@@ -94,9 +122,108 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
-          <h2 style={{ margin: 0 }}>Workload Runs</h2>
+          <h2 style={{ margin: 0 }}>Workloads</h2>
           <button onClick={onClose}>✕</button>
         </div>
+
+        <section style={{ marginBottom: 20 }} data-testid="workload-chain-section">
+          <h3
+            style={{
+              margin: "0 0 8px",
+              fontSize: 12,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              opacity: 0.65,
+            }}
+          >
+            Template chain
+          </h3>
+          {chain.length === 0 ? (
+            <div style={{ opacity: 0.6, fontSize: 13 }}>
+              No template workload chain on this project.
+            </div>
+          ) : (
+            <ol
+              style={{
+                margin: 0,
+                padding: "8px 0 0 0",
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {chain.map((entry, i) => {
+                const status = workloadChainEntryStatus(entry.role, runs, doneSet);
+                const style = CHAIN_STATUS_STYLE[status];
+                return (
+                  <li
+                    key={`${i}-${entry.role}`}
+                    data-testid="workload-chain-entry"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default, transparent)",
+                      fontSize: 13,
+                    }}
+                  >
+                    <span style={{ opacity: 0.5, width: 22, flexShrink: 0 }}>{i + 1}.</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ fontWeight: 500 }}>{shortRoleLabel(entry.role)}</span>
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: 11,
+                          opacity: 0.55,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={entry.role}
+                      >
+                        {entry.role}
+                      </span>
+                    </span>
+                    {entry.runOnce && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          opacity: 0.7,
+                          border: "1px solid rgba(148,163,184,0.45)",
+                          borderRadius: 4,
+                          padding: "1px 6px",
+                        }}
+                      >
+                        runOnce
+                      </span>
+                    )}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: style.color }}>
+                      {style.label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </section>
+
+        <h3
+          style={{
+            margin: "0 0 8px",
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            opacity: 0.65,
+          }}
+        >
+          Run history
+        </h3>
         {loading ? (
           <div style={{ opacity: 0.6 }}>Loading…</div>
         ) : runs.length === 0 ? (

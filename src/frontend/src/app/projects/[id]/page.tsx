@@ -1237,7 +1237,7 @@ export default function ProjectCanvasPage() {
               onClick={() => setShowWorkloadRuns(true)}
               style={{ opacity: 0.85 }}
             >
-              Workload Runs
+              Workloads
               {inflightWorkload && (
                 <span
                   title="Workload running"
