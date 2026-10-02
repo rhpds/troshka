@@ -23,6 +23,8 @@ export type ShowroomExternalIp = {
   id: string;
   name: string;
   ip: string;
+  /** true = showroom sync auto-created; false = user-added (never auto-stripped). */
+  auto?: boolean;
 };
 
 /** Showroom container IP on the infra VXLAN (always .3). Used for DNS targets. */
@@ -125,7 +127,15 @@ export function ensureShowroomExternalIps(
   externalIps: ShowroomExternalIp[],
 ): ShowroomExternalIp[] {
   if (externalIps.length > 0) return externalIps;
-  return [{ id: crypto.randomUUID(), name: "IP-1", ip: "" }];
+  return [{ id: crypto.randomUUID(), name: "IP-1", ip: "", auto: true }];
+}
+
+function isAutoShowroomExternalIp(eip: ShowroomExternalIp): boolean {
+  // Explicit user-added EIPs must survive sync (Add IP on ocpvirt/dedicated CI).
+  if (eip.auto === false) return false;
+  if (eip.auto === true) return !eip.ip;
+  // Legacy unmarked auto IP-1 (pre-auto flag) — still self-heal on route providers.
+  return eip.name === "IP-1" && !eip.ip;
 }
 
 function stripShowroomAutoExternalIps(
@@ -134,7 +144,7 @@ function stripShowroomAutoExternalIps(
 ): ShowroomExternalIp[] {
   if (externalIps.length !== 1) return externalIps;
   const only = externalIps[0];
-  if (only.name !== "IP-1" || only.ip) return externalIps;
+  if (!isAutoShowroomExternalIp(only)) return externalIps;
   if (gatewayPortForwards.some((pf) => pf.extIpId === only.id)) return externalIps;
   return [];
 }

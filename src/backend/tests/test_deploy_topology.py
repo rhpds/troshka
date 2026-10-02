@@ -1462,6 +1462,34 @@ def test_inject_showroom_strips_stale_auto_eip_web_only_route_provider():
     assert not pfs["443"].get("extIpId")
 
 
+def test_inject_showroom_keeps_user_added_eip_web_only_route_provider():
+    """User-added EIPs (auto=False) survive web-only route-provider self-heal."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    user_eip = {"id": "eip-user", "name": "IP-1", "ip": "", "auto": False}
+    topo = {
+        "externalIps": [user_eip],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ocpvirt")
+    assert topo["externalIps"] == [user_eip]
+
+
 def test_inject_showroom_strips_allocated_eip_web_only_route_provider():
     """A previously-allocated (real-IP) web-only EIP is self-healed on redeploy."""
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards

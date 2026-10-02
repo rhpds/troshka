@@ -4957,7 +4957,7 @@ export default function PropertiesPanel() {
                                       title="Create an external IP"
                                       onClick={() => {
                                         const newId = `eip-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
-                                        useCanvasStore.getState().setExternalIps([...externalIps, { id: newId, name: "IP-1", ip: "" }]);
+                                        useCanvasStore.getState().setExternalIps([...externalIps, { id: newId, name: "IP-1", ip: "", auto: false }]);
                                         const updated = [...portForwards];
                                         (updated[i] as Record<string, string>).extIpId = newId;
                                         update("portForwards", updated);

@@ -536,7 +536,9 @@ def ensure_showroom_external_ips(topology: dict) -> bool:
         return False
     if topology.get("externalIps"):
         return False
-    topology["externalIps"] = [{"id": str(uuid.uuid4()), "name": "IP-1", "ip": ""}]
+    topology["externalIps"] = [
+        {"id": str(uuid.uuid4()), "name": "IP-1", "ip": "", "auto": True}
+    ]
     return True
 
 
@@ -569,11 +571,17 @@ def _strip_gateway_showroom_forwards(gateway: dict) -> tuple[bool, list]:
     return changed, gateway_pfs
 
 
+def _is_user_added_external_ip(eip: dict) -> bool:
+    """User-added via External IPs panel — never auto-stripped."""
+    return eip.get("auto") is False
+
+
 def _maybe_strip_unused_auto_external_ip(topology: dict, gateway_pfs: list) -> bool:
     """Drop empty auto IP-1 when no forward references it."""
     ext_ips = topology.get("externalIps") or []
     if (
         len(ext_ips) == 1
+        and not _is_user_added_external_ip(ext_ips[0])
         and not ext_ips[0].get("ip")
         and ext_ips[0].get("name") == "IP-1"
         and not any(pf.get("extIpId") == ext_ips[0].get("id") for pf in gateway_pfs)
@@ -650,11 +658,16 @@ def _strip_auto_showroom_external_ip(topology: dict) -> bool:
 
     Only called when no forward needs an EIP, so the auto IP-1 is provably
     unused — strip it even if a real IP was already allocated (self-heals
-    projects deployed before this fix). A VM-assigned external IP (has vmId) is
-    left untouched.
+    projects deployed before this fix). A VM-assigned external IP (has vmId) or
+    an explicitly user-added EIP (auto=False) is left untouched.
     """
     ext = topology.get("externalIps") or []
-    if len(ext) == 1 and ext[0].get("name") == "IP-1" and not ext[0].get("vmId"):
+    if (
+        len(ext) == 1
+        and not _is_user_added_external_ip(ext[0])
+        and ext[0].get("name") == "IP-1"
+        and not ext[0].get("vmId")
+    ):
         topology["externalIps"] = []
         return True
     return False

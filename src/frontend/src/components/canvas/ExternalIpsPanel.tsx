@@ -18,6 +18,9 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
       id: `eip-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       name: `IP-${externalIps.length + 1}`,
       ip: "",
+      // Mark user-added so showroom sync does not strip this as an auto IP-1
+      // (ocpvirt/kubevirt route providers otherwise make "+ Add IP" a no-op).
+      auto: false,
     }]);
   };
 

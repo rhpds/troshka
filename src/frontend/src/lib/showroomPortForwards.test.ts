@@ -170,6 +170,116 @@ describe("isRouteManagedForward", () => {
   });
 });
 
+describe("syncShowroomGatewayAccess — user-added external IPs", () => {
+  it("keeps a user-added EIP on ocpvirt with gateway only (no showroom)", () => {
+    // Dedicated CI / ocpvirt: Add IP used to no-op because stripShowroomAutoExternalIps
+    // treated the new empty IP-1 like a showroom auto EIP and dropped it before bind.
+    const nodes = [
+      {
+        id: "gw",
+        type: "networkNode",
+        position: { x: 0, y: 0 },
+        data: {
+          subtype: "gateway",
+          gatewayMode: "nat-portforward",
+          portForwards: [
+            {
+              extPort: "2222",
+              intIp: "10.0.0.10",
+              intPort: "22",
+              proto: "tcp",
+            },
+          ],
+        },
+      },
+    ] as unknown as Node[];
+    const userEip = {
+      id: "eip-user-1",
+      name: "IP-1",
+      ip: "",
+      auto: false as const,
+    };
+
+    const { externalIps } = syncShowroomGatewayAccess(
+      nodes,
+      [],
+      [userEip],
+      {},
+      "ocpvirt",
+    );
+    expect(externalIps).toEqual([userEip]);
+  });
+
+  it("keeps a user-added EIP on ocpvirt showroom with web-only forwards", () => {
+    const nodes = showroomNodes([
+      {
+        extPort: "443",
+        intIp: "172.30.232.3",
+        intPort: "80",
+        proto: "tcp",
+        managedByShowroom: true,
+      },
+    ]);
+    const userEip = {
+      id: "eip-user-2",
+      name: "IP-1",
+      ip: "",
+      auto: false as const,
+    };
+
+    const { externalIps } = syncShowroomGatewayAccess(
+      nodes,
+      [],
+      [userEip],
+      { "net-1": 1000 },
+      "ocpvirt",
+    );
+    expect(externalIps).toEqual([userEip]);
+  });
+
+  it("still strips unmarked legacy auto IP-1 on web-only route showroom", () => {
+    const nodes = showroomNodes([
+      {
+        extPort: "443",
+        intIp: "172.30.232.3",
+        intPort: "80",
+        proto: "tcp",
+        managedByShowroom: true,
+      },
+    ]);
+
+    const { externalIps } = syncShowroomGatewayAccess(
+      nodes,
+      [],
+      [{ id: "eip-legacy", name: "IP-1", ip: "" }],
+      { "net-1": 1000 },
+      "ocpvirt",
+    );
+    expect(externalIps).toEqual([]);
+  });
+
+  it("still strips auto:true EIP on web-only route showroom", () => {
+    const nodes = showroomNodes([
+      {
+        extPort: "443",
+        intIp: "172.30.232.3",
+        intPort: "80",
+        proto: "tcp",
+        managedByShowroom: true,
+      },
+    ]);
+
+    const { externalIps } = syncShowroomGatewayAccess(
+      nodes,
+      [],
+      [{ id: "eip-auto", name: "IP-1", ip: "", auto: true }],
+      { "net-1": 1000 },
+      "ocpvirt",
+    );
+    expect(externalIps).toEqual([]);
+  });
+});
+
 describe("syncShowroomGatewayAccess — showroom owns 443/80", () => {
   it("drops direct cluster-ingress 443/80 forwards when a showroom is present", () => {
     const nodes = showroomNodes([

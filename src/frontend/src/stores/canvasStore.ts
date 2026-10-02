@@ -312,6 +312,8 @@ export interface ExternalIp {
   id: string;
   name: string;
   ip: string;
+  /** false = user-added via External IPs panel; true = showroom auto-created. */
+  auto?: boolean;
   _private_ip?: string;
   state?: "pending" | "allocated" | "associated";
 }
