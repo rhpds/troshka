@@ -5,7 +5,7 @@ from typing import cast
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.pool import NullPool, QueuePool, StaticPool
 
 from app.core.config import config
 
@@ -26,29 +26,26 @@ def _db_pool_int(name: str, default: int) -> int:
         return default
 
 
-def _create_engine():
-    """Build the process engine.
+def _sqlite_create_engine(url: str):
+    """SQLite engine for tests.
 
-    Postgres uses QueuePool. SQLite (tests) needs ``check_same_thread=False`` and
-    a busy ``timeout`` so TestClient / deploy threads don't hang forever on locks.
-    In-memory SQLite requires StaticPool (one shared connection); file SQLite
-    keeps QueuePool so background threads each get a connection.
+    QueuePool on a file DB lets several connections sit on one sqlite file and
+    deadlock (``database is locked`` until pytest-timeout). In-memory needs
+    StaticPool (shared connection). File tests use NullPool so a closed session
+    actually drops the sqlite lock. ``timeout`` is sqlite busy-wait (seconds).
     """
+    connect_args = {"check_same_thread": False, "timeout": 5}
+    memory = url in ("sqlite://", "sqlite:///:memory:") or ":memory:" in url
+    if memory:
+        return create_engine(url, connect_args=connect_args, poolclass=StaticPool)
+    return create_engine(url, connect_args=connect_args, poolclass=NullPool)
+
+
+def _create_engine():
+    """Build the process engine. Postgres uses QueuePool; SQLite is test-only."""
     url = str(config.database.url)
     if url.startswith("sqlite"):
-        connect_args = {"check_same_thread": False, "timeout": 30}
-        memory = url in ("sqlite://", "sqlite:///:memory:") or ":memory:" in url
-        if memory:
-            return create_engine(url, connect_args=connect_args, poolclass=StaticPool)
-        return create_engine(
-            url,
-            connect_args=connect_args,
-            pool_pre_ping=True,
-            pool_size=_db_pool_int("pool_size", 5),
-            max_overflow=_db_pool_int("max_overflow", 10),
-            pool_timeout=_db_pool_int("pool_timeout", 30),
-            pool_recycle=_db_pool_int("pool_recycle", 1800),
-        )
+        return _sqlite_create_engine(url)
     return create_engine(
         url,
         pool_pre_ping=True,
@@ -62,6 +59,20 @@ def _create_engine():
 
 
 engine = _create_engine()
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_connect(dbapi_conn, _connection_record):
+    """WAL + busy timeout so TestClient / deploy threads don't exclusive-lock forever."""
+    if not str(config.database.url).startswith("sqlite"):
+        return
+    cur = dbapi_conn.cursor()
+    try:
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cur.close()
 
 
 @event.listens_for(engine, "checkout")
