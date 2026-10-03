@@ -47,6 +47,22 @@ def all_ocp_clusters_ready(topology: dict | None) -> bool:
     return all(c.get("ocpInstallStatus") == "ready" for c in clusters)
 
 
+def _clear_node_ocp_rebuild_markers(node: dict) -> None:
+    """Drop VM creds / pattern disk sources that would reuse the old install."""
+    data = node.get("data")
+    if not isinstance(data, dict):
+        return
+    ntype = node.get("type")
+    if ntype == "vmNode":
+        keys = _VM_OCP_CRED_KEYS
+    elif ntype == "storageNode":
+        keys = _STORAGE_PATTERN_KEYS
+    else:
+        return
+    for key in keys:
+        data.pop(key, None)
+
+
 def clear_topology_ocp_for_rebuild(topology: dict) -> None:
     """Strip markers that would send the next deploy down the recert path.
 
@@ -60,16 +76,7 @@ def clear_topology_ocp_for_rebuild(topology: dict) -> None:
             cluster.pop(key, None)
         cluster["ocpInstallStatus"] = "monitoring"
     for node in topology.get("nodes") or []:
-        data = node.get("data")
-        if not isinstance(data, dict):
-            continue
-        ntype = node.get("type")
-        if ntype == "vmNode":
-            for key in _VM_OCP_CRED_KEYS:
-                data.pop(key, None)
-        elif ntype == "storageNode":
-            for key in _STORAGE_PATTERN_KEYS:
-                data.pop(key, None)
+        _clear_node_ocp_rebuild_markers(node)
 
 
 def apply_ocp_rebuild_to_project(project: Any) -> None:

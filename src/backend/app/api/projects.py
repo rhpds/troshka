@@ -6568,6 +6568,38 @@ def _resolve_redeploy_ocp_mode(project, ocp_mode: str | None) -> str | None:
     return ocp_mode
 
 
+def _redeploy_destroy_context(db, project, ocp_mode):
+    """Capture destroy context before resetting state. Recert keeps disks."""
+    destroy_ctx = None
+    old_host_id = project.host_id
+    if ocp_mode != "recert" and project.host_id:
+        old_host = db.query(Host).filter_by(id=old_host_id).first()
+        if not old_host or not old_host.ip_address:
+            raise HTTPException(
+                status_code=503,
+                detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.",
+            )
+        destroy_ctx = _build_destroy_context(project)
+        destroy_ctx["wipe_all_disks"] = True
+    return destroy_ctx, old_host_id
+
+
+def _apply_redeploy_project_state(project, old_host_id, ocp_mode) -> None:
+    project.state = "deploying"
+    project.host_id = old_host_id
+    if ocp_mode != "recert":
+        project.vni_map = None
+        project.ocp_status = None
+        project.ocp_install_elapsed = None
+    else:
+        project.ocp_status = "monitoring"
+    project.deploy_error = None
+    # Drop leftover progress (e.g. control-plane-usable from the prior install)
+    # so the Deploying overlay does not show stale detail until new steps arrive.
+    project.deploy_progress = None
+    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
+
+
 @router.post(
     "/{project_id}/redeploy", responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}}
 )
@@ -6601,20 +6633,7 @@ def redeploy_project(
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
     ocp_mode = _resolve_redeploy_ocp_mode(project, (body.ocp_mode if body else None))
-
-    # Capture destroy context before resetting state. Recert keeps disks —
-    # skip destroy entirely and re-run ops-pod recert in place.
-    destroy_ctx = None
-    old_host_id = project.host_id
-    if ocp_mode != "recert" and project.host_id:
-        old_host = db.query(Host).filter_by(id=old_host_id).first()
-        if not old_host or not old_host.ip_address:
-            raise HTTPException(
-                status_code=503,
-                detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.",
-            )
-        destroy_ctx = _build_destroy_context(project)
-        destroy_ctx["wipe_all_disks"] = True
+    destroy_ctx, old_host_id = _redeploy_destroy_context(db, project, ocp_mode)
 
     # Cancel any in-flight deploy thread for this project
     from app.services.deploy_service import (
@@ -6629,20 +6648,7 @@ def redeploy_project(
 
         apply_ocp_rebuild_to_project(project)
 
-    # Set state to deploying and return immediately
-    project.state = "deploying"
-    project.host_id = old_host_id
-    if ocp_mode != "recert":
-        project.vni_map = None
-        project.ocp_status = None
-        project.ocp_install_elapsed = None
-    else:
-        project.ocp_status = "monitoring"
-    project.deploy_error = None
-    # Drop leftover progress (e.g. control-plane-usable from the prior install)
-    # so the Deploying overlay does not show stale detail until new steps arrive.
-    project.deploy_progress = None
-    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
+    _apply_redeploy_project_state(project, old_host_id, ocp_mode)
     # Template workloads must replay after redeploy (runOnce stamps + prior
     # succeeded runs would otherwise skip the whole chain).
     from app.services.workloads.template_workloads import (

@@ -166,6 +166,15 @@ def test_clear_topology_ocp_for_rebuild_strips_markers():
     assert "patternDiskId" not in disk
 
 
+def test_clear_node_ocp_rebuild_markers_skips_non_vm_storage():
+    from app.services.redeploy_ocp import _clear_node_ocp_rebuild_markers
+
+    net = {"type": "networkNode", "data": {"ocpKubeconfig": "keep"}}
+    _clear_node_ocp_rebuild_markers(net)
+    assert net["data"]["ocpKubeconfig"] == "keep"
+    _clear_node_ocp_rebuild_markers({"type": "vmNode", "data": None})
+
+
 def test_apply_ocp_rebuild_to_project_clears_both_topologies_and_project_fields():
     class FakeProject:
         topology = {

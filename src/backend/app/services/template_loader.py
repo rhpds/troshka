@@ -173,6 +173,7 @@ def ocp_install_via(topology: dict) -> str:
 # Canonical bastion shape used when stock OCP templates are bastionless but the
 # project opts into ``install_via: bastion`` (Plan 4b retained that path).
 _BASTION_PREFERRED_HOST = 50
+_FALLBACK_CLUSTER_CIDR = "10.0.0.0/24"  # NOSONAR — RFC1918 lab default
 _BASTION_VM_DEFAULTS = {
     "role": "bastion",
     "vcpus": 2,
@@ -215,22 +216,36 @@ def _cluster_and_bmc_net_names(networks: dict) -> tuple[str, str]:
     return cluster_name, bmc_name
 
 
-def _collect_used_host_ips(resolved: dict, network_name: str) -> set[str]:
-    """IPs already claimed on ``network_name`` (VM NICs + OCP VIPs + DNS)."""
+def _collect_nic_ips_on_network(resolved: dict, network_name: str) -> set[str]:
     used: set[str] = set()
     for vm_cfg in (resolved.get("vms") or {}).values():
         for nic in vm_cfg.get("nics") or []:
             if nic.get("network") == network_name and nic.get("ip"):
                 used.add(str(nic["ip"]))
+    return used
+
+
+def _collect_ocp_vip_ips(resolved: dict) -> set[str]:
+    used: set[str] = set()
     for cluster in normalize_ocp_section(resolved.get("ocp")):
         for key in ("api_vip", "ingress_vip"):
             if cluster.get(key):
                 used.add(str(cluster[key]))
-    net_cfg = (resolved.get("networks") or {}).get(network_name) or {}
-    for rec in net_cfg.get("dns_records") or []:
-        if rec.get("ip"):
-            used.add(str(rec["ip"]))
     return used
+
+
+def _collect_dns_record_ips(resolved: dict, network_name: str) -> set[str]:
+    net_cfg = (resolved.get("networks") or {}).get(network_name) or {}
+    return {str(rec["ip"]) for rec in net_cfg.get("dns_records") or [] if rec.get("ip")}
+
+
+def _collect_used_host_ips(resolved: dict, network_name: str) -> set[str]:
+    """IPs already claimed on ``network_name`` (VM NICs + OCP VIPs + DNS)."""
+    return (
+        _collect_nic_ips_on_network(resolved, network_name)
+        | _collect_ocp_vip_ips(resolved)
+        | _collect_dns_record_ips(resolved, network_name)
+    )
 
 
 def _pick_bastion_cluster_ip(resolved: dict, cluster_net: str) -> str:
@@ -238,7 +253,7 @@ def _pick_bastion_cluster_ip(resolved: dict, cluster_net: str) -> str:
     import ipaddress
 
     net_cfg = (resolved.get("networks") or {}).get(cluster_net) or {}
-    cidr = net_cfg.get("cidr") or "10.0.0.0/24"
+    cidr = net_cfg.get("cidr") or _FALLBACK_CLUSTER_CIDR
     network = ipaddress.ip_network(cidr, strict=False)
     used = _collect_used_host_ips(resolved, cluster_net)
     preferred = ipaddress.ip_address(

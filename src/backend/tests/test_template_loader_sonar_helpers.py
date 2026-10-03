@@ -467,3 +467,46 @@ class TestExportIndexHelpers:
         assert net_names["n1"] == "priv"
         assert len(vm_nodes) == 1
         assert edge_by_target["v1"][0]["source"] == "n1"
+
+
+class TestBastionIpCollectors:
+    def test_collects_nics_vips_and_dns(self):
+        from app.services.template_loader import (
+            _collect_dns_record_ips,
+            _collect_nic_ips_on_network,
+            _collect_ocp_vip_ips,
+            _collect_used_host_ips,
+        )
+
+        resolved = {
+            "vms": {
+                "a": {
+                    "nics": [
+                        {"network": "cluster", "ip": "10.0.0.10"},
+                        {"network": "bmc", "ip": "192.168.100.10"},
+                        {"network": "cluster"},
+                    ]
+                }
+            },
+            "ocp": {"api_vip": "10.0.0.2", "ingress_vip": "10.0.0.3"},
+            "networks": {
+                "cluster": {
+                    "dns_records": [{"ip": "10.0.0.4"}, {"name": "empty"}],
+                }
+            },
+        }
+        assert _collect_nic_ips_on_network(resolved, "cluster") == {"10.0.0.10"}
+        assert _collect_ocp_vip_ips(resolved) == {"10.0.0.2", "10.0.0.3"}
+        assert _collect_dns_record_ips(resolved, "cluster") == {"10.0.0.4"}
+        assert _collect_used_host_ips(resolved, "cluster") == {
+            "10.0.0.10",
+            "10.0.0.2",
+            "10.0.0.3",
+            "10.0.0.4",
+        }
+
+    def test_pick_bastion_uses_fallback_cidr(self):
+        from app.services.template_loader import _pick_bastion_cluster_ip
+
+        ip = _pick_bastion_cluster_ip({"vms": {}, "networks": {}}, "cluster")
+        assert ip.endswith(".50")

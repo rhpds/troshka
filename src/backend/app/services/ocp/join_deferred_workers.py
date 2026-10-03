@@ -224,7 +224,7 @@ def _serve_node_iso_cmd(
 ) -> str:
     """Start a directory HTTP server and set ``ISO_URL`` for Redfish."""
     i = indent
-    log_path = f"/tmp/http-server-{port}.log"
+    log_path = f"/tmp/http-server-{port}.log"  # NOSONAR — remote ops-pod log
     if serving_ip:
         ip_line = f"{i}BASTION_IP={serving_ip}\n"
     else:

@@ -355,3 +355,16 @@ class TestParseAndResolveRoundTrip:
         )
         nginx = build_nginx_config(resolved)
         assert "/wetty_bastion" in nginx
+
+
+class TestAppProxyServerHelpers:
+    def test_proxy_lines_literal_and_resolver(self):
+        from app.services.showroom_scaffold import _app_proxy_proxy_lines
+
+        literal = _app_proxy_proxy_lines("console.apps.x", 0, None)
+        assert literal == ["    proxy_pass https://console.apps.x;"]
+        resolved = _app_proxy_proxy_lines(
+            "console.apps.x", 1, "    resolver 10.0.0.2 valid=10s ipv6=off;"
+        )
+        assert 'set $troshka_up_1 "console.apps.x";' in resolved[1]
+        assert "proxy_pass https://$troshka_up_1;" in resolved[2]

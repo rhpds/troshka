@@ -269,6 +269,7 @@ def _showroom_public_base_url(topology: dict) -> str:
                 port = ep.get("port")
                 break
     if str(port or "") == "80":
+        # NOSONAR — OpenShift Route on :80 is HTTP by design (lab showroom)
         return f"http://{hostname}"
     return f"https://{hostname}"
 
@@ -3242,6 +3243,30 @@ def _stamp_recert_install_started(project, clusters: list) -> bool:
     return changed
 
 
+def _stamp_cluster_monitoring_fields(cluster: dict, now: int) -> bool:
+    """Force one cluster onto the in-progress install stamps."""
+    changed = False
+    if cluster.get("ocpInstallStatus") != "monitoring":
+        cluster["ocpInstallStatus"] = "monitoring"
+        changed = True
+    if cluster.get("ocpInstallStartedAt") is None:
+        cluster["ocpInstallStartedAt"] = now
+        changed = True
+    if "ocpInstallElapsed" in cluster:
+        cluster.pop("ocpInstallElapsed", None)
+        changed = True
+    return changed
+
+
+def _stamp_fresh_install_on_topology(topo: dict, keys: set[str], now: int) -> bool:
+    changed = False
+    for cluster in topo.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key in keys and _stamp_cluster_monitoring_fields(cluster, now):
+            changed = True
+    return changed
+
+
 def _stamp_fresh_install_clusters_monitoring(project, clusters: list) -> bool:
     """Force install-path clusters to ``monitoring`` when the ops pod starts.
 
@@ -3270,20 +3295,8 @@ def _stamp_fresh_install_clusters_monitoring(project, clusters: list) -> bool:
         topo = getattr(project, attr, None)
         if not isinstance(topo, dict):
             continue
-        for cluster in topo.get("clusters") or []:
-            key = str(cluster.get("id") or cluster.get("name") or "")
-            if key not in keys:
-                continue
-            if cluster.get("ocpInstallStatus") != "monitoring":
-                cluster["ocpInstallStatus"] = "monitoring"
-                changed = True
-            if cluster.get("ocpInstallStartedAt") is None:
-                cluster["ocpInstallStartedAt"] = now
-                changed = True
-            if "ocpInstallElapsed" in cluster:
-                cluster.pop("ocpInstallElapsed", None)
-                changed = True
-        if changed:
+        if _stamp_fresh_install_on_topology(topo, keys, now):
+            changed = True
             try:
                 flag_modified(project, attr)
             except Exception:
@@ -5988,6 +6001,39 @@ def _ops_pod_logs_show_terminal_failure(host, project_id: str, clusters: list) -
     return any(_phase_from_input(log or "") == PHASE_FAILED for log in logs.values())
 
 
+def _all_ops_clusters_error(topo: dict) -> bool:
+    statuses = [
+        c.get("ocpInstallStatus")
+        for c in (topo.get("clusters") or [])
+        if c.get("ocpInstallStatus")
+    ]
+    return bool(statuses) and all(s == "error" for s in statuses)
+
+
+def _ops_pod_resume_should_abort(
+    db, p, clusters, all_clusters_error, pod_alive, log_failed
+) -> bool:
+    """True when the scan must leave the project error and not start a monitor."""
+    if all_clusters_error and (not pod_alive or log_failed):
+        if p.ocp_status != "error":
+            p.ocp_status = "error"
+            db.commit()
+        return True
+    if p.ocp_status == "error" or all_clusters_error:
+        if not pod_alive or log_failed:
+            return True
+        logger.info(
+            "Auto-recovering ops-pod monitor for errored project %s (pod alive)",
+            p.id[:8],
+        )
+        p.ocp_status = "monitoring"
+        _stamp_fresh_install_clusters_monitoring(p, clusters)
+        db.commit()
+        return False
+    logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
+    return False
+
+
 def _resume_one_ops_pod_monitor(db, p) -> None:
     """Re-attach the ops-pod monitor for one stranded project (see
     :func:`resume_ops_pod_monitors`).
@@ -6017,41 +6063,21 @@ def _resume_one_ops_pod_monitor(db, p) -> None:
     # log already has a fatal breadcrumb. A stale error stamp (manual fail, or
     # canvas autosave after rebuild) with a healthy running install must heal
     # — otherwise Status & Log stays ERROR while wait-for is still progressing.
-    cluster_statuses = [
-        c.get("ocpInstallStatus")
-        for c in (topo.get("clusters") or [])
-        if c.get("ocpInstallStatus")
-    ]
-    all_clusters_error = bool(cluster_statuses) and all(
-        s == "error" for s in cluster_statuses
-    )
     pod_alive = _ops_pod_running(host, _ops_pod_container_name(p.id), p.id)
     log_failed = (
         _ops_pod_logs_show_terminal_failure(host, p.id, clusters)
         if pod_alive
         else False
     )
-
-    if all_clusters_error and (not pod_alive or log_failed):
-        if p.ocp_status != "error":
-            p.ocp_status = "error"
-            db.commit()
+    if _ops_pod_resume_should_abort(
+        db,
+        p,
+        clusters,
+        _all_ops_clusters_error(topo),
+        pod_alive,
+        log_failed,
+    ):
         return
-
-    if p.ocp_status == "error" or all_clusters_error:
-        if not pod_alive:
-            return  # genuinely failed — leave it error
-        if log_failed:
-            return  # real install failure; pod held for logs — do not flap
-        logger.info(
-            "Auto-recovering ops-pod monitor for errored project %s (pod alive)",
-            p.id[:8],
-        )
-        p.ocp_status = "monitoring"
-        _stamp_fresh_install_clusters_monitoring(p, clusters)
-        db.commit()
-    else:
-        logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
     _start_ops_pod_install_monitor(host, p.id, clusters)
 
 
@@ -6119,7 +6145,37 @@ def _redeploy_container_troshkad(
         _create_and_start_pod(host, project_id, ctr, topo, vni_map, pool)
     else:
         _create_and_start_container(host, project_id, ctr, topo, vni_map, pool)
-    _sync_deployed_container_node(project, container_id, topo)
+        _sync_deployed_container_node(project, container_id, topo)
+
+
+def _run_container_redeploy(db, host, project, project_id, container_id, topo, ctr):
+    """Destroy+recreate on kubevirt or troshkad after the node has been located."""
+    name = ctr.get("name", "container")
+    set_progress(
+        f"redeploy-container:{project_id}:{container_id}",
+        {"step": "redeploy", "detail": f"Recreating {name}..."},
+    )
+    if host.host_type == "kubevirt-cluster":
+        from app.services.kubevirt_reconfigure import redeploy_container_kubevirt_bg
+
+        redeploy_container_kubevirt_bg(
+            db, host, project, project_id, container_id, topo
+        )
+    else:
+        _redeploy_container_troshkad(
+            db, host, project, project_id, container_id, topo, ctr
+        )
+    db.commit()
+    notify_project(
+        project_id,
+        {"type": "container-redeployed", "containerId": container_id},
+    )
+    logger.info(
+        "Redeploy container %s/%s: complete%s",
+        project_id[:8],
+        container_id[:8],
+        " (kubevirt)" if host.host_type == "kubevirt-cluster" else "",
+    )
 
 
 def redeploy_container_bg(project_id: str, container_id: str) -> None:
@@ -6163,29 +6219,7 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
                 {"step": "error", "detail": "Container or host not found"},
             )
             return
-        name = ctr.get("name", "container")
-        set_progress(prog_key, {"step": "redeploy", "detail": f"Recreating {name}..."})
-        if host.host_type == "kubevirt-cluster":
-            from app.services.kubevirt_reconfigure import redeploy_container_kubevirt_bg
-
-            redeploy_container_kubevirt_bg(
-                db, host, project, project_id, container_id, topo
-            )
-        else:
-            _redeploy_container_troshkad(
-                db, host, project, project_id, container_id, topo, ctr
-            )
-        db.commit()
-        notify_project(
-            project_id,
-            {"type": "container-redeployed", "containerId": container_id},
-        )
-        logger.info(
-            "Redeploy container %s/%s: complete%s",
-            project_id[:8],
-            container_id[:8],
-            " (kubevirt)" if host.host_type == "kubevirt-cluster" else "",
-        )
+        _run_container_redeploy(db, host, project, project_id, container_id, topo, ctr)
     except Exception as e:  # noqa: BLE001 - report failure via progress
         logger.exception(
             "Redeploy container %s/%s failed", project_id[:8], container_id[:8]
@@ -10264,37 +10298,47 @@ def _deploy_complete_and_notify(
     if host and vni_map:
         _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
 
-    # Route providers: stamp tokenized showroom URL from the OCP Route hostname
-    # (cloud TLS path stamps inside _maybe_setup_showroom_tls).
-    route_base = _showroom_public_base_url(topology)
-    if route_base and not (project.deployed_topology or {}).get("_showroom_url"):
-        _stamp_showroom_access_url(project, route_base, topology)
-    elif route_base:
-        # Refresh stamp if routes exist but URL lacks token (upgrade path).
-        from app.services.showroom_scaffold import SHOWROOM_URL_KEY
-
-        current = str((project.deployed_topology or {}).get(SHOWROOM_URL_KEY) or "")
-        if "token=" not in current:
-            _stamp_showroom_access_url(project, route_base, topology)
+    _maybe_stamp_showroom_url_from_route(project, topology)
 
     s.commit()
     _notify_client_topology_update(project_id, project, s)
+    _emit_deploy_complete_notifications(project_id, project, vms, external_ips)
+    _delete_deploy_progress(project_id)
+    logger.info("Deploy %s: complete — all VMs running", project_id[:8])
+
+    if auto_start and _has_ocp_monitor(topology):
+        project.ocp_status = "monitoring"
+        project.ocp_status_detail = None
+        project.ocp_install_elapsed = None
+        project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+        s.commit()
+
+
+def _maybe_stamp_showroom_url_from_route(project, topology) -> None:
+    """Stamp tokenized showroom URL from the OCP Route hostname if needed."""
+    route_base = _showroom_public_base_url(topology)
+    if not route_base:
+        return
+    from app.services.showroom_scaffold import SHOWROOM_URL_KEY
+
+    current = str((project.deployed_topology or {}).get(SHOWROOM_URL_KEY) or "")
+    if not current or "token=" not in current:
+        _stamp_showroom_access_url(project, route_base, topology)
+
+
+def _iso_or_none(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _emit_deploy_complete_notifications(project_id, project, vms, external_ips) -> None:
     notify_project(
         project_id,
         {
             "type": "project-state",
             "state": "active",
             "deploy_error": None,
-            "auto_stop_expires_at": (
-                project.auto_stop_expires_at.isoformat()
-                if project.auto_stop_expires_at
-                else None
-            ),
-            "lifetime_expires_at": (
-                project.lifetime_expires_at.isoformat()
-                if project.lifetime_expires_at
-                else None
-            ),
+            "auto_stop_expires_at": _iso_or_none(project.auto_stop_expires_at),
+            "lifetime_expires_at": _iso_or_none(project.lifetime_expires_at),
         },
     )
     if external_ips:
@@ -10306,15 +10350,6 @@ def _deploy_complete_and_notify(
     notify_project(
         project_id, {"type": "vm-state", "states": vm_states, "progress": {}}
     )
-    _delete_deploy_progress(project_id)
-    logger.info("Deploy %s: complete — all VMs running", project_id[:8])
-
-    if auto_start and _has_ocp_monitor(topology):
-        project.ocp_status = "monitoring"
-        project.ocp_status_detail = None
-        project.ocp_install_elapsed = None
-        project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
-        s.commit()
 
 
 def _deploy_handle_failure(s, project_id, exception):

@@ -956,6 +956,41 @@ def _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress
     )
 
 
+def _apply_cluster_install_options(clusters: list, config: dict) -> None:
+    install_on_deploy = config.get("auto_install_ocp", True)
+    ocp_version = str(config.get("ocp_version") or "").strip()
+    distribution = str(config.get("distribution") or "").strip()
+    norm_dist = None
+    if distribution:
+        from app.services.ocp.client_mirror import normalize_distribution
+
+        norm_dist = normalize_distribution(distribution)
+    for cluster in clusters:
+        cluster["installOnDeploy"] = install_on_deploy
+        if ocp_version:
+            cluster["ocpVersion"] = ocp_version
+        if norm_dist:
+            cluster["ocpDistribution"] = norm_dist
+
+
+def _maybe_bake_bastion_install(
+    topology: dict, config: dict, template_id: str, install_via: str, last_vips
+) -> None:
+    if install_via != "bastion":
+        return
+    api_vip, ingress_vip = last_vips
+    _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress_vip)
+    if not any(
+        n.get("type") == "vmNode" and n.get("data", {}).get("name") == "bastion"
+        for n in topology.get("nodes", [])
+    ):
+        raise ValueError(
+            "install_via='bastion' requires a bastion VM in the topology "
+            "(templates without one are injected at project create — "
+            "re-create the project or add a bastion VM)."
+        )
+
+
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     """Apply OCP Agent-Based configuration to a base topology.
 
@@ -995,20 +1030,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     clusters = topology.get("clusters") or [
         _legacy_cluster_from_config(topology, template_id, config)
     ]
-    install_on_deploy = config.get("auto_install_ocp", True)
-    # Apply the wizard's selected OCP version to every cluster. Without this the
-    # value only reached the bastion bake, so pod-install clusters silently kept
-    # the template's baked-in version (e.g. 4.22 even when the user picked 5.0).
-    ocp_version = str(config.get("ocp_version") or "").strip()
-    distribution = str(config.get("distribution") or "").strip()
-    for cluster in clusters:
-        cluster["installOnDeploy"] = install_on_deploy
-        if ocp_version:
-            cluster["ocpVersion"] = ocp_version
-        if distribution:
-            from app.services.ocp.client_mirror import normalize_distribution
-
-            cluster["ocpDistribution"] = normalize_distribution(distribution)
+    _apply_cluster_install_options(clusters, config)
     if not topology.get("clusters"):
         topology["clusters"] = clusters
 
@@ -1030,21 +1052,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
 
     _attach_bastion_image(topology, config.get("bastion_image"))
     _attach_bastion_iso(topology, config.get("bastion_iso"))
-
-    if install_via == "bastion":
-        api_vip, ingress_vip = last_vips
-        _bake_single_cluster_bastion(
-            topology, config, template_id, api_vip, ingress_vip
-        )
-        if not any(
-            n.get("type") == "vmNode" and n.get("data", {}).get("name") == "bastion"
-            for n in topology.get("nodes", [])
-        ):
-            raise ValueError(
-                "install_via='bastion' requires a bastion VM in the topology "
-                "(templates without one are injected at project create — "
-                "re-create the project or add a bastion VM)."
-            )
+    _maybe_bake_bastion_install(topology, config, template_id, install_via, last_vips)
     # else: install_via == "pod" — ops pod consumes per-cluster _generated*
     # configs (no bastion bake; DNS + port-forwards still apply to every
     # cluster above).
@@ -2367,8 +2375,12 @@ def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
     )
 
 
+# Remote-host log path in generated bash (ops-pod / bastion), not backend /tmp.
+_REMOTE_HTTP_SERVER_LOG = "/tmp/http-server.log"  # NOSONAR — remote staging log
+
+
 def _wait_for_iso_http_ready_cmd(
-    indent: str, log_path: str = "/tmp/http-server.log"
+    indent: str, log_path: str = _REMOTE_HTTP_SERVER_LOG
 ) -> str:
     """Poll ``$ISO_URL`` until HEAD succeeds or ``$HTTP_PID`` dies.
 
@@ -2424,7 +2436,7 @@ def _serve_iso_cmd(
         f"{i}sudo firewall-cmd --add-port={port}/tcp --permanent 2>/dev/null && "
         "sudo firewall-cmd --reload 2>/dev/null || true\n"
         f"{i}cd {workdir}\n"
-        f"{i}nohup python3 -m http.server {port} > /tmp/http-server.log 2>&1 &\n"
+        f"{i}nohup python3 -m http.server {port} > {_REMOTE_HTTP_SERVER_LOG} 2>&1 &\n"
         f"{i}HTTP_PID=$!\n"
         f'{i}echo "HTTP server PID: $HTTP_PID"\n'
         f"{i}\n"
@@ -2432,7 +2444,7 @@ def _serve_iso_cmd(
         f"{bastion_ip_line}"
         f'{i}ISO_URL="http://${{BASTION_IP}}:{port}/agent.x86_64.iso"\n'
         f'{i}echo "ISO URL: $ISO_URL"\n'
-        + _wait_for_iso_http_ready_cmd(i, "/tmp/http-server.log")
+        + _wait_for_iso_http_ready_cmd(i, _REMOTE_HTTP_SERVER_LOG)
     )
 
 
