@@ -51,15 +51,6 @@ def get_test_db():
 
 
 import pytest  # noqa: E402
-from sqlalchemy.orm import close_all_sessions
-
-
-@pytest.fixture(autouse=True)
-def _release_sqlite_locks():
-    """Drop leaked sessions so the next test is not stuck on a write lock."""
-    yield
-    close_all_sessions()
-
 
 # Live/real-install tests legitimately run long (a tier2 OCP install is ~30-60
 # min), so exempt them from the default per-test timeout. Everything else keeps
