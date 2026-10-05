@@ -432,8 +432,16 @@ def live_spend(db: Session, project: Project, now: datetime | None = None) -> di
         )
         bucket = by_kind_lines.setdefault(
             row.kind,
-            {"kind": row.kind, "qty_hours": 0.0, "subtotal": 0.0, "hosts": []},
+            {
+                "kind": row.kind,
+                "hours": 0.0,
+                "qty_hours": 0.0,
+                "subtotal": 0.0,
+                "unit_rate": 0.0,
+                "hosts": [],
+            },
         )
+        bucket["hours"] += hours
         bucket["qty_hours"] += _as_float(row.qty) * hours
         bucket["subtotal"] += cost
         if row.host_id and row.host_id not in bucket["hosts"]:
@@ -441,6 +449,9 @@ def live_spend(db: Session, project: Project, now: datetime | None = None) -> di
     total = spend_total(payload, now)
     since, until = _running_window(project, rows, now)
     lines = sorted(by_kind_lines.values(), key=lambda row: row["kind"])
+    for item in lines:
+        qh = float(item["qty_hours"])
+        item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     return {
         "total_usd": total,
         "by_kind": by_kind_map,
@@ -523,7 +534,14 @@ def freeze_invoice(
         starts.append(row.started_at)
         bucket = by_kind.setdefault(
             row.kind,
-            {"kind": row.kind, "qty_hours": 0.0, "subtotal": 0.0, "hosts": []},
+            {
+                "kind": row.kind,
+                "hours": 0.0,
+                "qty_hours": 0.0,
+                "subtotal": 0.0,
+                "unit_rate": 0.0,
+                "hosts": [],
+            },
         )
         hours = spend_total(
             [
@@ -547,10 +565,14 @@ def freeze_invoice(
             ],
             now,
         )
+        bucket["hours"] += hours
         bucket["qty_hours"] += _as_float(row.qty) * hours
         bucket["subtotal"] += cost
         if row.host_id and row.host_id not in bucket["hosts"]:
             bucket["hosts"].append(row.host_id)
+    for item in by_kind.values():
+        qh = float(item["qty_hours"])
+        item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     total = sum(item["subtotal"] for item in by_kind.values())
     invoice = ProjectInvoice(
         project_id=project.id,

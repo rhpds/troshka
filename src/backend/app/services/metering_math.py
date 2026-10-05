@@ -147,11 +147,22 @@ def period_usage(
         total += cost
         kind = str(row.get("kind") or "unknown")
         bucket = by_kind.setdefault(
-            kind, {"kind": kind, "qty_hours": 0.0, "subtotal": 0.0}
+            kind,
+            {
+                "kind": kind,
+                "hours": 0.0,
+                "qty_hours": 0.0,
+                "subtotal": 0.0,
+                "unit_rate": 0.0,
+            },
         )
+        bucket["hours"] += hours
         bucket["qty_hours"] += qty * hours
         bucket["subtotal"] += cost
     lines = sorted(by_kind.values(), key=lambda item: item["kind"])
+    for item in lines:
+        qh = float(item["qty_hours"])
+        item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     return total, lines
 
 
@@ -198,6 +209,9 @@ def desired_resources(snapshot: dict) -> set[Desired]:
     default_host = snapshot.get("host_id")
     project_state = str(snapshot.get("project_state") or "")
     billing_mode = str(snapshot.get("billing_mode") or "shared")
+    # Error freezes the meter for shared and dedicated alike.
+    if project_state == "error":
+        return set()
     if billing_mode == "dedicated":
         return _dedicated_host_resources(snapshot, provider_type, default_host)
     if project_state in ("stopped", "stopping"):

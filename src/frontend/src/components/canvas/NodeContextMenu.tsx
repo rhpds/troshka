@@ -42,6 +42,9 @@ export default function NodeContextMenu({
   const node = nodes.find((n) => n.id === nodeId);
   const isVm = node?.type === "vmNode";
   const isClusterNode = node?.type === "clusterNode";
+  const isBmcNetwork =
+    node?.type === "networkNode" &&
+    (node.data as Record<string, unknown>)?.networkType === "bmc";
   // Cluster-member VMs are managed by the OCP box (count/editor) — no per-VM
   // Duplicate/Hide.
   const isClusterMember =
@@ -64,6 +67,21 @@ export default function NodeContextMenu({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
+
+  // BMC network is managed by VM BMC toggles — context menu is Hide only.
+  if (isBmcNetwork) {
+    return (
+      <div
+        ref={ref}
+        className="node-context-menu"
+        style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
+      >
+        <button onClick={() => { hideNode(nodeId); onClose(); }}>
+          👁 Hide
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div

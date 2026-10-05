@@ -42,11 +42,14 @@ import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 function formatRunningElapsed(totalSeconds: number): string {
   const total = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(total / 3600);
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
   const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${h}h ${pad(m)}m ${pad(s)}s`;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  parts.push(`${m}m`);
+  return parts.join(" ");
 }
 
 export default function ProjectCanvasPage() {
@@ -93,7 +96,6 @@ export default function ProjectCanvasPage() {
   const [projectState, setProjectState] = useState("");
   const [projectHostId, setProjectHostId] = useState("");
   const [ownerEmail, setOwnerEmail] = useState<string | null>(null);
-  const [meEmail, setMeEmail] = useState("");
   const [hostPlacement, setHostPlacement] = useState<{
     provider: string | null;
     host: string | null;
@@ -169,12 +171,10 @@ export default function ProjectCanvasPage() {
         setProjectHostId(data.host_id || "");
         setOwnerEmail(data.owner_email || null);
         {
-          const provider =
-            data.host_provider_name ||
+          const providerType =
             data.host_provider_type ||
             data.provider_type ||
             null;
-          // Prefer IP/hostname over raw instance_id (KubeVirt stores API URL there).
           const host =
             data.host_ip ||
             (typeof data.host_instance_id === "string" &&
@@ -182,7 +182,7 @@ export default function ProjectCanvasPage() {
               ? data.host_instance_id
               : null) ||
             (data.host_id ? String(data.host_id).slice(0, 8) : null);
-          setHostPlacement({ provider, host });
+          setHostPlacement({ provider: providerType, host });
         }
         useCanvasStore.setState({
           providerType: data.provider_type || null,
@@ -208,6 +208,7 @@ export default function ProjectCanvasPage() {
         // Project ocp_status can lag at monitoring after a real cluster failure.
         if (allClusterError) setOcpStatus("error");
         else if (data.ocp_status) setOcpStatus(data.ocp_status);
+        if (data.ocp_status_detail) setOcpStatusDetail(data.ocp_status_detail);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
       })
@@ -234,7 +235,13 @@ export default function ProjectCanvasPage() {
 
   useEffect(() => {
     if (!liveSpend?.running_since || liveSpend.running_until) return;
-    if (projectState === "stopped" || projectState === "stopping") return;
+    if (
+      projectState === "stopped" ||
+      projectState === "stopping" ||
+      projectState === "error"
+    ) {
+      return;
+    }
     const tick = () => setSpendNowMs(Date.now());
     tick();
     const id = setInterval(tick, 1000);
@@ -244,7 +251,6 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
       setIsAdmin(d.role === "admin");
-      if (d.email) setMeEmail(d.email);
       if (d.role === "admin") {
         Promise.all([
           fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
@@ -263,6 +269,7 @@ export default function ProjectCanvasPage() {
 
   const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string; items?: string[] } | null>(null);
   const [ocpStatus, setOcpStatus] = useState<string | null>(null);
+  const [ocpStatusDetail, setOcpStatusDetail] = useState<string | null>(null);
   const [ocpInstallElapsed, setOcpInstallElapsed] = useState<number | null>(null);
 
   // WebSocket → project state
@@ -951,12 +958,15 @@ export default function ProjectCanvasPage() {
   const spendPaused =
     projectState === "stopped" ||
     projectState === "stopping" ||
+    projectState === "error" ||
     Boolean(liveSpend?.running_until);
   const spendElapsedSec =
     (liveSpend?.running_seconds || 0) +
     (spendPaused || !liveSpend?.running_since
       ? 0
       : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
+  const spendLabel =
+    projectState === "error" ? "Paused" : spendPaused ? "Stopped" : "Running";
   const showroomUrl = useMemo(() => {
     const deployed =
       typeof window !== "undefined"
@@ -1116,6 +1126,7 @@ export default function ProjectCanvasPage() {
             }),
           });
           if (data.ocp_status) setOcpStatus(data.ocp_status);
+          if (data.ocp_status_detail) setOcpStatusDetail(data.ocp_status_detail);
         }
       }
     } catch {
@@ -1214,44 +1225,70 @@ export default function ProjectCanvasPage() {
             }}
             title="Click to rename"
           >{projectName || "Untitled"}</span>
-          {(() => {
-            const otherOwner =
-              !!ownerEmail &&
-              !!meEmail &&
-              ownerEmail.toLowerCase() !== meEmail.toLowerCase();
-            if (!otherOwner) return null;
-            const ownerLabel = ownerEmail!.split("@")[0];
-            return (
-              <span
-                title={`Owned by ${ownerEmail}`}
-                style={{
-                  fontSize: 11,
-                  padding: "1px 6px",
-                  borderRadius: 4,
-                  background: "rgba(96,165,250,0.18)",
-                  color: "#60a5fa",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontWeight: 600,
-                }}
-              >
-                <UserIcon style={{ width: 11, height: 11 }} />
-                {ownerLabel}
-              </span>
-            );
-          })()}
+          <span
+            title={ownerEmail ? `Owned by ${ownerEmail}` : "System"}
+            style={{
+              fontSize: 11,
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "rgba(96,165,250,0.18)",
+              color: "#60a5fa",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              fontWeight: 600,
+              flexShrink: 0,
+            }}
+          >
+            <UserIcon style={{ width: 11, height: 11 }} />
+            {ownerEmail ? ownerEmail.split("@")[0] : "system"}
+          </span>
+        </div>
+        <div className="project-action-bar-center">
+          <span className="project-action-stats">
+            {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 ? ` · ${containerCount} container${containerCount !== 1 ? "s" : ""}` : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
+            {hostPlacement.provider && <> · ({hostPlacement.provider})</>}
+          </span>
+        </div>
+        <div className="project-action-bar-right">
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
             {projectState === "stopped" && autoStopped ? "stopped (auto)" : projectState}
           </span>
+          {projectState !== "deleting" && ocpStatus && ocpStatus !== "none" && (
+            <span
+              style={{
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 4,
+                flexShrink: 0,
+                whiteSpace: "nowrap",
+                background:
+                  ocpStatus === "ready"
+                    ? "rgba(74,222,128,0.15)"
+                    : ocpStatus === "error"
+                      ? "rgba(248,113,113,0.15)"
+                      : "rgba(251,191,36,0.15)",
+                color:
+                  ocpStatus === "ready"
+                    ? "#4ade80"
+                    : ocpStatus === "error"
+                      ? "#f87171"
+                      : "#fbbf24",
+              }}
+            >
+              {resolvedOcpHealth?.detail || ocpStatusDetail || `OCP ${ocpStatus}`}
+            </span>
+          )}
           {liveSpend && (
             <span
               className="project-timer-badge"
               style={{
-                fontSize: 11, marginLeft: 8, padding: "2px 8px", borderRadius: 10,
+                fontSize: 11, padding: "2px 8px", borderRadius: 10,
                 color: liveSpend.budget_stopped ? "#ef4444" : liveSpend.budget_warned ? "#fbbf24" : "#86efac",
                 background: liveSpend.budget_stopped ? "rgba(239,68,68,0.12)" : liveSpend.budget_warned ? "rgba(251,191,36,0.12)" : "rgba(34,197,94,0.12)",
                 cursor: "pointer",
+                flexShrink: 0,
+                whiteSpace: "nowrap",
               }}
               title={`$${liveSpend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"} — click to set budget`}
               onClick={() => {
@@ -1260,7 +1297,7 @@ export default function ProjectCanvasPage() {
               }}
             >
               {liveSpend.running_since
-                ? `${spendPaused ? "Stopped" : "Running"}: ${formatRunningElapsed(spendElapsedSec)} / $${liveSpend.total_usd.toFixed(2)}`
+                ? `${spendLabel}: ${formatRunningElapsed(spendElapsedSec)} / $${liveSpend.total_usd.toFixed(2)}`
                 : `$${liveSpend.total_usd.toFixed(2)}`}
               {liveSpend.budget_usd != null ? ` / $${liveSpend.budget_usd.toFixed(2)}` : ""}
             </span>
@@ -1269,10 +1306,13 @@ export default function ProjectCanvasPage() {
             <span
               className={`project-timer-badge ${timerUrgency}`}
               style={{
-                fontSize: 11, marginLeft: 8, padding: "2px 8px", borderRadius: 10,
+                fontSize: 11, padding: "2px 8px", borderRadius: 10,
                 color: timerUrgency === "critical" ? "#ef4444" : timerUrgency === "warning" ? "#fbbf24" : "#94a3b8",
                 background: timerUrgency === "critical" ? "rgba(239,68,68,0.12)" : timerUrgency === "warning" ? "rgba(251,191,36,0.12)" : "rgba(148,163,184,0.08)",
                 animation: timerUrgency === "critical" ? "pulse 1s infinite" : "none",
+                flexShrink: 0,
+                whiteSpace: "nowrap",
+                cursor: "pointer",
               }}
               title="Time remaining (click to open Project settings)"
               onClick={() => setShowPalette(true)}
@@ -1281,15 +1321,6 @@ export default function ProjectCanvasPage() {
             </span>
           )}
         </div>
-        <div className="project-action-bar-center">
-          <span className="project-action-stats">
-            {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 ? ` · ${containerCount} container${containerCount !== 1 ? "s" : ""}` : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
-            {(hostPlacement.provider || hostPlacement.host) && (
-              <> · {[hostPlacement.provider, hostPlacement.host].filter(Boolean).join(" · ")}</>
-            )}
-          </span>
-        </div>
-        <div className="project-action-bar-spacer" aria-hidden="true" />
         </div>
         <div className="project-action-bar-actions">
           {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (

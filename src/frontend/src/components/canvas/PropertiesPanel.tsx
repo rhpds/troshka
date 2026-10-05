@@ -2305,7 +2305,6 @@ export default function PropertiesPanel() {
                       const deployedTopo = (window as any).__deployedTopology;
                       const bmcData = deployedTopo?.bmc?.vms?.[node.id];
                       if (!bmcData) return null;
-                      const bmcCreds = deployedTopo?.bmc;
 
                       const CopyBtn = ({ value, label }: { value: string; label: string }) => (
                         <button
@@ -2341,24 +2340,6 @@ export default function PropertiesPanel() {
                               <input className="props-input" value={bmcData.ipmi_address} readOnly
                                 style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }} />
                               <CopyBtn value={bmcData.ipmi_address} label="IPMI address" />
-                            </div>
-                          </div>
-                          <div className="props-field">
-                            <label className="props-label">Username</label>
-                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                              <input className="props-input" value={bmcCreds?.username || "admin"} readOnly
-                                style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }} />
-                              <CopyBtn value={bmcCreds?.username || "admin"} label="username" />
-                            </div>
-                          </div>
-                          <div className="props-field">
-                            <label className="props-label">Password</label>
-                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                              <input className="props-input" type="password" value={bmcCreds?.password || ""} readOnly
-                                style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }}
-                                onFocus={(e) => (e.currentTarget.type = "text")}
-                                onBlur={(e) => (e.currentTarget.type = "password")} />
-                              <CopyBtn value={bmcCreds?.password || ""} label="password" />
                             </div>
                           </div>
                         </div>
@@ -4054,6 +4035,7 @@ export default function PropertiesPanel() {
       {nodeType === "networkNode" && (() => {
         const and = data as unknown as NetworkNodeData;
         const subtype = and.subtype || "network";
+        const isBmcNetwork = (data as Record<string, any>).networkType === "bmc";
         const portForwards = (data as Record<string, any>).portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string}> || [];
 
         return (
@@ -4102,8 +4084,47 @@ export default function PropertiesPanel() {
                     })()}
                   </div>
 
+                  {isBmcNetwork && (
+                    <>
+                      <div className="props-field">
+                        <label className="props-label">BMC Username</label>
+                        <input className="props-input" value={(data as Record<string, any>).bmcUsername || "admin"}
+                          style={{ fontFamily: "monospace" }}
+                          onChange={(e) => update("bmcUsername", e.target.value)} />
+                      </div>
+                      <div className="props-field">
+                        <label className="props-label">BMC Password</label>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input className="props-input" type="password"
+                            value={(data as Record<string, any>).bmcPassword || ""}
+                            style={{ fontFamily: "monospace", flex: 1 }}
+                            onFocus={(e) => (e.currentTarget.type = "text")}
+                            onBlur={(e) => (e.currentTarget.type = "password")}
+                            onChange={(e) => update("bmcPassword", e.target.value)} />
+                        </div>
+                      </div>
+                      {(() => {
+                        const bmcVms = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
+                        if (bmcVms.length === 0) return null;
+                        return (
+                          <div className="props-field" style={{ marginTop: 4 }}>
+                            <label className="props-label">BMC-Enabled VMs</label>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                              {bmcVms.map((vm) => (
+                                <div key={vm.id} style={{ fontSize: 11, fontFamily: "monospace", color: "var(--troshka-text-dim)", display: "flex", justifyContent: "space-between" }}>
+                                  <span>{(vm.data as Record<string, any>).name || vm.id.slice(0, 8)}</span>
+                                  <span>{(vm.data as Record<string, any>).bmcIp || "—"}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </>
+                  )}
+
                   {/* MTU Configuration */}
-                  <div className="props-field">
+                  {!isBmcNetwork && <div className="props-field">
                     <label className="props-label">MTU</label>
                     {(() => {
                       const mtuMode = and.mtu === "auto" || and.mtu == null ? "auto" : "custom";
@@ -4165,13 +4186,13 @@ export default function PropertiesPanel() {
                         </>
                       );
                     })()}
-                  </div>
+                  </div>}
                 </>
               )}
             </div>
 
-            {/* Network services (network subtype only) */}
-            {subtype === "network" && (
+            {/* Network services (network subtype only; BMC uses a simplified panel) */}
+            {subtype === "network" && !isBmcNetwork && (
               <>
                 <div className="props-divider" />
                 <div className="props-section">
@@ -4429,49 +4450,6 @@ export default function PropertiesPanel() {
                     </>
                   )}
 
-                  {/* BMC Network Properties */}
-                  {(node.data as Record<string, any>).networkType === "bmc" && (
-                    <>
-                      <div className="props-divider" />
-                      <div className="props-field">
-                        <label className="props-label">BMC Username</label>
-                        <input className="props-input" value={(node.data as Record<string, any>).bmcUsername || "admin"}
-                          style={{ fontFamily: "monospace" }}
-                          onChange={(e) => update("bmcUsername", e.target.value)} />
-                      </div>
-                      <div className="props-field">
-                        <label className="props-label">BMC Password</label>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                          <input className="props-input" type="password"
-                            value={(node.data as Record<string, any>).bmcPassword || ""}
-                            style={{ fontFamily: "monospace", flex: 1 }}
-                            onFocus={(e) => (e.currentTarget.type = "text")}
-                            onBlur={(e) => (e.currentTarget.type = "password")}
-                            onChange={(e) => update("bmcPassword", e.target.value)} />
-                        </div>
-                      </div>
-
-                      {/* List BMC-enabled VMs */}
-                      {(() => {
-                        const allNodes = useCanvasStore.getState().nodes;
-                        const bmcVms = allNodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
-                        if (bmcVms.length === 0) return null;
-                        return (
-                          <div style={{ marginTop: 8 }}>
-                            <label className="props-label">BMC-Enabled VMs</label>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                              {bmcVms.map((vm) => (
-                                <div key={vm.id} style={{ fontSize: 11, fontFamily: "monospace", color: "var(--troshka-text-dim)", display: "flex", justifyContent: "space-between" }}>
-                                  <span>{(vm.data as Record<string, any>).name || vm.id.slice(0, 8)}</span>
-                                  <span>{(vm.data as Record<string, any>).bmcIp || "—"}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </>
-                  )}
                 </div>
               </>
             )}
@@ -5611,7 +5589,10 @@ export default function PropertiesPanel() {
         </>
       )}
 
-      {/* Delete button — disabled for cluster-member VMs (managed by the OCP box) */}
+      {/* Delete button — disabled for cluster-member VMs (managed by the OCP box).
+          BMC network has no delete — it appears/disappears with VM BMC toggles. */}
+      {!(nodeType === "networkNode" && (data as Record<string, any>).networkType === "bmc") && (
+      <>
       <div className="props-divider" />
       <div className="props-section">
         {(() => {
@@ -5639,6 +5620,8 @@ export default function PropertiesPanel() {
           );
         })()}
       </div>
+      </>
+      )}
       {containerLogs && (
         <div
           style={{

@@ -3,6 +3,8 @@
 import React, { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Tooltip } from "@patternfly/react-core";
+import InfoCircleIcon from "@patternfly/react-icons/dist/esm/icons/info-circle-icon";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
@@ -18,6 +20,18 @@ import {
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
+
+const BMC_INFO_TIP = (
+  <div style={{ maxWidth: 280, fontSize: 12, lineHeight: 1.45 }}>
+    <div style={{ marginBottom: 6 }}>
+      This BMC network appears automatically when any VM has BMC enabled. It disappears when no VM has BMC enabled.
+    </div>
+    <div style={{ marginBottom: 6 }}>
+      To manage BMC from a VM, connect that VM to this network (add a NIC and link it here).
+    </div>
+    <div>There can be only one BMC network per project.</div>
+  </div>
+);
 
 function RJ45Icon() {
   return (
@@ -86,9 +100,35 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           boxShadow: selected ? `0 0 0 3px ${c.glow}` : `inset 0 0 0 1px ${c.bg}`,
           opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
           transition: "opacity 0.3s",
+          position: "relative" as const,
         };
       })()}
     >
+      {isBmc && (
+        <Tooltip content={BMC_INFO_TIP} position="right">
+          <span
+            role="button"
+            tabIndex={0}
+            aria-label="BMC network information"
+            className="nodrag nopan"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute",
+              top: 4,
+              right: 4,
+              display: "inline-flex",
+              alignItems: "center",
+              color: "#fff",
+              cursor: "help",
+              zIndex: 1,
+              lineHeight: 0,
+            }}
+          >
+            <InfoCircleIcon style={{ width: 12, height: 12 }} />
+          </span>
+        </Tooltip>
+      )}
       <span className="network-node-icon">
         {d.subtype === "router" ? "🔀" : d.subtype === "gateway" ? "🌐" : isBmc ? (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

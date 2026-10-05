@@ -65,11 +65,14 @@ const API_BASE = "";
 
 function formatRunningElapsed(totalSeconds: number): string {
   const total = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(total / 3600);
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
   const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${h}h ${pad(m)}m ${pad(s)}s`;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  parts.push(`${m}m`);
+  return parts.join(" ");
 }
 
 const stateColors: Record<string, string> = {
@@ -1048,7 +1051,6 @@ export default function ProjectsPage() {
   });
   const [search, setSearch] = useState("");
   const [userRole, setUserRole] = useState("");
-  const [meEmail, setMeEmail] = useState("");
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
   const [deployPoolId, setDeployPoolId] = useState("");
   const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; host_type?: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
@@ -1106,7 +1108,6 @@ export default function ProjectsPage() {
     fetchProjects();
     fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
       setUserRole(d.role || "");
-      setMeEmail(d.email || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
           setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false));
@@ -1329,45 +1330,41 @@ export default function ProjectsPage() {
                   onClick={(e) => e.stopPropagation()}
                   style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }}
                 />
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <strong>{p.name}</strong>
-                    {p.guid && (
-                      <span style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", fontFamily: "monospace" }}>
-                        {p.guid}
-                      </span>
-                    )}
-                    {(() => {
-                      const otherOwner =
-                        !!p.owner_email &&
-                        !!meEmail &&
-                        p.owner_email.toLowerCase() !== meEmail.toLowerCase();
-                      if (!otherOwner) return null;
-                      const ownerLabel = p.owner_email!.split("@")[0];
-                      return (
-                        <span
-                          title={`Owned by ${p.owner_email}`}
-                          style={{
-                            fontSize: 11,
-                            padding: "1px 6px",
-                            borderRadius: 4,
-                            background: "rgba(96,165,250,0.18)",
-                            color: "#60a5fa",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            fontWeight: 600,
-                          }}
-                        >
-                          <UserIcon style={{ width: 11, height: 11 }} />
-                          {ownerLabel}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</strong>
+                      {p.guid && (
+                        <span style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", fontFamily: "monospace", flexShrink: 0 }}>
+                          {p.guid}
                         </span>
-                      );
-                    })()}
+                      )}
+                      <span
+                        title={p.owner_email ? `Owned by ${p.owner_email}` : "System"}
+                        style={{
+                          fontSize: 11,
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          background: "rgba(96,165,250,0.18)",
+                          color: "#60a5fa",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <UserIcon style={{ width: 11, height: 11 }} />
+                        {p.owner_email ? p.owner_email.split("@")[0] : "system"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 4,
                       background: `${stateColors[p.state] || "#94a3b8"}22`,
                       color: stateColors[p.state] || "#94a3b8",
+                      textTransform: "uppercase",
+                      fontWeight: 500,
                     }}>
                       {p.state === "stopped" && p.auto_stopped ? "stopped (auto)" : p.state}
                     </span>
@@ -1377,12 +1374,15 @@ export default function ProjectsPage() {
                       const paused =
                         p.state === "stopped" ||
                         p.state === "stopping" ||
+                        p.state === "error" ||
                         Boolean(spend.running_until);
                       const elapsed =
                         (spend.running_seconds || 0) +
                         (paused
                           ? 0
                           : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
+                      const label =
+                        p.state === "error" ? "Paused" : paused ? "Stopped" : "Running";
                       return (
                         <span
                           title={`$${spend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"}`}
@@ -1394,9 +1394,10 @@ export default function ProjectsPage() {
                               ? "rgba(148,163,184,0.12)"
                               : "rgba(34,197,94,0.12)",
                             color: paused ? "#94a3b8" : "#86efac",
+                            whiteSpace: "nowrap",
                           }}
                         >
-                          {paused ? "Stopped" : "Running"}: {formatRunningElapsed(elapsed)} · ${spend.total_usd.toFixed(2)}
+                          {label}: {formatRunningElapsed(elapsed)} · ${spend.total_usd.toFixed(2)}
                         </span>
                       );
                     })()}
@@ -1417,7 +1418,7 @@ export default function ProjectsPage() {
                       </span>
                     )}
                     {(p.state === "deploying" || p.state === "stopping" || p.state === "starting" || p.state === "deleting") && (
-                      <span className="project-btn-spinner" style={{ width: 14, height: 14, marginLeft: "auto" }} />
+                      <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
                     )}
                     {p.state !== "deleting" && p.ocp_status && p.ocp_status !== "none" && (
                       <span style={{
@@ -1428,21 +1429,13 @@ export default function ProjectsPage() {
                         {p.ocp_status_detail || `OCP ${p.ocp_status}`}
                       </span>
                     )}
+                    </div>
                   </div>
                   {p.state === "error" && p.deploy_error && (
                     <p style={{ fontSize: 12, color: "#f87171", margin: "4px 0 0" }}>{p.deploy_error}</p>
                   )}
                   <p style={{ fontSize: 13, opacity: 0.7, margin: "4px 0 0" }}>{p.description || "No description"}</p>
                   <p style={{ fontSize: 11, opacity: 0.5, margin: "4px 0 0" }}>
-                    {(() => {
-                      if (!p.owner_email) return null;
-                      const otherOwner =
-                        !!meEmail &&
-                        p.owner_email.toLowerCase() !== meEmail.toLowerCase();
-                      // Other owners: title badge only. Own (or me not loaded): show here.
-                      if (otherOwner) return null;
-                      return <>{p.owner_email.split("@")[0]} &middot; </>;
-                    })()}
                     {p.host_type} &middot; created {new Date(p.created_at).toLocaleString()}
                     {p.deploy_started_at && <> &middot; deployed {new Date(p.deploy_started_at).toLocaleString()}</>}
                     {p.host_instance_id && <> &middot; {p.host_instance_id}{p.host_ip ? ` · ${p.host_ip}` : ""}{p.host_provider_name ? ` · ${p.host_provider_name} (${p.host_provider_type})` : ""}</>}

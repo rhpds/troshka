@@ -53,6 +53,9 @@ interface Pattern {
   is_ocp?: boolean;
   is_sno?: boolean;
   recert?: boolean;
+  /** Synced storage backends: gold (read-only), central, obc (local). */
+  sources?: string[];
+  readonly?: boolean;
 }
 
 function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
@@ -277,6 +280,31 @@ export default function PatternsPage() {
     }
   };
 
+  const sourceLabel = (source: string): { text: string; color: "yellow" | "blue" | "grey"; tip: string } | null => {
+    switch (source) {
+      case "gold":
+        return {
+          text: "Gold",
+          color: "yellow",
+          tip: "Read-only curated store (troshka-gold-images)",
+        };
+      case "central":
+        return {
+          text: "Central",
+          color: "blue",
+          tip: "Shared read/write library (troshka-images)",
+        };
+      case "obc":
+        return {
+          text: "Local",
+          color: "grey",
+          tip: "Cluster-local storage (OBC)",
+        };
+      default:
+        return null;
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (!bytes) return "0 B";
     const units = ["B", "KB", "MB", "GB", "TB"];
@@ -419,45 +447,50 @@ export default function PatternsPage() {
                           style={{ cursor: saving ? "default" : "text" }}
                         >{pattern.name}</strong>
                       )}
-                      {(() => {
-                        const otherOwner =
-                          !!pattern.owner_email &&
-                          !!me.email &&
-                          pattern.owner_email.toLowerCase() !== me.email.toLowerCase();
-                        if (!otherOwner) return null;
-                        return (
-                          <span
-                            title={`Owned by ${pattern.owner_email}`}
-                            style={{
-                              fontSize: 11,
-                              padding: "1px 6px",
-                              borderRadius: 4,
-                              background: "rgba(96,165,250,0.18)",
-                              color: "#60a5fa",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              fontWeight: 600,
-                              marginTop: 2,
-                            }}
-                          >
-                            <UserIcon style={{ width: 11, height: 11 }} />
-                            {pattern.owner_email!.split("@")[0]}
-                          </span>
-                        );
-                      })()}
+                      <span
+                        title={pattern.owner_email ? `Owned by ${pattern.owner_email}` : "System"}
+                        style={{
+                          fontSize: 11,
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          background: "rgba(96,165,250,0.18)",
+                          color: "#60a5fa",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontWeight: 600,
+                          marginTop: 2,
+                        }}
+                      >
+                        <UserIcon style={{ width: 11, height: 11 }} />
+                        {pattern.owner_email ? pattern.owner_email.split("@")[0] : "system"}
+                      </span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       {certWarning && (
                         <Tooltip content={`This OCP pattern is ${Math.floor(ageMonths)} months old. OpenShift certificates expire after ~1 year. CSRs will be auto-approved at deploy time.`}>
                           <Label color="orange">cert age: {Math.floor(ageMonths)}mo</Label>
                         </Tooltip>
                       )}
+                      {(pattern.sources || []).map((src) => {
+                        const meta = sourceLabel(src);
+                        if (!meta) return null;
+                        return (
+                          <Tooltip key={src} content={meta.tip}>
+                            <Label color={meta.color}>{meta.text}</Label>
+                          </Tooltip>
+                        );
+                      })}
                       {saving ? (
                         <Label color="orange">{pattern.state === "importing" ? "importing…" : "saving…"}</Label>
                       ) : pattern.state === "error" ? (
                         <Label color="red">error</Label>
+                      ) : pattern.state === "available" ? (
+                        <Label color="green">ready</Label>
                       ) : (
+                        <Label color="grey">{pattern.state}</Label>
+                      )}
+                      {!saving && pattern.state !== "error" && (
                         <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
                       )}
                     </div>
@@ -485,14 +518,6 @@ export default function PatternsPage() {
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>
-                      {(() => {
-                        if (!pattern.owner_email) return null;
-                        const otherOwner =
-                          !!me.email &&
-                          pattern.owner_email.toLowerCase() !== me.email.toLowerCase();
-                        if (otherOwner) return null;
-                        return <>{pattern.owner_email.split("@")[0]}{" · "}</>;
-                      })()}
                       {pattern.vm_count || 0} VM{(pattern.vm_count || 0) !== 1 ? "s" : ""}
                       {" · "}{pattern.total_vcpus || 0} vCPU
                       {" · "}{pattern.total_ram_gb || 0} GB RAM
@@ -546,7 +571,7 @@ export default function PatternsPage() {
                       });
                     }}>Cancel</Button>
                   )}
-                  {!saving && (pattern.visibility !== "public" || me.role === "admin") && (
+                  {!saving && !pattern.readonly && (pattern.visibility !== "public" || me.role === "admin") && (
                     <Button variant="danger" size="sm" onClick={async () => {
                       if (!(await appConfirm({
                         message: `Delete pattern "${pattern.name}"? This cannot be undone.`,

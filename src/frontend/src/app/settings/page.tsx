@@ -11,7 +11,125 @@ import {
   Title,
   Alert,
   Switch,
+  Tooltip,
 } from "@patternfly/react-core";
+import AngleRightIcon from "@patternfly/react-icons/dist/esm/icons/angle-right-icon";
+import AngleDownIcon from "@patternfly/react-icons/dist/esm/icons/angle-down-icon";
+import InfoCircleIcon from "@patternfly/react-icons/dist/esm/icons/info-circle-icon";
+
+function SettingsSection({
+  id,
+  title,
+  info,
+  children,
+  bare = false,
+}: {
+  id?: string;
+  title: string;
+  info?: React.ReactNode;
+  children: React.ReactNode;
+  bare?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    const applyHash = () => {
+      if (window.location.hash === `#${id}`) setOpen(true);
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, [id]);
+
+  const body = (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: open ? 12 : 0,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "none",
+            border: "none",
+            color: "inherit",
+            cursor: "pointer",
+            padding: 0,
+            textAlign: "left",
+          }}
+        >
+          {open ? (
+            <AngleDownIcon style={{ width: 14, height: 14, flexShrink: 0 }} />
+          ) : (
+            <AngleRightIcon style={{ width: 14, height: 14, flexShrink: 0 }} />
+          )}
+          <Title headingLevel="h2" style={{ margin: 0 }}>
+            {title}
+          </Title>
+        </button>
+        {info && (
+          <Tooltip content={info} position="right">
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                opacity: 0.7,
+                cursor: "help",
+                flexShrink: 0,
+              }}
+              aria-label="More information"
+            >
+              <InfoCircleIcon style={{ width: 14, height: 14 }} />
+            </span>
+          </Tooltip>
+        )}
+      </div>
+      {open && children}
+    </>
+  );
+
+  if (bare) {
+    return <div id={id}>{body}</div>;
+  }
+  return <PageSection id={id}>{body}</PageSection>;
+}
+
+function SettingsGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <PageSection>
+      <div
+        style={{
+          border: "1px solid var(--pf-t--global--border--color--default)",
+          borderRadius: 8,
+          padding: "16px 20px",
+        }}
+      >
+        <Title headingLevel="h2" style={{ marginBottom: 16 }}>
+          {title}
+        </Title>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {children}
+        </div>
+      </div>
+    </PageSection>
+  );
+}
 
 interface ApiKey {
   id: string;
@@ -26,6 +144,7 @@ interface ApiKey {
 
 export default function SettingsPage() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(new Set());
   const [newKeyName, setNewKeyName] = useState("");
   const [expiresDays, setExpiresDays] = useState("");
   const [newKey, setNewKey] = useState<string | null>(null);
@@ -67,6 +186,11 @@ export default function SettingsPage() {
   const [ingressSaving, setIngressSaving] = useState(false);
   const [ingressSaved, setIngressSaved] = useState(false);
 
+  // Metering rates (admin)
+  const [meteringRates, setMeteringRates] = useState<Record<string, number>>({});
+  const [meteringRatesError, setMeteringRatesError] = useState("");
+  const [meteringRatesSaved, setMeteringRatesSaved] = useState(false);
+
   useEffect(() => {
     fetch("/api/v1/api-keys/")
       .then((r) => r.json())
@@ -95,11 +219,20 @@ export default function SettingsPage() {
       .then((me) => {
         if (me?.role !== "admin") return;
         setIsAdmin(true);
-        return fetch("/api/v1/admin/settings")
-          .then((r) => (r.ok ? r.json() : null))
-          .then((data) => {
-            if (data?.ingress_controller) setIngressController(data.ingress_controller);
-          });
+        return Promise.all([
+          fetch("/api/v1/admin/settings")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+              if (data?.ingress_controller) setIngressController(data.ingress_controller);
+            }),
+          fetch("/api/v1/metering/rates")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+              if (!data) return;
+              const picked = data.kubevirt || data.ocpvirt || data.libvirt || {};
+              setMeteringRates({ ...picked });
+            }),
+        ]);
       })
       .catch(() => {});
   }, []);
@@ -133,16 +266,36 @@ export default function SettingsPage() {
     setExpiresDays("");
   };
 
-  const revokeKey = async (id: string) => {
+  const revokeKeys = async (ids: string[]) => {
+    if (!ids.length) return;
+    const label = ids.length === 1 ? "this API key" : `${ids.length} API keys`;
     if (!(await appConfirm({
-      title: "Revoke API Key",
-      message: "Revoke this API key? This cannot be undone.",
+      title: ids.length === 1 ? "Revoke API Key" : "Revoke API Keys",
+      message: `Revoke ${label}? This cannot be undone.`,
       confirmLabel: "Revoke",
       variant: "danger",
     }))) return;
-    await fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
-    setKeys(keys.filter((k) => k.id !== id));
+    await Promise.all(ids.map((id) => fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" })));
+    const gone = new Set(ids);
+    setKeys((prev) => prev.filter((k) => !gone.has(k.id)));
+    setSelectedKeyIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
   };
+
+  const toggleKeySelected = (id: string) => {
+    setSelectedKeyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allKeysSelected = keys.length > 0 && keys.every((k) => selectedKeyIds.has(k.id));
+  const someKeysSelected = keys.some((k) => selectedKeyIds.has(k.id));
 
   const fetchCreds = () => {
     fetch("/api/v1/auth/registry-credentials")
@@ -179,67 +332,8 @@ export default function SettingsPage() {
       <PageSection>
         <Title headingLevel="h1">Settings</Title>
       </PageSection>
-      {isAdmin && (
-        <PageSection>
-          <Title headingLevel="h2" style={{ marginBottom: 12 }}>OpenShift IngressController</Title>
-          <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
-            Name of the cluster IngressController used for Troshka Routes and
-            showroom. If not set, uses <code>default</code>.
-          </p>
-          {ingressSaved && (
-            <Alert
-              variant="success"
-              title="Saved. New routes use this IngressController on next deploy."
-              style={{ marginBottom: 12 }}
-              isInline
-            />
-          )}
-          <Card>
-            <CardBody>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Controller name</label>
-              <input
-                style={{ width: "100%", maxWidth: 420, padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
-                value={ingressController}
-                onChange={(e) => { setIngressController(e.target.value); setIngressSaved(false); }}
-                placeholder="default"
-              />
-              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-                <Button
-                  variant="primary"
-                  isDisabled={ingressSaving}
-                  onClick={async () => {
-                    setIngressSaving(true);
-                    setIngressSaved(false);
-                    try {
-                      const resp = await fetch("/api/v1/admin/settings", {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          ingress_controller: ingressController.trim() || "default",
-                        }),
-                      });
-                      if (!resp.ok) {
-                        const err = await resp.json().catch(() => ({ detail: "Save failed" }));
-                        setAlertMsg(err.detail || "Save failed");
-                        return;
-                      }
-                      const data = await resp.json();
-                      setIngressController(data.ingress_controller);
-                      setIngressSaved(true);
-                    } finally {
-                      setIngressSaving(false);
-                    }
-                  }}
-                >
-                  {ingressSaving ? "Saving..." : "Save"}
-                </Button>
-              </div>
-            </CardBody>
-          </Card>
-        </PageSection>
-      )}
-      <PageSection>
-        <Title headingLevel="h2" size="lg" style={{ marginBottom: 16 }}>API Keys</Title>
+      <SettingsGroup title="User Settings">
+      <SettingsSection bare title="API Keys">
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
           API keys authenticate external tools and scripts. Keys use the format <code>trk_...</code> and are passed as <code>Authorization: Bearer trk_...</code>
         </p>
@@ -290,28 +384,69 @@ export default function SettingsPage() {
           <p style={{ opacity: 0.6 }}>No API keys created yet.</p>
         )}
 
+        {keys.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 8,
+              fontSize: 13,
+            }}
+          >
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={allKeysSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someKeysSelected && !allKeysSelected;
+                }}
+                onChange={() => {
+                  if (allKeysSelected) setSelectedKeyIds(new Set());
+                  else setSelectedKeyIds(new Set(keys.map((k) => k.id)));
+                }}
+              />
+              Select all
+            </label>
+            <Button
+              variant="danger"
+              isDisabled={!someKeysSelected}
+              onClick={() => revokeKeys([...selectedKeyIds])}
+            >
+              Revoke selected{someKeysSelected ? ` (${selectedKeyIds.size})` : ""}
+            </Button>
+          </div>
+        )}
+
         {keys.map((k) => (
           <Card key={k.id} style={{ marginBottom: 8 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <strong>{k.name}</strong>
-                <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6, fontFamily: "monospace" }}>{k.key_prefix}...</span>
-                <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
-                  Created {new Date(k.created_at).toLocaleDateString()}
-                  {k.last_used_at && ` · Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
-                  {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, flex: 1, cursor: "pointer", minWidth: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedKeyIds.has(k.id)}
+                  onChange={() => toggleKeySelected(k.id)}
+                  style={{ marginTop: 4 }}
+                />
+                <div>
+                  <strong>{k.name}</strong>
+                  <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6, fontFamily: "monospace" }}>{k.key_prefix}...</span>
+                  <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
+                    Created {new Date(k.created_at).toLocaleDateString()}
+                    {k.last_used_at && ` · Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
+                    {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                  </div>
                 </div>
-              </div>
-              <Button variant="danger" onClick={() => revokeKey(k.id)}>Revoke</Button>
+              </label>
+              <Button variant="danger" onClick={() => revokeKeys([k.id])}>Revoke</Button>
             </CardBody>
           </Card>
         ))}
-      </PageSection>
-      <PageSection>
+      </SettingsSection>
+      <SettingsSection bare title="SSH Public Keys">
         <SshKeysSection />
-      </PageSection>
-      <PageSection>
-        <Title headingLevel="h2" style={{ marginBottom: 12 }}>Red Hat Offline Token</Title>
+      </SettingsSection>
+      <SettingsSection bare title="Red Hat Offline Token">
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
           Required for building custom host images via Image Builder. Generate a token at{" "}
           <a href="https://access.redhat.com/management/api" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>access.redhat.com/management/api</a>.
@@ -343,9 +478,8 @@ export default function SettingsPage() {
             </CardBody>
           </Card>
         )}
-      </PageSection>
-      <PageSection>
-        <Title headingLevel="h2" style={{ marginBottom: 12 }}>OCP Pull Secret</Title>
+      </SettingsSection>
+      <SettingsSection bare title="OCP Pull Secret">
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
           Required for OpenShift installation. Get yours from{" "}
           <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>console.redhat.com</a>.
@@ -484,9 +618,8 @@ export default function SettingsPage() {
             </Card>
           )
         )}
-      </PageSection>
-      <PageSection>
-        <Title headingLevel="h2" style={{ marginBottom: 12 }}>Registry Credentials</Title>
+      </SettingsSection>
+      <SettingsSection bare title="Registry Credentials">
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
           Container registry credentials for pulling private images. Referenced by name in container nodes.
         </p>
@@ -595,7 +728,161 @@ export default function SettingsPage() {
             + Add Registry Credential
           </Button>
         )}
-      </PageSection>
+      </SettingsSection>
+      </SettingsGroup>
+      {isAdmin && (
+        <SettingsGroup title="Admin Settings">
+          <SettingsSection bare title="OpenShift IngressController">
+            <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+              Name of the cluster IngressController used for Troshka Routes and
+              showroom. If not set, uses <code>default</code>.
+            </p>
+            {ingressSaved && (
+              <Alert
+                variant="success"
+                title="Saved. New routes use this IngressController on next deploy."
+                style={{ marginBottom: 12 }}
+                isInline
+              />
+            )}
+            <Card>
+              <CardBody>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Controller name</label>
+                <input
+                  style={{ width: "100%", maxWidth: 420, padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                  value={ingressController}
+                  onChange={(e) => { setIngressController(e.target.value); setIngressSaved(false); }}
+                  placeholder="default"
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                  <Button
+                    variant="primary"
+                    isDisabled={ingressSaving}
+                    onClick={async () => {
+                      setIngressSaving(true);
+                      setIngressSaved(false);
+                      try {
+                        const resp = await fetch("/api/v1/admin/settings", {
+                          method: "PUT",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            ingress_controller: ingressController.trim() || "default",
+                          }),
+                        });
+                        if (!resp.ok) {
+                          const err = await resp.json().catch(() => ({ detail: "Save failed" }));
+                          setAlertMsg(err.detail || "Save failed");
+                          return;
+                        }
+                        const data = await resp.json();
+                        setIngressController(data.ingress_controller);
+                        setIngressSaved(true);
+                      } finally {
+                        setIngressSaving(false);
+                      }
+                    }}
+                  >
+                    {ingressSaving ? "Saving..." : "Save"}
+                  </Button>
+                </div>
+              </CardBody>
+            </Card>
+          </SettingsSection>
+          <SettingsSection
+            bare
+            id="metering-rates"
+            title="Kubevirt Metering Rates"
+            info={
+              <div style={{ maxWidth: 280 }}>
+                These unit rates apply to KubeVirt (and nested/shared hosts that use them).
+                AWS, GCP, and Azure bill from the instance catalog instead. Per-host rate
+                overrides can be set on Hosts.
+              </div>
+            }
+          >
+            {meteringRatesError && (
+              <Alert variant="danger" title={meteringRatesError} style={{ marginBottom: 12 }} isInline />
+            )}
+            {meteringRatesSaved && (
+              <Alert variant="success" title="Rates saved" style={{ marginBottom: 12 }} isInline />
+            )}
+            <Card style={{ maxWidth: 480 }}>
+              <CardBody>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {(
+                    [
+                      { key: "vcpu_hour", label: "CPU per core per hour ($)" },
+                      { key: "ram_gib_hour", label: "Memory per GB per hour ($)" },
+                      { key: "disk_gib_hour", label: "Storage per GB per hour ($)" },
+                      { key: "ceph_gib_hour", label: "Ceph per GB per hour ($)" },
+                      { key: "eip_hour", label: "Elastic IP per hour ($)" },
+                    ] as const
+                  ).map((field) => (
+                    <label
+                      key={field.key}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 16,
+                        fontSize: 13,
+                      }}
+                    >
+                      <span>{field.label}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.0000001"
+                        value={meteringRates[field.key] ?? 0}
+                        onChange={(e) => {
+                          setMeteringRatesSaved(false);
+                          setMeteringRates((prev) => ({
+                            ...prev,
+                            [field.key]: Number(e.target.value),
+                          }));
+                        }}
+                        style={{
+                          width: 160,
+                          padding: "6px 10px",
+                          borderRadius: 6,
+                          border: "1px solid var(--pf-t--global--border--color--default)",
+                          background: "var(--pf-t--global--background--color--primary--default)",
+                          color: "var(--pf-t--global--text--color--regular)",
+                          fontSize: 13,
+                        }}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <Button
+                  variant="primary"
+                  style={{ marginTop: 20 }}
+                  onClick={async () => {
+                    setMeteringRatesError("");
+                    setMeteringRatesSaved(false);
+                    const resp = await fetch("/api/v1/metering/rates", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ rates: { kubevirt: meteringRates } }),
+                    });
+                    if (!resp.ok) {
+                      const data = await resp.json().catch(() => ({}));
+                      setMeteringRatesError(data.detail || "Failed to save rates");
+                      return;
+                    }
+                    const data = await resp.json();
+                    const picked = data.kubevirt || data.ocpvirt || data.libvirt || {};
+                    setMeteringRates({ ...picked });
+                    setMeteringRatesSaved(true);
+                  }}
+                >
+                  Save
+                </Button>
+              </CardBody>
+            </Card>
+          </SettingsSection>
+        </SettingsGroup>
+      )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </>
   );
@@ -642,7 +929,6 @@ function SshKeysSection() {
 
   return (
     <>
-      <Title headingLevel="h2" size="lg" style={{ marginBottom: 16 }}>SSH Public Keys</Title>
       <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
         SSH keys are injected into VMs via cloud-init. Add your public keys here, then select them per VM.
       </p>

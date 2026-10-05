@@ -7,13 +7,16 @@ import {
   Button,
   Card,
   CardBody,
+  CardTitle,
   FileUpload,
+  Label,
   PageSection,
   Title,
   Alert,
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Tooltip,
 } from "@patternfly/react-core";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
@@ -46,7 +49,6 @@ export default function ImagesPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
-  const [meEmail, setMeEmail] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -84,13 +86,6 @@ export default function ImagesPage() {
   };
 
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
-
-  useEffect(() => {
-    fetch("/api/v1/auth/me")
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((d: { email?: string }) => setMeEmail(d.email || ""))
-      .catch(() => {});
-  }, []);
 
   // Auto-refresh when any item is importing
   useEffect(() => {
@@ -244,7 +239,41 @@ export default function ImagesPage() {
   };
 
   const inputStyle = { width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 };
-  const stateColors: Record<string, string> = { ready: "#4ade80", uploading: "#fbbf24", importing: "#fbbf24", downloading: "#fbbf24", uploading_s3: "#22d3ee", pending: "#94a3b8", error: "#f87171" };
+  const imageStateLabel = (item: LibraryItem): { text: string; color: "green" | "red" | "orange" | "grey" | "teal" } => {
+    if (item.state === "ready") return { text: "ready", color: "green" };
+    if (item.state === "error") return { text: "error", color: "red" };
+    if (item.state === "downloading") {
+      return {
+        text: item.size_bytes > 0
+          ? `downloading · ${formatSize(item.size_bytes)}`
+          : "starting download…",
+        color: "orange",
+      };
+    }
+    if (item.state === "uploading_s3") {
+      const tags = item.tags as Record<string, number> | null;
+      const tp = tags?.total_parts || 0;
+      const up = tags?.uploaded_parts || 0;
+      return {
+        text: tp
+          ? `uploading · ${Math.round((up / tp) * 100)}%`
+          : `uploading · ${formatSize(item.size_bytes)}`,
+        color: "teal",
+      };
+    }
+    if (item.state === "importing") {
+      return {
+        text: item.size_bytes > 0
+          ? `importing · ${formatSize(item.size_bytes)}`
+          : "importing…",
+        color: "orange",
+      };
+    }
+    if (item.state === "uploading" || item.state === "pending") {
+      return { text: item.state === "pending" ? "pending" : "uploading…", color: "orange" };
+    }
+    return { text: item.state, color: "grey" };
+  };
 
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
 
@@ -387,17 +416,18 @@ export default function ImagesPage() {
         {items.length === 0 && !showUpload && (
           <p style={{ opacity: 0.6 }}>No items in library. Click &quot;+ Upload&quot; to add ISOs or disk images.</p>
         )}
-        {items.map((item) => (
-          <Card key={item.id} style={{ marginBottom: 8 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div style={{ flex: 1 }}>
+        {items.map((item) => {
+          const stateMeta = imageStateLabel(item);
+          return (
+          <Card key={item.id} isCompact style={{ marginBottom: 8 }}>
+            <CardTitle>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                   <input type="checkbox" checked={selectedItems.has(item.id)} onChange={() => setSelectedItems((prev) => {
                     const next = new Set(prev);
                     if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
                     return next;
                   })} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
-                  <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   {editingName === item.id ? (
                     <input
                       autoFocus
@@ -424,7 +454,7 @@ export default function ImagesPage() {
                         background: "var(--pf-t--global--background--color--primary--default)",
                         color: "var(--pf-t--global--text--color--regular)",
                         border: "1px solid var(--pf-t--global--border--color--default)",
-                        borderRadius: 4, padding: "2px 6px", minWidth: 200,
+                        borderRadius: 4, padding: "2px 6px", width: "100%",
                       }}
                     />
                   ) : (
@@ -434,67 +464,46 @@ export default function ImagesPage() {
                       style={{ cursor: item.readonly ? "default" : "text" }}
                     >{item.name}</strong>
                   )}
-                  {(() => {
-                    const otherOwner =
-                      !!item.owner_email &&
-                      !!meEmail &&
-                      item.owner_email.toLowerCase() !== meEmail.toLowerCase() &&
-                      item.source !== "central";
-                    if (!otherOwner) return null;
-                    return (
-                      <span
-                        title={`Owned by ${item.owner_email}`}
-                        style={{
-                          fontSize: 11,
-                          padding: "1px 6px",
-                          borderRadius: 4,
-                          background: "rgba(96,165,250,0.18)",
-                          color: "#60a5fa",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontWeight: 600,
-                        }}
-                      >
-                        <UserIcon style={{ width: 11, height: 11 }} />
-                        {item.owner_email!.split("@")[0]}
-                      </span>
-                    );
-                  })()}
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {item.state === "downloading" ? (item.size_bytes > 0 ? `downloading from URL · ${formatSize(item.size_bytes)}` : "starting download...")
-                      : item.state === "uploading_s3" ? (() => {
-                          const tags = item.tags as Record<string, number> | null;
-                          const tp = tags?.total_parts || 0;
-                          const up = tags?.uploaded_parts || 0;
-                          return tp ? `uploading to library · ${Math.round((up / tp) * 100)}%` : `uploading to library · ${formatSize(item.size_bytes)}`;
-                        })()
-                      : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
-                      : item.state}
+                  <span
+                    title={item.owner_email ? `Owned by ${item.owner_email}` : "System"}
+                    style={{
+                      fontSize: 11,
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      background: "rgba(96,165,250,0.18)",
+                      color: "#60a5fa",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontWeight: 600,
+                      marginTop: 2,
+                    }}
+                  >
+                    <UserIcon style={{ width: 11, height: 11 }} />
+                    {item.owner_email ? item.owner_email.split("@")[0] : "system"}
                   </span>
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
-                    {item.format === "iso" ? "ISO" : item.format}
-                  </span>
-                  {item.source === "central" && (
-                    <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
-                      Central
-                    </span>
-                  )}
                 </div>
-                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {(() => {
-                    if (!item.owner_email || item.source === "central") return null;
-                    const otherOwner =
-                      !!meEmail &&
-                      item.owner_email.toLowerCase() !== meEmail.toLowerCase();
-                    if (otherOwner) return null;
-                    return <>{item.owner_email.split("@")[0]}{" · "}</>;
-                  })()}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Label color="grey">{item.format === "iso" ? "ISO" : item.format}</Label>
+                  {item.source === "central" || item.readonly ? (
+                    <Tooltip content="Read-only curated store (troshka-gold-images)">
+                      <Label color="yellow">Gold</Label>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip content="Personal library (writable)">
+                      <Label color="grey">Local</Label>
+                    </Tooltip>
+                  )}
+                  <Label color={stateMeta.color}>{stateMeta.text}</Label>
+                </div>
+              </div>
+            </CardTitle>
+            <CardBody>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>
                   {item.state !== "importing" && formatSize(item.size_bytes)}
                   {item.description && `${item.state !== "importing" ? " · " : ""}${item.description}`}
                   {" · "}{new Date(item.created_at).toLocaleDateString()}
                 </div>
-              </div>
             </CardBody>
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
               {item.state === "ready" && !item.readonly && (
@@ -555,7 +564,8 @@ export default function ImagesPage() {
               </Button>
             </CardBody>
           </Card>
-        ))}
+          );
+        })}
       </PageSection>
       {editItem && (
         <div style={{

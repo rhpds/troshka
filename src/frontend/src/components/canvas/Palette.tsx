@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 
@@ -27,6 +27,72 @@ function currentPresetLabel(minutes: number | null | undefined): string {
   if (minutes == null) return "None";
   const preset = TIMER_PRESETS.find(p => p.value === minutes);
   return preset ? preset.label : formatMinutes(minutes);
+}
+
+function toggleRevealed(prev: Set<string>, key: string) {
+  const next = new Set(prev);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
+function BmcSecretRow({
+  rowLabel,
+  value,
+  revealKey,
+  revealed,
+  onToggle,
+}: {
+  rowLabel: string;
+  value: string;
+  revealKey?: string;
+  revealed: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  const masked = !!revealKey;
+  const shown = masked ? (revealed.has(revealKey) ? (value || "—") : "••••••") : value;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+      <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>{rowLabel}</span>
+      <code
+        style={{ fontSize: 11, flex: 1, cursor: masked ? "pointer" : undefined, userSelect: "all" }}
+        onClick={masked ? () => onToggle(revealKey) : undefined}
+      >
+        {shown}
+      </code>
+      <PaletteCopyBtn value={value} label={`BMC ${rowLabel.toLowerCase()}`} />
+    </div>
+  );
+}
+
+function PaletteCopyBtn({ value, label }: { value: string; label: string }) {
+  if (!value) return null;
+  return (
+    <button
+      type="button"
+      style={{
+        background: "none",
+        border: "none",
+        color: "var(--troshka-cyan, #22d3ee)",
+        cursor: "pointer",
+        padding: "0 2px",
+        flexShrink: 0,
+        opacity: 0.75,
+        fontSize: 10,
+      }}
+      title={`Copy ${label}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(value);
+        const btn = e.currentTarget;
+        const orig = btn.textContent;
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = orig; }, 1000);
+      }}
+    >
+      Copy
+    </button>
+  );
 }
 
 interface PaletteItemDef {
@@ -250,6 +316,9 @@ interface SnapshotItem {
 
 export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }) {
   const [showDesc, setShowDesc] = useState(false);
+  const [showBmc, setShowBmc] = useState(false);
+  const bmcHeaderRef = React.useRef<HTMLDivElement>(null);
+  const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
   const [budgetDraft, setBudgetDraft] = useState("");
   useEffect(() => {
     setBudgetDraft(budgetUsd == null ? "" : String(budgetUsd));
@@ -361,12 +430,90 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       if (n.type === "vmNode" && d.ciCloudUserPassword) {
         result.push({ label: `${d.name || d.label || n.id} (cloud-user)`, value: d.ciCloudUserPassword });
       }
-      if (n.type === "networkNode" && d.networkType === "bmc" && d.bmcPassword) {
-        result.push({ label: "BMC", value: d.bmcPassword });
-      }
     }
     return result;
   }, [nodes]);
+
+  const bmcInfo = React.useMemo(() => {
+    const topo = (typeof window !== "undefined" ? (window as any).__deployedTopology : null) || {};
+    const bmc = topo.bmc || {};
+    const bmcNet = nodes.find((n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
+    const netData = (bmcNet?.data || {}) as Record<string, any>;
+    const username = bmc.username || netData.bmcUsername || "admin";
+    const password = bmc.password || netData.bmcPassword || "";
+    const nodeById = Object.fromEntries(nodes.map((n) => [n.id, n]));
+    const deployedVms = bmc.vms && typeof bmc.vms === "object" ? Object.entries(bmc.vms) as [string, Record<string, any>][] : [];
+    const vms = deployedVms.length
+      ? deployedVms.map(([id, vm]) => {
+          const vmData = (nodeById[id]?.data || {}) as Record<string, any>;
+          const ip = vm.ip || vmData.bmcIp || "";
+          return {
+            id,
+            name: vmData.name || vmData.label || id.slice(0, 8),
+            ip,
+            http: ip ? `http://${ip}:8000` : "",
+            https: ip ? `https://${ip}:8443` : "",
+            redfish: vm.redfish_url || "",
+            redfishSsl: vm.redfish_url_ssl || "",
+            ipmi: vm.ipmi_address || (ip ? `${ip}:623` : ""),
+          };
+        })
+      : nodes
+          .filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled)
+          .map((n) => {
+            const vmData = n.data as Record<string, any>;
+            const ip = vmData.bmcIp || "";
+            return {
+              id: n.id,
+              name: vmData.name || vmData.label || n.id.slice(0, 8),
+              ip,
+              http: ip ? `http://${ip}:8000` : "",
+              https: ip ? `https://${ip}:8443` : "",
+              redfish: "",
+              redfishSsl: "",
+              ipmi: ip ? `${ip}:623` : "",
+            };
+          });
+    const bmcEnabled =
+      !!bmcNet &&
+      (deployedVms.length > 0 ||
+        nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled));
+    return { username, password, vms, bmcEnabled };
+  }, [nodes]);
+  const placeBmcFlyout = () => {
+    const el = bmcHeaderRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setBmcFlyoutPos({ top: r.top, left: r.right });
+  };
+
+  const toggleBmc = () => {
+    if (!showBmc) placeBmcFlyout();
+    setShowBmc((v) => !v);
+  };
+
+  useLayoutEffect(() => {
+    if (!showBmc) return;
+    placeBmcFlyout();
+  }, [showBmc]);
+
+  useEffect(() => {
+    if (!showBmc) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (bmcHeaderRef.current?.contains(t)) return;
+      if (document.getElementById("bmc-info-flyout")?.contains(t)) return;
+      setShowBmc(false);
+    };
+    window.addEventListener("resize", placeBmcFlyout);
+    window.addEventListener("scroll", placeBmcFlyout, true);
+    document.addEventListener("mousedown", onDoc);
+    return () => {
+      window.removeEventListener("resize", placeBmcFlyout);
+      window.removeEventListener("scroll", placeBmcFlyout, true);
+      document.removeEventListener("mousedown", onDoc);
+    };
+  }, [showBmc]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([]);
   const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
@@ -430,33 +577,99 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <code style={{ fontSize: 11 }}>{projectGuid}</code>
                   </div>
                 )}
-                {hostInfo && (
-                  <>
-                    <div style={{ marginTop: 4 }}>
-                      <span style={{ opacity: 0.4 }}>Host:</span> {hostInfo.instance_id} · {hostInfo.ip_address}
-                    </div>
-                    {hostInfo.provider_name && (
-                      <div>
-                        <span style={{ opacity: 0.4 }}>Provider:</span> {hostInfo.provider_name} ({hostInfo.provider_type})
-                      </div>
-                    )}
-                  </>
-                )}
-                {(() => {
-                  const bmcData = (window as any).__deployedTopology?.bmc;
-                  if (!bmcData?.vms) return null;
-                  const bmcVms = Object.values(bmcData.vms) as any[];
-                  if (!bmcVms.length) return null;
-                  return bmcVms.map((vm: any, i: number) => (
-                    <div key={i} style={{ marginTop: i === 0 ? 4 : 0 }}>
-                      <span style={{ opacity: 0.4 }}>BMC:</span>{" "}
-                      <code style={{ fontSize: 10 }}>http://{vm.ip}:8000</code>{" · "}
-                      <code style={{ fontSize: 10 }}>https://{vm.ip}:8443</code>
-                    </div>
-                  ));
-                })()}
               </div>
             )
+          )}
+        </div>
+      )}
+      {bmcInfo.bmcEnabled && (
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)", position: "relative" }}>
+          <div
+            ref={bmcHeaderRef}
+            className="palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
+            onClick={toggleBmc}
+          >
+            <span>BMC INFO</span>
+            <span style={{ fontSize: 9 }}>{showBmc ? "▾" : "▸"}</span>
+          </div>
+          {showBmc && (
+            <div
+              id="bmc-info-flyout"
+              style={{
+                position: "fixed",
+                top: bmcFlyoutPos.top,
+                left: bmcFlyoutPos.left,
+                zIndex: 40,
+                width: 960,
+                maxWidth: "min(960px, calc(100vw - 40px))",
+                maxHeight: "70vh",
+                overflowY: "auto",
+                background: "var(--troshka-surface)",
+                border: "1px solid var(--pf-t--global--border--color--default)",
+                borderLeft: "none",
+                borderRadius: "0 8px 8px 0",
+                padding: "10px 12px 12px",
+                boxShadow: "8px 4px 24px rgba(0,0,0,0.35)",
+                fontSize: 11,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <BmcSecretRow
+                  rowLabel="User"
+                  value={bmcInfo.username}
+                  revealed={revealedPasswords}
+                  onToggle={(k) => setRevealedPasswords((prev) => toggleRevealed(prev, k))}
+                />
+                <BmcSecretRow
+                  rowLabel="Password"
+                  value={bmcInfo.password}
+                  revealKey="BMC"
+                  revealed={revealedPasswords}
+                  onToggle={(k) => setRevealedPasswords((prev) => toggleRevealed(prev, k))}
+                />
+                {bmcInfo.vms.map((vm) => (
+                  <div key={vm.id} style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{vm.name}{vm.ip ? ` · ${vm.ip}` : ""}</div>
+                    {vm.http && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                        <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>HTTP</span>
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{vm.http}</code>
+                        <PaletteCopyBtn value={vm.http} label="HTTP URL" />
+                      </div>
+                    )}
+                    {vm.https && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                        <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>HTTPS</span>
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{vm.https}</code>
+                        <PaletteCopyBtn value={vm.https} label="HTTPS URL" />
+                      </div>
+                    )}
+                    {vm.redfish && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                        <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>Redfish</span>
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{vm.redfish}</code>
+                        <PaletteCopyBtn value={vm.redfish} label="Redfish URL" />
+                      </div>
+                    )}
+                    {vm.redfishSsl && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                        <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>Redfish SSL</span>
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{vm.redfishSsl}</code>
+                        <PaletteCopyBtn value={vm.redfishSsl} label="Redfish SSL URL" />
+                      </div>
+                    )}
+                    {vm.ipmi && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>IPMI</span>
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{vm.ipmi}</code>
+                        <PaletteCopyBtn value={vm.ipmi} label="IPMI address" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -613,9 +826,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           </div>
         </div>
       )}
-      {sections.map((section, sIdx) => (
+      {sections.map((section) => (
         <React.Fragment key={section.title}>
-          {sIdx > 0 && <div className="palette-divider" />}
           <div className="palette-section">
             <div
               className="palette-section-title"
@@ -625,7 +837,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <span>{section.title}</span>
               <span style={{ fontSize: 9 }}>{collapsedSections.has(section.title) ? "▸" : "▾"}</span>
             </div>
-            {!collapsedSections.has(section.title) && (<>
+            {!collapsedSections.has(section.title) && (<div className="palette-section-body">
               {section.items.map((item) => {
                 if (item.kubevirtOnly && !isKubevirt) return null;
                 const disabled =
@@ -713,11 +925,10 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 )}
               </>
             )}
-            </>)}
+            </div>)}
           </div>
         </React.Fragment>
       ))}
-      <div className="palette-divider" />
       <div className="palette-section">
         <div
           className="palette-section-title"
@@ -728,7 +939,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           <span style={{ fontSize: 9 }}>{collapsedSections.has("Project") ? "▸" : "▾"}</span>
         </div>
         {!collapsedSections.has("Project") && (
-          <>
+          <div className="palette-section-body">
             <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
               <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
               <div>
@@ -967,10 +1178,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 <div className="palette-item-desc">Enable VM command exec</div>
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
-      <div className="palette-divider" />
       <div className="palette-section">
         <div
           className="palette-section-title"

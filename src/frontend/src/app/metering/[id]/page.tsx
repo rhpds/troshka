@@ -20,7 +20,15 @@ interface InvoiceDetail {
   period_start: string | null;
   period_end: string | null;
   finalized_at: string | null;
-  line_items: { by_kind?: Array<{ kind: string; qty_hours: number; subtotal: number }> };
+  line_items: {
+    by_kind?: Array<{
+      kind: string;
+      hours?: number;
+      qty_hours: number;
+      unit_rate?: number;
+      subtotal: number;
+    }>;
+  };
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -37,6 +45,16 @@ function money(n: number): string {
 
 function kindLabel(kind: string): string {
   return KIND_LABELS[kind] || kind;
+}
+
+function effectiveRate(row: {
+  unit_rate?: number;
+  qty_hours: number;
+  subtotal: number;
+}): number | null {
+  if (row.unit_rate != null && !Number.isNaN(row.unit_rate)) return row.unit_rate;
+  if (row.qty_hours > 0) return row.subtotal / row.qty_hours;
+  return null;
 }
 
 export default function InvoiceDetailPage() {
@@ -60,7 +78,7 @@ export default function InvoiceDetailPage() {
 
   return (
     <PageSection>
-      <Button variant="link" onClick={() => router.push("/metering")}>
+      <Button variant="link" onClick={() => router.push("/metering?tab=past")}>
         ← Past
       </Button>
       {error && <Alert variant="danger" title={error} />}
@@ -79,18 +97,27 @@ export default function InvoiceDetailPage() {
                 <thead>
                   <tr style={{ textAlign: "left" }}>
                     <th style={{ padding: "8px 4px" }}>Kind</th>
-                    <th style={{ padding: "8px 4px" }}>Qty-hours</th>
+                    <th style={{ padding: "8px 4px" }}>Rate</th>
+                    <th style={{ padding: "8px 4px" }}>Hours</th>
                     <th style={{ padding: "8px 4px" }}>Subtotal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(invoice.line_items?.by_kind || []).map((row) => (
-                    <tr key={row.kind} style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
-                      <td style={{ padding: "8px 4px" }}>{kindLabel(row.kind)}</td>
-                      <td style={{ padding: "8px 4px" }}>{row.qty_hours.toFixed(4)}</td>
-                      <td style={{ padding: "8px 4px" }}>{money(row.subtotal)}</td>
-                    </tr>
-                  ))}
+                  {(invoice.line_items?.by_kind || []).map((row) => {
+                    const rate = effectiveRate(row);
+                    return (
+                      <tr key={row.kind} style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
+                        <td style={{ padding: "8px 4px" }}>{kindLabel(row.kind)}</td>
+                        <td style={{ padding: "8px 4px" }}>
+                          {rate != null ? `$${rate.toFixed(6)}` : "—"}
+                        </td>
+                        <td style={{ padding: "8px 4px" }}>
+                          {row.hours != null ? row.hours.toFixed(4) : "—"}
+                        </td>
+                        <td style={{ padding: "8px 4px" }}>{money(row.subtotal)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </CardBody>

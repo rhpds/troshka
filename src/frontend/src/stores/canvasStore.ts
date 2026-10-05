@@ -1318,7 +1318,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   clusterOcpPhases: {} as Record<string, string>,
 
   onNodesChange: (changes) => {
-    const removals = changes.filter((c) => c.type === "remove");
+    const hasBmcVm = () =>
+      get().nodes.some(
+        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+      );
+    const isBmcNetId = (id: string) => {
+      const n = get().nodes.find((node) => node.id === id);
+      return (
+        n?.type === "networkNode" &&
+        (n.data as Record<string, any>).networkType === "bmc"
+      );
+    };
+    // BMC network is not manually deletable while any VM has BMC enabled.
+    const removals = changes.filter(
+      (c) => c.type === "remove" && !(isBmcNetId((c as { id: string }).id) && hasBmcVm()),
+    );
     const others = changes.filter((c) => c.type !== "remove");
 
     // Always apply non-removal changes first (selection, position, etc.)
@@ -1356,9 +1370,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           const nextStartOrder = removedShowroomId
             ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
             : get().startOrder;
-          const nodes = applyNodeChanges(removals, get().nodes).filter(
+          let nodes = applyNodeChanges(removals, get().nodes).filter(
             (n) => !extraDiskIds.has(n.id),
           );
+          const stillHasBmcVm = nodes.some(
+            (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+          );
+          const bmcNet = findBmcNetwork(nodes);
+          if (!stillHasBmcVm && bmcNet) {
+            removedIds.add(bmcNet.id);
+            nodes = nodes.filter((n) => n.id !== bmcNet.id);
+          }
           const edges = get().edges.filter(
             (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
           );
@@ -1390,9 +1412,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const nextStartOrder = removedShowroomId
         ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
         : get().startOrder;
-      const nodes = applyNodeChanges(removals, updatedNodes).filter(
+      let nodes = applyNodeChanges(removals, updatedNodes).filter(
         (n) => !extraDiskIds.has(n.id),
       );
+      const stillHasBmcVm = nodes.some(
+        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+      );
+      const bmcNet = findBmcNetwork(nodes);
+      if (!stillHasBmcVm && bmcNet) {
+        removedIds.add(bmcNet.id);
+        nodes = nodes.filter((n) => n.id !== bmcNet.id);
+      }
       const edges = get().edges.filter(
         (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
       );
@@ -1882,6 +1912,18 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   },
 
   deleteNode: (nodeId) => {
+    const target = get().nodes.find((n) => n.id === nodeId);
+    // BMC network is managed by VM BMC toggles — cannot delete while any VM
+    // still has BMC enabled. It is removed automatically once none do.
+    if (
+      target?.type === "networkNode" &&
+      (target.data as Record<string, any>).networkType === "bmc" &&
+      get().nodes.some(
+        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+      )
+    ) {
+      return;
+    }
     get().pushHistory();
     const removedIds = new Set([nodeId]);
     const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
@@ -1892,7 +1934,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     // Deleting a cluster boundary cascades to its member children (nodes
     // parented to it) and drops the matching clusters[] entry — otherwise the
     // config lingers (permanent dirty) and children keep a dangling parentId.
-    const target = get().nodes.find((n) => n.id === nodeId);
     let nextClusters = get().clusters;
     let baseNodes = get().nodes;
     if (target?.type === "clusterNode") {
@@ -1932,6 +1973,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const nextStartOrder = removedShowroomId
       ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
       : get().startOrder;
+    // Drop the BMC network when the last BMC-enabled VM is removed.
+    const remainingForBmc = baseNodes.filter((n) => !removedIds.has(n.id));
+    const stillHasBmcVm = remainingForBmc.some(
+      (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+    );
+    const bmcNet = findBmcNetwork(baseNodes);
+    if (!stillHasBmcVm && bmcNet) removedIds.add(bmcNet.id);
     const nodes = baseNodes.filter((n) => !removedIds.has(n.id));
     const edges = get().edges.filter(
       (e) => !removedIds.has(e.source) && !removedIds.has(e.target),

@@ -380,6 +380,29 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
     return sync_status, list(provider_states.values())
 
 
+_SOURCE_ORDER = ("gold", "central", "obc")
+
+
+def _pattern_storage_sources(p: Pattern, db: Session | None) -> list[str]:
+    """Synced storage backends for this pattern: gold, central, and/or obc."""
+    if not db or not p.disks:
+        return []
+    rows = (
+        db.query(PatternLocation.location_type)
+        .filter(
+            PatternLocation.pattern_disk_id.in_([d.id for d in p.disks]),
+            PatternLocation.state == "synced",
+        )
+        .distinct()
+        .all()
+    )
+    present = {r[0] for r in rows}
+    # Gold catalog tags still say source=central; prefer location_type, fall back to tag.
+    if not present and (p.tags or {}).get("source") == "central":
+        return ["gold"]
+    return [t for t in _SOURCE_ORDER if t in present]
+
+
 def _pattern_to_list_dict(
     p: Pattern, db: Session | None = None, owner_email: str | None = None
 ) -> dict:
@@ -406,6 +429,8 @@ def _pattern_to_list_dict(
     if db and p.source_provider_id:
         sync_status, _ = _compute_sync_status(p, db)
 
+    sources = _pattern_storage_sources(p, db)
+
     return {
         "id": p.id,
         "name": p.name,
@@ -430,6 +455,8 @@ def _pattern_to_list_dict(
         "recert": p.recert,
         "sync_status": sync_status,
         "source_provider_id": p.source_provider_id,
+        "sources": sources,
+        "readonly": "gold" in sources,
     }
 
 
@@ -439,6 +466,8 @@ def _pattern_to_detail_dict(p: Pattern, db: Session | None = None) -> dict:
     locations = []
     if db and p.source_provider_id:
         sync_status, locations = _compute_sync_status(p, db)
+
+    sources = _pattern_storage_sources(p, db)
 
     return {
         "id": p.id,
@@ -472,6 +501,8 @@ def _pattern_to_detail_dict(p: Pattern, db: Session | None = None) -> dict:
         ],
         "sync_status": sync_status,
         "locations": locations,
+        "sources": sources,
+        "readonly": "gold" in sources,
     }
 
 

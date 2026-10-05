@@ -84,6 +84,8 @@ def test_period_usage_clips_to_month():
     assert abs(total - 72.0) < 1e-9
     assert lines[0]["kind"] == "vcpu"
     assert abs(lines[0]["qty_hours"] - 72.0) < 1e-9
+    assert abs(lines[0]["hours"] - 36.0) < 1e-9
+    assert abs(lines[0]["unit_rate"] - 1.0) < 1e-9
 
 
 def test_desired_stopped_vm_keeps_disk_not_cpu():
@@ -134,6 +136,42 @@ def test_desired_stopped_project_without_power_flag_skips_cpu():
     )
     kinds = {row[0] for row in got}
     assert not kinds
+
+
+def test_desired_error_project_skips_all():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "project_state": "error",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 4,
+                    "ram_gib": 8,
+                    "live_state": "running",
+                }
+            ],
+            "disks": [{"id": "d1", "size_gib": 80, "host_id": "h1"}],
+        }
+    )
+    assert not got
+
+
+def test_desired_dedicated_error_skips_full_host():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "billing_mode": "dedicated",
+            "project_state": "error",
+            "host_vcpus": 64,
+            "host_ram_gib": 256,
+            "vms": [],
+            "disks": [],
+        }
+    )
+    assert not got
 
 
 def test_desired_dedicated_bills_full_host_when_stopped():

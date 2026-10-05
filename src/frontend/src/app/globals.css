@@ -99,6 +99,15 @@ html:not(.pf-v6-theme-dark) {
 .project-action-bar-spacer {
   min-width: 0;
 }
+.project-action-bar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  justify-self: end;
+  flex-wrap: wrap;
+}
 .project-action-bar-actions {
   display: flex;
   align-items: center;
@@ -209,7 +218,8 @@ html:not(.pf-v6-theme-dark) {
 }
 
 .palette-section {
-  padding: 12px;
+  padding: 0;
+  border-bottom: 1px solid var(--troshka-border);
 }
 
 .palette-section-title {
@@ -218,7 +228,12 @@ html:not(.pf-v6-theme-dark) {
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--troshka-text-dim);
-  margin-bottom: 10px;
+  margin-bottom: 0;
+  padding: 6px 12px;
+}
+
+.palette-section-body {
+  padding: 0 12px 8px;
 }
 
 .palette-item {
