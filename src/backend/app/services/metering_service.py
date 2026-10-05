@@ -408,6 +408,7 @@ def live_spend(db: Session, project: Project, now: datetime | None = None) -> di
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
     by_kind_map: dict[str, float] = {kind: 0.0 for kind in KIND_TO_RATE}
     by_kind_lines: dict[str, dict] = {}
+    by_kind_spans: dict[str, list[dict]] = {}
     payload = []
     for row in rows:
         item = {
@@ -441,15 +442,20 @@ def live_spend(db: Session, project: Project, now: datetime | None = None) -> di
                 "hosts": [],
             },
         )
-        bucket["hours"] += hours
+        # qty_hours stays additive for rate math; Hours is wall-clock union.
         bucket["qty_hours"] += _as_float(row.qty) * hours
         bucket["subtotal"] += cost
+        by_kind_spans.setdefault(row.kind, []).append(
+            {"started_at": row.started_at, "ended_at": row.ended_at or now}
+        )
         if row.host_id and row.host_id not in bucket["hosts"]:
             bucket["hosts"].append(row.host_id)
     total = spend_total(payload, now)
     since, until = _running_window(project, rows, now)
     lines = sorted(by_kind_lines.values(), key=lambda row: row["kind"])
     for item in lines:
+        spans = by_kind_spans.get(item["kind"], [])
+        item["hours"] = covered_seconds(spans, now) / 3600.0
         qh = float(item["qty_hours"])
         item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     return {
@@ -529,6 +535,7 @@ def freeze_invoice(
     db.flush()
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
     by_kind: dict[str, dict] = {}
+    by_kind_spans: dict[str, list[dict]] = {}
     starts: list[datetime] = []
     for row in rows:
         starts.append(row.started_at)
@@ -565,12 +572,16 @@ def freeze_invoice(
             ],
             now,
         )
-        bucket["hours"] += hours
         bucket["qty_hours"] += _as_float(row.qty) * hours
         bucket["subtotal"] += cost
+        by_kind_spans.setdefault(row.kind, []).append(
+            {"started_at": row.started_at, "ended_at": row.ended_at or now}
+        )
         if row.host_id and row.host_id not in bucket["hosts"]:
             bucket["hosts"].append(row.host_id)
     for item in by_kind.values():
+        spans = by_kind_spans.get(item["kind"], [])
+        item["hours"] = covered_seconds(spans, now) / 3600.0
         qh = float(item["qty_hours"])
         item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     total = sum(item["subtotal"] for item in by_kind.values())

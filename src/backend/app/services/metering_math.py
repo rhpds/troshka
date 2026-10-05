@@ -129,6 +129,7 @@ def period_usage(
     p0, p1 = _aware(period_start), _aware(period_end)
     now_u = _aware(now)
     by_kind: dict[str, dict] = {}
+    by_kind_spans: dict[str, list[dict]] = {}
     total = 0.0
     for row in rows:
         start = row.get("started_at")
@@ -156,11 +157,16 @@ def period_usage(
                 "unit_rate": 0.0,
             },
         )
-        bucket["hours"] += hours
+        # qty_hours stays additive; wall-clock hours are the union of spans.
         bucket["qty_hours"] += qty * hours
         bucket["subtotal"] += cost
+        by_kind_spans.setdefault(kind, []).append(
+            {"started_at": clip_s, "ended_at": clip_e}
+        )
     lines = sorted(by_kind.values(), key=lambda item: item["kind"])
     for item in lines:
+        spans = by_kind_spans.get(item["kind"], [])
+        item["hours"] = covered_seconds(spans, now_u) / 3600.0
         qh = float(item["qty_hours"])
         item["unit_rate"] = float(item["subtotal"]) / qh if qh > 0 else 0.0
     return total, lines

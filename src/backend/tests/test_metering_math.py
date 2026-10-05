@@ -88,6 +88,34 @@ def test_period_usage_clips_to_month():
     assert abs(lines[0]["unit_rate"] - 1.0) < 1e-9
 
 
+def test_period_usage_hours_are_wall_clock_not_summed():
+    """Overlapping same-kind intervals must not inflate Hours."""
+    start = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    now = start + timedelta(hours=3)
+    rows = [
+        {
+            "kind": "disk",
+            "qty": 100,
+            "unit_rate": 0.001,
+            "started_at": start,
+            "ended_at": None,
+        },
+        {
+            "kind": "disk",
+            "qty": 200,
+            "unit_rate": 0.001,
+            "started_at": start,
+            "ended_at": None,
+        },
+    ]
+    p0, p1 = month_bounds(2026, 10)
+    total, lines = period_usage(rows, p0, p1, now)
+    assert lines[0]["kind"] == "disk"
+    assert abs(lines[0]["hours"] - 3.0) < 1e-9
+    assert abs(lines[0]["qty_hours"] - 900.0) < 1e-9  # (100+200)*3
+    assert abs(total - 0.9) < 1e-9
+
+
 def test_desired_stopped_vm_keeps_disk_not_cpu():
     got = desired_resources(
         {
