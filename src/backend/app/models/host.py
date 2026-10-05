@@ -56,6 +56,7 @@ class Host(Base):
     # Soft cordon: False removes the host from auto and manual placement
     accepting_work: Mapped[bool] = mapped_column(Boolean, default=True)
     console_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metering_rates: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

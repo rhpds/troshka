@@ -11,6 +11,7 @@ from app.models.library import (
     LibraryShare,
 )
 from app.models.mesh_peer import ProjectMeshPeer
+from app.models.metering import MeteringInterval, MeteringRateDefault, ProjectInvoice
 from app.models.network import Network, SecurityRule
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.pattern_location import PatternLocation
@@ -53,6 +54,9 @@ __all__ = [
     "ProjectPortalToken",
     "RegistryCredential",
     "SystemConfig",
+    "MeteringRateDefault",
+    "MeteringInterval",
+    "ProjectInvoice",
     "ProjectMeshPeer",
     "PatternLocation",
     "WorkloadRun",

@@ -27,6 +27,7 @@ class ProjectUpdate(BaseModel):
     guid: str | None = None
     clock_target: datetime.datetime | None = None
     guest_exec_enabled: bool | None = None
+    budget_usd: float | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -44,6 +45,9 @@ class ProjectResponse(BaseModel):
     auto_stop_expires_at: datetime.datetime | None = None
     auto_delete_minutes: int | None = None
     auto_stopped: bool = False
+    budget_usd: float | None = None
+    budget_warned: bool = False
+    budget_stopped: bool = False
     lifetime_expires_at: datetime.datetime | None = None
     poweroff_mode: str
     host_id: str | None = None

@@ -4,7 +4,16 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,6 +55,9 @@ class Project(Base):
     )
     auto_delete_warned: Mapped[bool] = mapped_column(default=False)
     auto_stopped: Mapped[bool] = mapped_column(default=False)
+    budget_usd: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    budget_warned: Mapped[bool] = mapped_column(default=False, server_default="false")
+    budget_stopped: Mapped[bool] = mapped_column(default=False, server_default="false")
     lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
