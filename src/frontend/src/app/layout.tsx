@@ -76,12 +76,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     const titleMap: Record<string, string> = {
       "/projects": "Projects",
+      "/metering": "Metering",
       "/library/images": "Images",
       "/library/patterns": "Patterns",
       "/settings": "Settings",
       "/admin/users": "Users",
       "/admin/providers": "Providers",
       "/admin/hosts": "Hosts",
+      "/admin/metering": "Metering rates",
       "/admin/storage-pools": "Storage Pools",
       "/admin/dns-providers": "DNS Providers",
       "/admin/queue": "Job Queue",
@@ -326,6 +328,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const navItems = [
     { label: "Getting Started", path: "/getting-started" },
     { label: "Projects", path: "/projects" },
+    { label: "Metering", path: "/metering" },
     { label: "Images", path: "/library/images" },
     { label: "Patterns", path: "/library/patterns" },
     { label: "Settings", path: "/settings" },
@@ -335,6 +338,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { label: "Users", path: "/admin/users" },
     { label: "Providers", path: "/admin/providers" },
     { label: "Hosts", path: "/admin/hosts" },
+    { label: "Metering rates", path: "/admin/metering" },
     { label: "Storage Pools", path: "/admin/storage-pools" },
     { label: "DNS Providers", path: "/admin/dns-providers" },
     { label: "Job Queue", path: "/admin/queue" },

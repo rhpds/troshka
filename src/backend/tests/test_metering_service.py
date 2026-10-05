@@ -4,11 +4,20 @@ from unittest.mock import patch
 from app.core.auth import hash_password
 from app.models.disk import Disk
 from app.models.host import Host
-from app.models.metering import MeteringInterval, MeteringRateDefault, ProjectInvoice
+from app.models.metering import (
+    MeteringInterval,
+    MeteringRateDefault,
+    MonthlyStatement,
+    ProjectInvoice,
+)
 from app.models.project import Project
 from app.models.provider import Provider
 from app.models.user import User
-from app.services.metering_service import freeze_invoice, reconcile_project
+from app.services.metering_service import (
+    finalize_month,
+    freeze_invoice,
+    reconcile_project,
+)
 from tests.conftest import TestSession
 
 _db = TestSession()
@@ -126,6 +135,81 @@ def test_stop_closes_cpu_keeps_disk():
     db.close()
 
 
+def test_project_stop_closes_disk_too():
+    db, project, host = _setup(running=True)
+    t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    running = {
+        "provider_type": "aws",
+        "host_id": host.id,
+        "project_state": "active",
+        "host_rates": host.metering_rates,
+        "vms": [
+            {
+                "id": "vm1",
+                "running": True,
+                "vcpus": 2,
+                "ram_gib": 4,
+                "host_id": host.id,
+            }
+        ],
+        "disks": [{"id": "d1", "size_gib": 10, "host_id": host.id}],
+        "eips": [],
+        "ceph": [],
+    }
+    reconcile_project(db, project, now=t0, snapshot=running)
+    db.commit()
+    t1 = t0 + timedelta(hours=1)
+    reconcile_project(
+        db, project, now=t1, snapshot={**running, "project_state": "stopped"}
+    )
+    db.commit()
+    rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
+    assert rows
+    assert all(row.ended_at.replace(tzinfo=UTC) == t1 for row in rows)
+    db.close()
+
+
+def test_dedicated_keeps_full_host_open_when_stopped():
+    db, project, host = _setup(
+        running=True, rates={"vcpu_hour": 1.0, "ram_gib_hour": 0.0}
+    )
+    host.billing_mode = "dedicated"
+    host.total_vcpus = 64
+    host.total_ram_mb = 256 * 1024
+    db.commit()
+    t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    snap = {
+        "provider_type": "ocpvirt",
+        "host_id": host.id,
+        "billing_mode": "dedicated",
+        "host_vcpus": 64,
+        "host_ram_gib": 256,
+        "project_state": "active",
+        "host_rates": {"vcpu_hour": 1.0, "ram_gib_hour": 0.0},
+        "vms": [{"id": "vm1", "running": True, "vcpus": 4, "ram_gib": 8}],
+        "disks": [],
+        "eips": [],
+        "ceph": [],
+    }
+    reconcile_project(db, project, now=t0, snapshot=snap)
+    db.commit()
+    t1 = t0 + timedelta(hours=1)
+    reconcile_project(
+        db, project, now=t1, snapshot={**snap, "project_state": "stopped"}
+    )
+    db.commit()
+    open_rows = [
+        row
+        for row in db.query(MeteringInterval).filter_by(project_id=project.id).all()
+        if row.ended_at is None
+    ]
+    by_kind = {row.kind: float(row.qty) for row in open_rows}
+    assert by_kind.get("vcpu") == 64.0
+    assert by_kind.get("ram") == 256.0
+    assert "disk" not in by_kind
+    db.close()
+
+
 def test_rate_change_does_not_rewrite_closed():
     db, project, host = _setup(running=True)
     t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -207,6 +291,108 @@ def test_budget_warn_and_stop_once(mock_stop, _notify):
     db.close()
 
 
+def test_reconcile_reopens_when_unit_rate_changes():
+    db, project, host = _setup(
+        running=True,
+        rates={
+            "vcpu_hour": 1.0,
+            "ram_gib_hour": 0.0,
+            "disk_gib_hour": 0.0,
+            "eip_hour": 0.0,
+            "ceph_gib_hour": 0.0,
+        },
+    )
+    t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    snap = {
+        "provider_type": "aws",
+        "host_id": host.id,
+        "project_state": "active",
+        "host_rates": dict(host.metering_rates),
+        "vms": [
+            {
+                "id": "vm1",
+                "running": True,
+                "vcpus": 2,
+                "ram_gib": 4,
+                "host_id": host.id,
+            }
+        ],
+        "disks": [],
+        "eips": [],
+        "ceph": [],
+    }
+    reconcile_project(db, project, now=t0, snapshot=snap)
+    db.commit()
+    t1 = t0 + timedelta(hours=1)
+    snap2 = {
+        **snap,
+        "host_rates": {**snap["host_rates"], "vcpu_hour": 0.5},
+    }
+    reconcile_project(db, project, now=t1, snapshot=snap2)
+    db.commit()
+    rows = (
+        db.query(MeteringInterval)
+        .filter_by(project_id=project.id, kind="vcpu")
+        .order_by(MeteringInterval.started_at)
+        .all()
+    )
+    assert len(rows) == 2
+    assert rows[0].ended_at.replace(tzinfo=UTC) == t1
+    assert float(rows[0].unit_rate) == 1.0
+    assert rows[1].ended_at is None
+    assert float(rows[1].unit_rate) == 0.5
+    db.close()
+
+
+def test_finalize_month_persists_owner_statement():
+    db, project, host = _setup(
+        running=True,
+        rates={
+            "vcpu_hour": 1.0,
+            "ram_gib_hour": 0.0,
+            "disk_gib_hour": 0.0,
+            "eip_hour": 0.0,
+            "ceph_gib_hour": 0.0,
+        },
+    )
+    t0 = datetime(2026, 9, 15, 0, 0, tzinfo=UTC)
+    snap = {
+        "provider_type": "aws",
+        "host_id": host.id,
+        "billing_mode": "shared",
+        "project_state": "active",
+        "host_rates": host.metering_rates,
+        "vms": [
+            {
+                "id": "vm1",
+                "running": True,
+                "vcpus": 2,
+                "ram_gib": 4,
+                "host_id": host.id,
+            }
+        ],
+        "disks": [],
+        "eips": [],
+        "ceph": [],
+    }
+    reconcile_project(db, project, now=t0, snapshot=snap)
+    db.commit()
+    now = datetime(2026, 10, 2, 0, 0, tzinfo=UTC)
+    rows = finalize_month(db, 2026, 9, now=now)
+    db.commit()
+    assert rows
+    stmt = (
+        db.query(MonthlyStatement)
+        .filter_by(owner_id=project.owner_id, status="final")
+        .first()
+    )
+    assert stmt is not None
+    assert float(stmt.total_usd) > 0
+    projects = (stmt.line_items or {}).get("by_project") or []
+    assert any(p.get("project_id") == project.id for p in projects)
+    db.close()
+
+
 def test_freeze_invoice_survives_project_delete():
     db, project, _host = _setup(running=True)
     t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -227,7 +413,7 @@ def test_freeze_invoice_survives_project_delete():
 
 def test_type_default_used_without_host_override():
     db = TestSession()
-    db.add(MeteringRateDefault(provider_type="aws", rates={"vcpu_hour": 0.25}))
+    db.merge(MeteringRateDefault(provider_type="aws", rates={"vcpu_hour": 0.25}))
     db.commit()
     db.close()
     db, project, host = _setup(rates=None, running=True)

@@ -54,7 +54,23 @@ interface Project {
   owner_email?: string | null;
 }
 
+interface LiveSpend {
+  total_usd: number;
+  running_seconds?: number;
+  running_since?: string | null;
+  running_until?: string | null;
+}
+
 const API_BASE = "";
+
+function formatRunningElapsed(totalSeconds: number): string {
+  const total = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${h}h ${pad(m)}m ${pad(s)}s`;
+}
 
 const stateColors: Record<string, string> = {
   draft: "#94a3b8",
@@ -1041,6 +1057,14 @@ export default function ProjectsPage() {
   const [republishTarget, setRepublishTarget] = useState<Project | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [spendById, setSpendById] = useState<Record<string, LiveSpend>>({});
+  const [spendNowMs, setSpendNowMs] = useState(() => Date.now());
+  const [spendFetchedAt, setSpendFetchedAt] = useState(() => Date.now());
+  const meterProjectKey = projects
+    .filter((p) => p.state !== "draft" && p.state !== "deleting")
+    .map((p) => p.id)
+    .sort()
+    .join("|");
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -1093,6 +1117,51 @@ export default function ProjectsPage() {
     const interval = setInterval(fetchProjects, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!meterProjectKey) {
+      setSpendById({});
+      return;
+    }
+    const ids = meterProjectKey.split("|");
+    let cancelled = false;
+    const load = () => {
+      Promise.all(
+        ids.map(async (id) => {
+          try {
+            const r = await fetch(`/api/v1/projects/${id}/metering`);
+            if (!r.ok) return null;
+            return [id, (await r.json()) as LiveSpend] as const;
+          } catch {
+            return null;
+          }
+        })
+      ).then((pairs) => {
+        if (cancelled) return;
+        const next: Record<string, LiveSpend> = {};
+        for (const pair of pairs) {
+          if (pair) next[pair[0]] = pair[1];
+        }
+        setSpendById(next);
+        setSpendFetchedAt(Date.now());
+      });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [meterProjectKey]);
+
+  useEffect(() => {
+    const anyLive = Object.values(spendById).some(
+      (s) => s.running_since && !s.running_until
+    );
+    if (!anyLive) return;
+    const id = setInterval(() => setSpendNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [spendById]);
 
   if (loading) {
     return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
@@ -1302,6 +1371,35 @@ export default function ProjectsPage() {
                     }}>
                       {p.state === "stopped" && p.auto_stopped ? "stopped (auto)" : p.state}
                     </span>
+                    {(() => {
+                      const spend = spendById[p.id];
+                      if (!spend || spend.running_since == null) return null;
+                      const paused =
+                        p.state === "stopped" ||
+                        p.state === "stopping" ||
+                        Boolean(spend.running_until);
+                      const elapsed =
+                        (spend.running_seconds || 0) +
+                        (paused
+                          ? 0
+                          : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
+                      return (
+                        <span
+                          title={`$${spend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"}`}
+                          style={{
+                            fontSize: 11,
+                            padding: "1px 6px",
+                            borderRadius: 4,
+                            background: paused
+                              ? "rgba(148,163,184,0.12)"
+                              : "rgba(34,197,94,0.12)",
+                            color: paused ? "#94a3b8" : "#86efac",
+                          }}
+                        >
+                          {paused ? "Stopped" : "Running"}: {formatRunningElapsed(elapsed)} · ${spend.total_usd.toFixed(2)}
+                        </span>
+                      );
+                    })()}
                     {p.state === "deploying" && p.deploy_progress?.step === "queued" && (
                       <span style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,

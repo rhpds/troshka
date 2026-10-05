@@ -517,6 +517,9 @@ async def lifespan(app):
     start_health_poller()
     start_project_timer()
     start_workload_timer()
+    from app.services.metering_service import start_metering_poll
+
+    start_metering_poll()
     start_state_poller()
     start_redis_listener()
 
@@ -675,6 +678,7 @@ from app.api import dns_providers as dns_provider_routes  # noqa: E402
 from app.api import eips as eip_routes  # noqa: E402
 from app.api import hosts as host_routes  # noqa: E402
 from app.api import library as library_routes  # noqa: E402
+from app.api import metering as metering_routes  # noqa: E402
 from app.api import networks as network_routes  # noqa: E402
 from app.api import ocp_versions as ocp_version_routes  # noqa: E402
 from app.api import patterns as pattern_routes  # noqa: E402
@@ -706,6 +710,7 @@ app.include_router(api_key_routes.router, prefix=_API_PREFIX)
 app.include_router(host_routes.router, prefix=_API_PREFIX)
 app.include_router(provider_routes.router, prefix=_API_PREFIX)
 app.include_router(library_routes.router, prefix=_API_PREFIX)
+app.include_router(metering_routes.router, prefix=_API_PREFIX)
 app.include_router(pattern_routes.router, prefix=_API_PREFIX)
 app.include_router(eip_routes.router, prefix=_API_PREFIX)
 app.include_router(workload_routes.router, prefix=_API_PREFIX)

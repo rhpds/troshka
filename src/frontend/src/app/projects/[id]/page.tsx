@@ -40,6 +40,15 @@ import {
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
+function formatRunningElapsed(totalSeconds: number): string {
+  const total = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${h}h ${pad(m)}m ${pad(s)}s`;
+}
+
 export default function ProjectCanvasPage() {
   const params = useParams();
   const router = useRouter();
@@ -94,6 +103,20 @@ export default function ProjectCanvasPage() {
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
   const [autoStopped, setAutoStopped] = useState(false);
+  const [budgetUsd, setBudgetUsd] = useState<number | null>(null);
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [budgetModalDraft, setBudgetModalDraft] = useState("");
+  const [liveSpend, setLiveSpend] = useState<{
+    total_usd: number;
+    budget_usd: number | null;
+    budget_warned: boolean;
+    budget_stopped: boolean;
+    running_since?: string | null;
+    running_until?: string | null;
+    running_seconds?: number;
+  } | null>(null);
+  const [spendNowMs, setSpendNowMs] = useState(() => Date.now());
+  const [spendFetchedAt, setSpendFetchedAt] = useState(() => Date.now());
   const [clockTarget, setClockTarget] = useState<string | null>(null);
   const [guestExecEnabled, setGuestExecEnabled] = useState(true);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
@@ -172,6 +195,7 @@ export default function ProjectCanvasPage() {
         setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
         setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
         setAutoStopped(!!data.auto_stopped);
+        setBudgetUsd(data.budget_usd ?? null);
         setClockTarget(data.clock_target ?? null);
         setGuestExecEnabled(data.guest_exec_enabled !== false);
         const clusterStatuses = (
@@ -189,6 +213,33 @@ export default function ProjectCanvasPage() {
       })
       .catch(() => {});
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const loadSpend = () => {
+      fetch(`/api/v1/projects/${projectId}/metering`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data) {
+            setLiveSpend(data);
+            setSpendFetchedAt(Date.now());
+          }
+        })
+        .catch(() => {});
+    };
+    loadSpend();
+    const interval = setInterval(loadSpend, 30000);
+    return () => clearInterval(interval);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!liveSpend?.running_since || liveSpend.running_until) return;
+    if (projectState === "stopped" || projectState === "stopping") return;
+    const tick = () => setSpendNowMs(Date.now());
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [liveSpend?.running_since, liveSpend?.running_until, projectState]);
 
   useEffect(() => {
     fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
@@ -897,6 +948,15 @@ export default function ProjectCanvasPage() {
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
+  const spendPaused =
+    projectState === "stopped" ||
+    projectState === "stopping" ||
+    Boolean(liveSpend?.running_until);
+  const spendElapsedSec =
+    (liveSpend?.running_seconds || 0) +
+    (spendPaused || !liveSpend?.running_since
+      ? 0
+      : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
   const showroomUrl = useMemo(() => {
     const deployed =
       typeof window !== "undefined"
@@ -1184,6 +1244,27 @@ export default function ProjectCanvasPage() {
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
             {projectState === "stopped" && autoStopped ? "stopped (auto)" : projectState}
           </span>
+          {liveSpend && (
+            <span
+              className="project-timer-badge"
+              style={{
+                fontSize: 11, marginLeft: 8, padding: "2px 8px", borderRadius: 10,
+                color: liveSpend.budget_stopped ? "#ef4444" : liveSpend.budget_warned ? "#fbbf24" : "#86efac",
+                background: liveSpend.budget_stopped ? "rgba(239,68,68,0.12)" : liveSpend.budget_warned ? "rgba(251,191,36,0.12)" : "rgba(34,197,94,0.12)",
+                cursor: "pointer",
+              }}
+              title={`$${liveSpend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"} — click to set budget`}
+              onClick={() => {
+                setBudgetModalDraft(budgetUsd == null ? "" : String(budgetUsd));
+                setShowBudgetModal(true);
+              }}
+            >
+              {liveSpend.running_since
+                ? `${spendPaused ? "Stopped" : "Running"}: ${formatRunningElapsed(spendElapsedSec)} / $${liveSpend.total_usd.toFixed(2)}`
+                : `$${liveSpend.total_usd.toFixed(2)}`}
+              {liveSpend.budget_usd != null ? ` / $${liveSpend.budget_usd.toFixed(2)}` : ""}
+            </span>
+          )}
           {timerCountdown && (
             <span
               className={`project-timer-badge ${timerUrgency}`}
@@ -1640,6 +1721,15 @@ export default function ProjectCanvasPage() {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ guest_exec_enabled: v }),
+          });
+        }} budgetUsd={budgetUsd} onBudgetChange={(v: number | null) => {
+          setBudgetUsd(v);
+          fetch(`/api/v1/projects/${projectId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ budget_usd: v }),
+          }).then((r) => r.ok ? r.json() : null).then((data) => {
+            if (data) setBudgetUsd(data.budget_usd ?? null);
           });
         }} />}
         <button
@@ -2116,6 +2206,65 @@ export default function ProjectCanvasPage() {
         />
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
+      {showBudgetModal && (
+        <div className="start-order-overlay" onClick={() => setShowBudgetModal(false)}>
+          <div className="start-order-modal" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+            <div className="start-order-header">
+              <span>Budget</span>
+              <button onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
+            </div>
+            <div className="start-order-body" style={{ padding: 16 }}>
+              <label style={{ fontSize: 13, display: "block", marginBottom: 6 }}>
+                Stop the project at this spend (USD)
+              </label>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                autoFocus
+                placeholder="None"
+                value={budgetModalDraft}
+                onChange={(e) => setBudgetModalDraft(e.target.value)}
+                style={{
+                  width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }}
+              />
+              {liveSpend && (
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                  Spend so far ${liveSpend.total_usd < 0.01 && liveSpend.total_usd > 0
+                    ? liveSpend.total_usd.toFixed(4)
+                    : liveSpend.total_usd.toFixed(2)}
+                </div>
+              )}
+            </div>
+            <div className="start-order-footer" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="start-order-btn" onClick={() => setShowBudgetModal(false)}>Cancel</button>
+              <button
+                className="start-order-btn save"
+                onClick={() => {
+                  const raw = budgetModalDraft.trim();
+                  const next = raw === "" ? null : Number(raw);
+                  if (next != null && (Number.isNaN(next) || next < 0)) return;
+                  setBudgetUsd(next);
+                  setShowBudgetModal(false);
+                  fetch(`/api/v1/projects/${projectId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ budget_usd: next }),
+                  }).then((r) => (r.ok ? r.json() : null)).then((data) => {
+                    if (data) setBudgetUsd(data.budget_usd ?? null);
+                  });
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showDeleteModal && (
         <ConfirmModal
           title="Delete Project"

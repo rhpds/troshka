@@ -1,0 +1,62 @@
+{
+  "as_of": "2026-10-05",
+  "currency": "USD",
+  "notes": "Linux on-demand list prices in the cheap region we use for quotes. AWS us-east-1, GCP us-central1, Azure eastus. Metal SKUs listed separately so a premium vs the virtual size is captured if list prices diverge. Disk/Ceph/EIP are not in instance list price; those use kubevirt_unit_rates.",
+  "kubevirt_unit_rates": {
+    "vcpu_hour": 0.0969377605,
+    "ram_gib_hour": 0.0036485604,
+    "disk_gib_hour": 0.0000925493,
+    "eip_hour": 0.0,
+    "ceph_gib_hour": 0.0000925493
+  },
+  "providers": {
+    "ec2": {
+      "c8i.large": { "hourly_usd": 0.0937, "vcpus": 2, "ram_gib": 4, "bare_metal": false },
+      "c8i.xlarge": { "hourly_usd": 0.1874, "vcpus": 4, "ram_gib": 8, "bare_metal": false },
+      "c8i.2xlarge": { "hourly_usd": 0.3748, "vcpus": 8, "ram_gib": 16, "bare_metal": false },
+      "c8i.4xlarge": { "hourly_usd": 0.7496, "vcpus": 16, "ram_gib": 32, "bare_metal": false },
+      "c8i.metal-48xl": { "hourly_usd": 8.9952, "vcpus": 192, "ram_gib": 384, "bare_metal": true },
+      "m8i.large": { "hourly_usd": 0.1058, "vcpus": 2, "ram_gib": 8, "bare_metal": false },
+      "m8i.xlarge": { "hourly_usd": 0.2117, "vcpus": 4, "ram_gib": 16, "bare_metal": false },
+      "m8i.2xlarge": { "hourly_usd": 0.4232, "vcpus": 8, "ram_gib": 32, "bare_metal": false },
+      "m8i.4xlarge": { "hourly_usd": 0.8464, "vcpus": 16, "ram_gib": 64, "bare_metal": false },
+      "m8i.8xlarge": { "hourly_usd": 1.6928, "vcpus": 32, "ram_gib": 128, "bare_metal": false },
+      "m8i.24xlarge": { "hourly_usd": 5.0784, "vcpus": 96, "ram_gib": 384, "bare_metal": false },
+      "m8i.48xlarge": { "hourly_usd": 10.1606, "vcpus": 192, "ram_gib": 768, "bare_metal": false },
+      "m8i.metal-48xl": { "hourly_usd": 10.1606, "vcpus": 192, "ram_gib": 768, "bare_metal": true },
+      "r8i.large": { "hourly_usd": 0.138925, "vcpus": 2, "ram_gib": 16, "bare_metal": false },
+      "r8i.xlarge": { "hourly_usd": 0.27785, "vcpus": 4, "ram_gib": 32, "bare_metal": false },
+      "r8i.2xlarge": { "hourly_usd": 0.5557, "vcpus": 8, "ram_gib": 64, "bare_metal": false },
+      "r8i.4xlarge": { "hourly_usd": 1.1114, "vcpus": 16, "ram_gib": 128, "bare_metal": false },
+      "r8i.8xlarge": { "hourly_usd": 2.2228, "vcpus": 32, "ram_gib": 256, "bare_metal": false },
+      "r8i.24xlarge": { "hourly_usd": 6.6684, "vcpus": 96, "ram_gib": 768, "bare_metal": false },
+      "r8i.metal-48xl": { "hourly_usd": 13.3363, "vcpus": 192, "ram_gib": 1536, "bare_metal": true },
+      "i4i.large": { "hourly_usd": 0.172, "vcpus": 2, "ram_gib": 16, "bare_metal": false },
+      "i4i.xlarge": { "hourly_usd": 0.343, "vcpus": 4, "ram_gib": 32, "bare_metal": false },
+      "i4i.2xlarge": { "hourly_usd": 0.686, "vcpus": 8, "ram_gib": 64, "bare_metal": false },
+      "c6id.large": { "hourly_usd": 0.1008, "vcpus": 2, "ram_gib": 4, "bare_metal": false },
+      "c6id.xlarge": { "hourly_usd": 0.2016, "vcpus": 4, "ram_gib": 8, "bare_metal": false }
+    },
+    "gcp": {
+      "n2-highmem-8": { "hourly_usd": 0.5241, "vcpus": 8, "ram_gib": 64, "bare_metal": false },
+      "n2-highmem-16": { "hourly_usd": 1.0481, "vcpus": 16, "ram_gib": 128, "bare_metal": false },
+      "n2-highmem-32": { "hourly_usd": 2.0962, "vcpus": 32, "ram_gib": 256, "bare_metal": false },
+      "n2-highmem-48": { "hourly_usd": 3.1443, "vcpus": 48, "ram_gib": 384, "bare_metal": false },
+      "n2-highmem-64": { "hourly_usd": 4.1924, "vcpus": 64, "ram_gib": 512, "bare_metal": false },
+      "n2-highmem-96": { "hourly_usd": 6.2886, "vcpus": 96, "ram_gib": 768, "bare_metal": false },
+      "e2-standard-2": { "hourly_usd": 0.06701, "vcpus": 2, "ram_gib": 8, "bare_metal": false },
+      "e2-standard-4": { "hourly_usd": 0.13402, "vcpus": 4, "ram_gib": 16, "bare_metal": false },
+      "e2-standard-8": { "hourly_usd": 0.26804, "vcpus": 8, "ram_gib": 32, "bare_metal": false }
+    },
+    "azure": {
+      "Standard_E2s_v5": { "hourly_usd": 0.126, "vcpus": 2, "ram_gib": 16, "bare_metal": false },
+      "Standard_E4s_v5": { "hourly_usd": 0.252, "vcpus": 4, "ram_gib": 32, "bare_metal": false },
+      "Standard_E8s_v5": { "hourly_usd": 0.504, "vcpus": 8, "ram_gib": 64, "bare_metal": false },
+      "Standard_E16s_v5": { "hourly_usd": 1.008, "vcpus": 16, "ram_gib": 128, "bare_metal": false },
+      "Standard_E32s_v5": { "hourly_usd": 2.016, "vcpus": 32, "ram_gib": 256, "bare_metal": false },
+      "Standard_E48s_v5": { "hourly_usd": 3.024, "vcpus": 48, "ram_gib": 384, "bare_metal": false },
+      "Standard_E64s_v5": { "hourly_usd": 4.032, "vcpus": 64, "ram_gib": 512, "bare_metal": false },
+      "Standard_E96s_v5": { "hourly_usd": 6.048, "vcpus": 96, "ram_gib": 672, "bare_metal": false }
+    }
+  }
+}

@@ -110,3 +110,11 @@ workloads:
     core_workloads: "main"
     demo_workloads: "main"
     namespaced_workloads: "main"
+
+metering:
+  enabled: true
+  poll_seconds: 120
+  warn_ratio: 0.8
+  # Multiply CPU/RAM unit rates for nested hosts (ocpvirt/aws/gcp/azure/libvirt).
+  # KubeVirt shared cluster and dedicated hosts skip this factor.
+  nested_factor: 0.5

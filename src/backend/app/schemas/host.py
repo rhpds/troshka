@@ -47,5 +47,6 @@ class HostResponse(BaseModel):
     ssh_port: int | None = None
     ssh_user: str | None = None
     metering_rates: dict | None = None
+    billing_mode: str = "shared"
 
     model_config = {"from_attributes": True}

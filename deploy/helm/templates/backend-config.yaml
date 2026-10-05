@@ -80,4 +80,9 @@ data:
     app_update:
       mode: {{ .Values.appUpdate.mode | default "auto" | quote }}
     {{- end }}
+    metering:
+      enabled: true
+      poll_seconds: 120
+      warn_ratio: 0.8
+      nested_factor: 0.5
 {{- end }}

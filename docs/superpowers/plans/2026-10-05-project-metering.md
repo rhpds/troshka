@@ -14,7 +14,7 @@
 
 - No HTTP to reporting-api / demo-reporting from metering code
 - CPU/RAM only while VM running; disk, EIP, Ceph while the resource exists
-- $0 rate if unset; host override beats type default
+- Host override > instance catalog (apportioned) > type default > kubevirt unit rates
 - Budget 80% warn once, 100% auto-stop once (`budget_stopped`); persistent resources may still accrue
 - Invoice has no ON DELETE CASCADE from `projects`
 - `metering.enabled` false → no poll, APIs 404

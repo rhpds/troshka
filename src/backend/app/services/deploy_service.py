@@ -13373,6 +13373,9 @@ def stop_project_async(project_id: str):
         project.auto_stop_warned = False
 
         s.commit()
+        from app.services.metering_service import touch_metering
+
+        touch_metering(s, project)
         notify_project(
             project_id,
             {
@@ -13533,6 +13536,9 @@ def _finalize_project_active(s, project, project_id, topology):
         project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
 
     s.commit()
+    from app.services.metering_service import touch_metering
+
+    touch_metering(s, project)
     notify_project(
         project_id,
         {

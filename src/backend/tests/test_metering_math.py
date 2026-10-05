@@ -1,9 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
 from app.services.metering_math import (
+    covered_seconds,
     desired_resources,
     diff_intervals,
     interval_cost,
+    month_bounds,
+    period_usage,
     resolve_rate,
     spend_total,
 )
@@ -47,6 +50,42 @@ def test_spend_total_closed_plus_open():
     assert abs(spend_total(rows, now) - 3.0) < 1e-9
 
 
+def test_covered_seconds_skips_stopped_gap():
+    start = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    now = start + timedelta(hours=3)
+    rows = [
+        {
+            "started_at": start,
+            "ended_at": start + timedelta(hours=1),
+        },
+        {
+            "started_at": start + timedelta(hours=2),
+            "ended_at": None,
+        },
+    ]
+    assert abs(covered_seconds(rows, now) - 7200.0) < 1e-6
+
+
+def test_period_usage_clips_to_month():
+    start = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    rows = [
+        {
+            "kind": "vcpu",
+            "qty": 2,
+            "unit_rate": 1.0,
+            "started_at": start,
+            "ended_at": None,
+        }
+    ]
+    p0, p1 = month_bounds(2026, 10)
+    total, lines = period_usage(rows, p0, p1, now)
+    # Oct 1 00:00 → Oct 2 12:00 = 36 hours × 2 × $1 = $72
+    assert abs(total - 72.0) < 1e-9
+    assert lines[0]["kind"] == "vcpu"
+    assert abs(lines[0]["qty_hours"] - 72.0) < 1e-9
+
+
 def test_desired_stopped_vm_keeps_disk_not_cpu():
     got = desired_resources(
         {
@@ -68,6 +107,110 @@ def test_desired_stopped_vm_keeps_disk_not_cpu():
     assert "vcpu" not in kinds
     assert "ram" not in kinds
     assert ("disk", "d1", 50.0, "h1", "aws") in got
+
+
+def test_desired_active_project_assumes_running_without_power_flag():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [{"id": "vm1", "vcpus": 4, "ram_gib": 8}],
+        }
+    )
+    assert ("vcpu", "vm1", 4.0, "h1", "ocpvirt") in got
+    assert ("ram", "vm1", 8.0, "h1", "ocpvirt") in got
+
+
+def test_desired_stopped_project_without_power_flag_skips_cpu():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "project_state": "stopped",
+            "vms": [{"id": "vm1", "vcpus": 4, "ram_gib": 8}],
+            "disks": [{"id": "d1", "size_gib": 80, "host_id": "h1"}],
+        }
+    )
+    kinds = {row[0] for row in got}
+    assert not kinds
+
+
+def test_desired_dedicated_bills_full_host_when_stopped():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "billing_mode": "dedicated",
+            "project_state": "stopped",
+            "host_vcpus": 64,
+            "host_ram_gib": 256,
+            "vms": [{"id": "vm1", "vcpus": 4, "ram_gib": 8, "running": False}],
+            "disks": [{"id": "d1", "size_gib": 80, "host_id": "h1"}],
+        }
+    )
+    assert ("vcpu", "host:h1", 64.0, "h1", "ocpvirt") in got
+    assert ("ram", "host:h1", 256.0, "h1", "ocpvirt") in got
+    assert not any(row[0] == "disk" for row in got)
+    assert not any(row[1] == "vm1" for row in got)
+
+
+def test_desired_autostart_false_skips_cpu_on_active_project():
+    got = desired_resources(
+        {
+            "provider_type": "kubevirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 16,
+                    "ram_gib": 64,
+                    "auto_start": False,
+                }
+            ],
+        }
+    )
+    assert not any(row[0] == "vcpu" for row in got)
+
+
+def test_desired_live_running_overrides_autostart_false():
+    got = desired_resources(
+        {
+            "provider_type": "kubevirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 2,
+                    "ram_gib": 4,
+                    "auto_start": False,
+                    "live_state": "running",
+                }
+            ],
+        }
+    )
+    assert ("vcpu", "vm1", 2.0, "h1", "kubevirt") in got
+
+
+def test_desired_live_shutoff_skips_cpu_on_active_project():
+    got = desired_resources(
+        {
+            "provider_type": "ocpvirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 4,
+                    "ram_gib": 8,
+                    "live_state": "shutoff",
+                }
+            ],
+        }
+    )
+    assert not any(row[0] == "vcpu" for row in got)
 
 
 def test_desired_running_vm_cpu_ram():

@@ -57,6 +57,8 @@ class Host(Base):
     accepting_work: Mapped[bool] = mapped_column(Boolean, default=True)
     console_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     metering_rates: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # shared = nested guest metering (+ nested_factor); dedicated = full host hourly always
+    billing_mode: Mapped[str] = mapped_column(String(20), default="shared")
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

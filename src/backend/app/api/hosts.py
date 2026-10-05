@@ -1821,11 +1821,21 @@ def update_host(
         "auto_extend_increment_gb": int,
         "auto_extend_max_gb": (int, type(None)),
         "accepting_work": bool,
+        "metering_rates": (dict, type(None)),
+        "billing_mode": str,
     }
     for key, val in body.items():
         if key not in allowed:
             raise HTTPException(status_code=400, detail=f"Cannot update field: {key}")
-        if not isinstance(val, allowed[key]):  # type: ignore[arg-type]
+        if key == "metering_rates":
+            if val is not None and not isinstance(val, dict):
+                raise HTTPException(status_code=400, detail=f"Invalid type for {key}")
+        elif key == "billing_mode":
+            if val not in ("shared", "dedicated"):
+                raise HTTPException(
+                    status_code=400, detail="billing_mode must be shared or dedicated"
+                )
+        elif not isinstance(val, allowed[key]):  # type: ignore[arg-type]
             raise HTTPException(status_code=400, detail=f"Invalid type for {key}")
         setattr(host, key, val)
     db.commit()

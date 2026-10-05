@@ -248,8 +248,12 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }) {
   const [showDesc, setShowDesc] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState("");
+  useEffect(() => {
+    setBudgetDraft(budgetUsd == null ? "" : String(budgetUsd));
+  }, [budgetUsd]);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
   const [showOcpStatus, setShowOcpStatus] = useState(true);
@@ -782,6 +786,38 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     >Set</button>
                   </div>
                 )}
+              </div>
+            </div>
+
+            <div className="palette-item" style={{ cursor: "default" }}>
+              <div className="palette-icon" style={{ background: "rgba(34,197,94,0.15)" }}>$</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="palette-item-label">Budget (USD)</div>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={budgetDraft}
+                    placeholder="None"
+                    onChange={(e) => setBudgetDraft(e.target.value)}
+                    onBlur={() => {
+                      const raw = budgetDraft.trim();
+                      if (raw === "") {
+                        onBudgetChange?.(null);
+                        return;
+                      }
+                      const n = Number(raw);
+                      if (!Number.isNaN(n) && n >= 0) onBudgetChange?.(n);
+                    }}
+                    style={{
+                      width: 72, fontSize: 10, padding: "1px 4px", borderRadius: 3,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                    }}
+                  />
+                </div>
               </div>
             </div>
 

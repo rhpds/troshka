@@ -1,7 +1,7 @@
 # Troshka project metering (native)
 
 **Date:** 2026-10-05  
-**Status:** Draft spec (approved approach: ledger + invoice snapshot)
+**Status:** Implemented
 
 In-app usage → dollars so a user can see **live spend**, set a **budget** (warn / auto-stop), and read a **final bill** after the project is gone. Independent of reporting-api ingest. Metering never POSTs usage or cost to reporting.
 
@@ -49,7 +49,20 @@ Changing a rate does **not** rewrite closed rows. New/reopened intervals copy th
 
 ## Rate card
 
-**Type defaults** (admin, keyed by `provider_type`: `aws`, `gcp`, `azure`, `kubevirt`, `ocpvirt`, `libvirt`, …):
+**Lookup:** host override → nested factor → instance catalog (apportioned) → admin type default → kubevirt unit rates.
+
+KubeVirt shared-cluster rates (CPU/RAM/disk) are the fallback for libvirt, ocpvirt, and unknown SKUs. ocpvirt host VMs use those same unit rates (a `64c-256g` parent is just kubevirt CPU+RAM × size; nested guests pay their fraction).
+
+**Nested factor** (`metering.nested_factor`, default `0.5`): multiplies CPU/RAM unit rates for every provider **except** `kubevirt`, and except hosts with `billing_mode=dedicated`. Reflects overcommit on nested virt. Disk / EIP / Ceph are not discounted.
+
+**Billing mode** (per host, default `shared`):
+
+| Mode | Who | Accrues |
+| --- | --- | --- |
+| `shared` | Quickstart / multi-tenant pools | Running guest CPU/RAM (+ nested factor); project stop freezes all intervals |
+| `dedicated` | Single-tenant CI | Full host CPU+RAM hourly whether VMs are up or not; no nested factor; no per-guest double bill |
+
+Public-cloud hosts (`ec2` / `gcp` / `azure`) use Linux on-demand **retail hourly** from `src/backend/app/data/instance_hourly_rates.json` (us-east-1 / us-central1 / eastus, dated in-file). That hourly is split into per-vCPU and per-GiB using kubevirt CPU:RAM weights, then a shared project pays only for **its running VMs** as `(vm vCPUs / host vCPUs)` + `(vm RAM / host RAM)` × nested factor. Idle capacity and other tenants are not billed to this project. Disk / EIP / Ceph stay on kubevirt unit rates (not in the instance list price). Metal SKUs are listed separately from nested sizes.
 
 | Key | Unit | Accrues |
 | --- | --- | --- |
@@ -59,11 +72,7 @@ Changing a rate does **not** rewrite closed rows. New/reopened intervals copy th
 | `eip_hour` | $ / EIP-hour | EIP associated |
 | `ceph_gib_hour` | $ / GiB Ceph-hour | Ceph volume/share exists |
 
-Missing key or unset type → **$0** (record usage, no dollars until configured).
-
-**Host override:** JSON on `hosts` (same keys). Lookup: host override → type default → 0.
-
-Admin UI: type defaults on an admin **Metering rates** surface (or Settings for admins); per-host overrides on the existing host detail. Users never edit rates.
+Admin UI: type defaults on **Metering rates**; per-host overrides on Hosts. Users never edit rates.
 
 ## Data model
 
@@ -97,9 +106,19 @@ Survives project delete (no ON DELETE CASCADE from `projects`).
 - `period_start`, `period_end` (`finalized_at`)
 - `currency`: `USD`
 
-Destroy order: reconcile + close all intervals → insert invoice → then existing destroy (intervals go away with the project).
+Destroy order: reconcile + close all intervals → insert invoice → contribute month slices to draft monthly statements → then existing destroy (intervals go away with the project).
 
 Users see invoices they own; admins see all.
+
+### `monthly_statements` (hybrid rollup)
+
+Per-owner UTC calendar month. Compute overlap cost from intervals, then persist an immutable row.
+
+- `owner_id`, `period_start` / `period_end` (month bounds), unique per owner+month
+- `line_items.by_project[]`: project name, subtotal, `by_kind[]`
+- `status`: `draft` while month open / after mid-month destroy contributions; `final` after month closes
+- Metering poll finalizes the previous month; admin can `POST /metering/statements/finalize?year=&month=`
+- Destroy still creates a per-project invoice; monthly statements are the accumulation view
 
 ## Accumulate (hybrid)
 
@@ -119,7 +138,7 @@ Reuse `project_timer` / auto-stop stop path — do not invent a second stopper.
 
 - After each reconcile (and after event-driven spend update): `spend >= 0.8 * budget` and not `budget_warned` → set flag, WS/banner warn.
 - `spend >= budget` and project `active` and not already `budget_stopped` → same path as auto-stop (state stopping, `auto_stopped` or `budget_stopped`, spawn stop).
-- After stop, CPU/RAM intervals close; disk/EIP/Ceph stay open. Spend can exceed 100%; UI shows overage. No second stop. No auto-delete from budget in v1.
+- After stop on **shared** hosts, all intervals close (meter freezes). On **dedicated** hosts, full-host intervals stay open. Spend can exceed 100%; UI shows overage. No second stop. No auto-delete from budget in v1.
 
 Warn copy: spend vs budget, not the 5-minute auto-stop timer copy.
 

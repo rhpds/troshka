@@ -383,6 +383,11 @@ def _project_response_base(project) -> dict:
         ),
         "auto_delete_minutes": project.auto_delete_minutes,
         "auto_stopped": project.auto_stopped,
+        "budget_usd": (
+            float(project.budget_usd) if project.budget_usd is not None else None
+        ),
+        "budget_warned": bool(project.budget_warned),
+        "budget_stopped": bool(project.budget_stopped),
         "lifetime_expires_at": (
             project.lifetime_expires_at.isoformat()
             if project.lifetime_expires_at
@@ -1445,6 +1450,17 @@ def get_deploy_progress(
     return {"state": project.state, "progress": progress}
 
 
+@router.get("/{project_id}/metering", responses={403: {}, 404: {}})
+def get_project_metering(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    from app.api.metering import _project_metering
+
+    return _project_metering(project_id, user, db)
+
+
 def _cluster_cp_member(topo: dict, cluster_key: str):
     """Return the first control-plane vmNode data dict for a cluster, or None."""
     for node in topo.get("nodes", []):
@@ -1910,6 +1926,10 @@ def update_project(
         _recompute_auto_stop_timer(project, fields)
     if "auto_delete_minutes" in fields:
         _recompute_auto_delete_timer(project, fields)
+    if "budget_usd" in fields:
+        project.budget_warned = False
+        if project.budget_usd is None:
+            project.budget_stopped = False
 
     if "clock_target" in fields and project.state == "active":
         from app.services.clock_service import adjust_clocks_async
@@ -2485,6 +2505,12 @@ def _get_project_and_host(
     return project, host
 
 
+def _touch_metering(db: Session, project: Project) -> None:
+    from app.services.metering_service import touch_metering
+
+    touch_metering(db, project)
+
+
 def _set_redeploy_progress(dom: str, data: dict):
     from app.core.redis import set_progress
 
@@ -2625,6 +2651,7 @@ def start_vm(
         if project.state == "stopped":
             project.state = "active"
             db.commit()
+        _touch_metering(db, project)
         return {"action": "start", "success": True}
 
     if project.state in ("stopped", "starting"):
@@ -2678,7 +2705,7 @@ def stop_vm(
     user: CurrentUser,
     db: DbSession,
 ):
-    _, host = _get_project_and_host(project_id, user, db)
+    project, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: patch VM running state via K8s API
     if host.host_type == "kubevirt-cluster":
@@ -2695,6 +2722,7 @@ def stop_vm(
                     project_id,
                     {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},
                 )
+                _touch_metering(db, project)
                 return {"action": "stop", "success": True}
             except Exception as e:
                 logger.exception("Failed to stop KubeVirt VM %s: %s", kv_name, e)
@@ -2709,6 +2737,7 @@ def stop_vm(
             project_id,
             {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},
         )
+        _touch_metering(db, project)
         return {"action": "stop", "success": True}
     except TroshkadError as e:
         logger.exception("Failed to stop VM %s: %s", dom, e)
@@ -6706,6 +6735,7 @@ def undeploy_project(
     project.vni_map = None
     project.deploy_error = None
     db.commit()
+    _touch_metering(db, project)
 
     return {"status": "draft"}
 
@@ -6721,6 +6751,10 @@ def delete_project(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+    from app.services.metering_service import safe_freeze_invoice
+
+    safe_freeze_invoice(db, project)
 
     # Release EIPs
     from app.models.elastic_ip import ElasticIp

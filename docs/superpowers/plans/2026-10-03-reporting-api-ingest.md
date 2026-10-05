@@ -4,7 +4,7 @@
 >
 > **For agentic workers:** track work with the checkboxes below. Do not implement collectors or send worker id.
 
-**Goal:** Troshka posts a **pointer** (who / where / when) on project deploy and destroy. Reporting-api and other tools inspect the **project namespace** after the fact for usage and cost, then chargeback to the SSO user.
+**Goal:** Troshka posts a **pointer** (who / where / when) on project deploy and destroy. Reporting-api and other tools inspect the **project namespace** after the fact for usage and cost, then chargeback to the SSO user. Native in-app metering (live spend, budgets, invoices) is a separate subsystem and does not send payloads to reporting-api.
 
 **Repos:** Troshka (`redhat-gpte/troshka`) + reporting-api (`rhpds/demo-reporting`).
 

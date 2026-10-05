@@ -54,6 +54,8 @@ interface Host {
   accepting_work: boolean;
   console_domain: string | null;
   provider_type: string | null;
+  metering_rates: Record<string, number> | null;
+  billing_mode?: "shared" | "dedicated";
 }
 
 export default function AdminHostsPage() {
@@ -347,6 +349,7 @@ export default function AdminHostsPage() {
   const [expectedVersion, setExpectedVersion] = useState("");
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
   const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
+  const [expandedMetering, setExpandedMetering] = useState<Record<string, boolean>>({});
   const [extending, setExtending] = useState<Record<string, boolean>>({});
   const [resizeTarget, setResizeTarget] = useState<Record<string, string>>({});
   const [resizing, setResizing] = useState<Record<string, boolean>>({});
@@ -415,6 +418,40 @@ export default function AdminHostsPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to update auto-extend settings");
+    }
+  };
+
+  const updateMeteringRates = async (
+    hostId: string,
+    meteringRates: Record<string, number> | null
+  ) => {
+    const resp = await fetch(`/api/v1/hosts/${hostId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metering_rates: meteringRates }),
+    });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update metering rates");
+    }
+  };
+
+  const updateBillingMode = async (
+    hostId: string,
+    billingMode: "shared" | "dedicated"
+  ) => {
+    const resp = await fetch(`/api/v1/hosts/${hostId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ billing_mode: billingMode }),
+    });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update billing mode");
     }
   };
 
@@ -1271,6 +1308,14 @@ export default function AdminHostsPage() {
                   )}
                 </>
               )}
+              <Button
+                variant="plain"
+                size="sm"
+                onClick={() => setExpandedMetering({ ...expandedMetering, [h.id]: !expandedMetering[h.id] })}
+                style={{ padding: "2px 6px", fontSize: 11 }}
+              >
+                Rates {expandedMetering[h.id] ? "▲" : "▼"}
+              </Button>
             </CardBody>
             {h.state === "active" && h.agent_status === "connected" && h.auto_extend_enabled && expandedAutoExtend[h.id] && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
@@ -1314,6 +1359,51 @@ export default function AdminHostsPage() {
                       Extend Now (+{h.auto_extend_increment_gb} GB)
                     </Button>
                   </div>
+                </div>
+              </CardBody>
+            )}
+            {expandedMetering[h.id] && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Billing mode</label>
+                  <select
+                    style={{ ...inputStyle, width: 180 }}
+                    value={h.billing_mode || "shared"}
+                    onChange={(e) =>
+                      updateBillingMode(h.id, e.target.value as "shared" | "dedicated")
+                    }
+                  >
+                    <option value="shared">shared (nested factor)</option>
+                    <option value="dedicated">dedicated (full host)</option>
+                  </select>
+                  <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>
+                    Shared: guest CPU/RAM with nested discount. Dedicated: full host hourly whether VMs are running or not.
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  {(["vcpu_hour", "ram_gib_hour", "disk_gib_hour", "eip_hour", "ceph_gib_hour"] as const).map((key) => (
+                    <div key={key}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{key}</label>
+                      <input
+                        style={{ ...inputStyle, width: 100 }}
+                        type="number"
+                        min={0}
+                        step="0.0001"
+                        defaultValue={h.metering_rates?.[key] ?? ""}
+                        placeholder="default"
+                        onBlur={(e) => {
+                          const raw = e.target.value.trim();
+                          const next = { ...(h.metering_rates || {}) };
+                          if (raw === "") {
+                            delete next[key];
+                          } else {
+                            next[key] = Number(raw);
+                          }
+                          updateMeteringRates(h.id, Object.keys(next).length ? next : null);
+                        }}
+                      />
+                    </div>
+                  ))}
                 </div>
               </CardBody>
             )}
