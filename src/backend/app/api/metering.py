@@ -65,18 +65,33 @@ def put_rates(body: RatesBody, user: AdminUser, db: DbSession):
     return merge_rate_maps(load_type_rates(db))
 
 
+def _owner_scope(query, model, user: User):
+    if user.role == "admin":
+        return query
+    return query.filter(model.owner_id == user.id)
+
+
+def _owner_emails(db: Session, owner_ids) -> dict[str, str]:
+    ids = {oid for oid in owner_ids if oid}
+    if not ids:
+        return {}
+    rows = db.query(User).filter(User.id.in_(ids)).all()
+    return {u.id: u.email for u in rows}
+
+
 @router.get("/invoices")
 def list_invoices(
     user: CurrentUser,
     db: DbSession,
-    include_all: bool = Query(False, alias="all"),
 ):
     _require_enabled()
-    q = db.query(ProjectInvoice)
-    if not (include_all and user.role == "admin"):
-        q = q.filter(ProjectInvoice.owner_id == user.id)
+    q = _owner_scope(db.query(ProjectInvoice), ProjectInvoice, user)
     rows = q.order_by(ProjectInvoice.finalized_at.desc()).all()
-    return [_invoice_summary(row) for row in rows]
+    emails = _owner_emails(db, (r.owner_id for r in rows))
+    return [
+        _invoice_summary(row, emails.get(row.owner_id) if row.owner_id else None)
+        for row in rows
+    ]
 
 
 @router.get("/invoices/{invoice_id}")
@@ -87,14 +102,17 @@ def get_invoice(invoice_id: str, user: CurrentUser, db: DbSession):
         raise HTTPException(status_code=404, detail="Invoice not found")
     if row.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    return _invoice_detail(row)
+    emails = _owner_emails(db, [row.owner_id])
+    return _invoice_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
 
-def _invoice_summary(row: ProjectInvoice) -> dict:
+def _invoice_summary(row: ProjectInvoice, owner_email: str | None = None) -> dict:
     return {
         "id": row.id,
         "project_id": row.project_id,
         "project_name": row.project_name,
+        "owner_id": row.owner_id,
+        "owner_email": owner_email,
         "total_usd": float(row.total_usd),
         "currency": row.currency,
         "period_start": row.period_start.isoformat() if row.period_start else None,
@@ -103,10 +121,9 @@ def _invoice_summary(row: ProjectInvoice) -> dict:
     }
 
 
-def _invoice_detail(row: ProjectInvoice) -> dict:
-    data = _invoice_summary(row)
+def _invoice_detail(row: ProjectInvoice, owner_email: str | None = None) -> dict:
+    data = _invoice_summary(row, owner_email)
     data["line_items"] = row.line_items or {}
-    data["owner_id"] = row.owner_id
     return data
 
 
@@ -114,14 +131,19 @@ def _invoice_detail(row: ProjectInvoice) -> dict:
 def list_statements(
     user: CurrentUser,
     db: DbSession,
-    include_all: bool = Query(False, alias="all"),
 ):
     _require_enabled()
-    q = db.query(MonthlyStatement).filter(MonthlyStatement.status == "final")
-    if not (include_all and user.role == "admin"):
-        q = q.filter(MonthlyStatement.owner_id == user.id)
+    q = _owner_scope(
+        db.query(MonthlyStatement).filter(MonthlyStatement.status == "final"),
+        MonthlyStatement,
+        user,
+    )
     rows = q.order_by(MonthlyStatement.period_start.desc()).all()
-    return [_statement_summary(row) for row in rows]
+    emails = _owner_emails(db, (r.owner_id for r in rows))
+    return [
+        _statement_summary(row, emails.get(row.owner_id) if row.owner_id else None)
+        for row in rows
+    ]
 
 
 @router.get("/statements/{statement_id}")
@@ -132,7 +154,8 @@ def get_statement(statement_id: str, user: CurrentUser, db: DbSession):
         raise HTTPException(status_code=404, detail="Statement not found")
     if row.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    return _statement_detail(row)
+    emails = _owner_emails(db, [row.owner_id])
+    return _statement_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
 
 @router.post("/statements/finalize")
@@ -149,10 +172,11 @@ def post_finalize_month(
     return [_statement_summary(row) for row in rows]
 
 
-def _statement_summary(row: MonthlyStatement) -> dict:
+def _statement_summary(row: MonthlyStatement, owner_email: str | None = None) -> dict:
     return {
         "id": row.id,
         "owner_id": row.owner_id,
+        "owner_email": owner_email,
         "period_start": row.period_start.isoformat() if row.period_start else None,
         "period_end": row.period_end.isoformat() if row.period_end else None,
         "total_usd": float(row.total_usd),
@@ -163,8 +187,8 @@ def _statement_summary(row: MonthlyStatement) -> dict:
     }
 
 
-def _statement_detail(row: MonthlyStatement) -> dict:
-    data = _statement_summary(row)
+def _statement_detail(row: MonthlyStatement, owner_email: str | None = None) -> dict:
+    data = _statement_summary(row, owner_email)
     data["line_items"] = row.line_items or {}
     return data
 

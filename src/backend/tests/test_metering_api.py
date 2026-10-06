@@ -1,6 +1,7 @@
 """HTTP tests for metering rates, live spend, invoices, and host overrides."""
 
 import uuid
+from datetime import UTC
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -167,3 +168,153 @@ def test_list_statements_empty_ok():
     resp = client.get("/api/v1/metering/statements")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+def _add_user(email: str, role: str = "user") -> User:
+    db = TestSession()
+    row = User(email=email, role=role, display_name=email.split("@")[0])
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    uid, urole, uemail = row.id, row.role, row.email
+    db.close()
+    user = User(id=uid, email=uemail, role=urole)
+    user.id = uid
+    user.email = uemail
+    user.role = urole
+    return user
+
+
+def _as_user(user: User):
+    from app.core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: user
+
+
+def _clear_user_override():
+    from app.core.auth import get_current_user
+
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def _add_invoice(owner_id: str, name: str, total: float = 1.25) -> str:
+    from datetime import datetime
+
+    from app.models.metering import ProjectInvoice
+
+    db = TestSession()
+    now = datetime.now(UTC)
+    row = ProjectInvoice(
+        project_id=str(uuid.uuid4()),
+        project_name=name,
+        owner_id=owner_id,
+        total_usd=total,
+        line_items={"by_kind": [{"kind": "vcpu", "qty_hours": 1, "subtotal": total}]},
+        period_start=now,
+        period_end=now,
+        finalized_at=now,
+    )
+    db.add(row)
+    db.commit()
+    iid = row.id
+    db.close()
+    return iid
+
+
+def _add_statement(owner_id: str, total: float = 4.0) -> str:
+    from datetime import datetime
+
+    from app.models.metering import MonthlyStatement
+
+    db = TestSession()
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    row = MonthlyStatement(
+        owner_id=owner_id,
+        period_start=start,
+        period_end=datetime(2026, 10, 1, tzinfo=UTC),
+        total_usd=total,
+        line_items={
+            "by_project": [
+                {
+                    "project_id": str(uuid.uuid4()),
+                    "project_name": "lab",
+                    "subtotal": total,
+                    "by_kind": [{"kind": "vcpu", "qty_hours": 1, "subtotal": total}],
+                }
+            ]
+        },
+        status="final",
+        finalized_at=datetime.now(UTC),
+    )
+    db.add(row)
+    db.commit()
+    sid = row.id
+    db.close()
+    return sid
+
+
+def test_users_cannot_list_each_others_invoices():
+    alice = _add_user("alice-meter@example.com")
+    bob = _add_user("bob-meter@example.com")
+    alice_inv = _add_invoice(alice.id, "alice-lab")
+    bob_inv = _add_invoice(bob.id, "bob-lab")
+    try:
+        _as_user(alice)
+        listed = client.get("/api/v1/metering/invoices")
+        assert listed.status_code == 200
+        ids = {row["id"] for row in listed.json()}
+        assert alice_inv in ids
+        assert bob_inv not in ids
+        assert client.get(f"/api/v1/metering/invoices/{bob_inv}").status_code == 403
+        leaked = client.get("/api/v1/metering/invoices?all=true")
+        assert bob_inv not in {row["id"] for row in leaked.json()}
+    finally:
+        _clear_user_override()
+
+
+def test_users_cannot_list_each_others_statements():
+    alice = _add_user("alice-stmt@example.com")
+    bob = _add_user("bob-stmt@example.com")
+    alice_stmt = _add_statement(alice.id)
+    bob_stmt = _add_statement(bob.id)
+    try:
+        _as_user(alice)
+        listed = client.get("/api/v1/metering/statements")
+        assert listed.status_code == 200
+        ids = {row["id"] for row in listed.json()}
+        assert alice_stmt in ids
+        assert bob_stmt not in ids
+        assert client.get(f"/api/v1/metering/statements/{bob_stmt}").status_code == 403
+    finally:
+        _clear_user_override()
+
+
+def test_admin_lists_all_users_metering():
+    owner = _add_user("owner-meter@example.com")
+    admin = _add_user("admin-meter@example.com", role="admin")
+    inv = _add_invoice(owner.id, "owned-lab", total=9.5)
+    stmt = _add_statement(owner.id, total=9.5)
+    try:
+        _as_user(admin)
+        invoices = client.get("/api/v1/metering/invoices")
+        assert invoices.status_code == 200
+        inv_row = next(r for r in invoices.json() if r["id"] == inv)
+        assert inv_row["owner_email"] == owner.email
+        statements = client.get("/api/v1/metering/statements")
+        assert statements.status_code == 200
+        stmt_row = next(r for r in statements.json() if r["id"] == stmt)
+        assert stmt_row["owner_email"] == owner.email
+    finally:
+        _clear_user_override()
+
+
+def test_operator_does_not_see_other_users_invoices():
+    owner = _add_user("op-owner-meter@example.com")
+    operator = _add_user("operator-meter@example.com", role="operator")
+    inv = _add_invoice(owner.id, "not-the-operator")
+    try:
+        _as_user(operator)
+        ids = {row["id"] for row in client.get("/api/v1/metering/invoices").json()}
+        assert inv not in ids
+    finally:
+        _clear_user_override()

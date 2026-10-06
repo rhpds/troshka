@@ -25,6 +25,8 @@ interface InvoiceRow {
   id: string;
   project_id: string;
   project_name: string;
+  owner_id?: string | null;
+  owner_email?: string | null;
   total_usd: number;
   currency: string;
   period_start?: string | null;
@@ -36,10 +38,13 @@ interface ProjectRow {
   name: string;
   state: string;
   created_at?: string | null;
+  owner_id?: string | null;
+  owner_email?: string | null;
 }
 
 interface MeteringFilters {
   name: string;
+  user: string;
   startFrom: string;
   startTo: string;
   finalFrom: string;
@@ -50,6 +55,7 @@ interface MeteringFilters {
 
 const EMPTY_FILTERS: MeteringFilters = {
   name: "",
+  user: "",
   startFrom: "",
   startTo: "",
   finalFrom: "",
@@ -81,6 +87,8 @@ interface StatementRow {
   currency: string;
   finalized_at: string | null;
   project_count: number;
+  owner_id?: string | null;
+  owner_email?: string | null;
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -165,6 +173,93 @@ function monthLabel(iso: string | null): string {
   return d.toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
+function csvCell(value: string | number | null | undefined): string {
+  if (value == null || value === "") return "";
+  const s = typeof value === "number" ? String(value) : String(value);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(
+  filename: string,
+  header: string[],
+  rows: Array<Array<string | number | null | undefined>>
+) {
+  const body = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF" + body + "\r\n"], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function parseStatementProjects(data: {
+  line_items?: { by_project?: ProjectMonthLine[] };
+}): ProjectMonthLine[] {
+  return Array.isArray(data.line_items?.by_project)
+    ? data.line_items.by_project
+    : [];
+}
+
+const INVOICE_CSV_HEADER = [
+  "Month",
+  "Owner",
+  "Period start",
+  "Project",
+  "Kind",
+  "Rate",
+  "Hours",
+  "Line subtotal",
+  "Invoice total",
+  "Finalized",
+];
+
+function invoiceExportRows(
+  stmt: StatementRow,
+  projects: ProjectMonthLine[],
+  nameQ: string
+): Array<Array<string | number | null | undefined>> {
+  const month = monthLabel(stmt.period_start);
+  const visible = nameQ
+    ? projects.filter((p) => p.project_name.toLowerCase().includes(nameQ))
+    : projects;
+  const rows: Array<Array<string | number | null | undefined>> = [];
+  const push = (projectName: string, item: LineItem | null, lineTotal: number) => {
+    const rate = item ? effectiveRate(item) : null;
+    rows.push([
+      month,
+      stmt.owner_email || "",
+      stmt.period_start || "",
+      projectName,
+      item ? kindLabel(item.kind) : "",
+      rate != null ? rate : "",
+      item ? (item.hours ?? item.qty_hours) : "",
+      lineTotal,
+      stmt.total_usd,
+      stmt.finalized_at || "",
+    ]);
+  };
+  if (!visible.length) {
+    push("", null, stmt.total_usd);
+    return rows;
+  }
+  for (const proj of visible) {
+    const kinds = proj.by_kind || [];
+    if (!kinds.length) {
+      push(proj.project_name, null, proj.subtotal);
+      continue;
+    }
+    for (const item of kinds) {
+      push(proj.project_name, item, item.subtotal);
+    }
+  }
+  return rows;
+}
+
 function dayStartMs(ymd: string): number {
   return new Date(`${ymd}T00:00:00`).getTime();
 }
@@ -211,6 +306,7 @@ function matchRow(
   f: MeteringFilters,
   opts: {
     name: string;
+    user?: string | null;
     total?: number | null;
     start?: string | null;
     final?: string | null;
@@ -218,6 +314,7 @@ function matchRow(
 ): boolean {
   return (
     nameMatches(opts.name, f.name) &&
+    nameMatches(opts.user || "", f.user) &&
     inTotalRange(opts.total, f.totalMin, f.totalMax) &&
     inDateRange(opts.start, f.startFrom, f.startTo) &&
     inDateRange(opts.final, f.finalFrom, f.finalTo)
@@ -299,10 +396,12 @@ function MeteringFilterBar({
   filters,
   onChange,
   onClear,
+  showUser,
 }: {
   filters: MeteringFilters;
   onChange: (next: MeteringFilters) => void;
   onClear: () => void;
+  showUser?: boolean;
 }) {
   const set = (key: keyof MeteringFilters, value: string) =>
     onChange({ ...filters, [key]: value });
@@ -325,6 +424,17 @@ function MeteringFilterBar({
           placeholder="Contains…"
         />
       </label>
+      {showUser && (
+        <label style={{ ...filterLabelStyle, flex: "1 1 180px" }}>
+          User
+          <input
+            style={filterInputStyle}
+            value={filters.user}
+            onChange={(e) => set("user", e.target.value)}
+            placeholder="Email contains…"
+          />
+        </label>
+      )}
       <label style={filterLabelStyle}>
         Started from
         <input
@@ -430,6 +540,8 @@ function MeteringPageInner() {
   >({});
   const [filters, setFilters] = useState<MeteringFilters>(EMPTY_FILTERS);
   const [sortByTab, setSortByTab] = useState(DEFAULT_SORT);
+  const [exporting, setExporting] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const sort = sortByTab[tab];
   const setSortCol = (col: string) => {
     setSortByTab((prev) => {
@@ -437,10 +549,25 @@ function MeteringPageInner() {
       if (cur.key === col) {
         return { ...prev, [tab]: { key: col, dir: cur.dir === "asc" ? "desc" : "asc" } };
       }
-      const defaultDesc = ["spend", "total", "budget", "finalized", "started", "month", "projects"].includes(col);
+      const defaultDesc = [
+        "spend",
+        "total",
+        "budget",
+        "finalized",
+        "started",
+        "month",
+        "projects",
+      ].includes(col);
       return { ...prev, [tab]: { key: col, dir: defaultDesc ? "desc" : "asc" } };
     });
   };
+
+  useEffect(() => {
+    fetch("/api/v1/auth/me")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d: { role?: string }) => setIsAdmin(d.role === "admin"))
+      .catch(() => setIsAdmin(false));
+  }, []);
 
   useEffect(() => {
     fetch("/api/v1/metering/statements")
@@ -533,11 +660,7 @@ function MeteringPageInner() {
       const data = await r.json();
       setStatementDetails((prev) => ({
         ...prev,
-        [id]: {
-          by_project: Array.isArray(data.line_items?.by_project)
-            ? data.line_items.by_project
-            : [],
-        },
+        [id]: { by_project: parseStatementProjects(data) },
       }));
     } catch (e) {
       setStatementDetails((prev) => ({
@@ -605,12 +728,17 @@ function MeteringPageInner() {
     display: "inline-flex",
     alignItems: "center",
   };
+  const ownerTh = isAdmin ? (
+    <SortableTh label="Owner" col="owner" sort={sort} onSort={setSortCol} style={th} />
+  ) : null;
+  const rowColSpan = isAdmin ? 6 : 5;
 
   // Active rows have created_at as "Started"; finalized does not apply.
   const filteredActive = active
     .filter(
       (row) =>
         nameMatches(row.name, filters.name) &&
+        nameMatches(row.owner_email || "", filters.user) &&
         inTotalRange(row.spend?.total_usd, filters.totalMin, filters.totalMax) &&
         inDateRange(row.created_at, filters.startFrom, filters.startTo)
     )
@@ -624,6 +752,9 @@ function MeteringPageInner() {
       if (key === "budget") {
         return compareSortValues(a.spend?.budget_usd, b.spend?.budget_usd, sortByTab.active.dir);
       }
+      if (key === "owner") {
+        return compareSortValues(a.owner_email, b.owner_email, sortByTab.active.dir);
+      }
       return compareSortValues(a.name, b.name, sortByTab.active.dir);
     });
 
@@ -631,6 +762,7 @@ function MeteringPageInner() {
     .filter((row) =>
       matchRow(filters, {
         name: row.project_name,
+        user: row.owner_email,
         total: row.total_usd,
         start: row.period_start,
         final: row.finalized_at,
@@ -646,15 +778,20 @@ function MeteringPageInner() {
       if (key === "finalized") {
         return compareSortValues(a.finalized_at, b.finalized_at, sortByTab.past.dir);
       }
+      if (key === "owner") {
+        return compareSortValues(a.owner_email, b.owner_email, sortByTab.past.dir);
+      }
       return compareSortValues(a.project_name, b.project_name, sortByTab.past.dir);
     });
 
   const nameQ = filters.name.trim().toLowerCase();
+  const userQ = filters.user.trim().toLowerCase();
   const filteredStatements = statements
     .filter((row) => {
       if (!inTotalRange(row.total_usd, filters.totalMin, filters.totalMax)) return false;
       if (!inDateRange(row.period_start, filters.startFrom, filters.startTo)) return false;
       if (!inDateRange(row.finalized_at, filters.finalFrom, filters.finalTo)) return false;
+      if (userQ && !(row.owner_email || "").toLowerCase().includes(userQ)) return false;
       if (!nameQ) return true;
       const detail = statementDetails[row.id];
       if (!detail || detail.loading || detail.error) return false;
@@ -674,6 +811,9 @@ function MeteringPageInner() {
       if (key === "finalized") {
         return compareSortValues(a.finalized_at, b.finalized_at, sortByTab.invoices.dir);
       }
+      if (key === "owner") {
+        return compareSortValues(a.owner_email, b.owner_email, sortByTab.invoices.dir);
+      }
       return compareSortValues(a.period_start, b.period_start, sortByTab.invoices.dir);
     });
 
@@ -681,6 +821,35 @@ function MeteringPageInner() {
   const statementsNamePending =
     !!nameQ &&
     statements.some((s) => !statementDetails[s.id] || statementDetails[s.id]?.loading);
+
+  const exportInvoicesCsv = async () => {
+    if (!filteredStatements.length || exporting) return;
+    setExporting(true);
+    try {
+      const rows: Array<Array<string | number | null | undefined>> = [];
+      for (const stmt of filteredStatements) {
+        const cached = statementDetails[stmt.id];
+        let projects: ProjectMonthLine[];
+        if (cached && !cached.loading && !cached.error) {
+          projects = cached.by_project;
+        } else {
+          const r = await fetch(`/api/v1/metering/statements/${stmt.id}`);
+          if (!r.ok) throw new Error("Failed to load statement");
+          projects = parseStatementProjects(await r.json());
+          setStatementDetails((prev) => ({
+            ...prev,
+            [stmt.id]: { by_project: projects },
+          }));
+        }
+        rows.push(...invoiceExportRows(stmt, projects, nameQ));
+      }
+      downloadCsv("troshka-invoices.csv", INVOICE_CSV_HEADER, rows);
+    } catch {
+      setError("Failed to export invoices");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <PageSection>
@@ -709,14 +878,24 @@ function MeteringPageInner() {
         filters={filters}
         onChange={setFilters}
         onClear={() => setFilters(EMPTY_FILTERS)}
+        showUser={isAdmin}
       />
       {error && <Alert variant="danger" title={error} />}
       {tab === "invoices" && (
         <Card>
           <CardBody>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+              <Button
+                variant="secondary"
+                onClick={() => void exportInvoicesCsv()}
+                isDisabled={filteredStatements.length === 0 || exporting || statementsNamePending}
+              >
+                {exporting ? "Exporting…" : "Export CSV"}
+              </Button>
+            </div>
             {statements.length === 0 ? (
               <div style={{ opacity: 0.7 }}>
-                No monthly invoices yet. They freeze after each UTC month closes (or when an admin finalizes).
+                No monthly invoices yet.
               </div>
             ) : statementsNamePending && filteredStatements.length === 0 ? (
               <div style={{ opacity: 0.7 }}>Loading project names…</div>
@@ -728,6 +907,7 @@ function MeteringPageInner() {
                   <tr style={{ textAlign: "left" }}>
                     <th style={{ ...th, width: 36 }} />
                     <SortableTh label="Month" col="month" sort={sort} onSort={setSortCol} style={th} />
+                    {ownerTh}
                     <SortableTh label="Projects" col="projects" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Total" col="total" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Finalized" col="finalized" sort={sort} onSort={setSortCol} style={th} />
@@ -760,6 +940,7 @@ function MeteringPageInner() {
                             </button>
                           </td>
                           <td style={td}>{monthLabel(row.period_start)}</td>
+                          {isAdmin && <td style={td}>{row.owner_email || "—"}</td>}
                           <td style={td}>{row.project_count}</td>
                           <td style={td}>{money(row.total_usd)}</td>
                           <td style={td}>
@@ -770,7 +951,7 @@ function MeteringPageInner() {
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={5} style={{ padding: "4px 8px 12px 40px" }}>
+                            <td colSpan={rowColSpan} style={{ padding: "4px 8px 12px 40px" }}>
                               {detail?.loading && (
                                 <div style={{ opacity: 0.65, fontSize: 13 }}>Loading…</div>
                               )}
@@ -807,6 +988,7 @@ function MeteringPageInner() {
                   <tr style={{ textAlign: "left" }}>
                     <th style={{ ...th, width: 36 }} />
                     <SortableTh label="Project" col="name" sort={sort} onSort={setSortCol} style={th} />
+                    {ownerTh}
                     <SortableTh label="State" col="state" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Spend" col="spend" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Budget" col="budget" sort={sort} onSort={setSortCol} style={th} />
@@ -852,6 +1034,7 @@ function MeteringPageInner() {
                               {row.name}
                             </button>
                           </td>
+                          {isAdmin && <td style={td}>{row.owner_email || "—"}</td>}
                           <td style={td}>{row.state}</td>
                           <td style={td}>
                             {row.spend ? money(row.spend.total_usd) : "—"}
@@ -864,7 +1047,7 @@ function MeteringPageInner() {
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={5} style={{ padding: "4px 8px 12px 40px" }}>
+                            <td colSpan={rowColSpan} style={{ padding: "4px 8px 12px 40px" }}>
                               <BreakdownTable items={items} />
                             </td>
                           </tr>
@@ -891,6 +1074,7 @@ function MeteringPageInner() {
                   <tr style={{ textAlign: "left" }}>
                     <th style={{ ...th, width: 36 }} />
                     <SortableTh label="Project" col="name" sort={sort} onSort={setSortCol} style={th} />
+                    {ownerTh}
                     <SortableTh label="Total" col="total" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Started" col="started" sort={sort} onSort={setSortCol} style={th} />
                     <SortableTh label="Finalized" col="finalized" sort={sort} onSort={setSortCol} style={th} />
@@ -936,6 +1120,7 @@ function MeteringPageInner() {
                               {row.project_name}
                             </button>
                           </td>
+                          {isAdmin && <td style={td}>{row.owner_email || "—"}</td>}
                           <td style={td}>{money(row.total_usd)}</td>
                           <td style={td}>
                             {row.period_start
@@ -950,7 +1135,7 @@ function MeteringPageInner() {
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={5} style={{ padding: "4px 8px 12px 40px" }}>
+                            <td colSpan={rowColSpan} style={{ padding: "4px 8px 12px 40px" }}>
                               {detail?.loading && (
                                 <div style={{ opacity: 0.65, fontSize: 13 }}>Loading…</div>
                               )}
