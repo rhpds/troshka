@@ -495,7 +495,14 @@ export default function ProjectCanvasPage() {
       }
     }
     fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-      .then(() => setProjectState("stopping"));
+      .then(() => {
+        // Pause finalizes back to "active" via WS (project never reaches
+        // "stopped"); setting "stopping" here optimistically can lose a
+        // race with that WS update and get stuck. stop/hibernate both
+        // finalize to "stopped", so the optimistic transition is safe and
+        // matches the backend's own synchronous state write.
+        if (offAction !== "pause") setProjectState("stopping");
+      });
   };
 
   // REST fallback: poll deploy progress when WS isn't delivering updates
@@ -1568,8 +1575,17 @@ export default function ProjectCanvasPage() {
                 <button
                   className="project-stop-btn"
                   aria-label="Choose off mode"
-                  style={{ padding: "5px 8px", borderRadius: "0 6px 6px 0" }}
-                  onClick={() => setShowOffMenu((v) => !v)}
+                  disabled={disruptiveActionsDisabled}
+                  title={disruptiveDisabledTitle}
+                  style={{
+                    ...(disruptiveActionsDisabled ? { opacity: 0.4, cursor: "not-allowed" } : {}),
+                    padding: "5px 8px",
+                    borderRadius: "0 6px 6px 0",
+                  }}
+                  onClick={() => {
+                    if (disruptiveActionsDisabled) return;
+                    setShowOffMenu((v) => !v);
+                  }}
                 >
                   ▾
                 </button>
