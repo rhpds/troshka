@@ -305,3 +305,47 @@ def test_diff_missed_stop_and_new_disk():
     assert ("vcpu", "vm1", 2.0) in to_close
     assert any(row[0] == "disk" and row[1] == "d2" for row in to_open)
     assert not any(row[1] == "d1" and row[0] == "disk" for row in to_open)
+
+
+def test_desired_paused_vm_still_bills_cpu_ram():
+    got = desired_resources(
+        {
+            "provider_type": "libvirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 4,
+                    "ram_gib": 8,
+                    "live_state": "paused",
+                }
+            ],
+            "disks": [{"id": "d1", "size_gib": 80, "host_id": "h1"}],
+        }
+    )
+    assert ("vcpu", "vm1", 4.0, "h1", "libvirt") in got
+    assert ("ram", "vm1", 8.0, "h1", "libvirt") in got
+    assert ("disk", "d1", 80.0, "h1", "libvirt") in got
+
+
+def test_desired_hibernated_vm_skips_cpu_ram_keeps_disk():
+    got = desired_resources(
+        {
+            "provider_type": "libvirt",
+            "host_id": "h1",
+            "project_state": "active",
+            "vms": [
+                {
+                    "id": "vm1",
+                    "vcpus": 4,
+                    "ram_gib": 8,
+                    "live_state": "hibernated",
+                }
+            ],
+            "disks": [{"id": "d1", "size_gib": 80, "host_id": "h1"}],
+        }
+    )
+    kinds = {row[0] for row in got if row[1] == "vm1"}
+    assert "vcpu" not in kinds and "ram" not in kinds
+    assert ("disk", "d1", 80.0, "h1", "libvirt") in got

@@ -172,8 +172,10 @@ def period_usage(
     return total, lines
 
 
-_RUNNING_STATES = frozenset({"running", "active", "on"})
-_STOPPED_STATES = frozenset({"stopped", "shutoff", "off", "halted", "paused"})
+_RUNNING_STATES = frozenset({"running", "active", "on", "paused"})
+_STOPPED_STATES = frozenset(
+    {"stopped", "shutoff", "off", "halted", "hibernated", "shut_off"}
+)
 
 
 def _state_running(value) -> bool | None:
