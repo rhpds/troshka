@@ -327,8 +327,8 @@ class TestExportHelpers:
         assert entry["recert"] is True
         assert entry["ocp_monitor"] is True
         assert entry["configure_bastion_browser"] is True
-        assert entry["control_plane_disks"] == [{"sizeGb": 120}]
-        assert entry["worker_disks"] == [{"sizeGb": 100}]
+        assert entry["control_plane_disks"] == [{"size_gb": 120}]
+        assert entry["worker_disks"] == [{"size_gb": 100}]
 
     def test_export_one_ocp_cluster_networks(self):
         cluster = {

@@ -247,8 +247,8 @@ def test_create_pattern_capture_clock_target(mock_enqueue):
 @patch("app.services.template_loader.export_topology_to_template")
 def test_export_template_success(mock_export):
     mock_export.return_value = {
-        "vms": [{"name": "web", "vcpus": 2, "ram": 4096}],
-        "networks": [{"name": "mgmt", "cidr": "10.0.1.0/24"}],
+        "vms": {"web": {"vcpus": 2, "ram_gb": 4}},
+        "networks": {"mgmt": {"cidr": "10.0.1.0/24"}},
     }
     pid = _create_pattern("Export Template Cov")
     resp = client.get(f"/api/v1/patterns/{pid}/export-template", headers=HEADERS)

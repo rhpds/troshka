@@ -150,6 +150,9 @@
           "maxItems": 256,
           "items": { "$ref": "#/$defs/dnsRecord" }
         },
+        "dns_upstream": { "type": "boolean" },
+        "bmc_username": { "type": "string", "maxLength": 128 },
+        "bmc_password": { "type": "string", "maxLength": 256 },
         "dhcpRangeStart": { "$ref": "#/$defs/ipAddress" },
         "dhcpRangeEnd": { "$ref": "#/$defs/ipAddress" },
         "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 }
@@ -202,6 +205,8 @@
         "bmc": { "type": "boolean" },
         "bmc_ip": { "$ref": "#/$defs/ipAddress" },
         "recert": { "type": "boolean" },
+        "ocp_monitor": { "type": "boolean" },
+        "configure_bastion_browser": { "type": "boolean" },
         "nested_virt": { "type": "boolean" },
         "nestedVirt": { "type": "boolean" },
         "power_on": { "type": "boolean" },
@@ -231,6 +236,7 @@
           ]
         },
         "serial_only": { "type": "boolean" },
+        "secure_boot": { "type": "boolean" },
         "headless": { "type": "boolean" },
         "machine_type": { "type": "string", "maxLength": 64 },
         "machineType": { "type": "string", "maxLength": 64 },
@@ -430,7 +436,11 @@
           "type": "array",
           "maxItems": 16,
           "items": { "$ref": "#/$defs/ocpClusterDisk" }
-        }
+        },
+        "recert": { "type": "boolean" },
+        "ocp_monitor": { "type": "boolean" },
+        "configure_bastion_browser": { "type": "boolean" },
+        "pull_through_registry": { "type": "object", "additionalProperties": true }
       }
     },
     "outboundPort": {

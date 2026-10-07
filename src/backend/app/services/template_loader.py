@@ -2503,6 +2503,34 @@ def _build_nic_to_net_map(
     return nic_to_net
 
 
+def _export_dns_record(rec: dict) -> dict | None:
+    """Emit only schema-allowed dns_records fields (name/ip/target)."""
+    if not isinstance(rec, dict):
+        return None
+    item: dict = {}
+    if rec.get("name") is not None:
+        item["name"] = rec["name"]
+    if rec.get("ip") is not None:
+        item["ip"] = rec["ip"]
+    if rec.get("target") is not None:
+        item["target"] = rec["target"]
+    return item if item.get("name") else None
+
+
+def _export_dns_records(records) -> list[dict]:
+    out: list[dict] = []
+    for rec in records or []:
+        item = _export_dns_record(rec)
+        if item:
+            out.append(item)
+    return out
+
+
+def sanitize_template_dns_records(records) -> list[dict]:
+    """Public helper: keep only schema-allowed dns_records fields."""
+    return _export_dns_records(records)
+
+
 def _export_single_network(d):
     net_out = {}
     if d.get("cidr"):
@@ -2512,7 +2540,7 @@ def _export_single_network(d):
     if d.get("dnsDomain"):
         net_out["domain"] = d["dnsDomain"]
     if d.get("dnsRecords"):
-        net_out["dns_records"] = d["dnsRecords"]
+        net_out["dns_records"] = _export_dns_records(d["dnsRecords"])
     if d.get("dnsUpstream"):
         net_out["dns_upstream"] = True
     if d.get("networkType") == "bmc":
@@ -3126,10 +3154,10 @@ _OCP_EXPORT_FIELDS = [
     ("workers", "workers"),
     ("controlPlaneCpu", "control_plane_cpu"),
     ("controlPlaneMemory", "control_plane_memory"),
-    ("controlPlaneDisk", "control_plane_disk"),
+    # Legacy scalar control_plane_disk / worker_disk are not in the template
+    # schema — disk lists below are the supported shape.
     ("workerCpu", "worker_cpu"),
     ("workerMemory", "worker_memory"),
-    ("workerDisk", "worker_disk"),
     ("ocpVersion", "ocp_version"),
     ("ocpDistribution", "distribution"),
     ("pullThroughRegistry", "pull_through_registry"),
@@ -3158,6 +3186,28 @@ def _copy_ocp_export_fields(cluster, entry):
         entry[dst] = val
 
 
+def _normalize_export_cluster_disk(disk: dict) -> dict:
+    """Map topology camelCase disk dicts to schema snake_case (size_gb, …)."""
+    out: dict = {}
+    size = disk.get("size_gb", disk.get("sizeGb"))
+    if size is not None:
+        out["size_gb"] = size
+    if disk.get("bootable"):
+        out["bootable"] = True
+    mount = disk.get("ocp_mount", disk.get("ocpMount"))
+    if mount:
+        out["ocp_mount"] = mount
+    return out
+
+
+def _normalize_export_cluster_disks(disks) -> list[dict]:
+    return [
+        _normalize_export_cluster_disk(d)
+        for d in (disks or [])
+        if isinstance(d, dict) and _normalize_export_cluster_disk(d)
+    ]
+
+
 def _export_ocp_cluster_flags_and_disks(cluster, entry):
     """Export cluster-level OCP flags and per-role disk lists when set."""
     if cluster.get("recert"):
@@ -3167,9 +3217,11 @@ def _export_ocp_cluster_flags_and_disks(cluster, entry):
     if cluster.get("configureBastionBrowser"):
         entry["configure_bastion_browser"] = True
     if cluster.get("controlPlaneDisks"):
-        entry["control_plane_disks"] = cluster["controlPlaneDisks"]
+        entry["control_plane_disks"] = _normalize_export_cluster_disks(
+            cluster["controlPlaneDisks"]
+        )
     if cluster.get("workerDisks"):
-        entry["worker_disks"] = cluster["workerDisks"]
+        entry["worker_disks"] = _normalize_export_cluster_disks(cluster["workerDisks"])
 
 
 def _export_one_ocp_cluster(cluster, net_id_to_name):

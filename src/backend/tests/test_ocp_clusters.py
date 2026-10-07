@@ -1711,8 +1711,8 @@ def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
     # Verify the export contains control_plane_disks and networks
     assert "control_plane_disks" in ocp_entry
     assert ocp_entry["control_plane_disks"] == [
-        {"sizeGb": 120, "bootable": True},
-        {"sizeGb": 100},
+        {"size_gb": 120, "bootable": True},
+        {"size_gb": 100},
     ]
     assert "networks" in ocp_entry
     assert set(ocp_entry["networks"]) == {"cluster", "data"}

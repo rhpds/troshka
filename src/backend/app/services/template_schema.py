@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 _SCHEMA_FILENAME = "troshka-template.schema.json"
 # Soft cap on serialized document size (defense against oversized import payloads).
 _MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+_ADDITIONAL_PROPS_RE = re.compile(
+    r"Additional properties are not allowed \((.+) (?:was|were) unexpected\)"
+)
+_QUOTED_KEY_RE = re.compile(r"'([^']+)'")
 
 
 class TemplateSchemaError(ValueError):
@@ -68,6 +74,24 @@ def _json_pointer(path_parts: list[Any]) -> str:
         text = text.replace("~", "~0").replace("/", "~1")
         escaped.append(text)
     return "/" + "/".join(escaped)
+
+
+def _humanize_validation_message(message: str) -> str:
+    """Turn jsonschema additionalProperties noise into 'unknown keys: …'."""
+    match = _ADDITIONAL_PROPS_RE.search(message)
+    if not match:
+        return message
+    keys = _QUOTED_KEY_RE.findall(match.group(1))
+    if not keys:
+        return message
+    return "unknown keys: " + ", ".join(keys)
+
+
+def _format_validation_error(err: ValidationError) -> dict[str, str]:
+    return {
+        "path": _json_pointer(list(err.absolute_path)),
+        "message": _humanize_validation_message(err.message),
+    }
 
 
 def _prepare_document(doc: dict[str, Any]) -> dict[str, Any]:
@@ -122,14 +146,11 @@ def validate_template_document(doc: Any) -> dict[str, Any]:
     validator = Draft202012Validator(schema)
     errors: list[dict[str, str]] = []
     for err in sorted(validator.iter_errors(prepared), key=lambda e: list(e.path)):
-        errors.append(
-            {
-                "path": _json_pointer(list(err.absolute_path)),
-                "message": err.message,
-            }
-        )
+        errors.append(_format_validation_error(err))
     if errors:
         summary = errors[0]["message"]
+        if errors[0].get("path") and errors[0]["path"] != "/":
+            summary = f"{errors[0]['path']}: {summary}"
         if len(errors) > 1:
             summary = f"{summary} (and {len(errors) - 1} more)"
         raise TemplateSchemaError(
@@ -147,11 +168,55 @@ def schema_validation_detail(exc: TemplateSchemaError) -> dict[str, Any]:
     }
 
 
+def slugify_template_name(name: str, *, fallback: str = "template") -> str:
+    """Make a human project/pattern name valid for template ``name`` (id)."""
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", (name or "").strip())
+    cleaned = cleaned.strip("-._")
+    if not cleaned:
+        cleaned = fallback
+    if not re.match(r"^[a-zA-Z0-9]", cleaned):
+        cleaned = f"{fallback}-{cleaned}"
+    if not _NAME_PATTERN.match(cleaned):
+        cleaned = fallback
+    return cleaned[:128]
+
+
+def apply_export_identity(doc: dict[str, Any], *, title: str, description: str = ""):
+    """Set schema-valid ``name`` + human ``display_name`` from a project title."""
+    title = (title or "").strip() or "template"
+    doc["display_name"] = title[:256]
+    doc["name"] = slugify_template_name(title)
+    if description:
+        doc["description"] = description
+
+
+def export_has_template_content(doc: dict[str, Any]) -> bool:
+    """True when export has schema-required sections worth validating."""
+    # Schema requires both vms and networks; skip incomplete/legacy stubs
+    # (empty draft, ocpMeta-only) so blank-project export keeps working.
+    return bool(doc.get("vms")) and bool(doc.get("networks"))
+
+
+def ensure_exported_template_valid(doc: dict[str, Any]) -> dict[str, Any]:
+    """Validate a fully built export document; raise TemplateSchemaError if invalid.
+
+    Empty or incomplete drafts skip validation so blank-project / ocpMeta-only
+    exports keep working.
+    """
+    if not export_has_template_content(doc):
+        return doc
+    return validate_template_document(doc)
+
+
 # Re-export for callers that catch ValidationError directly.
 __all__ = [
     "TemplateSchemaError",
     "ValidationError",
+    "apply_export_identity",
+    "ensure_exported_template_valid",
+    "export_has_template_content",
     "load_template_schema",
     "schema_validation_detail",
+    "slugify_template_name",
     "validate_template_document",
 ]

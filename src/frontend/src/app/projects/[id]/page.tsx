@@ -37,6 +37,7 @@ import {
   type OcpClusterStatus,
   type OcpRedeployMode,
 } from "@/lib/redeployOcp";
+import { formatApiDetail } from "@/lib/apiError";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
@@ -2019,7 +2020,7 @@ export default function ProjectCanvasPage() {
               </div>
             </div>
             {importError && (
-              <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8 }}>
+              <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
                 {importError}
               </div>
             )}
@@ -2075,7 +2076,7 @@ export default function ProjectCanvasPage() {
                     });
                     if (!resp.ok) {
                       const err = await resp.json().catch(() => ({ detail: "Import failed" }));
-                      setImportError(err.detail || "Import failed");
+                      setImportError(formatApiDetail(err.detail, "Import failed"));
                       setImporting(false);
                       return;
                     }

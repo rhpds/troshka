@@ -952,7 +952,7 @@ def _validate_template_topology_or_raise(topology) -> list:
     return infra_ip_overlap_warnings(topology)
 
 
-@router.post("/from-template", status_code=201, responses={400: {}, 404: {}})
+@router.post("/from-template", status_code=201, responses={400: {}, 404: {}, 409: {}})
 def create_project_from_template(
     body: dict,
     user: CurrentUser,
@@ -960,8 +960,17 @@ def create_project_from_template(
 ):
     from app.services.template_loader import generate_topology_from_template
 
+    # Schema / template resolve first — never create a project row on failure.
     resolved, template_id = _resolve_template_source(body)
     _apply_template_ocp_body_defaults(body, resolved)
+
+    project_name = body.get("name") or resolved.get("display_name") or template_id
+    existing = db.query(Project).filter_by(owner_id=user.id, name=project_name).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f'You already have a project named "{project_name}"',
+        )
 
     common_password = body.get("common_password", "")
     external_access = body.get("external_access", False)
@@ -1024,7 +1033,7 @@ def create_project_from_template(
     warnings = _validate_template_topology_or_raise(topology)
 
     project = Project(
-        name=body.get("name", resolved.get("display_name", template_id)),
+        name=project_name,
         description=_template_project_description(body, resolved),
         owner_id=user.id,
         topology=topology,
@@ -1318,7 +1327,16 @@ def export_template(
     db: DbSession,
     body: dict | None = None,
 ):
-    from app.services.template_loader import export_topology_to_template
+    from app.services.template_loader import (
+        export_topology_to_template,
+        sanitize_template_dns_records,
+    )
+    from app.services.template_schema import (
+        TemplateSchemaError,
+        apply_export_identity,
+        ensure_exported_template_valid,
+        schema_validation_detail,
+    )
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
@@ -1328,9 +1346,9 @@ def export_template(
 
     topo = project.topology or {}
     result = export_topology_to_template(topo, db=db)
-    result["name"] = project.name
-    if project.description:
-        result["description"] = project.description
+    apply_export_identity(
+        result, title=project.name or "template", description=project.description or ""
+    )
     if project.clock_target:
         result["clock_target"] = project.clock_target.isoformat()
 
@@ -1341,13 +1359,15 @@ def export_template(
         ocp_meta = topo.get("ocpMeta", {})
         if ocp_meta.get("clusterName"):
             result["ocp"] = {
-                "cluster_name": ocp_meta["clusterName"],
+                "name": ocp_meta["clusterName"],
                 "base_domain": ocp_meta.get("baseDomain", _OCP_LOCAL),
             }
 
-    for key in ("disconnected", "bastion_services", "dns_records"):
+    for key in ("disconnected", "bastion_services"):
         if topo.get(key):
             result[key] = topo[key]
+    if topo.get("dns_records"):
+        result["dns_records"] = sanitize_template_dns_records(topo["dns_records"])
 
     # Apply password mode
     body = body or {}
@@ -1357,6 +1377,14 @@ def export_template(
 
     if not body.get("include_ids"):
         _strip_library_ids_from_export(result)
+
+    try:
+        ensure_exported_template_valid(result)
+    except TemplateSchemaError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=schema_validation_detail(exc),
+        ) from exc
 
     import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response

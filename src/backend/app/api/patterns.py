@@ -727,7 +727,16 @@ def export_pattern_template(
     user: CurrentUser,
     db: DbSession,
 ):
-    from app.services.template_loader import export_topology_to_template
+    from app.services.template_loader import (
+        export_topology_to_template,
+        sanitize_template_dns_records,
+    )
+    from app.services.template_schema import (
+        TemplateSchemaError,
+        apply_export_identity,
+        ensure_exported_template_valid,
+        schema_validation_detail,
+    )
 
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
@@ -748,9 +757,11 @@ def export_pattern_template(
 
     topo = pattern.topology or {}
     result = export_topology_to_template(topo, db=db)
-    result["name"] = pattern.name
-    if pattern.description:
-        result["description"] = pattern.description
+    apply_export_identity(
+        result,
+        title=pattern.name or "template",
+        description=pattern.description or "",
+    )
 
     # export_topology_to_template emits ``ocp:`` as a list from topology
     # ``clusters``. Only fall back to the legacy single-mapping ocpMeta synth
@@ -759,13 +770,23 @@ def export_pattern_template(
         ocp_meta = topo.get("ocpMeta", {})
         if ocp_meta.get("clusterName"):
             result["ocp"] = {
-                "cluster_name": ocp_meta["clusterName"],
+                "name": ocp_meta["clusterName"],
                 "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
             }
 
-    for key in ("disconnected", "bastion_services", "dns_records"):
+    for key in ("disconnected", "bastion_services"):
         if topo.get(key):
             result[key] = topo[key]
+    if topo.get("dns_records"):
+        result["dns_records"] = sanitize_template_dns_records(topo["dns_records"])
+
+    try:
+        ensure_exported_template_valid(result)
+    except TemplateSchemaError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=schema_validation_detail(exc),
+        ) from exc
 
     import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response

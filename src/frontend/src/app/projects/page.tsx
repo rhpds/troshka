@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
+import { formatApiDetail } from "@/lib/apiError";
 import {
   formatTemplateVersionLabel,
   pickDefaultOcpVersion,
@@ -301,7 +302,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setCreateError(err.detail || "Failed to create project");
+          setCreateError(formatApiDetail(err.detail, "Failed to create project"));
         } else {
           const data = await resp.json();
           if (data?.warnings?.length) {
@@ -335,6 +336,58 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
           }
           onCreated(data.id);
         }
+      } else if (mode === "yaml" && yamlContent) {
+        // Atomic create: schema/library validation runs in from-template before
+        // any project row is written (unlike create + import-template).
+        let parsed: Record<string, unknown>;
+        try {
+          const jsYaml = await import("js-yaml");
+          parsed = jsYaml.load(yamlContent) as Record<string, unknown>;
+        } catch {
+          setCreateError("Invalid YAML syntax in template file");
+          setCreating(false);
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          setCreateError("Template must be a YAML mapping");
+          setCreating(false);
+          return;
+        }
+        const yamlBody: Record<string, unknown> = { name, template_yaml: parsed };
+        if (commonPassword) yamlBody.common_password = commonPassword;
+        if (bastionSshKeyId) yamlBody.bastion_ssh_key_id = bastionSshKeyId;
+        if (bastionImageId) yamlBody.bastion_image_id = bastionImageId;
+        if (bastionIsoId) yamlBody.bastion_iso_id = bastionIsoId;
+        const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(yamlBody),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "Template import failed" }));
+          setCreateError(formatApiDetail(err.detail, "Template import failed"));
+          setCreating(false);
+          return;
+        }
+        const data = await resp.json();
+        if (data?.warnings?.length) {
+          setAlertMsg("Imported with warnings: " + data.warnings.join("; "));
+        }
+        if (autoDeploy) {
+          const deployParams = new URLSearchParams();
+          if (deployHostId) deployParams.set("host_id", deployHostId);
+          const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
+          const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
+          if (!deployResp.ok) {
+            const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+            setCreateError(
+              formatApiDetail(err.detail, "Deploy failed — project was created as draft")
+            );
+            setCreating(false);
+            return;
+          }
+        }
+        onCreated(data.id);
       } else {
         const resp = await fetch(`${API_BASE}/api/v1/projects/`, {
           method: "POST",
@@ -343,53 +396,10 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         });
         if (resp.ok) {
           const data = await resp.json();
-          if (mode === "yaml" && yamlContent) {
-            try {
-              const jsYaml = await import("js-yaml");
-              const parsed = jsYaml.load(yamlContent) as Record<string, unknown>;
-              const importBody: Record<string, unknown> = { template_yaml: parsed };
-              if (commonPassword) importBody.common_password = commonPassword;
-              if (bastionSshKeyId) importBody.bastion_ssh_key_id = bastionSshKeyId;
-              const importResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/import-template`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(importBody),
-              });
-              if (!importResp.ok) {
-                const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
-                setCreateError(err.detail || "Template import failed");
-                setCreating(false);
-                return;
-              }
-              const importData = await importResp.json().catch(() => ({}));
-              if (importData?.warnings?.length) {
-                setAlertMsg("Imported with warnings: " + importData.warnings.join("; "));
-              }
-              if (autoDeploy) {
-                const deployParams = new URLSearchParams();
-                if (deployHostId) deployParams.set("host_id", deployHostId);
-                const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
-                const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
-                if (!deployResp.ok) {
-                  const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-                  setCreateError(
-                    (typeof err.detail === "string" ? err.detail : null) ||
-                      "Deploy failed — project was created as draft"
-                  );
-                  setCreating(false);
-                  return;
-                }
-              }
-            } catch {
-              setCreateError("Invalid YAML syntax in template file");
-              setCreating(false);
-              return;
-            }
-          }
           onCreated(data.id);
         } else {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setCreateError(err.detail || "Failed to create project");
+          setCreateError(formatApiDetail(err.detail, "Failed to create project"));
         }
       }
     } catch {
@@ -975,7 +985,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               </div>
             )}
             {createError && (
-              <div style={{ fontSize: 12, color: "#f87171", marginTop: 8, lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: "#f87171", marginTop: 8, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>
                 {createError}
               </div>
             )}

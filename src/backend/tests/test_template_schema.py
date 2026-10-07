@@ -59,7 +59,80 @@ def test_rejects_unknown_top_level_key():
     with pytest.raises(TemplateSchemaError) as ei:
         validate_template_document(doc)
     assert ei.value.errors
-    assert any("evil_payload" in e["message"] for e in ei.value.errors)
+    assert any("unknown keys: evil_payload" == e["message"] for e in ei.value.errors)
+    assert any(e["path"] == "/" for e in ei.value.errors)
+
+
+def test_unknown_network_keys_named_in_errors():
+    doc = {
+        "name": "bmc-extra",
+        "networks": {
+            "bmc": {
+                "cidr": "192.168.100.0/24",
+                "type": "bmc",
+                "bmc_username": "admin",
+                "bmc_password": "x",
+                "not_a_real_field": True,
+            }
+        },
+        "vms": {"demo": {"vcpus": 1, "ram_gb": 2}},
+    }
+    with pytest.raises(TemplateSchemaError) as ei:
+        validate_template_document(doc)
+    assert any(
+        e["path"] == "/networks/bmc" and "not_a_real_field" in e["message"]
+        for e in ei.value.errors
+    )
+
+
+def test_slugify_and_export_identity():
+    from app.services.template_schema import (
+        apply_export_identity,
+        slugify_template_name,
+    )
+
+    assert slugify_template_name("OpenShift 4.22 Compact 3-Node") == (
+        "OpenShift-4.22-Compact-3-Node"
+    )
+    doc: dict = {"networks": {"n": {"cidr": "10.0.0.0/24"}}, "vms": {"v": {"vcpus": 1}}}
+    apply_export_identity(doc, title="OpenShift 4.22 Compact 3-Node")
+    assert doc["name"] == "OpenShift-4.22-Compact-3-Node"
+    assert doc["display_name"] == "OpenShift 4.22 Compact 3-Node"
+
+
+def test_ocp_compact_round_trip_export_validates():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+    from app.services.template_schema import (
+        apply_export_identity,
+        ensure_exported_template_valid,
+    )
+
+    raw = yaml.safe_load((_BACKEND_TEMPLATES / "ocp-compact.yaml").read_text())
+    topo = generate_topology_from_template(resolve_inline_template(raw))
+    # Simulate topology runtime fields that must not leak into export.
+    for net in topo.get("nodes") or []:
+        if net.get("type") != "networkNode":
+            continue
+        records = net.get("data", {}).get("dnsRecords") or []
+        for rec in records:
+            rec["managed"] = True
+            rec["clusterId"] = "ocp"
+    exported = export_topology_to_template(topo)
+    apply_export_identity(exported, title="OpenShift 4.22 Compact 3-Node")
+    prepared = ensure_exported_template_valid(exported)
+    assert prepared["name"] == "OpenShift-4.22-Compact-3-Node"
+    for net in (prepared.get("networks") or {}).values():
+        for rec in net.get("dns_records") or []:
+            assert "managed" not in rec
+            assert "clusterId" not in rec
+    for cluster in prepared.get("ocp") or []:
+        for disk in cluster.get("control_plane_disks") or []:
+            assert "sizeGb" not in disk
+            assert "size_gb" in disk
 
 
 def test_rejects_missing_vms():

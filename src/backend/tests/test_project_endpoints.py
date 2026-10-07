@@ -280,8 +280,19 @@ class TestExportTemplate:
         with patch(
             "app.services.template_loader.export_topology_to_template",
             return_value={
-                "vms": {"vm1": {"cloud_user_password": "secret"}},
-                "networks": {"net1": {"bmc_password": "bmc-secret"}},
+                "vms": {
+                    "vm1": {
+                        "vcpus": 1,
+                        "ram_gb": 2,
+                        "cloud_user_password": "secret",
+                    }
+                },
+                "networks": {
+                    "net1": {
+                        "cidr": "10.0.0.0/24",
+                        "bmc_password": "bmc-secret",
+                    }
+                },
             },
         ):
             resp = client.post(

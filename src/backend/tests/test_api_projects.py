@@ -905,6 +905,28 @@ def test_import_template_invalid_type():
     assert "mapping" in _detail_text(resp)
 
 
+def test_import_template_lists_unknown_keys_in_detail():
+    pid = _create_project(name="import-unknown-keys")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "name": "OpenShift 4.22 Compact",  # spaces invalid
+                "networks": {"mgmt": {"cidr": "10.0.0.0/24", "bogus_key": True}},
+                "vms": {"demo": {"vcpus": 1, "ram_gb": 2}},
+            }
+        },
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert "errors" in detail
+    paths = {e["path"] for e in detail["errors"]}
+    assert "/name" in paths
+    assert "/networks/mgmt" in paths
+    assert any("unknown keys: bogus_key" in e["message"] for e in detail["errors"])
+
+
 def test_import_template_missing_vms():
     pid = _create_project(name="import-no-vms")
     resp = client.post(
@@ -2172,6 +2194,46 @@ def test_from_template_inline_yaml():
     data = resp.json()
     assert "id" in data
     assert "name" in data
+
+
+def test_from_template_schema_failure_creates_no_project():
+    """Invalid template_yaml must 400 without inserting a project row."""
+    name = f"no-create-on-bad-schema-{uuid.uuid4().hex[:8]}"
+    before = client.get("/api/v1/projects/").json()
+    before_ids = {p["id"] for p in before}
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "name": name,
+            "template_yaml": {
+                "name": "bad name with spaces",
+                "networks": {"mgmt": {"cidr": "10.0.0.0/24", "bogus_key": True}},
+                "vms": {"demo": {"vcpus": 1, "ram_gb": 2}},
+            },
+        },
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert any("unknown keys" in e.get("message", "") for e in detail.get("errors", []))
+    after = client.get("/api/v1/projects/").json()
+    assert {p["id"] for p in after} == before_ids
+    assert not any(p["name"] == name for p in after)
+
+
+def test_from_template_duplicate_name_rejected():
+    name = f"dup-from-tmpl-{uuid.uuid4().hex[:8]}"
+    body = {
+        "name": name,
+        "template_yaml": {
+            "vms": {"vm1": {"vcpus": 1, "ram_gb": 2}},
+            "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+        },
+    }
+    assert client.post("/api/v1/projects/from-template", json=body).status_code == 201
+    resp2 = client.post("/api/v1/projects/from-template", json=body)
+    assert resp2.status_code == 409
+    assert "already have a project" in resp2.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
