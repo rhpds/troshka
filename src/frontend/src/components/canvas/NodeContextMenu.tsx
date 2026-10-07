@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
+import { confirmPowerWarn } from "@/lib/powerWarn";
 import { useCanvasStore } from "@/stores/canvasStore";
 
 interface NodeContextMenuProps {
@@ -35,6 +36,7 @@ export default function NodeContextMenu({
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const projectState = useCanvasStore((s) => s.projectState);
+  const supportsHibernate = useCanvasStore((s) => s.supportsHibernate);
   const clusters = useCanvasStore((s) => s.clusters);
   const ref = useRef<HTMLDivElement>(null);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
@@ -55,6 +57,7 @@ export default function NodeContextMenu({
   const isRunning = vmStatus === "running";
   const isRedeploying = vmStatus === "redeploying";
   const isNotFound = vmStatus === "not_found";
+  const isPaused = vmStatus === "paused";
   // While a power transition is in flight, offer no actionable start/stop —
   // issuing the opposite/duplicate action mid-transition is what triggers the
   // KubeVirt "ghost record" SyncFailed spin. Show a disabled indicator instead.
@@ -99,6 +102,30 @@ export default function NodeContextMenu({
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
           </button>
+          <button onClick={() => {
+            onClose();
+            setTimeout(async () => {
+              if (!(await confirmPowerWarn("pause", { title: `Pause "${vmName}"?`, confirmLabel: "Pause" }))) return;
+              await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/pause`, { method: "POST" });
+            }, 50);
+          }}>
+            ⏸ Pause
+          </button>
+          <button
+            disabled={!supportsHibernate}
+            title={supportsHibernate ? undefined : "Not supported on this host type"}
+            style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
+            onClick={() => {
+              if (!supportsHibernate) return;
+              onClose();
+              setTimeout(async () => {
+                if (!(await confirmPowerWarn("hibernate", { title: `Hibernate "${vmName}"?`, confirmLabel: "Hibernate" }))) return;
+                await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/hibernate`, { method: "POST" });
+              }, 50);
+            }}
+          >
+            💤 Hibernate
+          </button>
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/forcestop`, { method: "POST" }); onClose(); }}>
             ⏻ Force Power Off
           </button>
@@ -107,7 +134,12 @@ export default function NodeContextMenu({
           </button>
         </>
       )}
-      {isDeployed && !isRunning && !isTransitioning && !isRedeploying && !isNotFound && (
+      {isDeployed && isPaused && !isTransitioning && !isRedeploying && !isNotFound && (
+        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/unpause`, { method: "POST" }); onClose(); }}>
+          ▶ Resume
+        </button>
+      )}
+      {isDeployed && !isRunning && !isPaused && !isTransitioning && !isRedeploying && !isNotFound && (
         <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>

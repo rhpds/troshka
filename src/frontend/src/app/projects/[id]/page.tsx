@@ -31,6 +31,7 @@ import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import RedeployOcpModal from "@/components/RedeployOcpModal";
 import { appConfirm } from "@/lib/confirm";
+import { POWER_WARN_MESSAGE, HIBERNATE_WARN_SUFFIX } from "@/lib/powerWarn";
 import {
   allOcpClustersReady,
   collectOcpClusters,
@@ -436,12 +437,6 @@ export default function ProjectCanvasPage() {
     pause: "⏸ Pause",
     hibernate: "💤 Hibernate",
   };
-  const POWER_WARN_MESSAGE =
-    "This freezes the guest without a clean service shutdown. Databases, clusters, and " +
-    "network services may not recover cleanly when resumed. Mileage may vary.";
-  const HIBERNATE_WARN_SUFFIX =
-    "\n\nHost RAM is freed; a save image is kept on disk.";
-
   useEffect(() => {
     if (!showOffMenu) return;
     const handler = (e: MouseEvent) => {
@@ -487,6 +482,7 @@ export default function ProjectCanvasPage() {
       if (!confirmed) return;
       if (checkboxRef.current) {
         setPowerWarnDismissed(true);
+        useCanvasStore.setState({ powerWarnDismissed: true });
         fetch(`/api/v1/projects/${projectId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
+import { vmStatusLabel } from "@/lib/vmStatus";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
@@ -1334,7 +1335,7 @@ export default function PropertiesPanel() {
           </div>
           <div className="props-subtitle">
             {nodeType === "vmNode"
-              ? `VM -- ${(data as unknown as VMNodeData).status === "running" ? "Running" : "Stopped"}`
+              ? `VM -- ${vmStatusLabel((data as unknown as VMNodeData).status)}`
               : nodeType === "containerNode"
                 ? `Container · ${(data as unknown as ContainerNodeData).status === "running" ? "Running" : "Stopped"}`
                 : nodeType === "networkNode"

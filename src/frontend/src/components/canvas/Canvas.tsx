@@ -37,6 +37,8 @@ import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
 import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks, syncClusterCanvasState } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
+import { appConfirm } from "@/lib/confirm";
+import { confirmPowerWarn } from "@/lib/powerWarn";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
   GATEWAY_NETWORK_TARGET_HANDLE,
@@ -270,6 +272,9 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
   const unhideAll = useCanvasStore((s) => s.unhideAll);
   const showMinimap = useCanvasStore((s) => s.showMinimap);
   const panMode = useCanvasStore((s) => s.panMode);
+  const currentProjectId = useCanvasStore((s) => s.currentProjectId);
+  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
+  const supportsHibernate = useCanvasStore((s) => s.supportsHibernate);
 
   // Wrapper for onConnect to handle cluster network anchors
   const onConnect = useCallback(
@@ -1013,51 +1018,83 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         )}
       </ReactFlow>
       <ClusterInstallLogModal />
-      {selectedNodes.length > 1 && (
-        <div className="selection-toolbar">
-          <span className="selection-count">{selectedNodes.length} selected</span>
-          <button
-            title="Duplicate All"
-            onClick={() => selectedNodes.forEach((n) => duplicateNode(n.id))}
-          >
-            ⧉ Duplicate
-          </button>
-          {selectedNodes.some((n) => n.type === "vmNode") && (
-            <>
-              <button
-                title="Start VMs"
-                onClick={() =>
-                  selectedNodes
-                    .filter((n) => n.type === "vmNode")
-                    .forEach((n) => updateNodeData(n.id, { status: "running" }))
-                }
-              >
-                ▶ Start VMs
-              </button>
-              <button
-                title="Stop VMs"
-                onClick={() =>
-                  selectedNodes
-                    .filter((n) => n.type === "vmNode")
-                    .forEach((n) => updateNodeData(n.id, { status: "stopped" }))
-                }
-              >
-                ■ Stop VMs
-              </button>
-            </>
-          )}
-          <button
-            className="danger"
-            title="Delete All"
-            onClick={() => {
-              selectedNodes.forEach((n) => deleteNode(n.id));
-              setSelectedNodes([]);
-            }}
-          >
-            ✕ Delete
-          </button>
-        </div>
-      )}
+      {selectedNodes.length > 1 && (() => {
+        const selectedVmNodes = selectedNodes.filter(
+          (n) => n.type === "vmNode" && deployedVmIds.has(n.id),
+        );
+        const runOnSelectedVms = (action: "start" | "unpause" | "stop" | "pause" | "hibernate") => {
+          selectedVmNodes.forEach((n) => {
+            fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
+          });
+        };
+        return (
+          <div className="selection-toolbar">
+            <span className="selection-count">{selectedNodes.length} selected</span>
+            <button
+              title="Duplicate All"
+              onClick={() => selectedNodes.forEach((n) => duplicateNode(n.id))}
+            >
+              ⧉ Duplicate
+            </button>
+            {selectedVmNodes.length > 0 && (
+              <>
+                <button
+                  title="Start/Resume VMs"
+                  onClick={() => {
+                    selectedVmNodes.forEach((n) => {
+                      const status = (n.data as Record<string, unknown>).status as string | undefined;
+                      const action = status === "paused" ? "unpause" : "start";
+                      fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
+                    });
+                  }}
+                >
+                  ▶ Start VMs
+                </button>
+                <button
+                  title="Graceful Shutdown VMs"
+                  onClick={async () => {
+                    if (!(await appConfirm({ message: `Shut down ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Shut down" }))) return;
+                    runOnSelectedVms("stop");
+                  }}
+                >
+                  ■ Stop VMs
+                </button>
+                <button
+                  title="Pause VMs"
+                  onClick={async () => {
+                    if (!(await confirmPowerWarn("pause", { title: `Pause ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Pause" }))) return;
+                    runOnSelectedVms("pause");
+                  }}
+                >
+                  ⏸ Pause VMs
+                </button>
+                <button
+                  title={supportsHibernate ? "Hibernate VMs" : "Not supported on this host type"}
+                  disabled={!supportsHibernate}
+                  style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
+                  onClick={async () => {
+                    if (!supportsHibernate) return;
+                    if (!(await confirmPowerWarn("hibernate", { title: `Hibernate ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Hibernate" }))) return;
+                    runOnSelectedVms("hibernate");
+                  }}
+                >
+                  💤 Hibernate VMs
+                </button>
+              </>
+            )}
+            <button
+              className="danger"
+              title="Delete All"
+              onClick={() => {
+                selectedNodes.forEach((n) => deleteNode(n.id));
+                setSelectedNodes([]);
+              }}
+            >
+              ✕ Delete
+            </button>
+          </div>
+        );
+      })()}
       {hiddenNodeIds.length > 0 && (
         <div className="hidden-items-bar">
           <span className="hidden-items-count">👁 {hiddenNodeIds.length} hidden</span>

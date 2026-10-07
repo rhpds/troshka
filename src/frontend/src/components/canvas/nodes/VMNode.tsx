@@ -6,6 +6,8 @@ import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, requestDuplicateVM, stableNodeData, stableStringify, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
+import { confirmPowerWarn } from "@/lib/powerWarn";
+import { vmStatusLabel } from "@/lib/vmStatus";
 import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 
 function VMNodeComponent({ id, data, selected }: NodeProps) {
@@ -17,12 +19,15 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const updateNodeInternals = useUpdateNodeInternals();
+  const supportsHibernate = useCanvasStore((s) => s.supportsHibernate);
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
   const isStopping = d.status === "stopping";
   const isRestarting = d.status === "restarting";
   const isRedeploying = d.status === "redeploying";
   const isNotFound = (d as any).status === "not_found";
+  const isPaused = d.status === "paused";
+  const isHibernated = d.status === "hibernated";
   const statusPending = (!d.status || (d as any).status === "unknown") && (projectState === "active" || projectState === "stopped" || projectState === "starting");
 
   const nicCount = (d.nics || []).length;
@@ -64,13 +69,31 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     return false;
   };
 
-  const vmAction = async (action: "start" | "stop" | "forcestop" | "restart") => {
+  const vmAction = async (action: "start" | "stop" | "forcestop" | "restart" | "pause" | "unpause" | "hibernate") => {
     if (!projectId || actionPending) return;
     setActionPending(action);
     try {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${id}/${action}`, { method: "POST" });
       const result = await resp.json();
-      if (action === "stop") {
+      if (action === "pause") {
+        if (result.success) {
+          updateNodeData(id, { status: "paused" });
+        } else {
+          setAlertMsg(`Pause failed: ${result.output?.slice(-200) || result.detail?.message || "unknown error"}`);
+        }
+      } else if (action === "unpause") {
+        if (result.success) {
+          updateNodeData(id, { status: "running" });
+        } else {
+          setAlertMsg(`Resume failed: ${result.output?.slice(-200) || result.detail?.message || "unknown error"}`);
+        }
+      } else if (action === "hibernate") {
+        if (result.success) {
+          updateNodeData(id, { status: "hibernated" });
+        } else {
+          setAlertMsg(`Hibernate failed: ${result.output?.slice(-200) || result.detail?.message || "unknown error"}`);
+        }
+      } else if (action === "stop") {
         if (result.success) {
           updateNodeData(id, { status: "stopping" });
           const off = await waitForShutdown(60000);
@@ -191,19 +214,43 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         ) : (
         <span
           className="vm-node-status-dot"
+          title={vmStatusLabel(d.status)}
           style={{
             background: isRunning
               ? "var(--troshka-green)"
-              : (d as any).status === "not_found"
-                ? "#6b7280"
-                : isDeployed
-                  ? "var(--troshka-red)"
-                  : "#6b7280",
-            boxShadow: isRunning ? "0 0 6px var(--troshka-green)" : "none",
+              : isPaused
+                ? "#fbbf24"
+                : isHibernated
+                  ? "#60a5fa"
+                  : (d as any).status === "not_found"
+                    ? "#6b7280"
+                    : isDeployed
+                      ? "var(--troshka-red)"
+                      : "#6b7280",
+            boxShadow: isRunning
+              ? "0 0 6px var(--troshka-green)"
+              : isPaused
+                ? "0 0 6px #fbbf24"
+                : isHibernated
+                  ? "0 0 6px #60a5fa"
+                  : "none",
           }}
         />
         )}
       </div>
+      {(isPaused || isHibernated) && (
+        <div
+          style={{
+            fontSize: 9,
+            fontWeight: 600,
+            textAlign: "center",
+            padding: "1px 0 2px",
+            color: isPaused ? "#fbbf24" : "#60a5fa",
+          }}
+        >
+          {isPaused ? "⏸ Paused" : "💤 Hibernated"}
+        </div>
+      )}
 
       {/* Redeploy progress */}
       {d.status === "redeploying" && d.redeployStep && (
@@ -323,11 +370,11 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         {isDeployed && !statusPending && !isRunning && !isStopping && !isRestarting && !isRedeploying && !isNotFound && (
           <button
             className="vm-node-action power-stopped"
-            title="Start"
-            onClick={(e) => { e.stopPropagation(); vmAction("start"); }}
+            title={isPaused ? "Resume" : "Start"}
+            onClick={(e) => { e.stopPropagation(); vmAction(isPaused ? "unpause" : "start"); }}
             disabled={!!actionPending || isRedeploying}
           >
-            {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
+            {actionPending === "start" || actionPending === "unpause" ? <span className="vm-btn-spinner" /> : "▶"}
           </button>
         )}
         {isDeployed && isRunning && !isRedeploying && !isNotFound && (
@@ -339,6 +386,31 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               disabled={!!actionPending || isRedeploying}
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
+            </button>
+            <button
+              className="vm-node-action power-running"
+              title="Pause"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (!(await confirmPowerWarn("pause", { title: `Pause "${d.name}"?`, confirmLabel: "Pause" }))) return;
+                vmAction("pause");
+              }}
+              disabled={!!actionPending || isRedeploying}
+            >
+              {actionPending === "pause" ? <span className="vm-btn-spinner" /> : "⏸"}
+            </button>
+            <button
+              className="vm-node-action power-running"
+              title={supportsHibernate ? "Hibernate" : "Not supported on this host type"}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (!supportsHibernate) return;
+                if (!(await confirmPowerWarn("hibernate", { title: `Hibernate "${d.name}"?`, confirmLabel: "Hibernate" }))) return;
+                vmAction("hibernate");
+              }}
+              disabled={!!actionPending || isRedeploying || !supportsHibernate}
+            >
+              {actionPending === "hibernate" ? <span className="vm-btn-spinner" /> : "💤"}
             </button>
             <button
               className="vm-node-action power-running"

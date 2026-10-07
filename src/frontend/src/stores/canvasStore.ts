@@ -109,7 +109,7 @@ export interface VMNodeData {
   vcpus: number;
   ram: number;
   os: string;
-  status: "running" | "stopped" | "stopping" | "restarting" | "starting" | "redeploying";
+  status: "running" | "stopped" | "stopping" | "starting" | "restarting" | "redeploying" | "paused" | "hibernated";
   bootOrder?: number;
   bootMethod?: string;
   cloudInit?: boolean;
@@ -354,6 +354,12 @@ interface CanvasState {
   panMode: boolean;
   providerType: string | null;
   clusterCapabilities: import("@/lib/kubevirtCapabilities").ClusterCapabilities | null;
+  /** Whether the project's host type supports hibernate (managed-save) — false on KubeVirt. */
+  supportsHibernate: boolean;
+  /** Mirrors the project's `power_warn_dismissed` flag so per-VM/multi-select
+   * pause/hibernate confirms (outside page.tsx) can skip the mileage warning
+   * once the user has dismissed it for this project. */
+  powerWarnDismissed: boolean;
 
   // React Flow callbacks
   onNodesChange: OnNodesChange;
@@ -1291,6 +1297,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   panMode: true,
   providerType: null,
   clusterCapabilities: null,
+  supportsHibernate: true,
+  powerWarnDismissed: false,
   currentProjectId: null as string | null,
   projectState: "draft" as string,
   deployedVmIds: new Set<string>(),
@@ -2319,6 +2327,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               : null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
+            supportsHibernate: project.supports_hibernate !== false,
+            powerWarnDismissed: !!project.power_warn_dismissed,
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         } else {
@@ -2327,6 +2337,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             clusters: [],
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
+            supportsHibernate: project.supports_hibernate !== false,
+            powerWarnDismissed: !!project.power_warn_dismissed,
           });
         }
 
