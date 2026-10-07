@@ -164,7 +164,6 @@ class TestMapVmStatesForProject:
             "shutting_down",
             "crashed",
             "suspended",
-            "paused",
             "Stopped",
         ]
         for raw_state in shutdown_states:
@@ -185,6 +184,28 @@ class TestMapVmStatesForProject:
             assert (
                 vm_states.get("vm-xxxx") == "stopped"
             ), f"{raw_state} should map to 'stopped'"
+
+    @patch("app.api.projects._redeploy_progress", {})
+    @patch("app.api.projects._domain_name", side_effect=_domain_name)
+    def test_paused_and_hibernated_not_normalised_to_stopped(self, mock_dn):
+        """paused/hibernated are resumable states, distinct from stopped — the
+        start_vm resume-from-pause shortcut depends on this exact string."""
+        for raw_state in ("paused", "hibernated"):
+            project = _make_project(
+                nodes=[
+                    {
+                        "id": "vm-xxxx",
+                        "type": "vmNode",
+                        "data": {"id": "vm-xxxx"},
+                    }
+                ]
+            )
+            dom = _domain_name(project.id, "vm-xxxx")
+            host_batch = {dom: raw_state}
+            vm_states, _, _ = _map_vm_states_for_project(
+                project, host_batch, kv_batch=None
+            )
+            assert vm_states.get("vm-xxxx") == raw_state
 
     @patch("app.api.projects._redeploy_progress", {})
     @patch("app.api.projects._domain_name", side_effect=_domain_name)
@@ -248,6 +269,50 @@ class TestFetchKubevirtVmStates:
         assert result is not None
         assert result["vm-aaaa-1111"] == "Running"
         assert result["vm-bbbb-2222"] == "Succeeded"
+
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    @patch(
+        "app.services.providers.kubevirt._project_ns", return_value="troshka-proj-1111"
+    )
+    def test_paused_condition_overrides_running_phase(self, mock_ns, mock_clients):
+        """libvirt-suspend keeps VMI phase=Running — only the Paused condition
+        (or printableStatus) tells us the guest is actually suspended."""
+        mock_custom_api = MagicMock()
+        mock_clients.return_value = (mock_custom_api, MagicMock(), MagicMock())
+
+        mock_custom_api.list_namespaced_custom_object.return_value = {
+            "items": [
+                {
+                    "metadata": {"name": "troshka-vm-vm-aaaa-"},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [
+                            {
+                                "type": "Paused",
+                                "status": "True",
+                                "reason": "PausedByUser",
+                            }
+                        ],
+                    },
+                },
+                {
+                    "metadata": {"name": "troshka-vm-vm-bbbb-"},
+                    "status": {"phase": "Running"},
+                },
+            ]
+        }
+
+        project = _make_project()
+        host = SimpleNamespace(provider_id="provider-1")
+        db = MagicMock()
+        provider = SimpleNamespace(id="provider-1")
+        db.query.return_value.filter_by.return_value.first.return_value = provider
+
+        result = _fetch_kubevirt_vm_states(project, host, db)
+
+        assert result is not None
+        assert result["vm-aaaa-1111"] == "paused"
+        assert result["vm-bbbb-2222"] == "Running"
 
     @patch("app.services.providers.kubevirt._get_k8s_clients")
     @patch(

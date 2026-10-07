@@ -285,6 +285,7 @@ def _fetch_kubevirt_vm_states(project, host, db):
     """
     from app.models.provider import Provider
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+    from app.services.providers.ocpvirt import _vmi_paused_info
 
     provider = db.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
@@ -301,6 +302,14 @@ def _fetch_kubevirt_vm_states(project, host, db):
         vmis: dict = vmis_raw if isinstance(vmis_raw, dict) else {}
         vmi_phases = {}
         for vmi in vmis.get("items", []):
+            # A libvirt-paused guest keeps VMI phase="Running" — the pause only
+            # shows up as a "Paused" condition/printableStatus. Without this
+            # check, the WS cache never sees "paused" and start_vm's
+            # resume-from-pause shortcut (_resume_if_paused) is unreachable.
+            paused, _reason = _vmi_paused_info(vmi)
+            if paused:
+                vmi_phases[vmi["metadata"]["name"]] = "paused"
+                continue
             vmi_phases[vmi["metadata"]["name"]] = vmi.get("status", {}).get(
                 "phase", "Unknown"
             )
@@ -321,12 +330,17 @@ def _fetch_kubevirt_vm_states(project, host, db):
 
 
 _STOPPED_STATES = frozenset(
-    ("shut_off", "shutting_down", "crashed", "suspended", "paused", "Stopped")
+    ("shut_off", "shutting_down", "crashed", "suspended", "Stopped")
 )
 
 
 def _normalize_vm_state(state: str) -> str:
-    """Normalize a raw VM state to a canonical display state."""
+    """Normalize a raw VM state to a canonical display state.
+
+    ``paused`` and ``hibernated`` are distinct, actionable states (resume vs.
+    cold-start) and must NOT collapse into ``stopped`` — callers like
+    ``_resume_if_paused`` key off the exact ``paused`` string from this cache.
+    """
     if state in _STOPPED_STATES:
         return "stopped"
     if state == "Running":

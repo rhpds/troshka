@@ -432,6 +432,33 @@ export default function ProjectCanvasPage() {
     ? { opacity: 0.4, cursor: "not-allowed" as const }
     : { opacity: 0.85 };
 
+  // Project stays "active" while individual VMs are paused/hibernated (off_action
+  // keeps the project up) — surface a toolbar Start so the user isn't limited to
+  // resuming one VM card at a time.
+  const resumableVmNodes = nodes.filter((n) => {
+    if (n.type !== "vmNode") return false;
+    const status = (n.data as Record<string, unknown>).status;
+    return status === "paused" || status === "hibernated";
+  });
+  const [resumingAll, setResumingAll] = useState(false);
+  const handleResumeAll = async () => {
+    if (disruptiveActionsDisabled || resumingAll) return;
+    setResumingAll(true);
+    try {
+      await Promise.all(
+        resumableVmNodes.map((n) => {
+          const status = (n.data as Record<string, unknown>).status;
+          const action = status === "paused" ? "unpause" : "start";
+          return fetch(`/api/v1/projects/${projectId}/vms/${n.id}/${action}`, {
+            method: "POST",
+          }).catch(() => {});
+        }),
+      );
+    } finally {
+      setResumingAll(false);
+    }
+  };
+
   const OFF_ACTION_LABEL: Record<"stop" | "pause" | "hibernate", string> = {
     stop: "■ Stop",
     pause: "⏸ Pause",
@@ -1554,6 +1581,29 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && (
             <>
+              {resumableVmNodes.length > 0 && (
+                <button
+                  className="project-publish-btn"
+                  disabled={disruptiveActionsDisabled || resumingAll}
+                  title={
+                    resumableVmNodes.length === 1
+                      ? "Resume the paused/hibernated VM"
+                      : `Resume ${resumableVmNodes.length} paused/hibernated VMs`
+                  }
+                  style={
+                    disruptiveActionsDisabled || resumingAll
+                      ? { opacity: 0.4, cursor: "not-allowed" }
+                      : { opacity: 0.85 }
+                  }
+                  onClick={handleResumeAll}
+                >
+                  {resumingAll ? (
+                    <><span className="project-btn-spinner" /> Resuming...</>
+                  ) : (
+                    "▶ Start"
+                  )}
+                </button>
+              )}
               <div ref={offMenuRef} style={{ position: "relative", display: "flex", flexShrink: 0 }}>
                 <button
                   className="project-stop-btn"

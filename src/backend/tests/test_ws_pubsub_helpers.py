@@ -29,10 +29,17 @@ class TestNormalizeVmState:
 
         assert _normalize_vm_state("suspended") == "stopped"
 
-    def test_paused_maps_to_stopped(self):
+    def test_paused_is_preserved(self):
+        """paused is a distinct, resumable state — must not collapse to stopped
+        (start_vm's resume-from-pause shortcut keys off this exact string)."""
         from app.services.ws_pubsub import _normalize_vm_state
 
-        assert _normalize_vm_state("paused") == "stopped"
+        assert _normalize_vm_state("paused") == "paused"
+
+    def test_hibernated_is_preserved(self):
+        from app.services.ws_pubsub import _normalize_vm_state
+
+        assert _normalize_vm_state("hibernated") == "hibernated"
 
     def test_kubevirt_stopped_maps_to_stopped(self):
         from app.services.ws_pubsub import _normalize_vm_state
