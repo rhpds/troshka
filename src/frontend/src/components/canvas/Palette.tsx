@@ -3,6 +3,7 @@
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
+import { buildPaletteOcpInfo } from "@/components/canvas/paletteOcpInfo";
 
 const TIMER_PRESETS = [
   { label: "None", value: null },
@@ -36,18 +37,20 @@ function toggleRevealed(prev: Set<string>, key: string) {
   return next;
 }
 
-function BmcSecretRow({
+function SecretRow({
   rowLabel,
   value,
   revealKey,
   revealed,
   onToggle,
+  copyLabel,
 }: {
   rowLabel: string;
   value: string;
   revealKey?: string;
   revealed: Set<string>;
   onToggle: (key: string) => void;
+  copyLabel?: string;
 }) {
   const masked = !!revealKey;
   const shown = masked ? (revealed.has(revealKey) ? (value || "—") : "••••••") : value;
@@ -60,8 +63,23 @@ function BmcSecretRow({
       >
         {shown}
       </code>
-      <PaletteCopyBtn value={value} label={`BMC ${rowLabel.toLowerCase()}`} />
+      <PaletteCopyBtn value={value} label={copyLabel || rowLabel} />
     </div>
+  );
+}
+
+function BmcSecretRow(props: {
+  rowLabel: string;
+  value: string;
+  revealKey?: string;
+  revealed: Set<string>;
+  onToggle: (key: string) => void;
+}) {
+  return (
+    <SecretRow
+      {...props}
+      copyLabel={`BMC ${props.rowLabel.toLowerCase()}`}
+    />
   );
 }
 
@@ -124,7 +142,7 @@ const sections: PaletteSection[] = [
     ],
   },
   {
-    title: "Containers",
+    title: "Kubernetes",
     items: [
       {
         type: "container",
@@ -140,18 +158,6 @@ const sections: PaletteSection[] = [
         icon: "🫛",
         iconClass: "palette-icon-pod",
       },
-      {
-        type: "showroom",
-        label: "Showroom",
-        desc: "Lab guide UI (pod)",
-        icon: "📖",
-        iconClass: "palette-icon-container",
-      },
-    ],
-  },
-  {
-    title: "OpenShift",
-    items: [
       {
         type: "cluster",
         label: "OpenShift Cluster",
@@ -319,6 +325,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [showBmc, setShowBmc] = useState(false);
   const bmcHeaderRef = React.useRef<HTMLDivElement>(null);
   const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
+  const [showOcpInfo, setShowOcpInfo] = useState(false);
+  const ocpHeaderRef = React.useRef<HTMLDivElement>(null);
+  const [ocpFlyoutPos, setOcpFlyoutPos] = useState({ top: 0, left: 220 });
   const [budgetDraft, setBudgetDraft] = useState("");
   useEffect(() => {
     setBudgetDraft(budgetUsd == null ? "" : String(budgetUsd));
@@ -334,7 +343,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [portalCopied, setPortalCopied] = useState(false);
   const ocpLogRef = React.useRef<HTMLPreElement>(null);
 
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Containers", "OpenShift", "Networking", "Storage", "Project"]));
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Kubernetes", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const [hostInfo, setHostInfo] = useState<{ instance_id: string; ip_address: string; provider_type: string; provider_name: string } | null>(null);
   const [customStopOpen, setCustomStopOpen] = useState(false);
@@ -346,6 +355,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [customDeleteH, setCustomDeleteH] = useState(0);
   const [customDeleteM, setCustomDeleteM] = useState(0);
   const nodes = useCanvasStore((s) => s.nodes);
+  const clusters = useCanvasStore((s) => s.clusters);
   const providerType = useCanvasStore((s) => s.providerType);
   const cephExists = nodes.some((n) => n.type === "cephClusterNode");
   const showroomExists = hasShowroomNode(nodes);
@@ -480,6 +490,26 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled));
     return { username, password, vms, bmcEnabled };
   }, [nodes]);
+
+  const ocpInfo = React.useMemo(() => {
+    const deployed =
+      typeof window !== "undefined"
+        ? ((window as unknown as { __deployedTopology?: Record<string, unknown> })
+            .__deployedTopology as
+            | {
+                _showroom_url?: string;
+                _showroom_access_token?: string;
+                nodes?: Array<{ data?: Record<string, unknown> }>;
+              }
+            | null
+            | undefined)
+        : null;
+    return buildPaletteOcpInfo(nodes, clusters, {
+      projectId,
+      deployed: deployed || null,
+    });
+  }, [nodes, clusters, projectId]);
+
   const placeBmcFlyout = () => {
     const el = bmcHeaderRef.current;
     if (!el) return;
@@ -487,15 +517,34 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
     setBmcFlyoutPos({ top: r.top, left: r.right });
   };
 
+  const placeOcpFlyout = () => {
+    const el = ocpHeaderRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setOcpFlyoutPos({ top: r.top, left: r.right });
+  };
+
   const toggleBmc = () => {
     if (!showBmc) placeBmcFlyout();
     setShowBmc((v) => !v);
+    if (!showBmc) setShowOcpInfo(false);
+  };
+
+  const toggleOcpInfo = () => {
+    if (!showOcpInfo) placeOcpFlyout();
+    setShowOcpInfo((v) => !v);
+    if (!showOcpInfo) setShowBmc(false);
   };
 
   useLayoutEffect(() => {
     if (!showBmc) return;
     placeBmcFlyout();
   }, [showBmc]);
+
+  useLayoutEffect(() => {
+    if (!showOcpInfo) return;
+    placeOcpFlyout();
+  }, [showOcpInfo]);
 
   useEffect(() => {
     if (!showBmc) return;
@@ -514,6 +563,24 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       document.removeEventListener("mousedown", onDoc);
     };
   }, [showBmc]);
+
+  useEffect(() => {
+    if (!showOcpInfo) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (ocpHeaderRef.current?.contains(t)) return;
+      if (document.getElementById("ocp-info-flyout")?.contains(t)) return;
+      setShowOcpInfo(false);
+    };
+    window.addEventListener("resize", placeOcpFlyout);
+    window.addEventListener("scroll", placeOcpFlyout, true);
+    document.addEventListener("mousedown", onDoc);
+    return () => {
+      window.removeEventListener("resize", placeOcpFlyout);
+      window.removeEventListener("scroll", placeOcpFlyout, true);
+      document.removeEventListener("mousedown", onDoc);
+    };
+  }, [showOcpInfo]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([]);
   const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
@@ -666,6 +733,132 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                         <PaletteCopyBtn value={vm.ipmi} label="IPMI address" />
                       </div>
                     )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {ocpInfo.ocpPresent && (
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)", position: "relative" }}>
+          <div
+            ref={ocpHeaderRef}
+            className="palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
+            onClick={toggleOcpInfo}
+          >
+            <span>OPENSHIFT INFO</span>
+            <span style={{ fontSize: 9 }}>{showOcpInfo ? "▾" : "▸"}</span>
+          </div>
+          {showOcpInfo && (
+            <div
+              id="ocp-info-flyout"
+              style={{
+                position: "fixed",
+                top: ocpFlyoutPos.top,
+                left: ocpFlyoutPos.left,
+                zIndex: 40,
+                width: 560,
+                maxWidth: "min(560px, calc(100vw - 40px))",
+                maxHeight: "70vh",
+                overflowY: "auto",
+                background: "var(--troshka-surface)",
+                border: "1px solid var(--pf-t--global--border--color--default)",
+                borderLeft: "none",
+                borderRadius: "0 8px 8px 0",
+                padding: "10px 12px 12px",
+                boxShadow: "8px 4px 24px rgba(0,0,0,0.35)",
+                fontSize: 11,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {ocpInfo.showroomUrl && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>Showroom</span>
+                    <a
+                      href={ocpInfo.showroomUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: 10, flex: 1, wordBreak: "break-all", color: "var(--troshka-cyan, #22d3ee)" }}
+                    >
+                      {ocpInfo.showroomUrl.split("?")[0]}
+                    </a>
+                    <PaletteCopyBtn value={ocpInfo.showroomUrl} label="Showroom URL" />
+                  </div>
+                )}
+                {ocpInfo.clusters.map((cluster, idx) => (
+                  <div
+                    key={cluster.id}
+                    style={
+                      idx > 0 || ocpInfo.showroomUrl
+                        ? { borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }
+                        : undefined
+                    }
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>{cluster.name}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>API</span>
+                      <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{cluster.apiUrl}</code>
+                      <PaletteCopyBtn value={cluster.apiUrl} label="API URL" />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>Console</span>
+                      {cluster.consoleViaShowroom ? (
+                        <a
+                          href={cluster.consoleUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ fontSize: 10, flex: 1, wordBreak: "break-all", color: "var(--troshka-cyan, #22d3ee)" }}
+                          title="Open via showroom app-proxy"
+                        >
+                          {cluster.consoleUrl.split("?")[0]}
+                        </a>
+                      ) : (
+                        <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all", opacity: 0.65 }}>
+                          {cluster.consoleUrl}
+                        </code>
+                      )}
+                      <PaletteCopyBtn
+                        value={cluster.consoleUrl}
+                        label={cluster.consoleViaShowroom ? "Showroom console URL" : "Internal console URL"}
+                      />
+                    </div>
+                    {cluster.consoleViaShowroom && (
+                      <div style={{ opacity: 0.5, fontSize: 10, marginBottom: 2 }}>via showroom</div>
+                    )}
+                    {cluster.kubeadminPassword ? (
+                      <SecretRow
+                        rowLabel="kubeadmin"
+                        value={cluster.kubeadminPassword}
+                        revealKey={`ocp-kubeadmin-${cluster.id}`}
+                        revealed={revealedPasswords}
+                        onToggle={(k) => setRevealedPasswords((prev) => toggleRevealed(prev, k))}
+                        copyLabel="kubeadmin password"
+                      />
+                    ) : (
+                      <div style={{ opacity: 0.55, marginTop: 2 }}>
+                        kubeadmin password available after install
+                      </div>
+                    )}
+                    {cluster.kubeconfig ? (
+                      <div style={{ marginTop: 4 }}>
+                        <span
+                          style={{ cursor: "pointer", fontSize: 10, opacity: 0.75, textDecoration: "underline" }}
+                          onClick={() => {
+                            const blob = new Blob([cluster.kubeconfig], { type: "application/x-yaml" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `kubeconfig-${cluster.kubeconfigVmName || cluster.name}.yaml`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                        >
+                          Download kubeconfig
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -940,6 +1133,31 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         </div>
         {!collapsedSections.has("Project") && (
           <div className="palette-section-body">
+            <div
+              className="palette-item"
+              draggable={!showroomExists}
+              onDragStart={(e) => {
+                if (showroomExists) {
+                  e.preventDefault();
+                  return;
+                }
+                onDragStart(e, {
+                  type: "showroom",
+                  label: "Showroom",
+                  desc: "Lab guide UI (pod)",
+                  icon: "📖",
+                  iconClass: "palette-icon-container",
+                });
+              }}
+              style={showroomExists ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+              title={showroomExists ? "One showroom per project" : undefined}
+            >
+              <PaletteIcon icon="📖" iconClass="palette-icon-container" />
+              <div>
+                <div className="palette-item-label">Showroom</div>
+                <div className="palette-item-desc">Lab guide UI (pod)</div>
+              </div>
+            </div>
             <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
               <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
               <div>
