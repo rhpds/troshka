@@ -9,7 +9,7 @@ Related: [`2026-10-05-project-metering-design.md`](./2026-10-05-project-metering
 
 ## Goals
 
-- Project-level `power_off_mode`: `stop` | `pause` | `hibernate` (default **`stop`**).
+- Project-level **`off_action`**: `stop` | `pause` | `hibernate` (default **`stop`**). Named `off_action` (not `power_off_mode`) to avoid colliding with existing `poweroff_mode` (sequential/parallel stop ordering).
 - Toolbar **B**: primary Off button label follows mode + ▾ mode picker + Start; mode change alone does not power VMs.
 - Per-VM Pause / Hibernate / Start-or-resume; multi-select uses the same actions.
 - **Pause** on troshkad/libvirt and KubeVirt (libvirt suspend / VMI pause subresource).
@@ -50,11 +50,11 @@ Pause freezes CPUs/I/O but keeps host RAM. Hibernate writes memory state to disk
 ### Project toolbar
 
 - Replace plain ■ Stop with split control: **[ Off label ▾ ][ ▶ Start ]** when the environment can be powered down / up.
-- Off label: Stop / Pause / Hibernate from `power_off_mode`.
-- ▾ sets `power_off_mode` via project PATCH; does not execute power.
-- On KubeVirt hosts: Hibernate menu entry disabled with tooltip (not supported yet); `power_off_mode` may only be `stop` or `pause` (reject PATCH to `hibernate`).
+- Off label: Stop / Pause / Hibernate from `off_action`.
+- ▾ sets `off_action` via project PATCH; does not execute power.
+- On KubeVirt hosts: Hibernate menu entry disabled with tooltip (not supported yet); `off_action` may only be `stop` or `pause` (reject PATCH to `hibernate`).
 - Off click: if mode is `pause` or `hibernate` and warn not dismissed → confirm; optional “Don’t show again for this project” → set `power_warn_dismissed`.
-- Off executes existing **`POST /projects/{id}/stop`**, extended to honor `power_off_mode`.
+- Off executes existing **`POST /projects/{id}/stop`**, extended to honor `off_action`.
 - Start executes existing **`POST /projects/{id}/start`**, extended to resume each VM by state.
 
 ### Per-VM / selection
@@ -82,10 +82,10 @@ Hibernate adds: *Host RAM is freed; a save image is kept on disk.*
 
 On `Project` (migration):
 
-- `power_off_mode`: string enum `stop` | `pause` | `hibernate`, default `stop`
+- `off_action`: string enum `stop` | `pause` | `hibernate`, default `stop`
 - `power_warn_dismissed`: boolean, default `false`
 
-Exposed on project GET/PATCH.
+Exposed on project GET/PATCH. Do not reuse `poweroff_mode` (that field remains stop ordering).
 
 ### Per-VM endpoints
 
@@ -99,9 +99,9 @@ Alongside existing start/stop/forcestop:
 
 ### Project endpoints
 
-- Extend `POST /projects/{id}/stop` to apply `power_off_mode` to running VMs (skip already non-running). Optional body `{ "vm_ids": [...] }` for selection scope; omit = all project VMs.
+- Extend `POST /projects/{id}/stop` to apply `off_action` to running VMs (skip already non-running). Optional body `{ "vm_ids": [...] }` for selection scope; omit = all project VMs.
 - Extend `POST /projects/{id}/start` to cascade resume/start per VM state (same optional `vm_ids`).
-- `PATCH` of `power_off_mode=hibernate` on a KubeVirt project returns `hibernate_unsupported`. Executing Off while mode is hibernate on KubeVirt also returns that error and does **not** stop.
+- `PATCH` of `off_action=hibernate` on a KubeVirt project returns `hibernate_unsupported`. Executing Off while mode is hibernate on KubeVirt also returns that error and does **not** stop.
 
 ### Host capability
 
