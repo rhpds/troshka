@@ -62,6 +62,10 @@ class Project(Base):
         DateTime(timezone=True)
     )
     poweroff_mode: Mapped[str] = mapped_column(String(20), default="simultaneous")
+    off_action: Mapped[str] = mapped_column(String(20), default="stop")
+    power_warn_dismissed: Mapped[bool] = mapped_column(
+        default=False, server_default="false"
+    )
     topology: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True, default=lambda: {"nodes": [], "edges": []}
     )

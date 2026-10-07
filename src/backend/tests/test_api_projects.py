@@ -1879,6 +1879,18 @@ def test_update_project_poweroff_mode():
     assert resp.json()["poweroff_mode"] == "parallel"
 
 
+def test_update_project_off_action():
+    pid = _create_project(name="off-action-update")
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"off_action": "pause", "power_warn_dismissed": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["off_action"] == "pause"
+    assert body["power_warn_dismissed"] is True
+
+
 # ---------------------------------------------------------------------------
 # from-template with template_yaml (inline) — validation
 # ---------------------------------------------------------------------------

@@ -394,6 +394,8 @@ def _project_response_base(project) -> dict:
             else None
         ),
         "poweroff_mode": project.poweroff_mode,
+        "off_action": project.off_action,
+        "power_warn_dismissed": bool(project.power_warn_dismissed),
         "clock_target": (
             project.clock_target.isoformat() if project.clock_target else None
         ),

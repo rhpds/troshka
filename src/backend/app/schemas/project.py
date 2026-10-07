@@ -1,6 +1,9 @@
 import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+OffAction = Literal["stop", "pause", "hibernate"]
 
 
 class ProjectCreate(BaseModel):
@@ -20,6 +23,8 @@ class ProjectUpdate(BaseModel):
     auto_stop_minutes: int | None = None
     auto_delete_minutes: int | None = None
     poweroff_mode: str | None = None
+    off_action: OffAction | None = None
+    power_warn_dismissed: bool | None = None
     guest_permission: str | None = None
     state: str | None = None
     topology: dict | None = None
@@ -50,6 +55,8 @@ class ProjectResponse(BaseModel):
     budget_stopped: bool = False
     lifetime_expires_at: datetime.datetime | None = None
     poweroff_mode: str
+    off_action: str = "stop"
+    power_warn_dismissed: bool = False
     host_id: str | None = None
     host_instance_id: str | None = None
     host_ip: str | None = None
