@@ -1232,6 +1232,42 @@ def test_stop_vm_no_host():
 
 
 # ---------------------------------------------------------------------------
+# VM pause/unpause/hibernate — validation + KubeVirt hibernate unsupported
+# ---------------------------------------------------------------------------
+def test_pause_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/pause")
+    assert resp.status_code == 404
+
+
+def test_unpause_vm_wrong_state():
+    pid = _create_project(name="unpause-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/unpause")
+    assert resp.status_code == 409
+
+
+def test_hibernate_vm_no_host():
+    pid = _create_project(name="hibernate-vm-no-host", state="active")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/hibernate")
+    assert resp.status_code == 503
+
+
+def test_hibernate_vm_kubevirt_unsupported():
+    """Hibernate on a KubeVirt host returns a structured 'unsupported' error."""
+    pid, _hid = _create_project_with_host(
+        name="hibernate-vm-kubevirt",
+        host_kwargs={"host_type": "kubevirt-cluster", "private_key": None},
+    )
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/hibernate")
+    assert resp.status_code == 501
+    assert resp.json()["detail"]["code"] == "hibernate_unsupported"
+
+
+# ---------------------------------------------------------------------------
 # VM start — POST /projects/{id}/vms/{vm_id}/start — validation
 # ---------------------------------------------------------------------------
 def test_start_vm_project_not_found():

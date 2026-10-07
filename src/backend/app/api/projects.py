@@ -68,6 +68,12 @@ from app.services.troshkad_client import (
 from app.services.troshkad_client import (
     undefine_vm as troshkad_undefine_vm,
 )
+from app.services.vm_power import (
+    HibernateUnsupported,
+    hibernate_vm_on_host,
+    pause_vm_on_host,
+    unpause_vm_on_host,
+)
 from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -2649,6 +2655,29 @@ def get_all_vm_states(
     return {"states": {}, "container_states": {}, "progress": {}}
 
 
+def _resume_if_paused(db, project, host, project_id: str, vm_id: str) -> dict | None:
+    """If the VM is currently paused, unpause it instead of a cold start.
+
+    Returns the route response dict when handled, else ``None`` to fall
+    through to the normal start flow (stopped/hibernated VMs still cold-boot).
+    """
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(project_id) or {}
+    if cached.get("states", {}).get(vm_id) != "paused":
+        return None
+    try:
+        unpause_vm_on_host(host, project_id, vm_id)
+    except Exception as e:
+        logger.exception("Failed to unpause VM %s: %s", sanitize_log(vm_id), e)
+        return {"action": "start", "success": False}
+    notify_project(
+        project_id, {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}}
+    )
+    _touch_metering(db, project)
+    return {"action": "start", "success": True}
+
+
 @router.post(
     "/{project_id}/vms/{vm_id}/start",
     responses={403: {}, 404: {}, 409: {}, 500: {}, 503: {}, 507: {}},
@@ -2660,6 +2689,10 @@ def start_vm(
     db: DbSession,
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    resumed = _resume_if_paused(db, project, host, project_id, vm_id)
+    if resumed is not None:
+        return resumed
 
     # KubeVirt native: patch VM running state via K8s API
     if host.host_type == "kubevirt-cluster":
@@ -2772,6 +2805,83 @@ def stop_vm(
     except TroshkadError as e:
         logger.exception("Failed to stop VM %s: %s", dom, e)
         return {"action": "stop", "success": False}
+
+
+@router.post(
+    "/{project_id}/vms/{vm_id}/pause",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
+def pause_vm(
+    project_id: str,
+    vm_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Suspend a running VM in place — RAM retained, compute billing continues."""
+    project, host = _get_project_and_host(project_id, user, db)
+    try:
+        pause_vm_on_host(host, project_id, vm_id)
+    except Exception as e:
+        logger.exception("Failed to pause VM %s: %s", sanitize_log(vm_id), e)
+        return {"action": "pause", "success": False}
+    notify_project(
+        project_id, {"type": "vm-state", "states": {vm_id: "paused"}, "progress": {}}
+    )
+    _touch_metering(db, project)
+    return {"action": "pause", "success": True}
+
+
+@router.post(
+    "/{project_id}/vms/{vm_id}/unpause",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
+def unpause_vm(
+    project_id: str,
+    vm_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Resume a VM previously paused via ``/pause``."""
+    project, host = _get_project_and_host(project_id, user, db)
+    try:
+        unpause_vm_on_host(host, project_id, vm_id)
+    except Exception as e:
+        logger.exception("Failed to unpause VM %s: %s", sanitize_log(vm_id), e)
+        return {"action": "unpause", "success": False}
+    notify_project(
+        project_id, {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}}
+    )
+    _touch_metering(db, project)
+    return {"action": "unpause", "success": True}
+
+
+@router.post(
+    "/{project_id}/vms/{vm_id}/hibernate",
+    responses={403: {}, 404: {}, 409: {}, 501: {}, 503: {}, 507: {}},
+)
+def hibernate_vm(
+    project_id: str,
+    vm_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Managed-save a running VM to disk, freeing host RAM — libvirt hosts only."""
+    project, host = _get_project_and_host(project_id, user, db)
+    try:
+        hibernate_vm_on_host(host, project_id, vm_id)
+    except HibernateUnsupported as e:
+        raise HTTPException(
+            status_code=501, detail={"code": e.code, "message": str(e)}
+        ) from e
+    except Exception as e:
+        logger.exception("Failed to hibernate VM %s: %s", sanitize_log(vm_id), e)
+        return {"action": "hibernate", "success": False}
+    notify_project(
+        project_id,
+        {"type": "vm-state", "states": {vm_id: "hibernated"}, "progress": {}},
+    )
+    _touch_metering(db, project)
+    return {"action": "hibernate", "success": True}
 
 
 @router.get(
