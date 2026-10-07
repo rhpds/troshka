@@ -1954,6 +1954,52 @@ def test_update_project_off_action():
     assert body["power_warn_dismissed"] is True
 
 
+def test_update_project_off_action_hibernate_kubevirt_rejected():
+    """PATCH off_action=hibernate on a KubeVirt host is rejected up front."""
+    pid, _hid = _create_project_with_host(
+        name="off-action-hibernate-kubevirt",
+        host_kwargs={"host_type": "kubevirt-cluster", "private_key": None},
+    )
+    resp = client.patch(f"/api/v1/projects/{pid}", json={"off_action": "hibernate"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "hibernate_unsupported"
+
+
+def test_update_project_off_action_hibernate_troshkad_allowed():
+    """PATCH off_action=hibernate on a libvirt/troshkad host is fine."""
+    pid, _hid = _create_project_with_host(name="off-action-hibernate-troshkad")
+    resp = client.patch(f"/api/v1/projects/{pid}", json={"off_action": "hibernate"})
+    assert resp.status_code == 200
+    assert resp.json()["off_action"] == "hibernate"
+
+
+def test_update_project_off_action_hibernate_no_host_allowed():
+    """Draft projects with no host yet can pick hibernate speculatively."""
+    pid = _create_project(name="off-action-hibernate-no-host")
+    resp = client.patch(f"/api/v1/projects/{pid}", json={"off_action": "hibernate"})
+    assert resp.status_code == 200
+    assert resp.json()["off_action"] == "hibernate"
+
+
+# ---------------------------------------------------------------------------
+# Project stop — off_action=hibernate fail-fast on KubeVirt
+# ---------------------------------------------------------------------------
+def test_stop_project_hibernate_kubevirt_rejected():
+    """Stopping a project with off_action=hibernate on KubeVirt returns 409
+    immediately, without transitioning through 'stopping'."""
+    pid, _hid = _create_project_with_host(
+        name="stop-hibernate-kubevirt",
+        host_kwargs={"host_type": "kubevirt-cluster", "private_key": None},
+        off_action="hibernate",
+    )
+    resp = client.post(f"/api/v1/projects/{pid}/stop")
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "hibernate_unsupported"
+
+    get_resp = client.get(f"/api/v1/projects/{pid}")
+    assert get_resp.json()["state"] == "active"
+
+
 # ---------------------------------------------------------------------------
 # from-template with template_yaml (inline) — validation
 # ---------------------------------------------------------------------------

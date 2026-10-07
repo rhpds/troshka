@@ -13325,11 +13325,120 @@ def _set_project_error(s, project_id, error_msg, project=None):
         )
 
 
+def _apply_off_action_troshkad(host, project_id, vms, off_action):
+    """Dispatch the project's off_action for troshkad-managed VMs.
+
+    ``stop`` keeps the existing graceful-stop behavior; ``pause``/``hibernate``
+    delegate to the shared ``vm_power`` helpers used by the per-VM routes.
+    """
+    from app.services.vm_power import hibernate_vm_on_host, pause_vm_on_host
+
+    if off_action == "pause":
+        for vm in vms:
+            try:
+                pause_vm_on_host(host, project_id, vm["node_id"])
+            except Exception as e:
+                logger.warning(
+                    "Pause %s: failed for %s: %s", project_id[:8], vm["node_id"], e
+                )
+    elif off_action == "hibernate":
+        for vm in vms:
+            try:
+                hibernate_vm_on_host(host, project_id, vm["node_id"])
+            except Exception as e:
+                logger.warning(
+                    "Hibernate %s: failed for %s: %s", project_id[:8], vm["node_id"], e
+                )
+    else:
+        _stop_troshkad_vms(host, project_id, vms)
+
+
+def _apply_off_action_kubevirt(s, host, project_id, vms, off_action):
+    """Dispatch the project's off_action for KubeVirt VMs.
+
+    Hibernate has no KubeVirt equivalent — callers must check
+    ``supports_hibernate`` before reaching here, so ``stop`` is the only
+    non-pause branch handled.
+    """
+    from app.services.vm_power import pause_vm_on_host
+
+    if off_action == "pause":
+        for vm in vms:
+            try:
+                pause_vm_on_host(host, project_id, vm["node_id"])
+            except Exception as e:
+                logger.warning(
+                    "Pause %s: failed for KubeVirt VM %s: %s",
+                    project_id[:8],
+                    vm["node_id"],
+                    e,
+                )
+    else:
+        _stop_kubevirt_vms(s, host, project_id, vms)
+
+
+def _finalize_project_stopped(s, project, project_id):
+    """Set project to stopped and notify — shared by the stop and hibernate
+    off_actions (hibernate reaches the same end state for Start-button UX)."""
+    # BMC, networks, and EIPs stay intact on stop — only torn down on delete
+    project.state = "stopped"
+    project.deploy_error = None
+
+    # Clear auto-stop timer (consumed; will restart on next start)
+    project.auto_stop_started_at = None
+    project.auto_stop_expires_at = None
+    project.auto_stop_warned = False
+
+    s.commit()
+    from app.services.metering_service import touch_metering
+
+    touch_metering(s, project)
+    notify_project(
+        project_id,
+        {
+            "type": "project-state",
+            "state": "stopped",
+            "deploy_error": None,
+            "auto_stopped": project.auto_stopped,
+            "auto_stop_expires_at": None,
+            "lifetime_expires_at": (
+                project.lifetime_expires_at.isoformat()
+                if project.lifetime_expires_at
+                else None
+            ),
+        },
+    )
+
+
+def _finalize_project_paused(s, project, project_id, vms):
+    """Pause keeps the project ``active`` — revert the transient ``stopping``
+    state the sync route set and notify the per-VM ``paused`` state."""
+    project.state = "active"
+    project.deploy_error = None
+    s.commit()
+    from app.services.metering_service import touch_metering
+
+    touch_metering(s, project)
+    notify_project(
+        project_id,
+        {"type": "project-state", "state": "active", "deploy_error": None},
+    )
+    notify_project(
+        project_id,
+        {
+            "type": "vm-state",
+            "states": {vm["node_id"]: "paused" for vm in vms},
+            "progress": {},
+        },
+    )
+
+
 def stop_project_async(project_id: str):
-    """Background thread: stop a project's VMs and tear down networks."""
+    """Background thread: apply the project's off_action (stop/pause/hibernate)."""
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
+    from app.services.vm_power import supports_hibernate
 
     s = SessionLocal()
     try:
@@ -13347,11 +13456,22 @@ def stop_project_async(project_id: str):
             )
             return
 
+        off_action = project.off_action or "stop"
+        if off_action == "hibernate" and not supports_hibernate(host):
+            # Fail fast rather than leave the project stuck in "stopping".
+            _set_project_error(
+                s,
+                project_id,
+                "Hibernate is not supported on this host type",
+                project=project,
+            )
+            return
+
         topology = project.topology or {}
         vms = _extract_vms(topology)
 
         if host.host_type == "kubevirt-cluster":
-            _stop_kubevirt_vms(s, host, project_id, vms)
+            _apply_off_action_kubevirt(s, host, project_id, vms, off_action)
         elif not host.ip_address:
             _set_project_error(
                 s,
@@ -13361,36 +13481,14 @@ def stop_project_async(project_id: str):
             )
             return
         else:
-            _stop_troshkad_vms(host, project_id, vms)
+            _apply_off_action_troshkad(host, project_id, vms, off_action)
 
-        # BMC, networks, and EIPs stay intact on stop — only torn down on delete
-        project.state = "stopped"
-        project.deploy_error = None
+        if off_action == "pause":
+            _finalize_project_paused(s, project, project_id, vms)
+            logger.info("Pause %s: complete", project_id[:8])
+            return
 
-        # Clear auto-stop timer (consumed; will restart on next start)
-        project.auto_stop_started_at = None
-        project.auto_stop_expires_at = None
-        project.auto_stop_warned = False
-
-        s.commit()
-        from app.services.metering_service import touch_metering
-
-        touch_metering(s, project)
-        notify_project(
-            project_id,
-            {
-                "type": "project-state",
-                "state": "stopped",
-                "deploy_error": None,
-                "auto_stopped": project.auto_stopped,
-                "auto_stop_expires_at": None,
-                "lifetime_expires_at": (
-                    project.lifetime_expires_at.isoformat()
-                    if project.lifetime_expires_at
-                    else None
-                ),
-            },
-        )
+        _finalize_project_stopped(s, project, project_id)
         logger.info("Stop %s: complete", project_id[:8])
 
     except Exception:
@@ -13407,24 +13505,42 @@ def stop_project_async(project_id: str):
         s.close()
 
 
+def _cached_vm_states(project_id: str) -> dict:
+    """Thin wrapper so callers get a plain ``{vm_id: state}`` dict."""
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(project_id) or {}
+    return cached.get("states", {})
+
+
 def _start_kubevirt_vms(s, host, project_id, vms):
-    """Start KubeVirt VMs via runStrategy (not deprecated spec.running)."""
+    """Start KubeVirt VMs via runStrategy (not deprecated spec.running).
+
+    A VM cached as ``paused`` is resumed via the pause/unpause subresource
+    instead — KubeVirt's run-strategy patch only toggles Halted/Always and
+    isn't the right verb to wake a suspended (not stopped) VMI.
+    """
     from app.models.provider import Provider
     from app.services.providers.kubevirt import (
         _get_k8s_clients,
         _project_ns,
         patch_kubevirt_run_strategy,
     )
+    from app.services.vm_power import unpause_vm_on_host
 
     provider = s.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
         return
     custom_api, _, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
+    states = _cached_vm_states(project_id)
     for vm in vms:
         kv_name = f"troshka-vm-{vm['node_id'][:8]}"
         try:
-            patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
+            if states.get(vm["node_id"]) == "paused":
+                unpause_vm_on_host(host, project_id, vm["node_id"])
+            else:
+                patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
         except Exception as e:
             logger.warning(
                 "Start %s: failed to start KubeVirt VM %s: %s",
@@ -13559,6 +13675,50 @@ def _finalize_project_active(s, project, project_id, topology):
     )
 
 
+def _resume_paused_vms(host, project_id, vms):
+    """Unpause VMs that were paused instead of cold-starting them.
+
+    Returns a list of ``(vm_name, error)`` for any that failed to resume.
+    """
+    from app.services.vm_power import unpause_vm_on_host
+
+    failed = []
+    for vm in vms:
+        try:
+            unpause_vm_on_host(host, project_id, vm["node_id"])
+        except Exception as e:
+            failed.append((_vm_domain_name(project_id, vm["node_id"]), str(e)))
+    return failed
+
+
+def _start_vms_respecting_pause(host, project_id, topology):
+    """Start a stopped project's VMs, resuming any still-paused instead of a
+    cold start.
+
+    Hibernated/stopped VMs don't need special handling — libvirt's own
+    ``virsh start`` restores a managed-save image automatically. Only VMs
+    cached as ``paused`` need the dedicated unpause verb.
+    """
+    vms = _extract_vms(topology)
+    states = _cached_vm_states(project_id)
+    paused_vms = [v for v in vms if states.get(v["node_id"]) == "paused"]
+    other_vms = [v for v in vms if states.get(v["node_id"]) != "paused"]
+
+    failed = _resume_paused_vms(host, project_id, paused_vms)
+
+    if other_vms:
+        other_ids = {v["node_id"] for v in other_vms}
+        remaining_topology = dict(topology)
+        remaining_topology["nodes"] = [
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") != "vmNode" or n.get("id") in other_ids
+        ]
+        failed.extend(_start_vms_via_troshkad(host, project_id, remaining_topology))
+
+    return failed
+
+
 def _start_troshkad_host_project(s, project, host, project_id):
     """Restart a stopped project on a troshkad-managed host.
 
@@ -13592,7 +13752,7 @@ def _start_troshkad_host_project(s, project, host, project_id):
         return False
     _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
-    start_failures = _start_vms_via_troshkad(host, project_id, topology)
+    start_failures = _start_vms_respecting_pause(host, project_id, topology)
     if start_failures:
         failed_names = ", ".join(name for name, _ in start_failures)
         error_msg = f"Failed to start VMs: {failed_names}"

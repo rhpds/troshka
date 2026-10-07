@@ -72,6 +72,7 @@ from app.services.vm_power import (
     HibernateUnsupported,
     hibernate_vm_on_host,
     pause_vm_on_host,
+    supports_hibernate,
     unpause_vm_on_host,
 )
 from app.services.ws_pubsub import notify_project
@@ -1934,10 +1935,29 @@ def _apply_topology_update_fields(db, project, project_id, previous_topology, to
     project.topology = topo
 
 
+def _reject_unsupported_hibernate(
+    db: Session, project: Project, off_action: str | None
+) -> None:
+    """Raise 409 hibernate_unsupported if off_action=hibernate on a host that
+    can't support it (KubeVirt has no managed-save equivalent). Draft projects
+    with no host yet are allowed to pick hibernate speculatively."""
+    if off_action != "hibernate" or not project.host_id:
+        return
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if host and not supports_hibernate(host):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "hibernate_unsupported",
+                "message": "Hibernate is not supported on this host type",
+            },
+        )
+
+
 @router.patch(
     "/{project_id}",
     response_model=ProjectResponse,
-    responses={400: {}, 403: {}, 404: {}, 507: {}},
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 507: {}},
 )
 def update_project(
     project_id: str,
@@ -1952,6 +1972,7 @@ def update_project(
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     fields = body.model_dump(exclude_unset=True)
+    _reject_unsupported_hibernate(db, project, fields.get("off_action"))
     previous_topology = (
         copy.deepcopy(project.topology or {}) if "topology" in fields else {}
     )
@@ -2270,6 +2291,10 @@ def stop_project(
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, not active"
         )
+
+    # Fail fast on hibernate/kubevirt rather than enqueue a stop that can
+    # never complete and leave the project stuck in "stopping".
+    _reject_unsupported_hibernate(db, project, project.off_action)
 
     project.state = "stopping"
     db.commit()
