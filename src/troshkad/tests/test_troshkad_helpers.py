@@ -2870,6 +2870,39 @@ class TestHandleVmStop(unittest.TestCase):
         self.assertEqual(result["method"], "destroy")
 
 
+# ── _handle_vm_pause / resume / hibernate ──
+
+
+class TestHandleVmPauseResumeHibernate(unittest.TestCase):
+    @patch("troshkad._run_cmd")
+    def test_pause(self, mock_run_cmd):
+        job = {"job_id": "pause-0000", "output": []}
+        result = troshkad._handle_vm_pause(
+            job, {"domain_name": "troshka-abcdef01-12345678"}
+        )
+        self.assertEqual(result["status"], "paused")
+        mock_run_cmd.assert_called_once()
+        self.assertEqual(mock_run_cmd.call_args[0][1][:2], ["virsh", "suspend"])
+
+    @patch("troshkad._run_cmd")
+    def test_resume(self, mock_run_cmd):
+        job = {"job_id": "resume-0000", "output": []}
+        result = troshkad._handle_vm_resume(
+            job, {"domain_name": "troshka-abcdef01-12345678"}
+        )
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(mock_run_cmd.call_args[0][1][:2], ["virsh", "resume"])
+
+    @patch("troshkad._run_cmd")
+    def test_hibernate(self, mock_run_cmd):
+        job = {"job_id": "hibernate-0000", "output": []}
+        result = troshkad._handle_vm_hibernate(
+            job, {"domain_name": "troshka-abcdef01-12345678"}
+        )
+        self.assertEqual(result["status"], "hibernated")
+        self.assertEqual(mock_run_cmd.call_args[0][1][:2], ["virsh", "managedsave"])
+
+
 # ── _handle_vm_undefine ──
 
 
@@ -4711,6 +4744,7 @@ class TestHandleVmState(unittest.TestCase):
     def test_shut_off(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="shut off\n"),
+            MagicMock(returncode=1, stderr="no managedsave"),
             MagicMock(
                 returncode=0, stdout="<domain><os><boot dev='hd'/></os></domain>"
             ),
@@ -4721,6 +4755,19 @@ class TestHandleVmState(unittest.TestCase):
         )
         self.assertEqual(result["state"], "shut_off")
         self.assertEqual(result["boot_devs"], ["hd"])
+
+    @patch("troshkad.subprocess.run")
+    def test_hibernated_when_managedsave_present(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="shut off\n"),
+            MagicMock(returncode=0, stdout="managed-save image: present\n"),
+            MagicMock(returncode=0, stdout="<domain><os/></domain>"),
+        ]
+        job = {"job_id": "state-0003", "output": []}
+        result = troshkad._handle_vm_state(
+            job, {"domain_name": "troshka-abcdef01-12345678"}
+        )
+        self.assertEqual(result["state"], "hibernated")
 
 
 # ── _handle_vm_list ──

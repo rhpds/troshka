@@ -1898,6 +1898,33 @@ def _handle_vm_stop(job, params):
 COMMAND_HANDLERS["vms/stop"] = _handle_vm_stop
 
 
+def _handle_vm_pause(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "suspend", domain], timeout=30)
+    return {"domain": domain, "status": "paused"}
+
+
+COMMAND_HANDLERS["vms/pause"] = _handle_vm_pause
+
+
+def _handle_vm_resume(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "resume", domain], timeout=30)
+    return {"domain": domain, "status": "running"}
+
+
+COMMAND_HANDLERS["vms/resume"] = _handle_vm_resume
+
+
+def _handle_vm_hibernate(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "managedsave", domain], timeout=600)
+    return {"domain": domain, "status": "hibernated"}
+
+
+COMMAND_HANDLERS["vms/hibernate"] = _handle_vm_hibernate
+
+
 def _handle_vm_reboot(job, params):
     domain = _validate_domain_name(params["domain_name"])
     _run_cmd(job, ["virsh", "reboot", domain], timeout=60)
@@ -1907,9 +1934,29 @@ def _handle_vm_reboot(job, params):
 COMMAND_HANDLERS["vms/reboot"] = _handle_vm_reboot
 
 
-def _handle_vm_state(job, params):
-    """Get VM state via virsh domstate."""
-    domain = _validate_domain_name(params["domain_name"])
+_VIRSH_DOMSTATE_MAP = {
+    "running": "running",
+    "shut_off": "shut_off",
+    "paused": "paused",
+    "in_shutdown": "shutting_down",
+    "crashed": "crashed",
+    "pmsuspended": "suspended",
+    "idle": "unknown",
+}
+
+
+def _domain_has_managedsave(domain: str) -> bool:
+    result = subprocess.run(
+        ["virsh", "managedsave-info", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
+def _domain_power_state(domain: str) -> str | None:
+    """Normalized VM power state from virsh, or None if the domain is missing."""
     result = subprocess.run(
         ["virsh", "domstate", domain],
         capture_output=True,
@@ -1917,20 +1964,20 @@ def _handle_vm_state(job, params):
         timeout=10,
     )
     if result.returncode != 0:
-        # Domain not found or other error
-        return {"domain": domain, "state": "not_found"}
+        return None
     raw_state = result.stdout.strip().lower().replace(" ", "_")
-    # Normalize virsh state names to match libvirt_mgr conventions
-    state_map = {
-        "running": "running",
-        "shut_off": "shut_off",
-        "paused": "paused",
-        "in_shutdown": "shutting_down",
-        "crashed": "crashed",
-        "pmsuspended": "suspended",
-        "idle": "unknown",
-    }
-    state = state_map.get(raw_state, raw_state)
+    state = _VIRSH_DOMSTATE_MAP.get(raw_state, raw_state)
+    if state == "shut_off" and _domain_has_managedsave(domain):
+        return "hibernated"
+    return state
+
+
+def _handle_vm_state(job, params):
+    """Get VM state via virsh domstate."""
+    domain = _validate_domain_name(params["domain_name"])
+    state = _domain_power_state(domain)
+    if state is None:
+        return {"domain": domain, "state": "not_found"}
 
     # Also get boot order from domain XML
     boot_devs = []
@@ -1973,25 +2020,7 @@ def _handle_vm_list(job, params):
         name = name.strip()
         if not name or not name.startswith("troshka-"):
             continue
-        # Get state for each domain
-        state_result = subprocess.run(
-            ["virsh", "domstate", name],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        state = "unknown"
-        if state_result.returncode == 0:
-            raw = state_result.stdout.strip().lower().replace(" ", "_")
-            state_map = {
-                "running": "running",
-                "shut_off": "shut_off",
-                "paused": "paused",
-                "in_shutdown": "shutting_down",
-                "crashed": "crashed",
-                "pmsuspended": "suspended",
-            }
-            state = state_map.get(raw, raw)
+        state = _domain_power_state(name) or "unknown"
         domains.append({"name": name, "state": state})
     return {"domains": domains}
 
@@ -8600,21 +8629,9 @@ def _get_domains_via_virsh():
             name = name.strip()
             if not name or not name.startswith("troshka-"):
                 continue
-            st = subprocess.run(
-                ["virsh", "domstate", name], capture_output=True, text=True, timeout=5
-            )
-            if st.returncode == 0:
-                raw = st.stdout.strip().lower().replace(" ", "_")
-                state_map = {
-                    "running": "running",
-                    "shut_off": "shut_off",
-                    "paused": "paused",
-                    "in_shutdown": "shutting_down",
-                    "crashed": "crashed",
-                    "pmsuspended": "suspended",
-                    "idle": "unknown",
-                }
-                domains[name] = {"state": state_map.get(raw, raw)}
+            state = _domain_power_state(name)
+            if state is not None:
+                domains[name] = {"state": state}
     except Exception as e:
         logger.warning("Failed to list VM states: %s", e)
     return domains

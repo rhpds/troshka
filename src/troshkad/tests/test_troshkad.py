@@ -1061,7 +1061,11 @@ class TestVmStateHandler(unittest.TestCase):
 
     @patch("troshkad.subprocess.run")
     def test_vm_state_shut_off(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="shut off\n", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="shut off\n", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr="no managedsave"),
+            MagicMock(returncode=0, stdout="<domain><os/></domain>", stderr=""),
+        ]
         job = troshkad._create_job(
             "vms/state", {"domain_name": "troshka-aabbccdd-11223344"}
         )
@@ -1095,11 +1099,14 @@ class TestVmListHandler(unittest.TestCase):
             result.returncode = 0
             if "list" in cmd:
                 result.stdout = "troshka-aabb1122-11223344\ntroshka-ccdd5566-55667788\nother-domain\n"
-            elif "domstate" in cmd:
+            elif cmd[:2] == ["virsh", "domstate"]:
                 if "aabb1122" in cmd[2]:
                     result.stdout = "running\n"
                 else:
                     result.stdout = "shut off\n"
+            elif cmd[:2] == ["virsh", "managedsave-info"]:
+                result.returncode = 1
+                result.stdout = ""
             result.stderr = ""
             return result
 
