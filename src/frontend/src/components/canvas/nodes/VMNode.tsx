@@ -409,6 +409,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
                 vmAction("hibernate");
               }}
               disabled={!!actionPending || isRedeploying || !supportsHibernate}
+              style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
             >
               {actionPending === "hibernate" ? <span className="vm-btn-spinner" /> : "💤"}
             </button>
