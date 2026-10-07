@@ -1268,6 +1268,23 @@ def test_hibernate_vm_kubevirt_unsupported():
     assert resp.json()["detail"]["code"] == "hibernate_unsupported"
 
 
+@patch("app.api.projects.notify_project")
+@patch("app.core.redis.enqueue_job")
+def test_hibernate_vm_enqueues_background_job(mock_enqueue, mock_notify):
+    """Libvirt hibernate must return immediately and enqueue the managedsave job."""
+    pid, _hid = _create_project_with_host(name="hibernate-vm-enqueue")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/hibernate")
+    assert resp.status_code == 200
+    assert resp.json() == {"action": "hibernate", "success": True}
+    mock_enqueue.assert_called_once()
+    assert mock_enqueue.call_args[0][0].__name__ == "job_hibernate_vm"
+    mock_notify.assert_called_once_with(
+        pid,
+        {"type": "vm-state", "states": {fake_vm: "hibernating"}, "progress": {}},
+    )
+
+
 # ---------------------------------------------------------------------------
 # VM start — POST /projects/{id}/vms/{vm_id}/start — validation
 # ---------------------------------------------------------------------------

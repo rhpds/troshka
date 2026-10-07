@@ -153,6 +153,46 @@ def job_cache_and_start_vm(project_id: str, host_id: str, vm_id: str):
         s.close()
 
 
+def job_hibernate_vm(project_id: str, host_id: str, vm_id: str):
+    """Managed-save a VM in the background.
+
+    ``virsh managedsave`` can take minutes for RAM-heavy VMs, so this runs
+    off the HTTP request thread (previously blocked up to 300s inline in
+    the ``/hibernate`` route). Notifies ``hibernated``/``error`` via the
+    project WS channel when done.
+    """
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+    from app.services.vm_power import hibernate_vm_on_host
+    from app.services.ws_pubsub import notify_project
+
+    s = SessionLocal()
+    try:
+        proj = s.query(Project).filter_by(id=project_id).first()
+        h = s.query(Host).filter_by(id=host_id).first()
+        if not proj or not h:
+            return
+        try:
+            hibernate_vm_on_host(h, project_id, vm_id)
+        except Exception as e:
+            logger.exception("Failed to hibernate VM %s: %s", vm_id, e)
+            notify_project(
+                project_id,
+                {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}},
+            )
+            return
+        notify_project(
+            project_id,
+            {"type": "vm-state", "states": {vm_id: "hibernated"}, "progress": {}},
+        )
+        from app.services.metering_service import touch_metering
+
+        touch_metering(s, proj)
+    finally:
+        s.close()
+
+
 def job_redeploy_bg(
     project_id: str,
     destroy_ctx: dict | None,

@@ -518,14 +518,29 @@ export default function ProjectCanvasPage() {
       }
     }
     fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-      .then(() => {
+      .then(async (r) => {
+        if (!r.ok) {
+          let detail = `Off action failed (${r.status})`;
+          try {
+            const body = await r.json();
+            const d = body?.detail;
+            if (typeof d === "string") detail = d;
+            else if (d?.message) detail = d.message;
+            else if (d?.code) detail = d.code;
+          } catch {
+            /* keep status-based message */
+          }
+          setAlertMsg(detail);
+          return;
+        }
         // Pause finalizes back to "active" via WS (project never reaches
         // "stopped"); setting "stopping" here optimistically can lose a
         // race with that WS update and get stuck. stop/hibernate both
         // finalize to "stopped", so the optimistic transition is safe and
         // matches the backend's own synchronous state write.
         if (offAction !== "pause") setProjectState("stopping");
-      });
+      })
+      .catch(() => setAlertMsg("Failed to reach server for Off action"));
   };
 
   // REST fallback: poll deploy progress when WS isn't delivering updates

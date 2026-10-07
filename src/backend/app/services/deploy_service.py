@@ -13330,13 +13330,19 @@ def _apply_off_action_troshkad(host, project_id, vms, off_action):
 
     ``stop`` keeps the existing graceful-stop behavior; ``pause``/``hibernate``
     delegate to the shared ``vm_power`` helpers used by the per-VM routes.
+    Callers are expected to have already restricted ``vms`` to currently
+    running ones for the pause/hibernate branches. Returns the node_ids that
+    were actually paused/hibernated (empty for ``stop``, which notifies via
+    its own path).
     """
     from app.services.vm_power import hibernate_vm_on_host, pause_vm_on_host
 
+    succeeded = []
     if off_action == "pause":
         for vm in vms:
             try:
                 pause_vm_on_host(host, project_id, vm["node_id"])
+                succeeded.append(vm["node_id"])
             except Exception as e:
                 logger.warning(
                     "Pause %s: failed for %s: %s", project_id[:8], vm["node_id"], e
@@ -13345,12 +13351,14 @@ def _apply_off_action_troshkad(host, project_id, vms, off_action):
         for vm in vms:
             try:
                 hibernate_vm_on_host(host, project_id, vm["node_id"])
+                succeeded.append(vm["node_id"])
             except Exception as e:
                 logger.warning(
                     "Hibernate %s: failed for %s: %s", project_id[:8], vm["node_id"], e
                 )
     else:
         _stop_troshkad_vms(host, project_id, vms)
+    return succeeded
 
 
 def _apply_off_action_kubevirt(s, host, project_id, vms, off_action):
@@ -13358,14 +13366,18 @@ def _apply_off_action_kubevirt(s, host, project_id, vms, off_action):
 
     Hibernate has no KubeVirt equivalent — callers must check
     ``supports_hibernate`` before reaching here, so ``stop`` is the only
-    non-pause branch handled.
+    non-pause branch handled. Callers are expected to have already
+    restricted ``vms`` to currently running ones for the pause branch.
+    Returns the node_ids that were actually paused.
     """
     from app.services.vm_power import pause_vm_on_host
 
+    succeeded = []
     if off_action == "pause":
         for vm in vms:
             try:
                 pause_vm_on_host(host, project_id, vm["node_id"])
+                succeeded.append(vm["node_id"])
             except Exception as e:
                 logger.warning(
                     "Pause %s: failed for KubeVirt VM %s: %s",
@@ -13375,6 +13387,7 @@ def _apply_off_action_kubevirt(s, host, project_id, vms, off_action):
                 )
     else:
         _stop_kubevirt_vms(s, host, project_id, vms)
+    return succeeded
 
 
 def _finalize_project_stopped(s, project, project_id):
@@ -13470,8 +13483,16 @@ def stop_project_async(project_id: str):
         topology = project.topology or {}
         vms = _extract_vms(topology)
 
+        # Pause/hibernate only make sense for VMs that are actually running —
+        # skip ones already off instead of issuing a virsh call that will
+        # fail and then broadcasting a stale "paused" state for them.
+        if off_action in ("pause", "hibernate"):
+            vms = _filter_running_vms(project_id, vms)
+
         if host.host_type == "kubevirt-cluster":
-            _apply_off_action_kubevirt(s, host, project_id, vms, off_action)
+            succeeded_ids = _apply_off_action_kubevirt(
+                s, host, project_id, vms, off_action
+            )
         elif not host.ip_address:
             _set_project_error(
                 s,
@@ -13481,10 +13502,13 @@ def stop_project_async(project_id: str):
             )
             return
         else:
-            _apply_off_action_troshkad(host, project_id, vms, off_action)
+            succeeded_ids = _apply_off_action_troshkad(
+                host, project_id, vms, off_action
+            )
 
         if off_action == "pause":
-            _finalize_project_paused(s, project, project_id, vms)
+            paused_vms = [v for v in vms if v["node_id"] in succeeded_ids]
+            _finalize_project_paused(s, project, project_id, paused_vms)
             logger.info("Pause %s: complete", project_id[:8])
             return
 
@@ -13511,6 +13535,17 @@ def _cached_vm_states(project_id: str) -> dict:
 
     cached = get_cached_vm_states(project_id) or {}
     return cached.get("states", {})
+
+
+def _filter_running_vms(project_id: str, vms: list[dict]) -> list[dict]:
+    """Restrict to VMs the WS poller currently reports as ``running``.
+
+    Used by the pause/hibernate off_action branches so an already-off VM
+    is neither sent a virsh pause/managedsave call nor included in the
+    "paused" broadcast afterward.
+    """
+    states = _cached_vm_states(project_id)
+    return [v for v in vms if states.get(v["node_id"]) == "running"]
 
 
 def _start_kubevirt_vms(s, host, project_id, vms):

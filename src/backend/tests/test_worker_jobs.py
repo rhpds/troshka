@@ -283,6 +283,66 @@ class TestJobCacheAndStartVm:
 
 
 # ---------------------------------------------------------------------------
+# job_hibernate_vm
+# ---------------------------------------------------------------------------
+
+
+class TestJobHibernateVm:
+    @patch("app.services.metering_service.touch_metering")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.vm_power.hibernate_vm_on_host")
+    @patch("app.core.database.SessionLocal")
+    def test_happy_path_notifies_hibernated(
+        self, mock_session_cls, mock_hibernate, mock_notify, mock_touch
+    ):
+        from app.workers.jobs import job_hibernate_vm
+
+        mock_db = MagicMock()
+        mock_session_cls.return_value = mock_db
+        proj = MagicMock()
+        host = MagicMock()
+        mock_db.query.return_value.filter_by.return_value.first.side_effect = [
+            proj,
+            host,
+        ]
+
+        job_hibernate_vm("proj-1", "h1", "vm-1")
+
+        mock_hibernate.assert_called_once_with(host, "proj-1", "vm-1")
+        mock_notify.assert_called_once_with(
+            "proj-1",
+            {"type": "vm-state", "states": {"vm-1": "hibernated"}, "progress": {}},
+        )
+        mock_touch.assert_called_once_with(mock_db, proj)
+        mock_db.close.assert_called_once()
+
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch(
+        "app.services.vm_power.hibernate_vm_on_host",
+        side_effect=RuntimeError("disk full"),
+    )
+    @patch("app.core.database.SessionLocal")
+    def test_failure_restores_running_state(
+        self, mock_session_cls, mock_hibernate, mock_notify
+    ):
+        from app.workers.jobs import job_hibernate_vm
+
+        mock_db = MagicMock()
+        mock_session_cls.return_value = mock_db
+        mock_db.query.return_value.filter_by.return_value.first.side_effect = [
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        job_hibernate_vm("proj-1", "h1", "vm-1")
+
+        mock_notify.assert_called_once_with(
+            "proj-1",
+            {"type": "vm-state", "states": {"vm-1": "running"}, "progress": {}},
+        )
+
+
+# ---------------------------------------------------------------------------
 # job_redeploy_bg
 # ---------------------------------------------------------------------------
 

@@ -9265,6 +9265,7 @@ class TestGetDomainsViaVirsh(unittest.TestCase):
         mock_subrun.side_effect = [
             MagicMock(returncode=0, stdout="troshka-aabbccdd-11223344\n"),
             MagicMock(returncode=0, stdout="shut off\n"),
+            MagicMock(returncode=1, stdout=""),  # managedsave-info: no managed save
         ]
         result = troshkad._get_domains_via_virsh()
         self.assertEqual(result["troshka-aabbccdd-11223344"]["state"], "shut_off")

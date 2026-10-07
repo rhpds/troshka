@@ -28,12 +28,14 @@ class TestStopProjectAsyncPause:
     @patch(f"{SVC}.notify_project")
     @patch(f"{VMP_MOD}.pause_vm_on_host")
     @patch(f"{SVC}._extract_vms")
+    @patch("app.services.ws_pubsub.get_cached_vm_states")
     def test_pause_troshkad_keeps_project_active(
-        self, mock_extract, mock_pause, mock_notify
+        self, mock_cached, mock_extract, mock_pause, mock_notify
     ):
         from app.services.deploy_service import stop_project_async
 
         mock_extract.return_value = [{"node_id": VM_NODE_ID, "name": "vm1"}]
+        mock_cached.return_value = {"states": {VM_NODE_ID: "running"}}
 
         project = _make_project(
             state="stopping",
@@ -65,12 +67,54 @@ class TestStopProjectAsyncPause:
     @patch(f"{SVC}.notify_project")
     @patch(f"{VMP_MOD}.pause_vm_on_host")
     @patch(f"{SVC}._extract_vms")
+    @patch("app.services.ws_pubsub.get_cached_vm_states")
+    def test_pause_skips_vm_that_is_already_off(
+        self, mock_cached, mock_extract, mock_pause, mock_notify
+    ):
+        """A VM already off must not be virsh-suspended nor broadcast paused."""
+        from app.services.deploy_service import stop_project_async
+
+        mock_extract.return_value = [{"node_id": VM_NODE_ID, "name": "vm1"}]
+        mock_cached.return_value = {"states": {VM_NODE_ID: "shut_off"}}
+
+        project = _make_project(
+            state="stopping",
+            topology=_minimal_topology(
+                vm_nodes=[_vm_node(node_id=VM_NODE_ID, name="vm1")]
+            ),
+        )
+        project.off_action = "pause"
+        host = _make_host()
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.side_effect = [
+            project,
+            host,
+        ]
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session):
+            stop_project_async(PROJECT_ID)
+
+        mock_pause.assert_not_called()
+        assert project.state == "active"
+
+        vm_state_calls = [
+            c for c in mock_notify.call_args_list if c.args[1].get("type") == "vm-state"
+        ]
+        assert vm_state_calls
+        assert vm_state_calls[0].args[1]["states"] == {}
+
+    @patch(f"{SVC}.notify_project")
+    @patch(f"{VMP_MOD}.pause_vm_on_host")
+    @patch(f"{SVC}._extract_vms")
+    @patch("app.services.ws_pubsub.get_cached_vm_states")
     def test_pause_kubevirt_keeps_project_active(
-        self, mock_extract, mock_pause, mock_notify
+        self, mock_cached, mock_extract, mock_pause, mock_notify
     ):
         from app.services.deploy_service import stop_project_async
 
         mock_extract.return_value = [{"node_id": VM_NODE_ID, "name": "vm1"}]
+        mock_cached.return_value = {"states": {VM_NODE_ID: "running"}}
 
         project = _make_project(state="stopping")
         project.off_action = "pause"
@@ -98,12 +142,14 @@ class TestStopProjectAsyncHibernate:
     @patch(f"{SVC}.notify_project")
     @patch(f"{VMP_MOD}.hibernate_vm_on_host")
     @patch(f"{SVC}._extract_vms")
+    @patch("app.services.ws_pubsub.get_cached_vm_states")
     def test_hibernate_troshkad_sets_stopped(
-        self, mock_extract, mock_hibernate, mock_notify
+        self, mock_cached, mock_extract, mock_hibernate, mock_notify
     ):
         from app.services.deploy_service import stop_project_async
 
         mock_extract.return_value = [{"node_id": VM_NODE_ID, "name": "vm1"}]
+        mock_cached.return_value = {"states": {VM_NODE_ID: "running"}}
 
         project = _make_project(state="stopping")
         project.off_action = "hibernate"

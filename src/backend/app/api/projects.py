@@ -70,7 +70,6 @@ from app.services.troshkad_client import (
 )
 from app.services.vm_power import (
     HibernateUnsupported,
-    hibernate_vm_on_host,
     pause_vm_on_host,
     supports_hibernate,
     unpause_vm_on_host,
@@ -2892,22 +2891,34 @@ def hibernate_vm(
     user: CurrentUser,
     db: DbSession,
 ):
-    """Managed-save a running VM to disk, freeing host RAM — libvirt hosts only."""
+    """Managed-save a running VM to disk, freeing host RAM — libvirt hosts only.
+
+    ``virsh managedsave`` can take minutes on RAM-heavy VMs, so the actual
+    save runs in a background job (RQ, or a daemon thread when Redis is
+    unavailable) — this route only validates and enqueues, then returns
+    immediately. The WS channel carries hibernating -> hibernated (or back
+    to running on failure).
+    """
     project, host = _get_project_and_host(project_id, user, db)
-    try:
-        hibernate_vm_on_host(host, project_id, vm_id)
-    except HibernateUnsupported as e:
+    if not supports_hibernate(host):
         raise HTTPException(
-            status_code=501, detail={"code": e.code, "message": str(e)}
-        ) from e
-    except Exception as e:
-        logger.exception("Failed to hibernate VM %s: %s", sanitize_log(vm_id), e)
-        return {"action": "hibernate", "success": False}
+            status_code=501,
+            detail={
+                "code": HibernateUnsupported.code,
+                "message": str(HibernateUnsupported()),
+            },
+        )
     notify_project(
         project_id,
-        {"type": "vm-state", "states": {vm_id: "hibernated"}, "progress": {}},
+        {"type": "vm-state", "states": {vm_id: "hibernating"}, "progress": {}},
     )
-    _touch_metering(db, project)
+    p_id = project.id
+    h_id = host.id
+
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_hibernate_vm
+
+    enqueue_job(job_hibernate_vm, p_id, h_id, vm_id, project_id=p_id, host_id=h_id)
     return {"action": "hibernate", "success": True}
 
 
