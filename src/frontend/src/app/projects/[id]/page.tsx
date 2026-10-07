@@ -96,6 +96,11 @@ export default function ProjectCanvasPage() {
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("");
   const [projectHostId, setProjectHostId] = useState("");
+  const [offAction, setOffAction] = useState<"stop" | "pause" | "hibernate">("stop");
+  const [powerWarnDismissed, setPowerWarnDismissed] = useState(false);
+  const [supportsHibernate, setSupportsHibernate] = useState(true);
+  const [showOffMenu, setShowOffMenu] = useState(false);
+  const offMenuRef = React.useRef<HTMLDivElement>(null);
   const [ownerEmail, setOwnerEmail] = useState<string | null>(null);
   const [hostPlacement, setHostPlacement] = useState<{
     provider: string | null;
@@ -170,6 +175,9 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
+        setOffAction((data.off_action as "stop" | "pause" | "hibernate") || "stop");
+        setPowerWarnDismissed(!!data.power_warn_dismissed);
+        setSupportsHibernate(data.supports_hibernate !== false);
         setOwnerEmail(data.owner_email || null);
         {
           const providerType =
@@ -422,6 +430,73 @@ export default function ProjectCanvasPage() {
   const disruptiveBtnStyle = disruptiveActionsDisabled
     ? { opacity: 0.4, cursor: "not-allowed" as const }
     : { opacity: 0.85 };
+
+  const OFF_ACTION_LABEL: Record<"stop" | "pause" | "hibernate", string> = {
+    stop: "■ Stop",
+    pause: "⏸ Pause",
+    hibernate: "💤 Hibernate",
+  };
+  const POWER_WARN_MESSAGE =
+    "This freezes the guest without a clean service shutdown. Databases, clusters, and " +
+    "network services may not recover cleanly when resumed. Mileage may vary.";
+  const HIBERNATE_WARN_SUFFIX =
+    "\n\nHost RAM is freed; a save image is kept on disk.";
+
+  useEffect(() => {
+    if (!showOffMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (offMenuRef.current && !offMenuRef.current.contains(e.target as HTMLElement)) {
+        setShowOffMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showOffMenu]);
+
+  const handleSetOffAction = async (action: "stop" | "pause" | "hibernate") => {
+    setShowOffMenu(false);
+    if (action === "hibernate" && !supportsHibernate) return;
+    const previous = offAction;
+    if (action === previous) return;
+    setOffAction(action);
+    try {
+      const r = await fetch(`/api/v1/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ off_action: action }),
+      });
+      if (!r.ok) throw new Error("off_action patch failed");
+    } catch {
+      setOffAction(previous);
+    }
+  };
+
+  const handleOffClick = async () => {
+    if (disruptiveActionsDisabled) return;
+    if ((offAction === "pause" || offAction === "hibernate") && !powerWarnDismissed) {
+      const checkboxRef = { current: false };
+      const message =
+        offAction === "hibernate" ? POWER_WARN_MESSAGE + HIBERNATE_WARN_SUFFIX : POWER_WARN_MESSAGE;
+      const confirmed = await appConfirm({
+        title: offAction === "hibernate" ? "Hibernate environment?" : "Pause environment?",
+        message,
+        confirmLabel: offAction === "hibernate" ? "Hibernate" : "Pause",
+        checkboxLabel: "Don't show this again for this project",
+        checkboxRef,
+      });
+      if (!confirmed) return;
+      if (checkboxRef.current) {
+        setPowerWarnDismissed(true);
+        fetch(`/api/v1/projects/${projectId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ power_warn_dismissed: true }),
+        }).catch(() => {});
+      }
+    }
+    fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
+      .then(() => setProjectState("stopping"));
+  };
 
   // REST fallback: poll deploy progress when WS isn't delivering updates
   useEffect(() => {
@@ -1476,20 +1551,52 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && (
             <>
-              <button
-                className="project-stop-btn"
-                disabled={disruptiveActionsDisabled}
-                title={disruptiveDisabledTitle}
-                style={disruptiveActionsDisabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
-                onClick={async () => {
-                  if (disruptiveActionsDisabled) return;
-                  if (!(await appConfirm({ message: "Stop all VMs in this environment?", confirmLabel: "Stop" }))) return;
-                  fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-                    .then(() => setProjectState("stopping"));
-                }}
-              >
-                ■ Stop
-              </button>
+              <div ref={offMenuRef} style={{ position: "relative", display: "flex", flexShrink: 0 }}>
+                <button
+                  className="project-stop-btn"
+                  disabled={disruptiveActionsDisabled}
+                  title={disruptiveDisabledTitle}
+                  style={{
+                    ...(disruptiveActionsDisabled ? { opacity: 0.4, cursor: "not-allowed" } : {}),
+                    borderRadius: "6px 0 0 6px",
+                    borderRight: "none",
+                  }}
+                  onClick={handleOffClick}
+                >
+                  {OFF_ACTION_LABEL[offAction]}
+                </button>
+                <button
+                  className="project-stop-btn"
+                  aria-label="Choose off mode"
+                  style={{ padding: "5px 8px", borderRadius: "0 6px 6px 0" }}
+                  onClick={() => setShowOffMenu((v) => !v)}
+                >
+                  ▾
+                </button>
+                {showOffMenu && (
+                  <div
+                    className="node-context-menu"
+                    style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20 }}
+                  >
+                    {(["stop", "pause", "hibernate"] as const).map((action) => (
+                      <button
+                        key={action}
+                        disabled={action === "hibernate" && !supportsHibernate}
+                        title={action === "hibernate" && !supportsHibernate ? "Not supported on this host type" : undefined}
+                        style={
+                          action === "hibernate" && !supportsHibernate
+                            ? { opacity: 0.4, cursor: "not-allowed" }
+                            : undefined
+                        }
+                        onClick={() => handleSetOffAction(action)}
+                      >
+                        {offAction === action ? "✓ " : ""}
+                        {OFF_ACTION_LABEL[action]}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {isAdmin && (
                 <button
                   className="project-publish-btn"
