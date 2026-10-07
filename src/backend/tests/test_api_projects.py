@@ -4,6 +4,7 @@ Targets ~100 uncovered new-code lines in app/api/projects.py for SonarQube cover
 """
 
 import uuid
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -1289,6 +1290,32 @@ def test_start_vm_no_host():
     fake_vm = str(uuid.uuid4())
     resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/start")
     assert resp.status_code == 503
+
+
+@patch("app.api.projects.unpause_vm_on_host")
+@patch("app.services.ws_pubsub.get_cached_vm_states")
+def test_start_vm_resumes_when_paused(mock_cached_states, mock_unpause):
+    """start_vm unpauses (not cold-starts) when the cached state is 'paused'."""
+    pid, hid = _create_project_with_host(name="start-vm-paused")
+    vm_id = str(uuid.uuid4())
+    mock_cached_states.return_value = {"states": {vm_id: "paused"}}
+    # Capture args while the request's DB session is still open — the Host
+    # instance detaches once the response is returned.
+    captured = {}
+
+    def _capture(host, project_id, target_vm_id):
+        captured["host_id"] = host.id
+        captured["project_id"] = project_id
+        captured["vm_id"] = target_vm_id
+
+    mock_unpause.side_effect = _capture
+
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{vm_id}/start")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"action": "start", "success": True}
+    mock_unpause.assert_called_once()
+    assert captured == {"host_id": hid, "project_id": pid, "vm_id": vm_id}
 
 
 # ---------------------------------------------------------------------------
