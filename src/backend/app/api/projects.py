@@ -403,6 +403,7 @@ def _project_response_base(project) -> dict:
         "poweroff_mode": project.poweroff_mode,
         "off_action": project.off_action,
         "power_warn_dismissed": bool(project.power_warn_dismissed),
+        "supports_hibernate": True,
         "clock_target": (
             project.clock_target.isoformat() if project.clock_target else None
         ),
@@ -419,6 +420,7 @@ def _attach_host_provider_fields(result: dict, db, project, prov_type) -> None:
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
         return
+    result["supports_hibernate"] = supports_hibernate(host)
     result["host_instance_id"] = host.instance_id
     result["host_ip"] = host.ip_address
     provider = (

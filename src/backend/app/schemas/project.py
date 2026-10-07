@@ -57,6 +57,7 @@ class ProjectResponse(BaseModel):
     poweroff_mode: str
     off_action: str = "stop"
     power_warn_dismissed: bool = False
+    supports_hibernate: bool = True
     host_id: str | None = None
     host_instance_id: str | None = None
     host_ip: str | None = None

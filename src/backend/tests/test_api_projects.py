@@ -1954,6 +1954,20 @@ def test_update_project_off_action():
     assert body["power_warn_dismissed"] is True
 
 
+def test_get_project_supports_hibernate_false_for_kubevirt():
+    """Project GET exposes supports_hibernate from the bound host."""
+    pid, _hid = _create_project_with_host(
+        name="get-supports-hibernate-kubevirt",
+        host_kwargs={"host_type": "kubevirt-cluster", "private_key": None},
+    )
+    resp = client.get(f"/api/v1/projects/{pid}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["supports_hibernate"] is False
+    assert body["off_action"] == "stop"
+    assert body["power_warn_dismissed"] is False
+
+
 def test_update_project_off_action_hibernate_kubevirt_rejected():
     """PATCH off_action=hibernate on a KubeVirt host is rejected up front."""
     pid, _hid = _create_project_with_host(
