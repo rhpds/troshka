@@ -3811,7 +3811,7 @@ def _ops_pod_running_kubevirt(host, project_id: str) -> bool:
 
 
 def _maybe_heal_stuck_ops_pod(host, project_id: str) -> dict:
-    """[LIVE-ENV] Reschedule a KubeVirt ops pod stuck in ContainerCreating.
+    """[LIVE-ENV] Reschedule a KubeVirt ops pod stuck creating or OVN-misplaced.
 
     No-op for troshkad hosts and when the pod is healthy / not yet past the
     stuck threshold. See :mod:`app.services.ocp.ops_pod_heal`.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
@@ -9,9 +11,12 @@ from unittest.mock import MagicMock
 from app.services.ocp.ops_pod_heal import (
     ANN_ATTEMPTS,
     ANN_STUCK_NODES,
+    _build_ops_pod_recreate_body,
     _format_stuck_node_counts,
     _is_ops_pod_stuck_creating,
     _node_hostname_not_in_affinity,
+    _ops_pod_ovn_ip_mismatched,
+    _parse_node_ovn_subnets,
     _parse_stuck_node_counts,
     heal_stuck_ops_pod,
     plan_ops_pod_heal,
@@ -35,6 +40,7 @@ def _pod(
     phase="Pending",
     annotations=None,
     affinity=None,
+    pod_ip=None,
 ):
     pod = MagicMock()
     pod.metadata.name = "troshka-aabbccdd-ops"
@@ -50,7 +56,12 @@ def _pod(
     pod.spec.service_account_name = "default"
     pod.spec.containers = [{"name": "ops", "image": "ops:latest"}]
     pod.spec.volumes = []
+    pod.spec.dns_config = None
+    pod.spec.dns_policy = None
+    pod.spec.host_aliases = None
+    pod.spec.security_context = None
     pod.status.phase = phase
+    pod.status.pod_ip = pod_ip
     cond = MagicMock()
     cond.type = "PodScheduled"
     cond.status = "True" if scheduled else "False"
@@ -68,6 +79,14 @@ def _pod(
         cs.state = MagicMock(waiting=None, running=MagicMock())
         pod.status.container_statuses = [cs]
     return pod
+
+
+def _node_with_subnet(cidr: str):
+    node = MagicMock()
+    node.metadata.annotations = {
+        "k8s.ovn.org/node-subnets": json.dumps({"default": [cidr]})
+    }
+    return node
 
 
 class TestOpsPodStuckDetection:
@@ -174,6 +193,63 @@ class TestMaybeHealStuckOpsPod:
         heal.assert_called_once()
 
 
+class TestOvnSubnetHelpers:
+    def test_parse_node_ovn_subnets_list_form(self):
+        nets = _parse_node_ovn_subnets(_node_with_subnet("10.129.24.0/21"))
+        assert nets == [ipaddress.ip_network("10.129.24.0/21")]
+
+    def test_parse_node_ovn_subnets_string_form(self):
+        node = MagicMock()
+        node.metadata.annotations = {
+            "k8s.ovn.org/node-subnets": json.dumps({"default": "10.129.32.0/21"})
+        }
+        nets = _parse_node_ovn_subnets(node)
+        assert nets == [ipaddress.ip_network("10.129.32.0/21")]
+
+    def test_mismatch_when_ip_outside_node_subnet(self):
+        pod = _pod(
+            creating=False,
+            phase="Running",
+            pod_ip="10.129.37.158",
+        )
+        assert _ops_pod_ovn_ip_mismatched(pod, [ipaddress.ip_network("10.129.24.0/21")])
+
+    def test_no_mismatch_when_ip_in_subnet(self):
+        pod = _pod(creating=False, phase="Running", pod_ip="10.129.25.10")
+        assert not _ops_pod_ovn_ip_mismatched(
+            pod, [ipaddress.ip_network("10.129.24.0/21")]
+        )
+
+
+class TestRecreateStripsOvnAnnotations:
+    def test_strips_ovn_status_keeps_multus_networks(self):
+        pod = _pod(
+            age_s=200,
+            annotations={
+                "k8s.ovn.org/pod-networks": '{"default":{"ip_addresses":["10.129.37.158/21"]}}',
+                "k8s.v1.cni.cncf.io/network-status": "[]",
+                "k8s.v1.cni.cncf.io/networks": "net-a,net-b",
+                ANN_ATTEMPTS: "1",
+            },
+        )
+        body = _build_ops_pod_recreate_body(
+            pod,
+            annotations={
+                "k8s.ovn.org/pod-networks": "stale",
+                "k8s.v1.cni.cncf.io/networks": "net-a,net-b",
+                ANN_ATTEMPTS: "2",
+                ANN_STUCK_NODES: "host8:2",
+            },
+            affinity=None,
+        )
+        anns = body["metadata"]["annotations"]
+        assert "k8s.ovn.org/pod-networks" not in anns
+        assert "k8s.v1.cni.cncf.io/network-status" not in anns
+        assert anns["k8s.v1.cni.cncf.io/networks"] == "net-a,net-b"
+        assert anns[ANN_ATTEMPTS] == "2"
+        assert anns[ANN_STUCK_NODES] == "host8:2"
+
+
 class TestHealStuckOpsPod:
     def test_noop_when_not_stuck(self):
         core = MagicMock()
@@ -184,14 +260,24 @@ class TestHealStuckOpsPod:
 
     def test_deletes_and_recreates_with_updated_annotations(self):
         core = MagicMock()
-        core.read_namespaced_pod.return_value = _pod(age_s=200, node="host6")
+        core.read_namespaced_pod.return_value = _pod(
+            age_s=200,
+            node="host6",
+            annotations={
+                "k8s.ovn.org/pod-networks": '{"default":{}}',
+                "k8s.v1.cni.cncf.io/networks": "net-a",
+            },
+        )
         result = heal_stuck_ops_pod(core, "ns", "troshka-aabbccdd-ops", now=time.time())
         assert result["action"] == "reschedule"
         assert "host6" in result["detail"]
+        assert result["reason"] == "stuck-creating"
         core.delete_namespaced_pod.assert_called_once()
         body = _create_body(core)
         assert body["metadata"]["annotations"][ANN_ATTEMPTS] == "1"
         assert "host6:1" in body["metadata"]["annotations"][ANN_STUCK_NODES]
+        assert "k8s.ovn.org/pod-networks" not in body["metadata"]["annotations"]
+        assert body["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"] == "net-a"
         assert "status" not in body
         assert "uid" not in body["metadata"]
         assert "resourceVersion" not in body["metadata"]
@@ -224,3 +310,39 @@ class TestHealStuckOpsPod:
         assert "stuck" in result["message"].lower()
         core.delete_namespaced_pod.assert_not_called()
         core.create_namespaced_pod.assert_not_called()
+
+    def test_heals_running_pod_with_ovn_ip_mismatch(self):
+        core = MagicMock()
+        core.read_namespaced_pod.return_value = _pod(
+            age_s=60,
+            node="host7",
+            creating=False,
+            phase="Running",
+            pod_ip="10.129.37.158",
+            annotations={
+                "k8s.ovn.org/pod-networks": '{"default":{"ip_addresses":["10.129.37.158/21"]}}',
+                "k8s.v1.cni.cncf.io/networks": "net-a",
+            },
+        )
+        core.read_node.return_value = _node_with_subnet("10.129.24.0/21")
+        result = heal_stuck_ops_pod(core, "ns", "troshka-aabbccdd-ops", now=time.time())
+        assert result["action"] == "reschedule"
+        assert result["reason"] == "ovn-ip-mismatch"
+        core.read_node.assert_called_once_with("host7")
+        body = _create_body(core)
+        assert "k8s.ovn.org/pod-networks" not in body["metadata"]["annotations"]
+        assert body["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"] == "net-a"
+
+    def test_running_matching_ip_is_noop(self):
+        core = MagicMock()
+        core.read_namespaced_pod.return_value = _pod(
+            age_s=60,
+            node="host7",
+            creating=False,
+            phase="Running",
+            pod_ip="10.129.25.10",
+        )
+        core.read_node.return_value = _node_with_subnet("10.129.24.0/21")
+        result = heal_stuck_ops_pod(core, "ns", "troshka-aabbccdd-ops", now=time.time())
+        assert result["action"] == "ok"
+        core.delete_namespaced_pod.assert_not_called()

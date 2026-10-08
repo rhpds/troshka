@@ -431,7 +431,17 @@ class TestOpsPodHealHelpers:
         from app.services.ocp.ops_pod_heal import _strip_ops_pod_runtime_fields
 
         body = {
-            "metadata": {"name": "ops", "uid": "u1", "resourceVersion": "1"},
+            "metadata": {
+                "name": "ops",
+                "uid": "u1",
+                "resourceVersion": "1",
+                "annotations": {
+                    "k8s.ovn.org/pod-networks": '{"default":{}}',
+                    "k8s.v1.cni.cncf.io/network-status": "[]",
+                    "k8s.v1.cni.cncf.io/networks": "net-a",
+                    "troshka.io/ops-reschedule-attempts": "1",
+                },
+            },
             "status": {"phase": "Pending"},
             "spec": {"nodeName": "n1", "containers": []},
         }
@@ -439,3 +449,8 @@ class TestOpsPodHealHelpers:
         assert "uid" not in body["metadata"]
         assert "status" not in body
         assert "nodeName" not in body["spec"]
+        anns = body["metadata"]["annotations"]
+        assert "k8s.ovn.org/pod-networks" not in anns
+        assert "k8s.v1.cni.cncf.io/network-status" not in anns
+        assert anns["k8s.v1.cni.cncf.io/networks"] == "net-a"
+        assert anns["troshka.io/ops-reschedule-attempts"] == "1"
