@@ -80,6 +80,13 @@
 - **k8s_stream gotcha**: `_preload_content=True` returns Python repr, not raw JSON — use `_preload_content=False` with manual read loop for JSON responses
 - SSH key auth preferred over password when `ssh_key_id` is provided
 - `from-template` API accepts `ssh_pub_key` directly for agnosticv key injection
+### Local oc (`troshka-oc`)
+- Laptop `oc` against nested OCP clusters via authenticated WebSocket API tunnel
+- CLI: `scripts/troshka-oc` — see [`troshka-oc.md`](troshka-oc.md) (API URL + Settings → API Keys)
+- API: `GET /projects/{id}/clusters`, `GET …/clusters/{id}/kubeconfig`, `WS …/clusters/{id}/api-tunnel`
+- Dial: kubevirt-native → gateway PF; ocpvirt/troshkad hosts → agent `/tcp-tunnel` in project netns
+- Canvas OPENSHIFT INFO shows project-level `troshka-oc use` (all clusters) + `oc config use-context` to switch
+
 ### Pattern Save State
 - Backend `Pattern.state`: "creating" → "capturing" → "available" or "error"
 - Frontend patterns page shows read-only cards during save (buttons disabled, delete hidden)

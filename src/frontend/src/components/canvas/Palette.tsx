@@ -113,6 +113,136 @@ function PaletteCopyBtn({ value, label }: { value: string; label: string }) {
   );
 }
 
+/** Project-level Local oc commands for OPENSHIFT INFO (all clusters + use-context). */
+function OcpLocalOcCommands({
+  projectId,
+  clusterNames,
+  open,
+  onToggle,
+}: {
+  projectId: string;
+  clusterNames: string[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const proj = projectId.slice(0, 8);
+  const apiOrigin =
+    typeof window !== "undefined" ? window.location.origin : "https://troshka.example.com";
+  const cloneCmd = "git clone https://github.com/rhpds/troshka.git && cd troshka";
+  const apiEnvCmd =
+    `export TROSHKA_API_URL=${apiOrigin}\n` +
+    `export TROSHKA_API_KEY=trk_…   # Settings → API Keys → Create Key`;
+  const useCmd = `eval "$(./scripts/troshka-oc use ${proj})"`;
+  const teardownCmd = `eval "$(./scripts/troshka-oc teardown ${proj})"`;
+  const oneShot = `./scripts/troshka-oc --project ${proj} get nodes`;
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          color: "inherit",
+          fontSize: 10,
+          opacity: 0.85,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+        }}
+      >
+        <span style={{ fontSize: 9 }}>{open ? "▾" : "▸"}</span>
+        <span style={{ fontWeight: 600 }}>Local oc</span>
+        <span style={{ opacity: 0.55 }}>(troshka-oc tunnel)</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            marginTop: 6,
+            padding: "8px 8px 6px",
+            borderRadius: 6,
+            background: "var(--pf-t--global--background--color--secondary, rgba(0,0,0,0.2))",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+          }}
+        >
+          <div style={{ opacity: 0.6, fontSize: 10, lineHeight: 1.35 }}>
+            Needs <code>oc</code> on PATH. Create a user API key under{" "}
+            <a
+              href="/settings"
+              onClick={(e) => e.stopPropagation()}
+              style={{ color: "inherit", textDecoration: "underline" }}
+            >
+              Settings → API Keys
+            </a>{" "}
+            (copy once). Starts tunnels for every cluster; switch with{" "}
+            <code>oc config use-context</code>. See <code>docs/dev/troshka-oc.md</code>.
+          </div>
+          <div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>Clone repo</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{cloneCmd}</code>
+              <PaletteCopyBtn value={cloneCmd} label="git clone troshka" />
+            </div>
+          </div>
+          <div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>Point at Troshka API</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <code style={{ fontSize: 10, flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                {apiEnvCmd}
+              </code>
+              <PaletteCopyBtn value={apiEnvCmd} label="TROSHKA_API env" />
+            </div>
+          </div>
+          <div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>Start oc tunnel</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{useCmd}</code>
+              <PaletteCopyBtn value={useCmd} label="troshka-oc use" />
+            </div>
+          </div>
+          {clusterNames.length > 0 && (
+            <div>
+              <div style={{ opacity: 0.5, marginBottom: 2 }}>Switch cluster</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {clusterNames.map((name) => {
+                  const switchCmd = `oc config use-context ${name}`;
+                  return (
+                    <div key={name} style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                      <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{switchCmd}</code>
+                      <PaletteCopyBtn value={switchCmd} label={`use-context ${name}`} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>Stop oc tunnel</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{teardownCmd}</code>
+              <PaletteCopyBtn value={teardownCmd} label="troshka-oc teardown" />
+            </div>
+          </div>
+          <div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>One-shot oc commands (no tunnel needed)</div>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+              <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{oneShot}</code>
+              <PaletteCopyBtn value={oneShot} label="troshka-oc get nodes" />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface PaletteItemDef {
   type: string;
   label: string;
@@ -326,6 +456,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const bmcHeaderRef = React.useRef<HTMLDivElement>(null);
   const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
   const [showOcpInfo, setShowOcpInfo] = useState(false);
+  /** Local oc command section expanded in OPENSHIFT INFO. */
+  const [ocpLocalOcOpen, setOcpLocalOcOpen] = useState(false);
   const ocpHeaderRef = React.useRef<HTMLDivElement>(null);
   const [ocpFlyoutPos, setOcpFlyoutPos] = useState({ top: 0, left: 220 });
   const [budgetDraft, setBudgetDraft] = useState("");
@@ -787,11 +919,33 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <PaletteCopyBtn value={ocpInfo.showroomUrl} label="Showroom URL" />
                   </div>
                 )}
+                {projectId && ocpInfo.clusters.some((c) => c.kubeconfig) ? (
+                  <div
+                    style={
+                      ocpInfo.showroomUrl
+                        ? { borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }
+                        : undefined
+                    }
+                  >
+                    <OcpLocalOcCommands
+                      projectId={projectId}
+                      clusterNames={ocpInfo.clusters.filter((c) => c.kubeconfig).map((c) => c.name)}
+                      open={ocpLocalOcOpen}
+                      onToggle={() => setOcpLocalOcOpen((v) => !v)}
+                    />
+                  </div>
+                ) : ocpInfo.clusters.some((c) => c.kubeconfig) ? (
+                  <div style={{ opacity: 0.55, fontSize: 10 }}>
+                    Local oc commands available after project id is known
+                  </div>
+                ) : null}
                 {ocpInfo.clusters.map((cluster, idx) => (
                   <div
                     key={cluster.id}
                     style={
-                      idx > 0 || ocpInfo.showroomUrl
+                      idx > 0 ||
+                      ocpInfo.showroomUrl ||
+                      ocpInfo.clusters.some((c) => c.kubeconfig)
                         ? { borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }
                         : undefined
                     }
@@ -841,24 +995,6 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                         kubeadmin password available after install
                       </div>
                     )}
-                    {cluster.kubeconfig ? (
-                      <div style={{ marginTop: 4 }}>
-                        <span
-                          style={{ cursor: "pointer", fontSize: 10, opacity: 0.75, textDecoration: "underline" }}
-                          onClick={() => {
-                            const blob = new Blob([cluster.kubeconfig], { type: "application/x-yaml" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `kubeconfig-${cluster.kubeconfigVmName || cluster.name}.yaml`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          }}
-                        >
-                          Download kubeconfig
-                        </span>
-                      </div>
-                    ) : null}
                   </div>
                 ))}
               </div>

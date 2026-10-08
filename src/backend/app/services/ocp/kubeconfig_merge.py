@@ -52,6 +52,105 @@ def is_valid_kubeconfig(raw: str | bytes) -> bool:
     return bool(cfg.get("contexts"))
 
 
+_SERVER_HOST_RE = re.compile(r"^https://([^:/]+)(:\d+)?")
+_IPV4_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+
+
+def kubeconfig_server_host(kc_yaml: str) -> str:
+    """Return the first cluster server's hostname, or empty string."""
+    if not kc_yaml or not kc_yaml.strip():
+        return ""
+    try:
+        doc = yaml.safe_load(kc_yaml)
+    except yaml.YAMLError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    for entry in doc.get("clusters", []) or []:
+        cl = entry.get("cluster") if isinstance(entry, dict) else None
+        if not isinstance(cl, dict):
+            continue
+        m = _SERVER_HOST_RE.match(str(cl.get("server", "")))
+        if m:
+            return m.group(1)
+    return ""
+
+
+def rewrite_kubeconfig_server(
+    kc_yaml: str,
+    new_host: str,
+    *,
+    port: int | None = None,
+    preserve_tls_server_name: bool = True,
+    tls_server_name: str | None = None,
+    skip_if_server_is_ip: bool = False,
+    insecure_skip_tls_verify: bool = False,
+) -> str:
+    """Rewrite each cluster ``server`` host while preserving cert verification.
+
+    When ``preserve_tls_server_name`` is True, the original hostname (or an
+    existing ``tls-server-name``) is kept as ``tls-server-name`` so SNI + SAN
+    checks still match the API cert after the client dials ``new_host`` (VIP,
+    localhost tunnel, etc.). Pass ``tls_server_name`` to force SNI (e.g. an
+    OpenShift Route hostname). No-op when ``new_host`` is empty or YAML is bad.
+
+    The showroom cluster-terminal VIP rewrite must use
+    ``rewrite_kubeconfig_server_to_host`` (skip_if_server_is_ip=True) — do not
+    change that call site's semantics when extending this helper.
+    """
+    if not new_host or not kc_yaml or not kc_yaml.strip():
+        return kc_yaml
+    try:
+        doc = yaml.safe_load(kc_yaml)
+    except yaml.YAMLError:
+        return kc_yaml
+    if not isinstance(doc, dict):
+        return kc_yaml
+    changed = False
+    for entry in doc.get("clusters", []) or []:
+        cl = entry.get("cluster") if isinstance(entry, dict) else None
+        if not isinstance(cl, dict):
+            continue
+        m = _SERVER_HOST_RE.match(str(cl.get("server", "")))
+        if not m:
+            continue
+        orig_host = m.group(1)
+        orig_port = m.group(2) or ""
+        if skip_if_server_is_ip and _IPV4_RE.match(orig_host):
+            continue
+        port_suffix = f":{port}" if port is not None else orig_port
+        cl["server"] = f"https://{new_host}{port_suffix}"
+        if tls_server_name:
+            cl["tls-server-name"] = tls_server_name
+        elif preserve_tls_server_name:
+            existing_sni = str(cl.get("tls-server-name") or "").strip()
+            if existing_sni:
+                cl["tls-server-name"] = existing_sni
+            elif not _IPV4_RE.match(orig_host):
+                cl["tls-server-name"] = orig_host
+        if insecure_skip_tls_verify:
+            cl["insecure-skip-tls-verify"] = True
+            cl.pop("certificate-authority-data", None)
+            cl.pop("certificate-authority", None)
+        changed = True
+    if not changed:
+        return kc_yaml
+    return yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)
+
+
+def rewrite_kubeconfig_server_to_host(kc_yaml: str, api_host: str) -> str:
+    """Rewrite DNS server host → IP/host, skipping entries already on an IP.
+
+    Used by the showroom cluster terminal (API VIP rewrite).
+    """
+    return rewrite_kubeconfig_server(
+        kc_yaml,
+        api_host,
+        preserve_tls_server_name=True,
+        skip_if_server_is_ip=True,
+    )
+
+
 def _sanitize_context_name(name: str) -> str:
     """A shell/oc-friendly context name: lowercase, non-alnum runs -> single '-'."""
     slug = re.sub(r"[^a-z0-9._-]+", "-", (name or "").strip().lower())

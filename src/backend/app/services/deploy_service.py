@@ -4682,30 +4682,9 @@ def _kubeconfig_server_to_ip(kc_yaml: str, api_ip: str) -> str:
     still match the API server SAN). No-op if ``api_ip`` is empty, the server is
     already an IP, or the YAML can't be parsed. Lets the cluster terminal's ``oc``
     reach the API without resolving api.<cluster>.<domain> via the lab dnsmasq."""
-    import re as _re
+    from app.services.ocp.kubeconfig_merge import rewrite_kubeconfig_server_to_host
 
-    import yaml as _yaml
-
-    if not api_ip or not kc_yaml.strip():
-        return kc_yaml
-    try:
-        doc = _yaml.safe_load(kc_yaml)
-    except Exception:
-        return kc_yaml
-    if not isinstance(doc, dict):
-        return kc_yaml
-    changed = False
-    for entry in doc.get("clusters", []) or []:
-        cl = entry.get("cluster") if isinstance(entry, dict) else None
-        if not isinstance(cl, dict):
-            continue
-        m = _re.match(r"^https://([^:/]+)(:\d+)?", str(cl.get("server", "")))
-        if not m or _re.match(r"^\d+\.\d+\.\d+\.\d+$", m.group(1)):
-            continue  # unparsable or already an IP
-        cl["server"] = f"https://{api_ip}{m.group(2) or ''}"
-        cl["tls-server-name"] = m.group(1)
-        changed = True
-    return _yaml.safe_dump(doc) if changed else kc_yaml
+    return rewrite_kubeconfig_server_to_host(kc_yaml, api_ip)
 
 
 def _inject_cluster_kubeconfigs(

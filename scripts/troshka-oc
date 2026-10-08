@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# Run stock `oc` against nested OCP clusters in a Troshka project you own.
+#
+# Opens an authenticated TCP tunnel (WebSocket → nested API) and rewrites a
+# local kubeconfig to 127.0.0.1. Showroom cluster-terminal kubeconfigs are
+# untouched.
+#
+# Usage:
+#   ./scripts/troshka-oc use <project> [cluster]     # tunnel + print KUBECONFIG
+#   ./scripts/troshka-oc use --shell <project>       # tunnel + interactive shell
+#   ./scripts/troshka-oc [--project P] [--cluster C] <oc args...>
+#   ./scripts/troshka-oc list <project>
+#
+# Auth:
+#   TROSHKA_API_URL   (default http://localhost:8200)
+#   TROSHKA_API_KEY   (optional in local dev; Bearer trk_… in prod)
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VENV_PYTHON="${ROOT}/src/backend/venv/bin/python3"
+HELPER="${ROOT}/scripts/troshka_oc.py"
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "Error: backend venv not found at $VENV_PYTHON" >&2
+    exit 1
+fi
+if [[ ! -f "$HELPER" ]]; then
+    echo "Error: missing $HELPER" >&2
+    exit 1
+fi
+
+export TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
+exec "$VENV_PYTHON" "$HELPER" "$@"

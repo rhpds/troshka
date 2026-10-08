@@ -978,6 +978,35 @@ class TestRouteDecorator(unittest.TestCase):
         del troshkad.ROUTES[("GET", "/test-route-decorator")]
 
 
+# ── tcp-tunnel helpers ──
+
+
+class TestTcpTunnelValidation(unittest.TestCase):
+    def test_validate_tunnel_ipv4_accepts_ipv4(self):
+        self.assertEqual(troshkad._validate_tunnel_ipv4("10.0.0.10"), "10.0.0.10")
+
+    def test_validate_tunnel_ipv4_rejects_hostname(self):
+        with self.assertRaises(RuntimeError):
+            troshkad._validate_tunnel_ipv4("api.ocp.local")
+
+    def test_validate_tunnel_ipv4_rejects_ipv6(self):
+        with self.assertRaises(RuntimeError):
+            troshkad._validate_tunnel_ipv4("::1")
+
+    @patch("os.path.exists", return_value=False)
+    def test_handle_tcp_tunnel_missing_namespace(self, _exists):
+        handler = MagicMock()
+        handler._read_body.return_value = {
+            "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+            "host": "10.0.0.10",
+            "port": 6443,
+        }
+        troshkad.handle_tcp_tunnel(handler, {})
+        handler._send_json.assert_called()
+        status = handler._send_json.call_args[0][0]
+        self.assertEqual(status, 404)
+
+
 # ── _handle_oc_exec ──
 
 

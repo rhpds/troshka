@@ -82,3 +82,6 @@ Code: `vxlan._infra_ip_reservations`, `kubevirt_reconfigure._showroom_ip_for_cid
 - **KubeVirt fix**: exec pod already has correct DNS via `dnsConfig` in pod spec
 - **Shell pipelines** (`|`, `&&`, `;`) skip `_exec_oc` and fall through to bastion SSH
 - **Bastionless**: simple `oc` commands work without a bastion on all providers
+### Local oc (laptop)
+- Use `scripts/troshka-oc` to run stock `oc` against nested clusters via an authenticated API tunnel — see [`troshka-oc.md`](troshka-oc.md)
+- Canvas **OPENSHIFT INFO** → **Local oc** copies project-level `use` / `use-context` commands

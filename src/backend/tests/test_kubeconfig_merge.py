@@ -10,7 +10,10 @@ from app.services.ocp.kubeconfig_merge import (
     cluster_terminal_motd_text,
     is_valid_kubeadmin_password,
     is_valid_kubeconfig,
+    kubeconfig_server_host,
     merge_kubeconfigs,
+    rewrite_kubeconfig_server,
+    rewrite_kubeconfig_server_to_host,
 )
 
 
@@ -111,6 +114,92 @@ def test_display_name_sanitized_for_context():
     merged = yaml.safe_load(merge_kubeconfigs([("My Cluster", _kc())]))
     # spaces are not shell/oc-friendly in a context name
     assert merged["current-context"] == "my-cluster"
+
+
+def test_rewrite_to_host_sets_tls_server_name_like_showroom_terminal():
+    """Showroom cluster terminal path: DNS API host → VIP + tls-server-name."""
+    out = yaml.safe_load(
+        rewrite_kubeconfig_server_to_host(
+            _kc(server="https://api.source.source.cclm.local:6443"),
+            "10.0.0.10",
+        )
+    )
+    cl = out["clusters"][0]["cluster"]
+    assert cl["server"] == "https://10.0.0.10:6443"
+    assert cl["tls-server-name"] == "api.source.source.cclm.local"
+    assert cl.get("certificate-authority-data") == "Q0E="
+
+
+def test_rewrite_to_host_skips_already_ip_preserving_showroom_idempotence():
+    raw = _kc(server="https://10.0.0.10:6443")
+    assert rewrite_kubeconfig_server_to_host(raw, "10.0.0.110") == raw
+
+
+def test_rewrite_to_host_preserves_insecure_skip_tls_verify():
+    """Harvested kubeconfigs often set insecure-skip-tls-verify; keep it."""
+    raw = yaml.safe_dump(
+        {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [
+                {
+                    "name": "c",
+                    "cluster": {
+                        "server": "https://api.x.local:6443",
+                        "insecure-skip-tls-verify": True,
+                    },
+                }
+            ],
+            "contexts": [{"name": "c", "context": {"cluster": "c", "user": "u"}}],
+            "users": [{"name": "u", "user": {"token": "t"}}],
+            "current-context": "c",
+        }
+    )
+    out = yaml.safe_load(rewrite_kubeconfig_server_to_host(raw, "10.0.0.10"))
+    cl = out["clusters"][0]["cluster"]
+    assert cl["server"] == "https://10.0.0.10:6443"
+    assert cl["tls-server-name"] == "api.x.local"
+    assert cl["insecure-skip-tls-verify"] is True
+
+
+def test_rewrite_localhost_tunnel_keeps_sni_and_sets_port():
+    out = yaml.safe_load(
+        rewrite_kubeconfig_server(
+            _kc(server="https://api.x.local:6443"),
+            "127.0.0.1",
+            port=18443,
+        )
+    )
+    cl = out["clusters"][0]["cluster"]
+    assert cl["server"] == "https://127.0.0.1:18443"
+    assert cl["tls-server-name"] == "api.x.local"
+
+
+def test_rewrite_localhost_from_vip_preserves_existing_tls_server_name():
+    vip = rewrite_kubeconfig_server_to_host(
+        _kc(server="https://api.x.local:6443"), "10.0.0.10"
+    )
+    out = yaml.safe_load(rewrite_kubeconfig_server(vip, "127.0.0.1", port=19000))
+    cl = out["clusters"][0]["cluster"]
+    assert cl["server"] == "https://127.0.0.1:19000"
+    assert cl["tls-server-name"] == "api.x.local"
+
+
+def test_kubeconfig_server_host_extracts_hostname():
+    assert (
+        kubeconfig_server_host(_kc(server="https://api.x.local:6443")) == "api.x.local"
+    )
+    assert kubeconfig_server_host("") == ""
+
+
+def test_deploy_service_wrapper_matches_shared_helper():
+    """deploy_service._kubeconfig_server_to_ip must stay a thin alias."""
+    from app.services.deploy_service import _kubeconfig_server_to_ip
+
+    raw = _kc(server="https://api.ocp.local:6443")
+    assert _kubeconfig_server_to_ip(
+        raw, "10.1.0.10"
+    ) == rewrite_kubeconfig_server_to_host(raw, "10.1.0.10")
 
 
 def test_cluster_terminal_motd_includes_single_cluster_access_info():

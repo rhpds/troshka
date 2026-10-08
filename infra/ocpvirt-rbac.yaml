@@ -122,7 +122,7 @@ rules:
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list"]
   - apiGroups: [""]
-    resources: ["pods/exec"]
+    resources: ["pods/exec", "pods/portforward"]
     verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["configmaps"]

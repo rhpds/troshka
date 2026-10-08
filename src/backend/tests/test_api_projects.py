@@ -597,6 +597,77 @@ def test_get_vm_states_not_found():
 
 
 # ---------------------------------------------------------------------------
+# GET /projects/{id}/clusters (+ per-cluster kubeconfig)
+# ---------------------------------------------------------------------------
+def test_list_project_clusters_empty():
+    pid = _create_project(name="clusters-empty")
+    resp = client.get(f"/api/v1/projects/{pid}/clusters")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_list_project_clusters_with_kubeconfig():
+    topo = {
+        "clusters": [
+            {
+                "id": "ocp-1",
+                "name": "ocp",
+                "apiVip": "10.0.0.10",
+                "baseDomain": "lab.local",
+            }
+        ],
+        "nodes": [
+            {
+                "type": "vmNode",
+                "id": "vm1",
+                "data": {
+                    "name": "cp-0",
+                    "clusterId": "ocp-1",
+                    "clusterRole": "controlplane",
+                    "ocpKubeconfig": (
+                        "apiVersion: v1\nkind: Config\n"
+                        "clusters:\n- name: c\n  cluster:\n"
+                        "    server: https://api.ocp.lab.local:6443\n"
+                        "contexts:\n- name: c\n  context: {cluster: c, user: u}\n"
+                        "users:\n- name: u\n  user: {token: t}\n"
+                        "current-context: c\n"
+                    ),
+                },
+            }
+        ],
+        "edges": [],
+    }
+    pid = _create_project(name="clusters-kc", topology=topo)
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    db = SessionLocal()
+    p = db.query(Project).filter_by(id=pid).first()
+    p.deployed_topology = topo
+    db.commit()
+    db.close()
+
+    resp = client.get(f"/api/v1/projects/{pid}/clusters")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["name"] == "ocp"
+    assert rows[0]["kubeconfig_available"] is True
+    assert rows[0]["tls_server_name"] == "api.ocp.lab.local"
+    assert rows[0]["api_tunnel_path"].endswith("/clusters/ocp-1/api-tunnel")
+
+    kc = client.get(f"/api/v1/projects/{pid}/clusters/ocp/kubeconfig")
+    assert kc.status_code == 200
+    assert "api.ocp.lab.local" in kc.text
+
+
+def test_get_cluster_kubeconfig_not_found():
+    pid = _create_project(name="clusters-nokc")
+    resp = client.get(f"/api/v1/projects/{pid}/clusters/missing/kubeconfig")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /projects/{id}/kubeconfigs
 # ---------------------------------------------------------------------------
 def test_list_kubeconfigs_empty():

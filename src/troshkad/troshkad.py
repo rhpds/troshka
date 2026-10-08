@@ -3507,6 +3507,149 @@ def _handle_oc_exec(job, params):
 COMMAND_HANDLERS["oc-exec"] = _handle_oc_exec
 
 
+_TCP_TUNNEL_RELAY = r"""
+import os
+import select
+import socket
+import sys
+
+host, port = sys.argv[1], int(sys.argv[2])
+sock = socket.create_connection((host, port), timeout=30)
+sock.settimeout(None)
+# Use os.read/os.write — BufferedReader.read(n) can block waiting to fill n bytes
+# even after select reports readability on a pipe.
+in_fd = sys.stdin.fileno()
+out_fd = sys.stdout.fileno()
+try:
+    while True:
+        readable, _, _ = select.select([in_fd, sock], [], [])
+        if in_fd in readable:
+            data = os.read(in_fd, 65536)
+            if not data:
+                break
+            sock.sendall(data)
+        if sock in readable:
+            data = sock.recv(65536)
+            if not data:
+                break
+            os.write(out_fd, data)
+finally:
+    sock.close()
+"""
+
+
+def _validate_tunnel_ipv4(host: str) -> str:
+    """Allow only IPv4 literals for tcp-tunnel destinations (SSRF guard)."""
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise RuntimeError("tunnel host must be an IPv4 address") from exc
+    if addr.version != 4:
+        raise RuntimeError("tunnel host must be an IPv4 address")
+    return str(addr)
+
+
+def _pipe_tunnel_bytes(src, dst, label: str) -> None:
+    """Copy bytes until EOF.
+
+    Must use stream APIs (not os.read on fileno): handler rfile/wfile wrap an
+    SSLSocket. Prefer ``read1`` so a small TLS ClientHello is not blocked waiting
+    for BufferedReader to fill a 64KiB buffer.
+    """
+    try:
+        read = getattr(src, "read1", None) or src.read
+        while True:
+            data = read(65536)
+            if not data:
+                break
+            dst.write(data)
+            try:
+                dst.flush()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("tcp-tunnel %s closed", label, exc_info=True)
+
+
+@route("POST", "/tcp-tunnel")
+def handle_tcp_tunnel(handler, params):
+    """Stream raw TCP to host:port inside a project netns (nested OCP API).
+
+    Request body JSON: ``{"project_id","host","port"}``. After a 200 response,
+    the connection becomes a bidirectional byte pipe (client ↔ netns TCP).
+    """
+    import threading
+
+    body = handler._read_body()
+    project_id = _validate_project_id(body.get("project_id", ""))
+    host = _validate_tunnel_ipv4(str(body.get("host") or ""))
+    port = int(body.get("port") or 6443)
+    if port < 1 or port > 65535:
+        handler._send_json(400, {"error": "invalid port"})
+        return
+
+    ns = f"troshka-{project_id[:8]}"
+    ns_path = f"/var/run/netns/{ns}"
+    if not os.path.exists(ns_path):
+        handler._send_json(404, {"error": f"namespace {ns} not found"})
+        return
+
+    proc = subprocess.Popen(
+        ["ip", "netns", "exec", ns, "python3", "-c", _TCP_TUNNEL_RELAY, host, str(port)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    # Fail fast if the in-netns dial dies before we advertise 200.
+    time.sleep(0.05)
+    if proc.poll() is not None:
+        err = (proc.stderr.read() or b"").decode("utf-8", errors="replace")[:300]
+        handler._send_json(502, {"error": f"tunnel dial failed: {err or proc.returncode}"})
+        return
+
+    try:
+        handler.connection.settimeout(3600)
+    except Exception:
+        pass
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/octet-stream")
+    handler.end_headers()
+
+    t_out = threading.Thread(
+        target=_pipe_tunnel_bytes,
+        args=(proc.stdout, handler.wfile, "net→client"),
+        daemon=True,
+    )
+    t_in = threading.Thread(
+        target=_pipe_tunnel_bytes,
+        args=(handler.rfile, proc.stdin, "client→net"),
+        daemon=True,
+    )
+    t_out.start()
+    t_in.start()
+    t_in.join()
+    try:
+        if proc.stdin:
+            proc.stdin.close()
+    except Exception:
+        pass
+    t_out.join(timeout=5)
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def _cleanup_stale_recert():
     """Clean up leftover recert artifacts from a previous agent crash."""
     import glob as _glob

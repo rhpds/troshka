@@ -1800,6 +1800,75 @@ def cancel_ocp_install(
     return {"status": "cancelling", "cluster": cluster}
 
 
+def _owned_project_or_404(project_id: str, user: User, db: Session) -> Project:
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    return project
+
+
+@router.get("/{project_id}/clusters", responses={403: {}, 404: {}})
+def list_project_clusters(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """List nested OCP clusters and kubeconfig availability for local oc tunnels."""
+    from app.services.ocp.api_tunnel import list_cluster_access
+
+    project = _owned_project_or_404(project_id, user, db)
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "api_vip": c.api_vip,
+            "base_domain": c.base_domain,
+            "kubeconfig_available": c.kubeconfig_available,
+            "tls_server_name": c.tls_server_name,
+            "route_hostname": c.route_hostname,
+            "api_tunnel_path": (
+                f"/api/v1/projects/{project.id}/clusters/{c.id}/api-tunnel"
+            ),
+        }
+        for c in list_cluster_access(project)
+    ]
+
+
+@router.get(
+    "/{project_id}/clusters/{cluster_id}/kubeconfig",
+    responses={403: {}, 404: {}},
+)
+def get_cluster_kubeconfig(
+    project_id: str,
+    cluster_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Download the harvested kubeconfig for one nested OCP cluster.
+
+    Returns the raw in-cluster server URL (not rewritten). The ``troshka-oc``
+    CLI rewrites to localhost after opening the API tunnel. Showroom terminal
+    kubeconfigs are injected separately and are unaffected.
+    """
+    from app.services.ocp.api_tunnel import get_cluster_access
+
+    project = _owned_project_or_404(project_id, user, db)
+    cluster = get_cluster_access(project, cluster_id)
+    if not cluster or not cluster.kubeconfig:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Kubeconfig not found for cluster {cluster_id}",
+        )
+    filename = f"kubeconfig-{cluster.name}.yaml"
+    return Response(
+        content=cluster.kubeconfig,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
 def list_kubeconfigs(
     project_id: str,
@@ -1807,11 +1876,7 @@ def list_kubeconfigs(
     db: DbSession,
 ):
     """List available kubeconfigs for a project's recerted VMs."""
-    project = db.query(Project).filter_by(id=project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    project = _owned_project_or_404(project_id, user, db)
     topo = project.deployed_topology or project.topology or {}
     configs = []
     for node in topo.get("nodes", []):
@@ -1854,13 +1919,7 @@ def get_kubeconfig(
     Reads from the deployed_topology node data (stored during recert).
     Optional ?vm=name to get a specific VM's kubeconfig.
     """
-    from fastapi.responses import Response
-
-    project = db.query(Project).filter_by(id=project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    project = _owned_project_or_404(project_id, user, db)
 
     topo = project.deployed_topology or project.topology or {}
     kc_content = _find_kubeconfig_content(topo, vm)

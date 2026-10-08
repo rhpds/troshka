@@ -37,6 +37,25 @@ def _is_scoped_api_key(token: str | None, db) -> bool:
     return bool(api_key and api_key.is_scoped)
 
 
+def _authenticate_ws_api_key(token: str, db) -> User | None:
+    """Resolve an unscoped ``trk_`` API key to its user (None if missing/scoped)."""
+    if not token.startswith("trk_"):
+        return None
+    import datetime
+
+    from app.models.api_key import ApiKey, hash_key
+
+    api_key = (
+        db.query(ApiKey).filter_by(key_hash=hash_key(token), is_active=True).first()
+    )
+    if not api_key or api_key.is_scoped:
+        return None
+    if api_key.expires_at and api_key.expires_at < datetime.datetime.now(datetime.UTC):
+        return None
+    api_key.last_used_at = datetime.datetime.now(datetime.UTC)
+    return api_key.user
+
+
 def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
     if not config.auth.oauth_enabled and not token:
         from app.core.auth import _get_or_create_dev_user
@@ -53,6 +72,10 @@ def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
 
     if not token:
         return None
+
+    api_user = _authenticate_ws_api_key(token, db)
+    if api_user:
+        return api_user
 
     from app.core.auth import decode_jwt
 
@@ -152,6 +175,179 @@ async def project_websocket(websocket: WebSocket, project_id: str):
         unsubscribe(project_id, websocket)
         if db:
             db.close()
+
+
+def _authorize_project_ws(websocket: WebSocket, project_id: str, db):
+    """AuthN/AuthZ for project-scoped websockets. Returns (user, project) or None."""
+    token = websocket.query_params.get("token")
+    if _is_scoped_api_key(token, db):
+        return None, None, 4003, "Scoped API keys cannot open websockets"
+    user = _authenticate_ws(token, db, headers=dict(websocket.headers))
+    if not user:
+        return None, None, 4001, "Unauthorized"
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        return None, None, 4004, "Project not found"
+    if project.owner_id != user.id and user.role != "admin":
+        return None, None, 4003, "Access denied"
+    return user, project, None, None
+
+
+@router.websocket("/api/v1/projects/{project_id}/clusters/{cluster_id}/api-tunnel")
+async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: str):
+    """Binary WebSocket TCP tunnel to a nested OCP API (owner/admin only)."""
+    from app.models.host import Host
+    from app.services.ocp import api_tunnel as tun
+
+    db = SessionLocal()
+    ssock = None
+    writer = None
+    try:
+        _user, project, code, reason = _authorize_project_ws(websocket, project_id, db)
+        if code or project is None:
+            await websocket.close(code=code or 4001, reason=reason or "Unauthorized")
+            return
+
+        cluster = tun.get_cluster_access(project, cluster_id)
+        if not cluster or not cluster.kubeconfig_available:
+            await websocket.close(code=4004, reason="Cluster kubeconfig not available")
+            return
+        if not project.host_id:
+            await websocket.close(code=4004, reason="Project has no host")
+            return
+        host = db.query(Host).filter_by(id=project.host_id).first()
+        if not host:
+            await websocket.close(code=4004, reason="Host not found")
+            return
+
+        try:
+            targets = tun.resolve_dial_targets(project, cluster, host, db)
+        except Exception as exc:
+            logger.warning("API tunnel dial resolve failed: %s", exc)
+            await websocket.close(code=1013, reason=str(exc)[:120])
+            return
+        if not targets:
+            await websocket.close(code=1013, reason="No dial path for cluster")
+            return
+
+        await websocket.accept()
+
+        last_err: Exception | None = None
+        provider = None
+        if host.provider_id:
+            from app.models.provider import Provider
+
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+
+        for candidate in targets:
+            try:
+                if candidate.via == "troshkad":
+                    ssock = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            tun.open_troshkad_tunnel_socket,
+                            host,
+                            project.id,
+                            candidate.host,
+                            candidate.port,
+                        ),
+                        timeout=15,
+                    )
+                elif candidate.via in ("kubevirt-pf", "kubevirt-exec"):
+                    if not provider:
+                        raise RuntimeError("No provider for kubevirt tunnel")
+                    opener = (
+                        tun.open_kubevirt_portforward_socket
+                        if candidate.via == "kubevirt-pf"
+                        else tun.open_kubevirt_exec_relay
+                    )
+                    ssock = await asyncio.wait_for(
+                        asyncio.to_thread(opener, provider, candidate),
+                        timeout=30,
+                    )
+                else:
+                    reader, writer = await asyncio.wait_for(
+                        tun.open_direct_connection(candidate.host, candidate.port),
+                        timeout=3,
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "ready",
+                            "via": candidate.via,
+                            "tls_server_name": candidate.tls_server_name,
+                            "force_insecure": candidate.force_insecure,
+                        }
+                    )
+                    await tun.bridge_websocket_to_tcp(websocket, reader, writer)
+                    writer = None
+                    return
+
+                await websocket.send_json(
+                    {
+                        "type": "ready",
+                        "via": candidate.via,
+                        "tls_server_name": candidate.tls_server_name,
+                        "force_insecure": candidate.force_insecure,
+                    }
+                )
+                await tun.bridge_websocket_to_socket(websocket, ssock)
+                ssock = None
+                return
+            except Exception as exc:
+                last_err = exc
+                logger.info(
+                    "API tunnel dial %s:%s via=%s failed (%s); trying next",
+                    candidate.host,
+                    candidate.port,
+                    candidate.via,
+                    exc,
+                )
+                if writer is not None:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+                    writer = None
+                if ssock is not None:
+                    try:
+                        ssock.close()
+                    except Exception:
+                        pass
+                    ssock = None
+
+        reason = f"All dial paths failed: {last_err}"[:120]
+        logger.warning(
+            "API tunnel exhausted for %s/%s: %s",
+            project_id[:8],
+            cluster_id,
+            reason,
+        )
+        try:
+            await websocket.send_json({"type": "error", "error": reason})
+        except Exception:
+            pass
+        await websocket.close(code=1013, reason=reason)
+    except Exception:
+        logger.debug(
+            "API tunnel error for %s/%s", project_id[:8], cluster_id, exc_info=True
+        )
+        try:
+            await websocket.close(code=1011, reason="Tunnel failed")
+        except Exception:
+            pass
+    finally:
+        if writer is not None:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+        if ssock is not None:
+            try:
+                ssock.close()
+            except Exception:
+                pass
+        db.close()
 
 
 @router.websocket("/api/v1/patterns/{pattern_id}/ws")
