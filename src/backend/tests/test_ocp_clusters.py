@@ -664,6 +664,119 @@ def test_ocp_port_forwards_skips_novip_cluster():
     assert set(by_port) == {"2222", "6443"}
 
 
+def test_ensure_ocp_api_port_forwards_merges_into_custom_list():
+    """Showroom-only custom forwards still get per-cluster API listen keys."""
+    from app.services.template_loader import ensure_ocp_api_port_forwards
+
+    pfs = [
+        {
+            "extIpId": "eip-1",
+            "extPort": "443",
+            "intIp": "192.168.122.80",
+            "intPort": "443",
+            "proto": "tcp",
+        }
+    ]
+    clusters = [
+        {"api_vip": "10.0.0.10"},
+        {"apiVip": "10.1.0.10"},  # camelCase topology shape
+    ]
+    ensure_ocp_api_port_forwards(pfs, "eip-1", clusters)
+    assert {pf["extPort"] for pf in pfs} == {"443", "6443", "6444"}
+    api = [pf for pf in pfs if pf["intPort"] == "6443"]
+    assert {pf["intIp"] for pf in api} == {"10.0.0.10", "10.1.0.10"}
+    # Idempotent
+    ensure_ocp_api_port_forwards(pfs, "eip-1", clusters)
+    assert len([pf for pf in pfs if pf["intPort"] == "6443"]) == 2
+
+
+def test_ensure_ocp_api_port_forwards_avoids_ext_port_collision():
+    """When 6443 is already taken for a non-API forward, bump the listen key."""
+    from app.services.template_loader import ensure_ocp_api_port_forwards
+
+    pfs = [
+        {
+            "extIpId": "eip-1",
+            "extPort": "6443",
+            "intIp": "10.0.0.99",
+            "intPort": "22",
+            "proto": "tcp",
+        }
+    ]
+    ensure_ocp_api_port_forwards(pfs, "eip-1", [{"api_vip": "10.0.0.10"}])
+    api = next(pf for pf in pfs if pf["intPort"] == "6443")
+    assert api["extPort"] == "6444"
+    assert api["intIp"] == "10.0.0.10"
+
+
+def test_gateway_node_custom_forwards_still_get_api():
+    """_create_gateway_node must not skip API when template lists custom PFs."""
+    from app.services.template_loader import _create_gateway_node
+
+    gw_def = {
+        "external_access": True,
+        "port_forwards": [
+            {
+                "ext_port": 443,
+                "int_ip": "192.168.122.80",
+                "int_port": 443,
+                "proto": "tcp",
+            }
+        ],
+    }
+    tmpl = {
+        "ocp": {
+            "name": "hub",
+            "type": "sno",
+            "api_vip": "10.0.0.10",
+            "ingress_vip": "10.0.0.11",
+        }
+    }
+    gw_node, _eips, _edges, _net = _create_gateway_node(
+        gw_def, {}, tmpl, True, 100, {"lan": {"type": "isolated"}}
+    )
+    forwards = gw_node["data"]["portForwards"]
+    assert any(pf.get("extPort") == "443" for pf in forwards)
+    assert any(
+        pf.get("intIp") == "10.0.0.10" and pf.get("intPort") == "6443"
+        for pf in forwards
+    )
+
+
+def test_ensure_topology_ocp_api_port_forwards_on_deploy():
+    """Deploy helper mutates gateway when topology.clusters lack API PFs."""
+    from app.services.deploy_service import _ensure_topology_ocp_api_port_forwards
+
+    topology = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1"}],
+        "clusters": [
+            {"id": "hub", "name": "hub", "apiVip": "10.0.0.10"},
+            {"id": "spoke", "name": "spoke", "apiVip": "10.1.0.10"},
+        ],
+        "nodes": [
+            {
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "portForwards": [
+                        {
+                            "extIpId": "eip-1",
+                            "extPort": "443",
+                            "intIp": "192.168.122.80",
+                            "intPort": "443",
+                            "proto": "tcp",
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    assert _ensure_topology_ocp_api_port_forwards(topology) is True
+    pfs = topology["nodes"][0]["data"]["portForwards"]
+    assert {pf["extPort"] for pf in pfs} == {"443", "6443", "6444"}
+    assert _ensure_topology_ocp_api_port_forwards(topology) is False
+
+
 # ---------------------------------------------------------------------------
 # normalize_cluster_member_fields (Task 7)
 # ---------------------------------------------------------------------------

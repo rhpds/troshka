@@ -1243,8 +1243,58 @@ def _cluster_api_ext_port(index: int) -> int:
     return 6443 + index
 
 
+def _cluster_api_vip(cluster: dict) -> str:
+    """API VIP from snake_case template or camelCase topology cluster dict."""
+    return str(cluster.get("api_vip") or cluster.get("apiVip") or "").strip()
+
+
+def _has_api_forward_for_vip(port_forwards: list, api_vip: str) -> bool:
+    for pf in port_forwards:
+        if str(pf.get("intIp") or "") != api_vip:
+            continue
+        if str(pf.get("intPort") or "").strip() == "6443":
+            return True
+    return False
+
+
+def _allocate_api_ext_port(preferred: int, used_ext: set[str]) -> str:
+    """Pick a free gateway listen port, preferring ``6443+index``."""
+    port = preferred
+    while str(port) in used_ext:
+        port += 1
+    return str(port)
+
+
+def ensure_ocp_api_port_forwards(port_forwards: list, eip_id: str, clusters) -> list:
+    """Ensure every OCP cluster with an API VIP has a gateway→VIP:6443 forward.
+
+    Custom/showroom port forwards must not suppress API publication — dial via
+    Route needs a listen key on the gateway. Mutates ``port_forwards`` in place
+    and returns it. Idempotent: skips VIPs that already have intPort 6443.
+    """
+    if not clusters:
+        return port_forwards
+    used_ext = {str(pf.get("extPort") or "") for pf in port_forwards}
+    for index, ocp_cfg in enumerate(clusters):
+        api_vip = _cluster_api_vip(ocp_cfg)
+        if not api_vip or _has_api_forward_for_vip(port_forwards, api_vip):
+            continue
+        ext_port = _allocate_api_ext_port(_cluster_api_ext_port(index), used_ext)
+        used_ext.add(ext_port)
+        port_forwards.append(
+            {
+                "extIpId": eip_id,
+                "extPort": ext_port,
+                "intIp": api_vip,
+                "intPort": "6443",
+                "proto": "tcp",
+            }
+        )
+    return port_forwards
+
+
 def _generate_ocp_port_forwards(eip_id, vms_def, clusters):
-    """Generate OCP API port forwards when no custom forwards exist.
+    """Generate OCP bastion SSH + API port forwards.
 
     Emits one bastion SSH forward (2222→22) plus one API forward per cluster.
     Consoles/ingress go through showroom (proxy tabs) — we do **not** publish
@@ -1264,19 +1314,7 @@ def _generate_ocp_port_forwards(eip_id, vms_def, clusters):
                 "proto": "tcp",
             }
         )
-    for index, ocp_cfg in enumerate(clusters):
-        api_vip = ocp_cfg.get("api_vip", "")
-        if not api_vip:
-            continue
-        port_forwards.append(
-            {
-                "extIpId": eip_id,
-                "extPort": str(_cluster_api_ext_port(index)),
-                "intIp": api_vip,
-                "intPort": "6443",
-                "proto": "tcp",
-            }
-        )
+    ensure_ocp_api_port_forwards(port_forwards, eip_id, clusters)
     return port_forwards
 
 
@@ -1303,10 +1341,13 @@ def _create_gateway_node(gw_def, vms_def, tmpl, external_access, gw_y, nets_def)
                 }
             )
 
-        # Auto-generate OCP port forwards if no custom ones and OCP config exists
+        ocp_clusters = normalize_ocp_section(tmpl.get("ocp"))
         if not port_forwards:
-            ocp_clusters = normalize_ocp_section(tmpl.get("ocp"))
+            # Bastion SSH + API when the template listed no custom forwards.
             port_forwards = _generate_ocp_port_forwards(eip_id, vms_def, ocp_clusters)
+        else:
+            # Custom/showroom-only lists still get per-cluster API listen keys.
+            ensure_ocp_api_port_forwards(port_forwards, eip_id, ocp_clusters)
 
     gw_node = {
         "id": _id(),

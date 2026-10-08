@@ -7201,6 +7201,7 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
 
     db.refresh(project)
     inject_showroom_gateway_port_forwards(topology, project.vni_map or {}, "kubevirt")
+    _ensure_topology_ocp_api_port_forwards(topology)
 
     project.state = "active"
     clean_topo = copy.deepcopy(topology)
@@ -7849,9 +7850,11 @@ def _kubevirt_create_or_resume_cr(
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
     _kubevirt_prebake_showroom(topology, project_id, provider, driver)
-    if inject_showroom_gateway_port_forwards(
+    showroom_changed = inject_showroom_gateway_port_forwards(
         topology, project.vni_map or {}, "kubevirt"
-    ):
+    )
+    api_pf_changed = _ensure_topology_ocp_api_port_forwards(topology)
+    if showroom_changed or api_pf_changed:
         project.topology = topology
         db.commit()
     logger.info(
@@ -8879,6 +8882,43 @@ def _resolve_project_provider(s, host, project):
     return None
 
 
+def _gateway_eip_id_for_forwards(topology: dict, node_data: dict) -> str:
+    """Pick an extIpId for auto-added API port forwards on an existing gateway."""
+    for pf in node_data.get("portForwards") or []:
+        eip = str(pf.get("extIpId") or "").strip()
+        if eip:
+            return eip
+    for eip in topology.get("externalIps") or []:
+        eid = str(eip.get("id") or "").strip()
+        if eid:
+            return eid
+    return ""
+
+
+def _ensure_topology_ocp_api_port_forwards(topology: dict) -> bool:
+    """Add missing OCP API listen forwards on gateway nodes. Returns True if mutated."""
+    from app.services.template_loader import ensure_ocp_api_port_forwards
+
+    clusters = topology.get("clusters") or []
+    if not clusters:
+        return False
+    changed = False
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") != "gateway":
+            continue
+        eip_id = _gateway_eip_id_for_forwards(topology, node_data)
+        if not eip_id:
+            continue
+        pfs = list(node_data.get("portForwards") or [])
+        before = len(pfs)
+        ensure_ocp_api_port_forwards(pfs, eip_id, clusters)
+        if len(pfs) != before:
+            node_data["portForwards"] = pfs
+            changed = True
+    return changed
+
+
 def _deploy_create_provider_routes(s, project_id, topology, host=None, project=None):
     """Create OCP Routes for routable port forwards on ocpvirt and kubevirt native."""
     provider = _resolve_project_provider(s, host, project)
@@ -8886,6 +8926,11 @@ def _deploy_create_provider_routes(s, project_id, topology, host=None, project=N
         return
     from app.services.providers import get_provider_driver
 
+    if _ensure_topology_ocp_api_port_forwards(topology):
+        logger.info(
+            "Deploy %s: ensured OCP API port-forwards on gateway",
+            project_id[:8],
+        )
     driver = get_provider_driver(provider)
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
@@ -9999,12 +10044,21 @@ def _deploy_init_context(s, project, project_id):
         if host and host.provider_id:
             prov = s.query(Provider).filter_by(id=host.provider_id).first()
             provider_type = prov.type if prov else None
-    if inject_showroom_gateway_port_forwards(topology, vni_map, provider_type):
+    showroom_changed = inject_showroom_gateway_port_forwards(
+        topology, vni_map, provider_type
+    )
+    api_pf_changed = _ensure_topology_ocp_api_port_forwards(topology)
+    if showroom_changed or api_pf_changed:
         project.topology = topology
         s.commit()
-        logger.info(
-            "Deploy %s: injected showroom gateway port forwards", project_id[:8]
-        )
+        if showroom_changed:
+            logger.info(
+                "Deploy %s: injected showroom gateway port forwards", project_id[:8]
+            )
+        if api_pf_changed:
+            logger.info(
+                "Deploy %s: ensured OCP API port-forwards on gateway", project_id[:8]
+            )
     return topology, clock_offset, vni_map
 
 
