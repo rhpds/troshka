@@ -195,13 +195,21 @@ def _authorize_project_ws(websocket: WebSocket, project_id: str, db):
 
 @router.websocket("/api/v1/projects/{project_id}/clusters/{cluster_id}/api-tunnel")
 async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: str):
-    """Binary WebSocket TCP tunnel to a nested OCP API (owner/admin only)."""
+    """Binary WebSocket TCP tunnel to a nested OCP API (owner/admin only).
+
+    DB work finishes before accept/bridge so long-lived tunnels do not pin
+    SQLAlchemy pool connections (idle-in-transaction exhaustion).
+    """
     from app.models.host import Host
     from app.services.ocp import api_tunnel as tun
 
     db = SessionLocal()
     ssock = None
     writer = None
+    host = None
+    provider = None
+    targets: list = []
+    tunnel_project_id = project_id
     try:
         _user, project, code, reason = _authorize_project_ws(websocket, project_id, db)
         if code or project is None:
@@ -230,15 +238,30 @@ async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: 
             await websocket.close(code=1013, reason="No dial path for cluster")
             return
 
-        await websocket.accept()
-
-        last_err: Exception | None = None
-        provider = None
+        tunnel_project_id = project.id
         if host.provider_id:
             from app.models.provider import Provider
 
             provider = db.query(Provider).filter_by(id=host.provider_id).first()
+            if provider:
+                # Touch attrs used after detach (no lazy loads during bridge).
+                provider.get_credentials()
+                db.expunge(provider)
+        # Force-load host fields used by troshkad client / fingerprint pin.
+        _ = (
+            host.ip_address,
+            host.agent_token,
+            host.agent_cert_fingerprint,
+            host.provider_id,
+        )
+        db.expunge(host)
+        db.rollback()
+        db.close()
+        db = None
 
+        await websocket.accept()
+
+        last_err: Exception | None = None
         for candidate in targets:
             try:
                 if candidate.via == "troshkad":
@@ -246,7 +269,7 @@ async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: 
                         asyncio.to_thread(
                             tun.open_troshkad_tunnel_socket,
                             host,
-                            project.id,
+                            tunnel_project_id,
                             candidate.host,
                             candidate.port,
                         ),
@@ -347,7 +370,8 @@ async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: 
                 ssock.close()
             except Exception:
                 pass
-        db.close()
+        if db is not None:
+            db.close()
 
 
 @router.websocket("/api/v1/patterns/{pattern_id}/ws")
