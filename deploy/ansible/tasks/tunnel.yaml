@@ -1,0 +1,169 @@
+---
+- name: Deploy troshka-tunnel
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: troshka-tunnel
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-tunnel
+          app.kubernetes.io/component: tunnel
+      spec:
+        replicas: "{{ troshka_tunnel_replicas }}"
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: troshka-tunnel
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: troshka-tunnel
+              app.kubernetes.io/component: tunnel
+          spec:
+            serviceAccountName: troshka-backend
+            containers:
+              - name: tunnel
+                image: "{{ troshka_backend_image }}"
+                imagePullPolicy: Always
+                command:
+                  - uvicorn
+                  - app.tunnel_main:app
+                  - --host
+                  - 0.0.0.0
+                  - --port
+                  - "8201"
+                  - --proxy-headers
+                  - --forwarded-allow-ips
+                  - "*"
+                  - --loop
+                  - uvloop
+                  - --http
+                  - httptools
+                ports:
+                  - containerPort: 8201
+                    name: http
+                env:
+                  - name: TROSHKA_DATABASE__URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: database-url
+                  - name: TROSHKA_DATABASE__POOL_SIZE
+                    value: "{{ troshka_tunnel_db_pool_size | quote }}"
+                  - name: TROSHKA_DATABASE__MAX_OVERFLOW
+                    value: "{{ troshka_tunnel_db_max_overflow | quote }}"
+                  - name: TROSHKA_AUTH__JWT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: jwt-secret
+                  - name: TROSHKA_AUTH__ENCRYPTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: encryption-key
+                  - name: TROSHKA_AWS__ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: s3-access-key
+                        optional: true
+                  - name: TROSHKA_AWS__SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: s3-secret-key
+                        optional: true
+                  - name: TROSHKA_TUNNEL__MAX_SESSIONS_PER_POD
+                    value: "{{ troshka_tunnel_max_sessions_per_pod | quote }}"
+                  - name: TROSHKA_TUNNEL__MAX_STREAMS_PER_SESSION
+                    value: "{{ troshka_tunnel_max_streams_per_session | quote }}"
+                  - name: POD_NAMESPACE
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: metadata.namespace
+                volumeMounts:
+                  - name: config
+                    mountPath: /opt/app-root/src/config/config.yaml
+                    subPath: config.yaml
+                readinessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8201
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 2
+                livenessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8201
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+                  timeoutSeconds: 2
+                  failureThreshold: 3
+                resources:
+                  requests:
+                    cpu: "{{ troshka_tunnel_cpu_request }}"
+                    memory: 512Mi
+                  limits:
+                    memory: "{{ troshka_tunnel_memory_limit }}"
+            volumes:
+              - name: config
+                configMap:
+                  name: troshka-config
+
+- name: Create troshka-tunnel Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: troshka-tunnel
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-tunnel
+          app.kubernetes.io/component: tunnel
+      spec:
+        selector:
+          app.kubernetes.io/name: troshka-tunnel
+        ports:
+          - name: http
+            port: 8201
+            targetPort: http
+
+- name: Create troshka-tunnel Route
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: troshka-tunnel
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-tunnel
+          app.kubernetes.io/component: tunnel
+      spec:
+        host: "{{ _troshka_route_host | replace('troshka.', 'troshka-tunnel.') }}"
+        tls:
+          termination: edge
+          insecureEdgeTerminationPolicy: Redirect
+        to:
+          kind: Service
+          name: troshka-tunnel
+        port:
+          targetPort: http
+
+- name: Wait for troshka-tunnel to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: troshka-tunnel
+    namespace: "{{ troshka_namespace }}"
+  register: _tunnel_deploy
+  until: (_tunnel_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10

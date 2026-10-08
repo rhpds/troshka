@@ -40,3 +40,13 @@ troshka_backend_memory_limit: 2Gi
 troshka_backend_cpu_request: 250m
 troshka_frontend_memory_limit: 512Mi
 troshka_frontend_cpu_request: 100m
+
+# Nested OCP API tunnel (troshka-oc WebSockets); uses troshka_backend_image
+troshka_tunnel_enabled: true
+troshka_tunnel_replicas: 1
+troshka_tunnel_db_pool_size: 2
+troshka_tunnel_db_max_overflow: 2
+troshka_tunnel_max_sessions_per_pod: 100
+troshka_tunnel_max_streams_per_session: 32
+troshka_tunnel_memory_limit: 2Gi
+troshka_tunnel_cpu_request: 250m

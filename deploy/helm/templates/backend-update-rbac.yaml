@@ -10,7 +10,7 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    resourceNames: ["troshka-backend", "troshka-frontend"]
+    resourceNames: ["troshka-backend", "troshka-frontend", "troshka-worker", "troshka-tunnel"]
     verbs: ["get", "patch"]
   - apiGroups: [""]
     resources: ["pods"]

@@ -82,6 +82,41 @@ services:
       TROSHKA_COMPOSE_UPDATE: "1"
       TROSHKA_COMPOSE_DIR: /var/lib/troshka/compose-updater
 
+  tunnel:
+    image: quay.io/redhat-gpte/troshka-backend:${TROSHKA_IMAGE_TAG:-latest}
+    command:
+      - uvicorn
+      - app.tunnel_main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8201"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --loop
+      - uvloop
+      - --http
+      - httptools
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    ports:
+      - "${TROSHKA_TUNNEL_PORT:-8201}:8201"
+    environment:
+      TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:${POSTGRES_PASSWORD}@postgres:5432/troshka
+      TROSHKA_REDIS__URL: redis://redis:6379/0
+      TROSHKA_AUTH__JWT_SECRET: ${JWT_SECRET}
+      TROSHKA_AUTH__ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      TROSHKA_S3__ENDPOINT_URL: http://minio:9000
+      TROSHKA_S3__BUCKET: troshka-images
+      TROSHKA_AWS__ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      TROSHKA_AWS__SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+
   worker:
     image: quay.io/redhat-gpte/troshka-backend:${TROSHKA_IMAGE_TAG:-latest}
     command: ["python3", "-m", "app.workers.deploy_worker"]

@@ -10,6 +10,7 @@ COMPOSE_DIR="${REPO_ROOT}/deploy/compose"
 ENV_FILE="${COMPOSE_DIR}/.env"
 UI_PORT="${TROSHKA_UI_PORT:-3100}"
 API_PORT="${TROSHKA_API_PORT:-8200}"
+TUNNEL_PORT="${TROSHKA_TUNNEL_PORT:-8201}"
 
 echo "Pre-run check (compose, curl)..."
 require_compose
@@ -75,8 +76,9 @@ cat <<EOF
 
 Troshka is up (dev auth — auto-admin).
 
-  UI:  http://localhost:${UI_PORT}
-  API: http://localhost:${API_PORT}
+  UI:     http://localhost:${UI_PORT}
+  API:    http://localhost:${API_PORT}
+  Tunnel: http://localhost:${TUNNEL_PORT}  (troshka-oc WebSockets)
 
 Apply update: when Quay digests move, the UI shows a top-bar button (host helper pulls + recreates).
 Host agents: a separate banner appears when troshkad is behind the backend image.

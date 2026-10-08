@@ -16,10 +16,11 @@ From the repo root:
 ./quickstarts/local/install.sh
 ```
 
-This starts Postgres, Redis, MinIO, backend, worker, and frontend, then prints:
+This starts Postgres, Redis, MinIO, backend, tunnel, worker, and frontend, then prints:
 
 - UI: `http://localhost:3100`
 - API: `http://localhost:8200`
+- Tunnel (`troshka-oc` WebSockets): `http://localhost:8201`
 
 Dev auth is on (auto-admin). Secrets are generated once in `deploy/compose/.env`.
 

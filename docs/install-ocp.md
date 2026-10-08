@@ -34,8 +34,9 @@ This creates:
 - PostgreSQL 16 StatefulSet (10Gi PVC)
 - MinIO S3-compatible storage (50Gi PVC)
 - Backend Deployment (FastAPI/uvicorn)
+- Tunnel Deployment (nested-OCP `troshka-oc` WebSockets on port 8201, same backend image)
 - Frontend Deployment (Next.js standalone)
-- OCP Route with edge TLS
+- OCP Routes with edge TLS (`troshka` UI; `troshka-tunnel` when the main host starts with `troshka.`)
 
 All passwords (PostgreSQL, MinIO, JWT, encryption key) are auto-generated and stored in a Kubernetes Secret. They persist across playbook re-runs.
 
@@ -146,6 +147,15 @@ All variables have defaults in `deploy/ansible/inventory/group_vars/all.yaml`.
 | `troshka_frontend_memory_limit` | `512Mi` | Frontend memory limit |
 | `troshka_frontend_cpu_request` | `100m` | Frontend CPU request |
 
+### Tunnel (`troshka-oc`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `troshka_tunnel_enabled` | `true` | Deploy dedicated tunnel Deployment/Service/Route |
+| `troshka_tunnel_replicas` | `1` | Tunnel pod replicas |
+| `troshka_tunnel_memory_limit` | `2Gi` | Tunnel memory limit |
+| `troshka_tunnel_cpu_request` | `250m` | Tunnel CPU request |
+
 ## What Gets Deployed
 
 ### Base (always)
@@ -154,8 +164,10 @@ All variables have defaults in `deploy/ansible/inventory/group_vars/all.yaml`.
 |----------|------|---------|
 | `troshka` | Namespace | Isolation |
 | `troshka-backend` | Deployment + Service | FastAPI API server (port 8200, ClusterIP) |
+| `troshka-tunnel` | Deployment + Service | Nested-OCP API tunnel (`app.tunnel_main`, port 8201, ClusterIP; backend image) |
 | `troshka-frontend` | Deployment + Service | Next.js UI (port 3000, ClusterIP) |
 | `troshka` | Route | Edge-TLS entry point (frontend or oauth-proxy) |
+| `troshka-tunnel` | Route | Edge-TLS WebSocket entry for `troshka-oc` (host: `troshka.` → `troshka-tunnel.`) |
 | `troshka-config` | ConfigMap | Non-sensitive configuration (config.yaml) |
 | `troshka-secrets` | Secret | DB URL, JWT secret, encryption key, S3 creds, passwords |
 | `troshka-migrate-*` | Job | Alembic database migration |
@@ -232,9 +244,12 @@ ansible-playbook deploy/ansible/deploy.yaml -e ...
        │ PostgreSQL │ │   S3     │  │  Hosts   │
        │ (in/ext)   │ │ (in/ext) │  │ (agents) │
        └────────────┘ └──────────┘  └──────────┘
+
+  troshka-tunnel Route ──► Tunnel (8201, backend image) ──► same data plane as backend
+  (WebSockets for troshka-oc; not proxied through the UI)
 ```
 
-The frontend is the only externally-exposed service. It proxies `/api/v1/*` requests to the backend via Next.js server-side rewrites. The backend Service is ClusterIP only — not directly accessible from outside the cluster.
+The UI Route exposes only the frontend (or oauth-proxy). The frontend proxies `/api/v1/*` REST to the backend via Next.js server-side rewrites. Backend and tunnel Services are ClusterIP; clients that need nested `oc` use the separate `troshka-tunnel` Route (`TROSHKA_TUNNEL_URL`), not the UI host.
 
 ## Teardown
 
@@ -318,7 +333,7 @@ To upgrade to a newer version:
    ```
 
 2. The playbook will:
-   - Update the Deployment images (triggers rolling restart)
+   - Update the backend and tunnel Deployment images (same `troshka_backend_image`; triggers rolling restart)
    - Run a new Alembic migration Job (applies any schema changes)
    - Leave secrets and PVCs untouched
 

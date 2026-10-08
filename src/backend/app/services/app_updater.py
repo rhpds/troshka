@@ -148,7 +148,9 @@ COMPONENTS = {
     "backend": "troshka-backend",
     "frontend": "troshka-frontend",
 }
-_ROLLOUT_DEPLOYMENTS = list(COMPONENTS.values()) + ["troshka-worker"]
+# Deployments that run the backend image but are not the primary backend rollout.
+_BACKEND_IMAGE_SIBLINGS = ("troshka-worker", "troshka-tunnel")
+_ROLLOUT_DEPLOYMENTS = list(COMPONENTS.values()) + list(_BACKEND_IMAGE_SIBLINGS)
 
 _snapshot: dict = {}
 
@@ -882,28 +884,27 @@ def _patch_restart(name: str) -> None:
     )
 
 
-_WORKER_DEPLOYMENT = "troshka-worker"
+def _apply_backend_image_sibling(deploy_name: str) -> None:
+    """Roll out a deployment that runs the backend image (worker, tunnel, …).
 
-
-def _apply_worker_image() -> None:
-    """Roll out the worker deployment too.
-
-    The worker runs the BACKEND image (worker-deployment.yaml uses
-    troshka.backendImage) but is a separate deployment, so updating only
-    backend/frontend leaves the worker on the old code — backend/worker version
-    skew that breaks deploy jobs (e.g. a signature that changed between them).
-    Patch it with the backend image ref, or restart it if the tag is unchanged.
-    Best-effort: deployments without a separate worker are skipped.
+    Separate Deployments pin their own image ref; updating only backend/frontend
+    leaves siblings on old code. Patch with the backend image ref, or restart when
+    the tag is unchanged. Best-effort: missing Deployments are skipped.
     """
     backend = COMPONENTS["backend"]
     try:
-        deploy_tag = _read_deployment_tag(_WORKER_DEPLOYMENT)
+        deploy_tag = _read_deployment_tag(deploy_name)
         if _comparison_tag(deploy_tag) != deploy_tag:
-            _patch_deployment_image(_WORKER_DEPLOYMENT, _rolling_image_ref(backend))
+            _patch_deployment_image(deploy_name, _rolling_image_ref(backend))
         else:
-            _patch_restart(_WORKER_DEPLOYMENT)
+            _patch_restart(deploy_name)
     except Exception:
-        logger.warning("app_updater: worker rollout skipped", exc_info=True)
+        logger.warning("app_updater: %s rollout skipped", deploy_name, exc_info=True)
+
+
+def _apply_backend_image_siblings() -> None:
+    for deploy_name in _BACKEND_IMAGE_SIBLINGS:
+        _apply_backend_image_sibling(deploy_name)
 
 
 def _apply_image() -> dict:
@@ -913,7 +914,7 @@ def _apply_image() -> dict:
             _patch_deployment_image(suffix, _rolling_image_ref(suffix))
         else:
             _patch_restart(suffix)
-    _apply_worker_image()
+    _apply_backend_image_siblings()
     return {"status": "rolling_out"}
 
 

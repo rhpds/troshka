@@ -367,6 +367,19 @@ def test_exec_relay_socket_preserves_binary_tls_bytes():
     ws.write_stdin.assert_called_once_with(b"\x16\x03\x01\x00\x05hello")
 
 
+def test_exec_relay_socket_buffers_partial_recv():
+    """Truncating a large WS frame without buffering drops TLS bytes (bad MAC)."""
+    ws = MagicMock()
+    ws.is_open.return_value = True
+    ws.read_stdout.return_value = b"ABCDEFGHIJ"
+    sock = _ExecRelaySocket(ws)
+    assert sock.recv(4) == b"ABCD"
+    # Second recv must return buffered remainder without another WS read.
+    ws.read_stdout.return_value = b""
+    assert sock.recv(10) == b"EFGHIJ"
+    assert ws.read_stdout.call_count == 1
+
+
 def test_cluster_access_dataclass_fields():
     row = ClusterAccess(
         id="c1",

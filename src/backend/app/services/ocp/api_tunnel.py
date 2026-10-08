@@ -384,42 +384,66 @@ class _ExecRelaySocket:
     The WSClient must be opened with ``binary=True``. Text mode UTF-8-decodes
     stdout (``errors=replace``), which corrupts TLS ClientHello/ServerHello and
     surfaces as ``tls: handshake message of length … exceeds maximum``.
+
+    ``recv`` must buffer leftovers when the caller requests fewer bytes than a
+    WS frame delivered — truncating without a buffer drops TLS ciphertext and
+    yields ``tls: bad record MAC``. All WSClient access is serialized: the
+    multiplex session reads and writes from different threads.
     """
 
     def __init__(self, ws_client):
+        import threading
+
         self._ws = ws_client
+        self._lock = threading.Lock()
+        self._buf = bytearray()
 
     def sendall(self, data: bytes) -> None:
         if isinstance(data, str):
             data = data.encode("latin1")
-        self._ws.write_stdin(data)
+        with self._lock:
+            self._ws.write_stdin(data)
 
     def recv(self, n: int = 65536) -> bytes:
-        # Drain until we get data or the stream closes.
+        if n <= 0:
+            return b""
+        with self._lock:
+            if self._buf:
+                out = bytes(self._buf[:n])
+                del self._buf[:n]
+                return out
+        # Do not hold the lock across the wait loop — sendall must interleave
+        # or TLS handshakes stall (peer waits for ClientHello flight).
         deadline = time.time() + 60
         while time.time() < deadline:
-            self._ws.update(timeout=1)
-            chunk = self._ws.read_stdout()
-            if chunk:
-                if isinstance(chunk, str):
-                    # Defensive: binary mode should already return bytes.
-                    return chunk.encode("latin1")
-                return chunk if len(chunk) <= n else chunk[:n]
-            if not self._ws.is_open():
-                return b""
+            with self._lock:
+                if self._buf:
+                    out = bytes(self._buf[:n])
+                    del self._buf[:n]
+                    return out
+                self._ws.update(timeout=0.5)
+                chunk = self._ws.read_stdout()
+                open_ = self._ws.is_open()
+                if chunk:
+                    if isinstance(chunk, str):
+                        chunk = chunk.encode("latin1")
+                    if len(chunk) <= n:
+                        return chunk
+                    self._buf.extend(chunk[n:])
+                    return chunk[:n]
+                if not open_:
+                    return b""
         return b""
 
     def shutdown(self, _how: int) -> None:
-        try:
-            self._ws.close()
-        except Exception:
-            pass
+        self.close()
 
     def close(self) -> None:
-        try:
-            self._ws.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
 
 
 def open_kubevirt_portforward_handle(provider, target: DialTarget):

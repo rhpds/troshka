@@ -28,6 +28,10 @@
     - name: Deploy backend
       ansible.builtin.include_tasks: tasks/backend.yaml
 
+    - name: Deploy troshka-tunnel
+      ansible.builtin.include_tasks: tasks/tunnel.yaml
+      when: troshka_tunnel_enabled | bool
+
     - name: Run database migration
       ansible.builtin.include_tasks: tasks/migrate.yaml
 
@@ -42,4 +46,5 @@
       ansible.builtin.debug:
         msg: >-
           Troshka deployed to namespace '{{ troshka_namespace }}'.
-          Route: https://{{ _troshka_route_host }}
+          Route: https://{{ _troshka_route_host }}{% if troshka_tunnel_enabled | bool %};
+          Tunnel route: https://{{ _troshka_route_host | replace('troshka.', 'troshka-tunnel.') }}{% endif %}

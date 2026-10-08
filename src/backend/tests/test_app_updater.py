@@ -334,11 +334,13 @@ def test_apply_update_image_repins_commit_sha_deployments(monkeypatch):
     )
     result = app_updater.apply_update()
     assert result == {"status": "rolling_out"}
-    # backend + frontend + worker (worker repinned with the backend image ref)
-    assert len(repinned) == 3
+    # backend + frontend + worker + tunnel (siblings repinned with backend image ref)
+    assert len(repinned) == 4
     assert restarted == []
     worker_entry = next(s for s in repinned if s[0] == "troshka-worker")
+    tunnel_entry = next(s for s in repinned if s[0] == "troshka-tunnel")
     assert "troshka-backend" in worker_entry[1]
+    assert "troshka-backend" in tunnel_entry[1]
 
 
 def test_fetch_registry_digest_none_when_header_missing(monkeypatch):
@@ -524,9 +526,13 @@ def test_apply_update_image_patches_both_deployments(monkeypatch):
     )
     result = app_updater.apply_update()
     assert result == {"status": "rolling_out"}
-    # The worker runs the backend image but is a separate deployment, so it must
-    # roll out too or it keeps the old code (backend/worker skew).
-    assert set(patched) == {"troshka-backend", "troshka-frontend", "troshka-worker"}
+    # Worker/tunnel run the backend image but are separate deployments.
+    assert set(patched) == {
+        "troshka-backend",
+        "troshka-frontend",
+        "troshka-worker",
+        "troshka-tunnel",
+    }
 
 
 def test_status_endpoint_returns_snapshot(monkeypatch):
