@@ -24,6 +24,11 @@ import BulkDeployModal from "@/components/canvas/BulkDeployModal";
 import PatternPreviewModal from "@/components/canvas/PatternPreviewModal";
 import SharePatternModal from "@/components/canvas/SharePatternModal";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
+import OwnershipFilter, {
+  DEFAULT_OWNERSHIP_FILTERS,
+  matchesOwnershipFilter,
+  type OwnershipCategory,
+} from "@/components/OwnershipFilter";
 
 interface PatternDisk {
   id: string;
@@ -206,6 +211,7 @@ export default function PatternsPage() {
   const [exportPattern, setExportPattern] = useState<Pattern | null>(null);
   const [sharePattern, setSharePattern] = useState<Pattern | null>(null);
   const [me, setMe] = useState<{ id?: string; role?: string; email?: string }>({});
+  const [ownershipFilters, setOwnershipFilters] = useState(DEFAULT_OWNERSHIP_FILTERS);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const loadPatterns = () => {
@@ -240,7 +246,17 @@ export default function PatternsPage() {
     return () => clearInterval(timer);
   }, [patterns]);
 
+  const isAdmin = me.role === "admin";
+  const patternCategory = (p: Pattern): OwnershipCategory => {
+    if (me.id && p.owner_id === me.id) return "mine";
+    if (p.visibility === "public" || p.visibility === "shared") return "shared";
+    // Private but visible to a non-admin ⇒ shared with them; admins see others' private patterns.
+    return isAdmin ? "others" : "shared";
+  };
   const filtered = patterns.filter((p) => {
+    if (me.id && !matchesOwnershipFilter(patternCategory(p), ownershipFilters, isAdmin)) {
+      return false;
+    }
     if (!search) return true;
     const q = search.toLowerCase();
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
@@ -328,6 +344,13 @@ export default function PatternsPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </ToolbarItem>
+            <ToolbarItem>
+              <OwnershipFilter
+                value={ownershipFilters}
+                onChange={setOwnershipFilters}
+                isAdmin={isAdmin}
+              />
+            </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="secondary" onClick={() => {
                 const input = document.createElement("input");
@@ -354,7 +377,9 @@ export default function PatternsPage() {
             <EmptyStateBody>
               {search
                 ? "No patterns match your search."
-                : "No patterns yet. Save a project as a pattern to create reusable templates."}
+                : patterns.length > 0
+                  ? "No patterns match the selected ownership filters."
+                  : "No patterns yet. Save a project as a pattern to create reusable templates."}
             </EmptyStateBody>
           </EmptyState>
         ) : (

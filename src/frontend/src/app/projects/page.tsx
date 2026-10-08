@@ -10,6 +10,11 @@ import {
   pickDefaultOcpVersion,
 } from "@/lib/ocpVersion";
 import TagEditor from "@/components/TagEditor";
+import OwnershipFilter, {
+  DEFAULT_OWNERSHIP_FILTERS,
+  matchesOwnershipFilter,
+  type OwnershipCategory,
+} from "@/components/OwnershipFilter";
 import {
   Button,
   Card,
@@ -52,6 +57,7 @@ interface Project {
   deploy_progress?: { step?: string; detail?: string; queue_position?: number; queue_length?: number } | null;
   deploy_started_at?: string | null;
   deploy_error?: string | null;
+  owner_id?: string | null;
   owner_email?: string | null;
 }
 
@@ -1061,6 +1067,8 @@ export default function ProjectsPage() {
   });
   const [search, setSearch] = useState("");
   const [userRole, setUserRole] = useState("");
+  const [userId, setUserId] = useState("");
+  const [ownershipFilters, setOwnershipFilters] = useState(DEFAULT_OWNERSHIP_FILTERS);
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
   const [deployPoolId, setDeployPoolId] = useState("");
   const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; host_type?: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
@@ -1116,8 +1124,9 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { id?: string; role?: string; email?: string }) => {
       setUserRole(d.role || "");
+      setUserId(d.id || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
           setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false));
@@ -1220,6 +1229,16 @@ export default function ProjectsPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </ToolbarItem>
+            {(userRole === "admin" || userId) && (
+              <ToolbarItem>
+                <OwnershipFilter
+                  value={ownershipFilters}
+                  onChange={setOwnershipFilters}
+                  isAdmin={userRole === "admin"}
+                  showShared={false}
+                />
+              </ToolbarItem>
+            )}
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" icon={<PlusCircleIcon />} onClick={() => setShowNewModal(true)}>
                 New Project
@@ -1231,7 +1250,15 @@ export default function ProjectsPage() {
       <PageSection>
         {(() => {
           const q = search.toLowerCase();
-          const filteredProjects = q ? projects.filter((p) => p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q)) : projects;
+          const isAdmin = userRole === "admin";
+          const filteredProjects = projects.filter((p) => {
+            if (userId) {
+              const cat: OwnershipCategory = p.owner_id === userId ? "mine" : "others";
+              if (!matchesOwnershipFilter(cat, ownershipFilters, isAdmin)) return false;
+            }
+            if (!q) return true;
+            return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
+          });
           return (<>
         {filteredProjects.length > 0 && (() => {
           const selected = filteredProjects.filter((p) => selectedProjects.has(p.id));
@@ -1317,7 +1344,13 @@ export default function ProjectsPage() {
         })()}
         <div>
           {filteredProjects.length === 0 && (
-            <p style={{ opacity: 0.6 }}>No projects match &quot;{search}&quot;</p>
+            <p style={{ opacity: 0.6 }}>
+              {search
+                ? `No projects match "${search}"`
+                : projects.length > 0
+                  ? "No projects match the selected ownership filters."
+                  : "No projects."}
+            </p>
           )}
           {filteredProjects.map((p) => (
             <Card

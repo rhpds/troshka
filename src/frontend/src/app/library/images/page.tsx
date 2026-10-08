@@ -19,6 +19,11 @@ import {
   Tooltip,
 } from "@patternfly/react-core";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
+import OwnershipFilter, {
+  DEFAULT_OWNERSHIP_FILTERS,
+  matchesOwnershipFilter,
+  type OwnershipCategory,
+} from "@/components/OwnershipFilter";
 
 interface LibraryItem {
   id: string;
@@ -49,6 +54,8 @@ export default function ImagesPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [userRole, setUserRole] = useState("");
+  const [ownershipFilters, setOwnershipFilters] = useState(DEFAULT_OWNERSHIP_FILTERS);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -87,6 +94,13 @@ export default function ImagesPage() {
 
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
 
+  useEffect(() => {
+    fetch("/api/v1/auth/me")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d: { role?: string }) => setUserRole(d.role || ""))
+      .catch(() => {});
+  }, []);
+
   // Auto-refresh when any item is importing
   useEffect(() => {
     if (items.some((i) => ["importing", "uploading", "downloading", "uploading_s3"].includes(i.state))) {
@@ -94,6 +108,17 @@ export default function ImagesPage() {
       return () => clearInterval(interval);
     }
   }, [items]);
+
+  const isAdmin = userRole === "admin";
+  const imageCategory = (i: LibraryItem): OwnershipCategory => {
+    if (i.owned) return "mine";
+    if (i.source === "central" || i.readonly) return "shared";
+    // Non-admins only receive explicitly shared items here; admins see others' libraries.
+    return isAdmin ? "others" : "shared";
+  };
+  const visibleItems = items.filter((i) =>
+    matchesOwnershipFilter(imageCategory(i), ownershipFilters, isAdmin)
+  );
 
   const handleUpload = async () => {
     if (!newName.trim()) { setError("Name is required"); return; }
@@ -293,6 +318,13 @@ export default function ImagesPage() {
             <ToolbarItem>
               <input style={{ ...inputStyle, width: 200 }} placeholder="Search images..." value={filter} onChange={(e) => setFilter(e.target.value)} />
             </ToolbarItem>
+            <ToolbarItem>
+              <OwnershipFilter
+                value={ownershipFilters}
+                onChange={setOwnershipFilters}
+                isAdmin={isAdmin}
+              />
+            </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" onClick={() => setShowUpload(!showUpload)}>
                 {showUpload ? "Cancel" : "+ Upload"}
@@ -385,18 +417,18 @@ export default function ImagesPage() {
       )}
 
       <PageSection>
-        {items.length > 0 && (() => {
-          const selected = items.filter((i) => selectedItems.has(i.id));
-          const allSelected = selected.length === items.length;
+        {visibleItems.length > 0 && (() => {
+          const selected = visibleItems.filter((i) => selectedItems.has(i.id));
+          const allSelected = selected.length === visibleItems.length;
           const someSelected = selected.length > 0;
           return (
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
                 <input type="checkbox" checked={allSelected} onChange={() => {
                   if (allSelected) setSelectedItems(new Set());
-                  else setSelectedItems(new Set(items.map((i) => i.id)));
+                  else setSelectedItems(new Set(visibleItems.map((i) => i.id)));
                 }} />
-                {someSelected ? `${selected.length} of ${items.length} selected` : "Select all"}
+                {someSelected ? `${selected.length} of ${visibleItems.length} selected` : "Select all"}
               </label>
               {someSelected && (
                 <Button variant="danger" size="sm" onClick={async () => {
@@ -413,10 +445,14 @@ export default function ImagesPage() {
             </div>
           );
         })()}
-        {items.length === 0 && !showUpload && (
-          <p style={{ opacity: 0.6 }}>No items in library. Click &quot;+ Upload&quot; to add ISOs or disk images.</p>
+        {visibleItems.length === 0 && !showUpload && (
+          <p style={{ opacity: 0.6 }}>
+            {items.length > 0
+              ? "No images match the selected ownership filters."
+              : "No items in library. Click \"+ Upload\" to add ISOs or disk images."}
+          </p>
         )}
-        {items.map((item) => {
+        {visibleItems.map((item) => {
           const stateMeta = imageStateLabel(item);
           return (
           <Card key={item.id} isCompact style={{ marginBottom: 8 }}>
