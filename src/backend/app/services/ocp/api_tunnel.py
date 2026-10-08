@@ -176,8 +176,14 @@ def _vm_name_for_api_vip(topology: dict, api_vip: str) -> str:
     return ""
 
 
-def _gateway_listen_port_for_vip(topology: dict, api_vip: str) -> int:
-    """Gateway pod listen / Service port for this cluster's API forward."""
+def _gateway_listen_port_for_vip(topology: dict, api_vip: str) -> int | None:
+    """Gateway pod listen port for this cluster's API Route forward, if any.
+
+    Returns ``None`` when topology has no API Route endpoint for the VIP.
+    Callers must not port-forward to a guessed ``6443`` — many gateways only
+    listen for showroom (``1443``) until an API Route is published; PF to a
+    closed port looks "ready" then EOFs on TLS. Prefer ``kubevirt-exec`` then.
+    """
     for ep in _gateway_endpoints(topology):
         if str(ep.get("vmIp") or "") != api_vip:
             continue
@@ -187,7 +193,7 @@ def _gateway_listen_port_for_vip(topology: dict, api_vip: str) -> int:
         if port in (80, 443) or port <= 0:
             continue
         return port
-    return API_PORT
+    return None
 
 
 def _gateway_pod_name(core_api, namespace: str, project_id: str) -> str:
@@ -235,18 +241,21 @@ def _kubevirt_dial_targets(
     if core_api is not None and cluster.api_vip:
         pod_name = _gateway_pod_name(core_api, namespace, project_id)
         if pod_name:
-            targets.append(
-                DialTarget(
-                    host=pod_name,
-                    port=listen_port,
-                    via="kubevirt-pf",
-                    tls_server_name=cluster.tls_server_name,
-                    force_insecure=False,
-                    namespace=namespace,
-                    pod_name=pod_name,
-                    api_vip=cluster.api_vip,
+            # Only PF when topology published an API listen port on the gateway.
+            # Otherwise PF to :6443 hits a closed port (showroom-only gateways).
+            if listen_port is not None:
+                targets.append(
+                    DialTarget(
+                        host=pod_name,
+                        port=listen_port,
+                        via="kubevirt-pf",
+                        tls_server_name=cluster.tls_server_name,
+                        force_insecure=False,
+                        namespace=namespace,
+                        pod_name=pod_name,
+                        api_vip=cluster.api_vip,
+                    )
                 )
-            )
             targets.append(
                 DialTarget(
                     host=pod_name,
@@ -269,9 +278,9 @@ def _kubevirt_dial_targets(
                 )
                 ports = list(getattr(getattr(svc, "spec", None), "ports", None) or [])
                 port = (
-                    int(getattr(ports[0], "port", listen_port))
+                    int(getattr(ports[0], "port", listen_port or API_PORT))
                     if ports
-                    else listen_port
+                    else (listen_port or API_PORT)
                 )
                 if cluster_ip and cluster_ip not in ("None", "none"):
                     targets.append(
@@ -370,14 +379,19 @@ async def open_direct_connection(host: str, port: int) -> tuple:
 
 
 class _ExecRelaySocket:
-    """Socket-like adapter over a kubernetes pod-exec WSClient (socat relay)."""
+    """Socket-like adapter over a binary kubernetes pod-exec WSClient (socat relay).
+
+    The WSClient must be opened with ``binary=True``. Text mode UTF-8-decodes
+    stdout (``errors=replace``), which corrupts TLS ClientHello/ServerHello and
+    surfaces as ``tls: handshake message of length … exceeds maximum``.
+    """
 
     def __init__(self, ws_client):
         self._ws = ws_client
 
     def sendall(self, data: bytes) -> None:
         if isinstance(data, str):
-            data = data.encode()
+            data = data.encode("latin1")
         self._ws.write_stdin(data)
 
     def recv(self, n: int = 65536) -> bytes:
@@ -388,8 +402,9 @@ class _ExecRelaySocket:
             chunk = self._ws.read_stdout()
             if chunk:
                 if isinstance(chunk, str):
-                    return chunk.encode("utf-8", errors="replace")
-                return chunk
+                    # Defensive: binary mode should already return bytes.
+                    return chunk.encode("latin1")
+                return chunk if len(chunk) <= n else chunk[:n]
             if not self._ws.is_open():
                 return b""
         return b""
@@ -469,6 +484,8 @@ def open_kubevirt_exec_relay(provider, target: DialTarget):
         stdout=True,
         tty=False,
         _preload_content=False,
+        # Required for TLS-over-socat: otherwise stdout is UTF-8 decoded.
+        binary=True,
     )
     return _ExecRelaySocket(ws)
 

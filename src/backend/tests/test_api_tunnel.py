@@ -10,9 +10,11 @@ import yaml
 from app.services.ocp.api_tunnel import (
     ClusterAccess,
     DialTarget,
+    _ExecRelaySocket,
     get_cluster_access,
     list_cluster_access,
     localhost_kubeconfig,
+    open_kubevirt_exec_relay,
     resolve_dial_targets,
 )
 
@@ -245,6 +247,124 @@ def test_resolve_dial_targets_kubevirt_prefers_portforward_then_exec():
     assert any(t.host == "172.30.1.50" for t in targets)
     assert targets[-1].host == "rt-source-cp-0-6443.apps.example.com"
     assert targets[-1].force_insecure is True
+
+
+def test_resolve_dial_targets_kubevirt_skips_pf_without_api_route():
+    """Showroom-only gateways listen on 1443; do not PF to closed :6443."""
+    topo = {
+        "clusters": [
+            {
+                "id": "ocp-8a2eb4",
+                "name": "ocp",
+                "apiVip": "10.0.0.10",
+                "baseDomain": "local",
+            }
+        ],
+        "nodes": [
+            {
+                "type": "vmNode",
+                "id": "cp",
+                "data": {
+                    "name": "cp-0",
+                    "clusterId": "ocp-8a2eb4",
+                    "clusterRole": "controlplane",
+                    "ocpKubeconfig": "apiVersion: v1\nkind: Config\n",
+                },
+            },
+            {
+                "type": "networkNode",
+                "id": "gw",
+                "data": {
+                    "subtype": "gateway",
+                    "externalEndpoints": [
+                        {
+                            "port": 443,
+                            "type": "route",
+                            "vmIp": "172.30.232.3",
+                            "vmName": "showroom",
+                            "hostname": "showroom.apps.example.com",
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+    p = _project(topo)
+    cluster = get_cluster_access(p, "ocp")
+    host = SimpleNamespace(provider_id="prov-1", host_type="kubevirt-cluster")
+    provider = SimpleNamespace(id="prov-1", type="kubevirt")
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = provider
+    pod = MagicMock()
+    pod.metadata.name = "gateway-troshka-320fe5fb-abc"
+    pod.status.phase = "Running"
+    core = MagicMock()
+    core.list_namespaced_pod.return_value = SimpleNamespace(items=[pod])
+    core.read_namespaced_service.side_effect = Exception("no api svc")
+
+    with (
+        patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(MagicMock(), core, MagicMock()),
+        ),
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-320fe5fb",
+        ),
+    ):
+        targets = resolve_dial_targets(p, cluster, host, db)
+
+    assert [t.via for t in targets] == ["kubevirt-exec"]
+    assert targets[0].api_vip == "10.0.0.10"
+    assert targets[0].pod_name == "gateway-troshka-320fe5fb-abc"
+
+
+def test_open_kubevirt_exec_relay_uses_binary_stream():
+    """TLS-over-socat requires kubernetes stream(binary=True) or stdout is UTF-8 mangled."""
+    provider = SimpleNamespace()
+    target = DialTarget(
+        host="gw",
+        port=6443,
+        via="kubevirt-exec",
+        tls_server_name="api.ocp.local",
+        force_insecure=False,
+        namespace="troshka-abc",
+        pod_name="gateway-1",
+        api_vip="10.0.0.10",
+    )
+    core = MagicMock()
+    captured = {}
+
+    def _stream(method, *args, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(name="ws")
+
+    with (
+        patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(MagicMock(), core, MagicMock()),
+        ),
+        patch("kubernetes.stream.stream", side_effect=_stream) as mock_stream,
+    ):
+        sock = open_kubevirt_exec_relay(provider, target)
+
+    assert isinstance(sock, _ExecRelaySocket)
+    assert captured.get("binary") is True
+    assert captured.get("_preload_content") is False
+    mock_stream.assert_called_once()
+
+
+def test_exec_relay_socket_preserves_binary_tls_bytes():
+    ws = MagicMock()
+    ws.is_open.return_value = True
+    # Invalid-as-UTF-8 TLS-like payload must round-trip unchanged.
+    payload = bytes(range(256)) + b"\x16\x03\x01\x00\x00"
+    ws.read_stdout.return_value = payload
+    sock = _ExecRelaySocket(ws)
+    got = sock.recv(65536)
+    assert got == payload
+    sock.sendall(b"\x16\x03\x01\x00\x05hello")
+    ws.write_stdin.assert_called_once_with(b"\x16\x03\x01\x00\x05hello")
 
 
 def test_cluster_access_dataclass_fields():
