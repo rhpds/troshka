@@ -3615,22 +3615,70 @@ class TestHandleVmModifyFs(unittest.TestCase):
         )
         self.assertEqual(len(result["results"]), 1)
         self.assertTrue(result["results"][0]["ok"])
+        # Inspection path (-i) used on first try
+        self.assertEqual(mock_run.call_args_list[0].args[0][:4], ["guestfish", "--rw", "-a", "/var/lib/troshka/vms/d.qcow2"])
+        self.assertIn("-i", mock_run.call_args_list[0].args[0])
 
     @patch("troshkad.subprocess.run")
     @patch("os.path.exists", return_value=True)
-    def test_guestfish_failure(self, _mock_exists, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="guestfish error"
-        )
+    def test_guestfish_failure_raises(self, _mock_exists, mock_run):
+        """Failed guestfish must raise so the job is marked failed (not silent ok)."""
+        # -i fails, list-fs finds a partition, mount+ops still fail
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="guestfish: no operating system was found on this disk",
+            ),
+            MagicMock(returncode=0, stdout="/dev/sda4: xfs\n", stderr=""),  # list-fs
+            MagicMock(returncode=1, stdout="", stderr="rm-rf: /var/lib/kubelet/pki: No such file or directory"),
+        ]
+        job = self._make_job()
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._handle_vm_modify_fs(
+                job,
+                {
+                    "disk": "/var/lib/troshka/vms/d.qcow2",
+                    "operations": [{"action": "rm-rf", "path": "/var/lib/kubelet/pki"}],
+                },
+            )
+        self.assertIn("guestfish failed", str(ctx.exception))
+
+    @patch("troshkad.subprocess.run")
+    @patch("os.path.exists", return_value=True)
+    def test_falls_back_when_inspection_finds_no_os(self, _mock_exists, mock_run):
+        """RHCOS often fails guestfish -i; manual mount of xfs/ext must still work."""
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="guestfish: no operating system was found on this disk",
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="/dev/sda2: vfat\n/dev/sda3: ext4\n/dev/sda4: xfs\n",
+                stderr="",
+            ),
+            # mount sda3 (ext4) — ops fail (wrong fs)
+            MagicMock(returncode=1, stdout="", stderr="rm-rf: No such file"),
+            # mount sda4 (xfs) — ops succeed
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
         job = self._make_job()
         result = troshkad._handle_vm_modify_fs(
             job,
             {
                 "disk": "/var/lib/troshka/vms/d.qcow2",
-                "operations": [{"action": "rm-f", "path": "/tmp/old"}],
+                "operations": [
+                    {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
+                    {"action": "rm-f", "path": "/var/lib/kubelet/kubeconfig"},
+                ],
             },
         )
-        self.assertFalse(result["results"][0]["ok"])
+        self.assertEqual(len(result["results"]), 2)
+        self.assertTrue(all(r["ok"] for r in result["results"]))
+        # list-filesystems + two mount attempts (vfat skipped)
+        self.assertGreaterEqual(mock_run.call_count, 4)
 
 
 # ── _build_dnsmasq_config_lines ──

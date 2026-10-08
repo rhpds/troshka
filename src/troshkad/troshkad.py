@@ -2788,6 +2788,91 @@ def _build_guestfish_commands(operations):
     return cmds
 
 
+def _guestfish_run_inspected(disk, script, timeout=120):
+    """Run guestfish with libguestfs OS inspection (-i)."""
+    env = os.environ.copy()
+    env.setdefault("LIBGUESTFS_BACKEND", "direct")
+    return subprocess.run(
+        ["guestfish", "--rw", "-a", disk, "-i"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _guestfish_list_rw_filesystems(disk, timeout=120):
+    """Return device paths for mountable RW filesystems (xfs/ext*), skipping boot/vfat."""
+    env = os.environ.copy()
+    env.setdefault("LIBGUESTFS_BACKEND", "direct")
+    result = subprocess.run(
+        ["guestfish", "--ro", "-a", disk, "run", ":", "list-filesystems"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+    if result.returncode != 0:
+        return [], result
+    parts = []
+    for line in result.stdout.splitlines():
+        # "/dev/sda4: xfs" or "/dev/sda3: ext4"
+        if ": " not in line:
+            continue
+        dev, fstype = line.split(": ", 1)
+        fstype = fstype.strip().lower()
+        if fstype.startswith("ext") or fstype == "xfs":
+            parts.append(dev.strip())
+    return parts, result
+
+
+def _guestfish_run_on_partition(disk, partition, script, timeout=120):
+    """Mount one partition at / and run guestfish commands (no OS inspection)."""
+    env = os.environ.copy()
+    env.setdefault("LIBGUESTFS_BACKEND", "direct")
+    mount_script = f"run\nmount {partition} /\n{script}"
+    if not mount_script.endswith("\n"):
+        mount_script += "\n"
+    return subprocess.run(
+        ["guestfish", "--rw", "-a", disk],
+        input=mount_script,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def _guestfish_run_manual_mounts(job, disk, script, timeout=120):
+    """RHCOS/ostree disks often fail ``guestfish -i`` inspection even when a
+    real root FS exists. List filesystems and try each xfs/ext mount until the
+    operations succeed.
+    """
+    parts, list_result = _guestfish_list_rw_filesystems(disk, timeout=timeout)
+    if not parts:
+        err = (list_result.stderr or list_result.stdout or "no mountable filesystems").strip()
+        return subprocess.CompletedProcess(
+            args=list_result.args,
+            returncode=list_result.returncode or 1,
+            stdout=list_result.stdout,
+            stderr=err or "no mountable filesystems",
+        )
+    last = None
+    for part in parts:
+        _job_log(job, f"guestfish: trying manual mount of {part}")
+        last = _guestfish_run_on_partition(disk, part, script, timeout=timeout)
+        if last.returncode == 0:
+            _job_log(job, f"guestfish: operations succeeded on {part}")
+            return last
+        _job_log(
+            job,
+            f"guestfish: {part} failed (rc={last.returncode}): "
+            f"{(last.stderr or '').strip()[:200]}",
+        )
+    return last
+
+
 def _handle_vm_modify_fs(job, params):
     """Modify a guest filesystem offline using guestfish.
 
@@ -2800,6 +2885,9 @@ def _handle_vm_modify_fs(job, params):
             - write: write content to file (path, content)
             - upload: upload local file to guest (local_path, path)
             - chmod: change permissions (mode, path)
+
+    Raises RuntimeError when guestfish cannot apply the operations so the job
+    is marked failed (callers must not treat a silent no-op as success).
     """
     disk = params.get("disk", "")
     operations = params.get("operations", [])
@@ -2812,34 +2900,26 @@ def _handle_vm_modify_fs(job, params):
     script = "\n".join(guestfish_cmds) + "\n"
     _job_log(job, f"Running guestfish on {disk} ({len(operations)} operations)")
 
-    result = subprocess.run(
-        ["guestfish", "--rw", "-a", disk, "-i"],
-        input=script,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    result = _guestfish_run_inspected(disk, script)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        _job_log(
+            job,
+            f"guestfish -i failed (rc={result.returncode}): {stderr[:300]}; "
+            "falling back to manual filesystem mounts",
+        )
+        result = _guestfish_run_manual_mounts(job, disk, script)
 
-    results = []
-    if result.returncode == 0:
-        for op in operations:
-            results.append(
-                {"action": op["action"], "path": op.get("path", ""), "ok": True}
-            )
-        _job_log(job, f"All {len(operations)} operations succeeded")
-    else:
-        stderr = result.stderr.strip()
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
         _job_log(job, f"guestfish failed (rc={result.returncode}): {stderr}")
-        for op in operations:
-            results.append(
-                {
-                    "action": op["action"],
-                    "path": op.get("path", ""),
-                    "ok": False,
-                    "error": stderr,
-                }
-            )
+        raise RuntimeError(f"guestfish failed (rc={result.returncode}): {stderr}")
 
+    results = [
+        {"action": op["action"], "path": op.get("path", ""), "ok": True}
+        for op in operations
+    ]
+    _job_log(job, f"All {len(operations)} operations succeeded")
     return {"results": results}
 
 
