@@ -29,6 +29,26 @@ backend:
     limits:
       memory: 2Gi
 
+# Dedicated nested-OCP API tunnel fleet (troshka-oc). Isolated from backend.
+tunnel:
+  enabled: true
+  replicas: 2
+  dbPoolSize: 2
+  dbMaxOverflow: 2
+  maxSessionsPerPod: 100
+  maxStreamsPerSession: 32
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilization: 70
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
 frontend:
   image:
     repository: quay.io/redhat-gpte/troshka-frontend

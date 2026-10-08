@@ -195,183 +195,28 @@ def _authorize_project_ws(websocket: WebSocket, project_id: str, db):
 
 @router.websocket("/api/v1/projects/{project_id}/clusters/{cluster_id}/api-tunnel")
 async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: str):
-    """Binary WebSocket TCP tunnel to a nested OCP API (owner/admin only).
+    """Deprecated: tunnels moved to the dedicated troshka-tunnel service.
 
-    DB work finishes before accept/bridge so long-lived tunnels do not pin
-    SQLAlchemy pool connections (idle-in-transaction exhaustion).
+    Clients must use ``TROSHKA_TUNNEL_URL`` (derived from ``troshka-api`` →
+    ``troshka-tunnel``, or localhost:8201). Keeping this stub avoids pinning
+    the API worker with kubevirt port-forwards.
     """
-    from app.models.host import Host
-    from app.services.ocp import api_tunnel as tun
-
-    db = SessionLocal()
-    ssock = None
-    writer = None
-    host = None
-    provider = None
-    targets: list = []
-    tunnel_project_id = project_id
+    _ = (project_id, cluster_id)
+    await websocket.accept()
     try:
-        _user, project, code, reason = _authorize_project_ws(websocket, project_id, db)
-        if code or project is None:
-            await websocket.close(code=code or 4001, reason=reason or "Unauthorized")
-            return
-
-        cluster = tun.get_cluster_access(project, cluster_id)
-        if not cluster or not cluster.kubeconfig_available:
-            await websocket.close(code=4004, reason="Cluster kubeconfig not available")
-            return
-        if not project.host_id:
-            await websocket.close(code=4004, reason="Project has no host")
-            return
-        host = db.query(Host).filter_by(id=project.host_id).first()
-        if not host:
-            await websocket.close(code=4004, reason="Host not found")
-            return
-
-        try:
-            targets = tun.resolve_dial_targets(project, cluster, host, db)
-        except Exception as exc:
-            logger.warning("API tunnel dial resolve failed: %s", exc)
-            await websocket.close(code=1013, reason=str(exc)[:120])
-            return
-        if not targets:
-            await websocket.close(code=1013, reason="No dial path for cluster")
-            return
-
-        tunnel_project_id = project.id
-        if host.provider_id:
-            from app.models.provider import Provider
-
-            provider = db.query(Provider).filter_by(id=host.provider_id).first()
-            if provider:
-                # Touch attrs used after detach (no lazy loads during bridge).
-                provider.get_credentials()
-                db.expunge(provider)
-        # Force-load host fields used by troshkad client / fingerprint pin.
-        _ = (
-            host.ip_address,
-            host.agent_token,
-            host.agent_cert_fingerprint,
-            host.provider_id,
+        await websocket.send_json(
+            {
+                "type": "error",
+                "error": (
+                    "API tunnels moved to troshka-tunnel. "
+                    "Set TROSHKA_TUNNEL_URL (or use a current troshka-oc). "
+                    "See docs/dev/troshka-oc.md"
+                ),
+            }
         )
-        db.expunge(host)
-        db.rollback()
-        db.close()
-        db = None
-
-        await websocket.accept()
-
-        last_err: Exception | None = None
-        for candidate in targets:
-            try:
-                if candidate.via == "troshkad":
-                    ssock = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            tun.open_troshkad_tunnel_socket,
-                            host,
-                            tunnel_project_id,
-                            candidate.host,
-                            candidate.port,
-                        ),
-                        timeout=15,
-                    )
-                elif candidate.via in ("kubevirt-pf", "kubevirt-exec"):
-                    if not provider:
-                        raise RuntimeError("No provider for kubevirt tunnel")
-                    opener = (
-                        tun.open_kubevirt_portforward_socket
-                        if candidate.via == "kubevirt-pf"
-                        else tun.open_kubevirt_exec_relay
-                    )
-                    ssock = await asyncio.wait_for(
-                        asyncio.to_thread(opener, provider, candidate),
-                        timeout=30,
-                    )
-                else:
-                    reader, writer = await asyncio.wait_for(
-                        tun.open_direct_connection(candidate.host, candidate.port),
-                        timeout=3,
-                    )
-                    await websocket.send_json(
-                        {
-                            "type": "ready",
-                            "via": candidate.via,
-                            "tls_server_name": candidate.tls_server_name,
-                            "force_insecure": candidate.force_insecure,
-                        }
-                    )
-                    await tun.bridge_websocket_to_tcp(websocket, reader, writer)
-                    writer = None
-                    return
-
-                await websocket.send_json(
-                    {
-                        "type": "ready",
-                        "via": candidate.via,
-                        "tls_server_name": candidate.tls_server_name,
-                        "force_insecure": candidate.force_insecure,
-                    }
-                )
-                await tun.bridge_websocket_to_socket(websocket, ssock)
-                ssock = None
-                return
-            except Exception as exc:
-                last_err = exc
-                logger.info(
-                    "API tunnel dial %s:%s via=%s failed (%s); trying next",
-                    candidate.host,
-                    candidate.port,
-                    candidate.via,
-                    exc,
-                )
-                if writer is not None:
-                    try:
-                        writer.close()
-                        await writer.wait_closed()
-                    except Exception:
-                        pass
-                    writer = None
-                if ssock is not None:
-                    try:
-                        ssock.close()
-                    except Exception:
-                        pass
-                    ssock = None
-
-        reason = f"All dial paths failed: {last_err}"[:120]
-        logger.warning(
-            "API tunnel exhausted for %s/%s: %s",
-            project_id[:8],
-            cluster_id,
-            reason,
-        )
-        try:
-            await websocket.send_json({"type": "error", "error": reason})
-        except Exception:
-            pass
-        await websocket.close(code=1013, reason=reason)
     except Exception:
-        logger.debug(
-            "API tunnel error for %s/%s", project_id[:8], cluster_id, exc_info=True
-        )
-        try:
-            await websocket.close(code=1011, reason="Tunnel failed")
-        except Exception:
-            pass
-    finally:
-        if writer is not None:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-        if ssock is not None:
-            try:
-                ssock.close()
-            except Exception:
-                pass
-        if db is not None:
-            db.close()
+        pass
+    await websocket.close(code=1001, reason="Use troshka-tunnel service")
 
 
 @router.websocket("/api/v1/patterns/{pattern_id}/ws")

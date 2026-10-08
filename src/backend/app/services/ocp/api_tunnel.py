@@ -407,8 +407,8 @@ class _ExecRelaySocket:
             pass
 
 
-def open_kubevirt_portforward_socket(provider, target: DialTarget):
-    """Port-forward to the gateway pod listen port; returns a connected socket."""
+def open_kubevirt_portforward_handle(provider, target: DialTarget):
+    """Start a k8s PortForward to the gateway listen port (reusable for streams)."""
     from kubernetes.stream import portforward
 
     from app.services.providers.kubevirt import _get_k8s_clients
@@ -422,10 +422,22 @@ def open_kubevirt_portforward_socket(provider, target: DialTarget):
         target.namespace,
         ports=str(target.port),
     )
-    sock = pf.socket(target.port)
+    return pf, int(target.port)
+
+
+def open_socket_from_portforward(pf, port: int, *, owns_pf: bool = False):
+    """Open one TCP stream through an existing PortForward handle."""
+    sock = pf.socket(port)
     sock.setblocking(True)
-    sock._troshka_portforward = pf  # type: ignore[attr-defined]
+    if owns_pf:
+        sock._troshka_portforward = pf  # type: ignore[attr-defined]
     return sock
+
+
+def open_kubevirt_portforward_socket(provider, target: DialTarget):
+    """Port-forward to the gateway pod listen port; returns a connected socket."""
+    pf, port = open_kubevirt_portforward_handle(provider, target)
+    return open_socket_from_portforward(pf, port, owns_pf=True)
 
 
 def open_kubevirt_exec_relay(provider, target: DialTarget):

@@ -1,0 +1,17 @@
+{{- if and .Values.deploy .Values.tunnel.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-tunnel
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-tunnel
+  ports:
+    - name: http
+      port: 8201
+      targetPort: http
+{{- end }}

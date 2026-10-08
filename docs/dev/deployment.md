@@ -14,8 +14,9 @@ helm install troshka deploy/helm/ -n troshka \
   --set auth.adminGroups="rhpds-admins" \
   --set route.host=troshka.apps.cluster.example.com
 ```
-- Full-stack chart: backend, frontend, PostgreSQL, S4, OAuth proxy, RBAC, migration Job
-- All components conditional via `values.yaml` toggles (`postgres.deploy`, `s4.deploy`, `auth.oauthEnabled`)
+- Full-stack chart: backend, frontend, **troshka-tunnel**, PostgreSQL, S4, OAuth proxy, RBAC, migration Job
+- All components conditional via `values.yaml` toggles (`postgres.deploy`, `s4.deploy`, `auth.oauthEnabled`, `tunnel.enabled`)
+- **troshka-tunnel**: dedicated Deployment/Service/Route/HPA for nested-OCP `troshka-oc` WebSockets (`app.tunnel_main:app`). Route host is `route.host` with `troshka.` → `troshka-tunnel.`. Isolates port-forward load from the API worker — see [`troshka-oc.md`](troshka-oc.md)
 - Global `deploy: false` suppresses all resources (ArgoCD pattern)
 - Migration runs as Helm pre-install/pre-upgrade hook
 - Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)

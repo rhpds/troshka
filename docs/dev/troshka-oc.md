@@ -1,20 +1,26 @@
 # Local `oc` via `troshka-oc`
 
-Use stock `oc` on your laptop against nested OpenShift clusters in a Troshka project you own. The helper opens an authenticated tunnel through the Troshka API so you do not need in-cluster DNS, a bastion, or a manually rewritten kubeconfig.
+Use stock `oc` on your laptop against nested OpenShift clusters in a Troshka project you own. The helper opens an authenticated tunnel through the dedicated **troshka-tunnel** service so you do not need in-cluster DNS, a bastion, or a manually rewritten kubeconfig — and so tunnel traffic cannot stall the Troshka API worker.
 
 ## Prerequisites
 
 - `oc` on your `PATH`
 - Repo checkout (`scripts/troshka-oc`)
 - A Troshka project **you own** (or admin) with at least one nested cluster that has finished install (harvested kubeconfig)
-- API reachability + auth (see [API access](#api-access) below)
+- API + tunnel reachability + auth (see [API access](#api-access) below)
 
 ## Quick start
 
 ```bash
-# Point at the Troshka API (required against prod / remote; see API access)
-export TROSHKA_API_URL=https://troshka.example.com
+# REST API (kubeconfig list/fetch) — NOT the UI host
+export TROSHKA_API_URL=https://troshka-api.apps.example.com
+# Tunnel WebSocket service (derived automatically if unset)
+export TROSHKA_TUNNEL_URL=https://troshka-tunnel.apps.example.com
 export TROSHKA_API_KEY=trk_…   # from Settings → API Keys
+
+# Local dev defaults: API :8200, tunnel :8201
+# export TROSHKA_API_URL=http://localhost:8200
+# export TROSHKA_TUNNEL_URL=http://localhost:8201
 
 # List nested clusters + whether a kubeconfig was harvested
 ./scripts/troshka-oc list <project>
@@ -58,47 +64,61 @@ on **stdout** (status messages go to stderr). Wrapping with `eval "$(…)"` runs
 
 ## What it does
 
-1. Resolves the project and cluster(s) via the Troshka API (owner or admin).
-2. Spawns a background daemon that opens a WebSocket API tunnel per cluster.
-3. Listens on `127.0.0.1:<ephemeral-port>` and rewrites a local kubeconfig with the correct `tls-server-name`.
-4. Writes `~/.troshka/kube/<project8>.yaml` (mode `0600`) plus `.state.json` / `.pid` / `.log`.
-5. Prints `export KUBECONFIG=…` on stdout once ready; `teardown` kills the daemon.
+1. Resolves the project and cluster(s) via the Troshka **API** (owner or admin).
+2. Spawns a background daemon that opens **one multiplexed WebSocket per cluster** to **troshka-tunnel**.
+3. Local `oc` TCP connections become streams on that session (not a new port-forward each time).
+4. Listens on `127.0.0.1:<ephemeral-port>` and rewrites a local kubeconfig with the correct `tls-server-name`.
+5. Writes `~/.troshka/kube/<project8>.yaml` (mode `0600`) plus `.state.json` / `.pid` / `.log`.
+6. Prints `export KUBECONFIG=…` on stdout once ready; `teardown` kills the daemon.
 
 Multi-cluster `use` merges contexts (same naming as the showroom cluster terminal). Switch with `oc config use-context <name>`.
 
 ## API access
 
-`troshka-oc` talks to the Troshka backend over HTTPS (REST + a WebSocket tunnel). Configure with env vars:
-
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `TROSHKA_API_URL` | Against prod / remote | `http://localhost:8200` | Base URL of the Troshka API (no trailing slash needed) |
-| `TROSHKA_API_KEY` | Against prod / remote | *(empty)* | User API key `trk_…` sent as `Authorization: Bearer …` (and as `?token=` on the WebSocket) |
+| `TROSHKA_API_URL` | Against prod / remote | `http://localhost:8200` | REST API (list projects, fetch kubeconfigs) |
+| `TROSHKA_TUNNEL_URL` | Optional | derived from API URL | WebSocket tunnel service |
+| `TROSHKA_API_KEY` | Against prod / remote | *(empty)* | User API key `trk_…` as `Authorization: Bearer …` |
 
 | Environment | What you need |
 |-------------|----------------|
-| Local `./dev-services.sh` | Usually nothing — backend auto-auths as admin. URL defaults to localhost. |
-| Deployed / shared Troshka | `TROSHKA_API_URL` + a **user** API key for an account that **owns** the project |
+| Local `./dev-services.sh` + tunnel on `:8201` | Usually nothing for API; start tunnel with `uvicorn app.tunnel_main:app --port 8201` |
+| Deployed / shared Troshka | `troshka-api` + `troshka-tunnel` Routes + a **user** API key that **owns** the project |
+
+### UI host vs API host vs tunnel host
+
+| Role | Host pattern | Example |
+|------|--------------|---------|
+| UI (browser / SSO) | `troshka.apps.…` | `https://troshka.apps.ocpv-infra01.…` |
+| API (REST + API keys) | `troshka-api.apps.…` | `https://troshka-api.apps.ocpv-infra01.…` |
+| Tunnel (`troshka-oc` WS) | `troshka-tunnel.apps.…` | `https://troshka-tunnel.apps.ocpv-infra01.…` |
+
+The UI host sits behind **oauth-proxy**. A `Bearer trk_…` key there returns **403** HTML “Log In”. The canvas **Local oc** panel copies the correct `troshka-api` and `troshka-tunnel` URLs.
+
+If `TROSHKA_TUNNEL_URL` is unset, `troshka-oc` derives it:
+
+- `troshka-api.` → `troshka-tunnel.`
+- `localhost:8200` → `localhost:8201`
 
 ### Create an API key
 
-1. Sign in to Troshka in the browser (same environment you will call with `TROSHKA_API_URL`).
-2. Open **Settings** (user menu) → **API Keys**.
-3. Enter a name (e.g. `laptop-oc`), optionally set an expiry, click **Create Key**.
-4. **Copy the key immediately** — it is shown once (`trk_…`) and cannot be retrieved later.
-5. Export it in your shell (or add to `~/.zshrc` / a private env file):
+1. Sign in to Troshka in the browser (UI host).
+2. Open **Settings** → **API Keys**.
+3. Create a key, copy it once (`trk_…`).
+4. Export:
 
 ```bash
-export TROSHKA_API_URL=https://troshka.example.com   # your Troshka UI/API origin
-export TROSHKA_API_KEY=trk_…                          # paste the key
-./scripts/troshka-oc list my-project                  # sanity check
+export TROSHKA_API_URL=https://troshka-api.apps.example.com
+export TROSHKA_TUNNEL_URL=https://troshka-tunnel.apps.example.com
+export TROSHKA_API_KEY=trk_…
+./scripts/troshka-oc list my-project
 ```
 
 Notes:
 
-- Use a normal **user** API key. Scoped ops-pod keys are rejected by the tunnel WebSocket.
-- The key authenticates as **you**: you only see projects you own (admins see all).
-- Rotate by creating a new key and deleting the old one in Settings if it leaks.
+- Use a normal **user** API key (not ops-pod scoped).
+- Auth is sent as an HTTP header (not `?token=`), so keys do not appear in access logs.
 
 ## How this relates to other access paths
 
@@ -108,25 +128,29 @@ Notes:
 | Showroom **OpenShift Cluster Terminal** | In-browser `oc` with VIP-rewritten kubeconfigs |
 | Host **oc-exec** | Server-side `oc` inside the project network |
 
-Showroom terminal kubeconfigs are injected onto the showroom disk separately. `troshka-oc` only writes under `~/.troshka/kube/` and does not change topology / showroom files.
+## Dial path (troshka-tunnel)
 
-## Dial path (backend)
+The tunnel service (not the API worker) picks a reachability path:
 
-The API tunnel picks a reachability path by host/provider:
-
-1. **KubeVirt native** (`provider.type=kubevirt` / `host_type=kubevirt-cluster`): port-forward into the project gateway pod (needs `pods/portforward` on the provider SA), then exec+`socat`, then in-cluster Service ClusterIP, then public Route (last resort).
-2. **ocpvirt / EC2 / other troshkad hosts** (nested virt on a host VM): agent `POST /tcp-tunnel` dials the API VIP from the project netns (`troshka-<project8>`). Do **not** look for a management-cluster project namespace — that is the kubevirt-native layout.
+1. **KubeVirt native**: port-forward into the project gateway pod (one PF per multiplex session, many streams), then exec+`socat`, then Service ClusterIP, then public Route.
+2. **troshkad hosts**: agent `POST /tcp-tunnel` dials the API VIP from the project netns (one agent tunnel per stream).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `No project matching …` | Wrong prefix/name, or API key user does not own the project |
-| `No clusters have a harvested kubeconfig` | Install/recert not finished; wait until OPENSHIFT INFO shows credentials |
-| TLS handshake timeout / tunnel error | Backend cannot reach the nested API (RBAC, gateway down, cluster not Ready) |
-| `oc: command not found` | Install the OpenShift CLI and ensure it is on `PATH` |
-| Scoped API key rejected on WebSocket | Use a normal user API key, not an ops-pod scoped key |
+| `API 403` + HTML “Log In” | `TROSHKA_API_URL` is the **UI** host; use `troshka-api` |
+| `API 401` / Not authenticated | `TROSHKA_API_KEY` unset or invalid |
+| `API tunnels moved to troshka-tunnel` | Old client hitting backend WS; upgrade `troshka-oc` / set `TROSHKA_TUNNEL_URL` |
+| `oc` → `EOF` / timeout | Nested API unreachable from tunnel dial path; check cluster Ready + gateway |
+| Tunnel handshake timeout | Tunnel service down (`:8201` locally / Route in prod) |
+| `No project matching …` | Wrong prefix/name, or key user does not own the project |
+| `No clusters have a harvested kubeconfig` | Install/recert not finished |
 
 ## Canvas UI
 
-On the project canvas, **OPENSHIFT INFO** has a project-level **Local oc** expandable (above the per-cluster API/console blocks) with clone / `use` (all clusters) / `use-context` / teardown / one-shot commands.
+On the project canvas, **OPENSHIFT INFO** → **Local oc** shows clone / `TROSHKA_API_URL` / `TROSHKA_TUNNEL_URL` / API key / `use` / `use-context` / teardown / one-shot commands.
+
+## Design
+
+See [`docs/superpowers/specs/2026-10-08-troshka-tunnel-service-design.md`](../superpowers/specs/2026-10-08-troshka-tunnel-service-design.md).

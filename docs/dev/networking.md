@@ -83,5 +83,6 @@ Code: `vxlan._infra_ip_reservations`, `kubevirt_reconfigure._showroom_ip_for_cid
 - **Shell pipelines** (`|`, `&&`, `;`) skip `_exec_oc` and fall through to bastion SSH
 - **Bastionless**: simple `oc` commands work without a bastion on all providers
 ### Local oc (laptop)
-- Use `scripts/troshka-oc` to run stock `oc` against nested clusters via an authenticated API tunnel — see [`troshka-oc.md`](troshka-oc.md)
-- Canvas **OPENSHIFT INFO** → **Local oc** copies project-level `use` / `use-context` commands
+- Use `scripts/troshka-oc` to run stock `oc` against nested clusters via the dedicated **troshka-tunnel** WebSocket service (not the API worker) — see [`troshka-oc.md`](troshka-oc.md)
+- Set `TROSHKA_API_URL` (REST) + optional `TROSHKA_TUNNEL_URL` (`troshka-api.` → `troshka-tunnel.`; local `:8200` → `:8201`)
+- Canvas **OPENSHIFT INFO** → **Local oc** copies `TROSHKA_API_URL` / `TROSHKA_TUNNEL_URL` / `use` / `use-context` commands

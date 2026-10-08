@@ -1,0 +1,103 @@
+{{- if and .Values.deploy .Values.tunnel.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-tunnel
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel
+spec:
+  replicas: {{ .Values.tunnel.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-tunnel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-tunnel
+        app.kubernetes.io/component: tunnel
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/backend-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: troshka-backend
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
+      containers:
+        - name: tunnel
+          image: {{ include "troshka.backendImage" . }}
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - app.tunnel_main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8201"
+            - --proxy-headers
+            - --forwarded-allow-ips
+            - "*"
+            - --loop
+            - uvloop
+            - --http
+            - httptools
+          ports:
+            - containerPort: 8201
+              name: http
+          env:
+            - name: TROSHKA_DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: database-url
+            - name: TROSHKA_DATABASE__POOL_SIZE
+              value: {{ .Values.tunnel.dbPoolSize | quote }}
+            - name: TROSHKA_DATABASE__MAX_OVERFLOW
+              value: {{ .Values.tunnel.dbMaxOverflow | quote }}
+            - name: TROSHKA_DATABASE__POOL_RECYCLE
+              value: {{ .Values.database.poolRecycle | quote }}
+            - name: TROSHKA_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: jwt-secret
+            - name: TROSHKA_AUTH__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: encryption-key
+            - name: TROSHKA_REDIS__URL
+              value: {{ if .Values.redis.url }}{{ .Values.redis.url | quote }}{{ else if .Values.redis.deploy }}"redis://troshka-redis.{{ include "troshka.namespace" . }}.svc:6379/0"{{ else }}"redis://localhost:6379/0"{{ end }}
+            - name: TROSHKA_TUNNEL__MAX_SESSIONS_PER_POD
+              value: {{ .Values.tunnel.maxSessionsPerPod | quote }}
+            - name: TROSHKA_TUNNEL__MAX_STREAMS_PER_SESSION
+              value: {{ .Values.tunnel.maxStreamsPerSession | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: config
+              mountPath: /opt/app-root/src/config/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8201
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8201
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.tunnel.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: troshka-config
+{{- end }}

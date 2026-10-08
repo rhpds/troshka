@@ -4,6 +4,10 @@ import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import { buildPaletteOcpInfo } from "@/components/canvas/paletteOcpInfo";
+import {
+  troshkaApiOriginForCli,
+  troshkaTunnelOriginForCli,
+} from "@/lib/troshkaApiOrigin";
 
 const TIMER_PRESETS = [
   { label: "None", value: null },
@@ -126,10 +130,14 @@ function OcpLocalOcCommands({
   onToggle: () => void;
 }) {
   const proj = projectId.slice(0, 8);
-  const apiOrigin =
+  // UI origin is often oauth-proxy; CLI needs troshka-api + troshka-tunnel hosts.
+  const uiOrigin =
     typeof window !== "undefined" ? window.location.origin : "https://troshka.example.com";
+  const apiOrigin = troshkaApiOriginForCli(uiOrigin);
+  const tunnelOrigin = troshkaTunnelOriginForCli(uiOrigin);
   const cloneCmd = "git clone https://github.com/rhpds/troshka.git && cd troshka";
   const apiUrlCmd = `export TROSHKA_API_URL=${apiOrigin}`;
+  const tunnelUrlCmd = `export TROSHKA_TUNNEL_URL=${tunnelOrigin}`;
   const apiKeyCmd = "export TROSHKA_API_KEY=trk_…   # Settings → API Keys → Create Key";
   const useCmd = `eval "$(./scripts/troshka-oc use ${proj})"`;
   const teardownCmd = `eval "$(./scripts/troshka-oc teardown ${proj})"`;
@@ -180,8 +188,11 @@ function OcpLocalOcCommands({
             >
               Settings → API Keys
             </a>{" "}
-            (copy once). Starts tunnels for every cluster; switch with{" "}
-            <code>oc config use-context</code>. See <code>docs/dev/troshka-oc.md</code>.
+            (copy once). Use <code>troshka-api</code> for REST and{" "}
+            <code>troshka-tunnel</code> for the oc WebSocket (not the UI host —
+            oauth-proxy rejects API keys). Starts multiplexed tunnels for every
+            cluster; switch with <code>oc config use-context</code>. See{" "}
+            <code>docs/dev/troshka-oc.md</code>.
           </div>
           <div>
             <div style={{ opacity: 0.5, marginBottom: 2 }}>Clone repo</div>
@@ -191,11 +202,15 @@ function OcpLocalOcCommands({
             </div>
           </div>
           <div>
-            <div style={{ opacity: 0.5, marginBottom: 2 }}>Point at Troshka API</div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>Point at Troshka API + tunnel</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                 <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{apiUrlCmd}</code>
                 <PaletteCopyBtn value={apiUrlCmd} label="TROSHKA_API_URL" />
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{tunnelUrlCmd}</code>
+                <PaletteCopyBtn value={tunnelUrlCmd} label="TROSHKA_TUNNEL_URL" />
               </div>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                 <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{apiKeyCmd}</code>
@@ -234,7 +249,7 @@ function OcpLocalOcCommands({
             </div>
           </div>
           <div>
-            <div style={{ opacity: 0.5, marginBottom: 2 }}>One-shot oc commands (no tunnel needed)</div>
+            <div style={{ opacity: 0.5, marginBottom: 2 }}>One-shot oc (tunnel for this command only)</div>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
               <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{oneShot}</code>
               <PaletteCopyBtn value={oneShot} label="troshka-oc get nodes" />

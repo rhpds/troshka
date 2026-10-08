@@ -49,6 +49,35 @@ KUBE_DIR = Path.home() / ".troshka" / "kube"
 _READY_TIMEOUT_S = 90
 
 
+def _derive_tunnel_url(api_url: str) -> str:
+    """Map API origin → tunnel service (prod Route or local :8201)."""
+    from urllib.parse import urlparse, urlunparse
+
+    u = urlparse(api_url)
+    host = u.hostname or ""
+    if host in ("localhost", "127.0.0.1"):
+        port = u.port or (443 if u.scheme == "https" else 80)
+        if port == 8200:
+            netloc = f"{host}:8201"
+        else:
+            netloc = u.netloc
+        return urlunparse((u.scheme, netloc, "", "", "", "")).rstrip("/")
+    if host.startswith("troshka-api."):
+        new_host = "troshka-tunnel." + host[len("troshka-api.") :]
+    elif host.startswith("troshka.") and not host.startswith("troshka-tunnel."):
+        new_host = "troshka-tunnel." + host[len("troshka.") :]
+    else:
+        return api_url.rstrip("/")
+    auth = f"{u.username}:{u.password}@" if u.username else ""
+    port = f":{u.port}" if u.port else ""
+    return urlunparse((u.scheme, f"{auth}{new_host}{port}", "", "", "", "")).rstrip("/")
+
+
+TUNNEL_URL = os.environ.get("TROSHKA_TUNNEL_URL", "").rstrip("/") or _derive_tunnel_url(
+    API_URL
+)
+
+
 def _headers() -> dict[str, str]:
     h = {"Accept": "application/json"}
     if API_KEY:
@@ -67,12 +96,39 @@ def _api(path: str) -> object:
             return json.loads(body.decode())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
-        raise SystemExit(f"API {exc.code} {path}: {detail}") from exc
+        hint = ""
+        low = detail.lower()
+        if exc.code in (401, 403) and ("<html" in low or "log in" in low):
+            hint = (
+                "\nHint: TROSHKA_API_URL looks like the UI host (oauth-proxy). "
+                "Use the dedicated API route instead "
+                "(troshka.apps… → troshka-api.apps…). See docs/dev/troshka-oc.md."
+            )
+        elif exc.code == 401 and "not authenticated" in low:
+            if not API_KEY:
+                hint = (
+                    "\nHint: TROSHKA_API_KEY is unset. Create one under "
+                    "Settings → API Keys, then "
+                    "export TROSHKA_API_KEY=trk_…"
+                )
+            elif not API_KEY.startswith("trk_"):
+                hint = (
+                    "\nHint: TROSHKA_API_KEY must start with trk_ "
+                    "(Settings → API Keys)."
+                )
+            else:
+                hint = (
+                    "\nHint: TROSHKA_API_KEY was rejected (wrong, expired, or "
+                    "revoked). Create a new key under Settings → API Keys."
+                )
+        raise SystemExit(f"API {exc.code} {path}: {detail}{hint}") from exc
 
 
 def _resolve_project(prefix: str) -> dict:
     data = _api("/api/v1/projects/")
-    projs = data if isinstance(data, list) else data.get("projects", data.get("items", []))
+    projs = (
+        data if isinstance(data, list) else data.get("projects", data.get("items", []))
+    )
     matches = [
         p
         for p in projs
@@ -101,13 +157,24 @@ def _fetch_kubeconfig(project_id: str, cluster_id: str) -> str:
 
 
 def _ws_url(project_id: str, cluster_id: str) -> str:
-    base = API_URL.replace("https://", "wss://").replace("http://", "ws://")
-    url = f"{base}/api/v1/projects/{project_id}/clusters/{cluster_id}/api-tunnel"
-    if API_KEY:
-        from urllib.parse import quote
+    base = TUNNEL_URL.replace("https://", "wss://").replace("http://", "ws://")
+    return f"{base}/api/v1/projects/{project_id}/clusters/{cluster_id}/api-tunnel"
 
-        url += f"?token={quote(API_KEY)}"
-    return url
+
+def _ws_headers() -> list[tuple[str, str]]:
+    if not API_KEY:
+        return []
+    return [("Authorization", f"Bearer {API_KEY}")]
+
+
+def _pack_frame(stream_id: int, payload: bytes) -> bytes:
+    return stream_id.to_bytes(4, "big") + payload
+
+
+def _unpack_frame(data: bytes) -> tuple[int, bytes]:
+    if len(data) < 4:
+        raise ValueError("short frame")
+    return int.from_bytes(data[:4], "big"), data[4:]
 
 
 def _pick_free_port() -> int:
@@ -173,86 +240,30 @@ def _running_daemon(project_id: str) -> dict | None:
     return state
 
 
-async def _relay_one_connection(
-    project_id: str,
-    cluster_id: str,
-    local_reader: asyncio.StreamReader,
-    local_writer: asyncio.StreamWriter,
-) -> dict:
-    """Open one API tunnel WS and bridge a single local TCP client. Returns ready."""
-    ssl_ctx = None
-    if _ws_url(project_id, cluster_id).startswith("wss://"):
-        ssl_ctx = ssl.create_default_context()
-
-    async with ws_connect(
-        _ws_url(project_id, cluster_id),
-        ssl=ssl_ctx,
-        max_size=8 * 1024 * 1024,
-        open_timeout=30,
-    ) as ws:
-        first = await asyncio.wait_for(ws.recv(), timeout=60)
-        if isinstance(first, bytes):
-            first = first.decode()
-        ready = json.loads(first)
-        if ready.get("type") == "error":
-            raise RuntimeError(ready.get("error") or "tunnel error")
-        if ready.get("type") != "ready":
-            raise RuntimeError(f"unexpected tunnel handshake: {ready!r}")
-
-        async def tcp_to_ws():
-            try:
-                while True:
-                    data = await local_reader.read(65536)
-                    if not data:
-                        break
-                    await ws.send(data)
-            except Exception:
-                # ConnectionClosed* when the peer finishes first — expected.
-                pass
-
-        async def ws_to_tcp():
-            try:
-                async for message in ws:
-                    if isinstance(message, str):
-                        continue
-                    local_writer.write(message)
-                    await local_writer.drain()
-            except Exception:
-                pass
-            finally:
-                try:
-                    local_writer.close()
-                    await local_writer.wait_closed()
-                except Exception:
-                    pass
-
-        # Wait for both directions — FIRST_COMPLETED abandoned the peer mid-response
-        # (oc "unexpected EOF") and left ConnectionClosedOK as an unretrieved task error.
-        await asyncio.gather(tcp_to_ws(), ws_to_tcp(), return_exceptions=True)
-        try:
-            await ws.close()
-        except Exception:
-            pass
-        return ready
-
-
-async def _probe_ready(project_id: str, cluster_id: str) -> dict:
-    """Open a short-lived tunnel to learn tls_server_name / force_insecure."""
+async def _open_multiplex_ws(project_id: str, cluster_id: str):
+    """Connect to troshka-tunnel and wait for the multiplex ready handshake."""
     ssl_ctx = None
     url = _ws_url(project_id, cluster_id)
     if url.startswith("wss://"):
         ssl_ctx = ssl.create_default_context()
-    async with ws_connect(url, ssl=ssl_ctx, open_timeout=30) as ws:
-        first = await asyncio.wait_for(ws.recv(), timeout=60)
-        if isinstance(first, bytes):
-            first = first.decode()
-        ready = json.loads(first)
-        if ready.get("type") == "error":
-            raise RuntimeError(ready.get("error") or "tunnel error")
-        if ready.get("type") != "ready":
-            raise RuntimeError(f"unexpected tunnel handshake: {ready!r}")
+    ws = await ws_connect(
+        url,
+        ssl=ssl_ctx,
+        max_size=8 * 1024 * 1024,
+        open_timeout=30,
+        additional_headers=_ws_headers(),
+    )
+    first = await asyncio.wait_for(ws.recv(), timeout=60)
+    if isinstance(first, bytes):
+        first = first.decode()
+    ready = json.loads(first)
+    if ready.get("type") == "error":
         await ws.close()
-        return ready
+        raise RuntimeError(ready.get("error") or "tunnel error")
+    if ready.get("type") != "ready":
+        await ws.close()
+        raise RuntimeError(f"unexpected tunnel handshake: {ready!r}")
+    return ws, ready
 
 
 async def _serve_cluster_tunnel(
@@ -261,23 +272,106 @@ async def _serve_cluster_tunnel(
     port: int,
     ready_holder: dict,
 ) -> None:
+    """One multiplexed WS to troshka-tunnel; fan local TCP into streams."""
+    ws, ready = await _open_multiplex_ws(project_id, cluster_id)
+    ready_holder.update(ready)
+    next_stream = 1
+    streams: dict[int, asyncio.StreamWriter] = {}
+    opened: dict[int, asyncio.Future] = {}
+    lock = asyncio.Lock()
+
+    async def _pump_ws_to_local() -> None:
+        try:
+            async for message in ws:
+                if isinstance(message, str):
+                    try:
+                        msg = json.loads(message)
+                    except json.JSONDecodeError:
+                        continue
+                    sid = int(msg.get("stream_id") or 0)
+                    typ = msg.get("type")
+                    fut = opened.get(sid)
+                    if typ == "opened" and fut and not fut.done():
+                        fut.set_result(True)
+                    elif typ == "error" and fut and not fut.done():
+                        fut.set_exception(
+                            RuntimeError(msg.get("error") or "stream error")
+                        )
+                    elif typ == "close":
+                        w = streams.pop(sid, None)
+                        if w is not None:
+                            try:
+                                w.close()
+                            except Exception:
+                                pass
+                    continue
+                try:
+                    sid, payload = _unpack_frame(message)
+                except ValueError:
+                    continue
+                w = streams.get(sid)
+                if w is None:
+                    continue
+                try:
+                    w.write(payload)
+                    await w.drain()
+                except Exception:
+                    streams.pop(sid, None)
+        except Exception as exc:
+            print(f"troshka-oc ws pump ({cluster_id}): {exc}", file=sys.stderr)
+        finally:
+            for w in list(streams.values()):
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            streams.clear()
+
+    pump = asyncio.create_task(_pump_ws_to_local())
+
     async def _on_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        nonlocal next_stream
+        async with lock:
+            sid = next_stream
+            next_stream += 1
+            fut: asyncio.Future = asyncio.get_running_loop().create_future()
+            opened[sid] = fut
+        streams[sid] = writer
         try:
-            await _relay_one_connection(project_id, cluster_id, reader, writer)
+            await ws.send(json.dumps({"type": "open", "stream_id": sid}))
+            await asyncio.wait_for(fut, timeout=30)
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    break
+                await ws.send(_pack_frame(sid, data))
         except Exception as exc:
-            print(f"troshka-oc tunnel error ({cluster_id}): {exc}", file=sys.stderr)
+            print(f"troshka-oc stream {sid} ({cluster_id}): {exc}", file=sys.stderr)
+        finally:
+            opened.pop(sid, None)
+            streams.pop(sid, None)
+            try:
+                await ws.send(json.dumps({"type": "close", "stream_id": sid}))
+            except Exception:
+                pass
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
 
-    server = await asyncio.start_server(_on_client, "127.0.0.1", port)
-    ready_holder.update(await _probe_ready(project_id, cluster_id))
-    async with server:
-        await server.serve_forever()
+    try:
+        server = await asyncio.start_server(_on_client, "127.0.0.1", port)
+        async with server:
+            await server.serve_forever()
+    finally:
+        pump.cancel()
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 def _write_merged_kubeconfig(
@@ -406,6 +500,7 @@ async def _daemon_serve(
         "project_name": project.get("name"),
         "kubeconfig": str(path),
         "api_url": API_URL,
+        "tunnel_url": TUNNEL_URL,
         "clusters": [
             {
                 "id": c["id"],
@@ -516,7 +611,11 @@ def _spawn_daemon(project_prefix: str, cluster: str | None) -> int:
                 f"troshka-oc daemon exited early (code {proc.returncode}).\n{tail}"
             )
         state = _read_state(project["id"])
-        if state and state.get("status") == "ready" and int(state.get("pid") or 0) == proc.pid:
+        if (
+            state
+            and state.get("status") == "ready"
+            and int(state.get("pid") or 0) == proc.pid
+        ):
             path = Path(state["kubeconfig"])
             ports = {c["id"]: c["port"] for c in state.get("clusters") or []}
             ready_by_id = {
@@ -619,7 +718,9 @@ def cmd_list(project_prefix: str) -> int:
     print(f"{project['id'][:8]}  {project.get('name')}")
     daemon = _running_daemon(project["id"])
     if daemon:
-        print(f"  tunnel: running (pid {daemon.get('pid')})  kubeconfig={daemon.get('kubeconfig')}")
+        print(
+            f"  tunnel: running (pid {daemon.get('pid')})  kubeconfig={daemon.get('kubeconfig')}"
+        )
     else:
         print("  tunnel: not running")
     for c in clusters:
@@ -699,9 +800,7 @@ def cmd_use(
     if shell or foreground:
         project = _resolve_project(project_prefix)
         clusters = _select_clusters(_list_clusters(project["id"]), cluster)
-        return asyncio.run(
-            _run_foreground(project, clusters, shell=shell)
-        )
+        return asyncio.run(_run_foreground(project, clusters, shell=shell))
     return _spawn_daemon(project_prefix, cluster)
 
 
@@ -794,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(
             "Usage:\n"
-            "  eval \"$(troshka-oc use <project> [cluster])\"   # daemonize + export\n"
+            '  eval "$(troshka-oc use <project> [cluster])"   # daemonize + export\n'
             "  troshka-oc teardown [project]                    # stop daemon (+ unset)\n"
             "  troshka-oc status [project]\n"
             "  troshka-oc list <project>\n"
@@ -802,7 +901,7 @@ def main(argv: list[str] | None = None) -> int:
             "  troshka-oc [--project P] [--cluster C] <oc args...>\n"
             "\n"
             "Background `use` prints only `export KUBECONFIG=...` on stdout so you can:\n"
-            "  eval \"$(./scripts/troshka-oc use e0f60a08)\"\n"
+            '  eval "$(./scripts/troshka-oc use e0f60a08)"\n'
             "  oc config use-context <cluster>\n",
             end="",
         )

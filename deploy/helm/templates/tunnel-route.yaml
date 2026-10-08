@@ -1,0 +1,22 @@
+{{- if and .Values.deploy .Values.tunnel.enabled .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: troshka-tunnel
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host | replace "troshka." "troshka-tunnel." }}
+  {{- end }}
+  to:
+    kind: Service
+    name: troshka-tunnel
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

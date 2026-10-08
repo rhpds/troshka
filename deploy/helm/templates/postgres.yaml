@@ -51,11 +51,11 @@ spec:
                   key: postgres-password
             - name: POSTGRESQL_DATABASE
               value: troshka
-            # Sized to the fleet: (workers * worker pool) + (backend * (pool + overflow)) + reserve.
-            # Auto-scales when worker.replicas changes, so a large fleet never
+            # Sized to the fleet: workers + backend + tunnel pools + reserve.
+            # Auto-scales when worker/tunnel replicas change so the fleet never
             # exhausts the DB (the root cause of "remaining connection slots reserved").
             - name: POSTGRESQL_MAX_CONNECTIONS
-              value: {{ add (add (mul .Values.worker.replicas .Values.worker.dbPoolSize) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) 20 | quote }}
+              value: {{ add (add (add (mul .Values.worker.replicas .Values.worker.dbPoolSize) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) (mul (default 0 .Values.tunnel.replicas) (add (default 2 .Values.tunnel.dbPoolSize) (default 2 .Values.tunnel.dbMaxOverflow)))) 20 | quote }}
             {{- end }}
           volumeMounts:
             - name: data

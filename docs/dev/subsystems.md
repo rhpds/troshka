@@ -81,11 +81,11 @@
 - SSH key auth preferred over password when `ssh_key_id` is provided
 - `from-template` API accepts `ssh_pub_key` directly for agnosticv key injection
 ### Local oc (`troshka-oc`)
-- Laptop `oc` against nested OCP clusters via authenticated WebSocket API tunnel
-- CLI: `scripts/troshka-oc` — see [`troshka-oc.md`](troshka-oc.md) (API URL + Settings → API Keys)
-- API: `GET /projects/{id}/clusters`, `GET …/clusters/{id}/kubeconfig`, `WS …/clusters/{id}/api-tunnel`
-- Dial: kubevirt-native → gateway PF; ocpvirt/troshkad hosts → agent `/tcp-tunnel` in project netns
-- Canvas OPENSHIFT INFO shows project-level `troshka-oc use` (all clusters) + `oc config use-context` to switch
+- Laptop `oc` against nested OCP clusters via multiplexed WebSocket on **troshka-tunnel** (separate Deployment/Route; backend WS returns 410)
+- CLI: `scripts/troshka-oc` — see [`troshka-oc.md`](troshka-oc.md) (`TROSHKA_API_URL` + `TROSHKA_TUNNEL_URL` + Settings → API Keys)
+- REST: `GET /projects/{id}/clusters`, `GET …/clusters/{id}/kubeconfig` on the API; WS `…/clusters/{id}/api-tunnel` on the tunnel service
+- Dial: kubevirt-native → one gateway PF per session (many streams); ocpvirt/troshkad hosts → agent `/tcp-tunnel` in project netns
+- Canvas OPENSHIFT INFO → Local oc copies API + tunnel URLs, project-level `troshka-oc use` (all clusters) + `oc config use-context` to switch
 
 ### Pattern Save State
 - Backend `Pattern.state`: "creating" → "capturing" → "available" or "error"

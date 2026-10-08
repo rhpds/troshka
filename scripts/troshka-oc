@@ -12,9 +12,12 @@
 #   ./scripts/troshka-oc [--project P] [--cluster C] <oc args...>
 #   ./scripts/troshka-oc list <project>
 #
-# Auth:
-#   TROSHKA_API_URL   (default http://localhost:8200)
-#   TROSHKA_API_KEY   (optional in local dev; Bearer trk_… in prod)
+# Auth / endpoints:
+#   TROSHKA_API_URL      (default http://localhost:8200) — REST only
+#                        Prod: https://troshka-api.apps.…  — NOT the UI host
+#   TROSHKA_TUNNEL_URL   (default derived: :8201 or troshka-tunnel.apps.…)
+#                        WebSocket tunnels — never the API worker
+#   TROSHKA_API_KEY      (optional in local dev; Bearer trk_… in prod)
 #
 set -euo pipefail
 
