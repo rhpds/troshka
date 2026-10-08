@@ -129,9 +129,8 @@ function OcpLocalOcCommands({
   const apiOrigin =
     typeof window !== "undefined" ? window.location.origin : "https://troshka.example.com";
   const cloneCmd = "git clone https://github.com/rhpds/troshka.git && cd troshka";
-  const apiEnvCmd =
-    `export TROSHKA_API_URL=${apiOrigin}\n` +
-    `export TROSHKA_API_KEY=trk_…   # Settings → API Keys → Create Key`;
+  const apiUrlCmd = `export TROSHKA_API_URL=${apiOrigin}`;
+  const apiKeyCmd = "export TROSHKA_API_KEY=trk_…   # Settings → API Keys → Create Key";
   const useCmd = `eval "$(./scripts/troshka-oc use ${proj})"`;
   const teardownCmd = `eval "$(./scripts/troshka-oc teardown ${proj})"`;
   const oneShot = `./scripts/troshka-oc --project ${proj} get nodes`;
@@ -193,11 +192,15 @@ function OcpLocalOcCommands({
           </div>
           <div>
             <div style={{ opacity: 0.5, marginBottom: 2 }}>Point at Troshka API</div>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-              <code style={{ fontSize: 10, flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                {apiEnvCmd}
-              </code>
-              <PaletteCopyBtn value={apiEnvCmd} label="TROSHKA_API env" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{apiUrlCmd}</code>
+                <PaletteCopyBtn value={apiUrlCmd} label="TROSHKA_API_URL" />
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <code style={{ fontSize: 10, flex: 1, wordBreak: "break-all" }}>{apiKeyCmd}</code>
+                <PaletteCopyBtn value={apiKeyCmd} label="TROSHKA_API_KEY" />
+              </div>
             </div>
           </div>
           <div>
