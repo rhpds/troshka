@@ -578,19 +578,13 @@ async def bridge_websocket_to_tcp(websocket, reader, writer) -> None:
                 await websocket.send_bytes(data)
         except Exception:
             logger.debug("tcp→ws closed", exc_info=True)
-        finally:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
 
-    await asyncio.wait(
-        [
-            asyncio.create_task(ws_to_tcp()),
-            asyncio.create_task(tcp_to_ws()),
-        ],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    # Drain both directions; FIRST_COMPLETED closed the peer mid-response.
+    await asyncio.gather(ws_to_tcp(), tcp_to_ws(), return_exceptions=True)
+    try:
+        await websocket.close()
+    except Exception:
+        pass
 
 
 async def bridge_websocket_to_socket(websocket, ssock) -> None:
@@ -629,20 +623,13 @@ async def bridge_websocket_to_socket(websocket, ssock) -> None:
                 await websocket.send_bytes(data)
         except Exception:
             logger.debug("sock→ws closed", exc_info=True)
-        finally:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
 
     try:
-        await asyncio.wait(
-            [
-                asyncio.create_task(ws_to_sock()),
-                asyncio.create_task(sock_to_ws()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        await asyncio.gather(ws_to_sock(), sock_to_ws(), return_exceptions=True)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
     finally:
         try:
             pf = getattr(ssock, "_troshka_portforward", None)

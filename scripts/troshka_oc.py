@@ -206,11 +206,9 @@ async def _relay_one_connection(
                     if not data:
                         break
                     await ws.send(data)
-            finally:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
+            except Exception:
+                # ConnectionClosed* when the peer finishes first — expected.
+                pass
 
         async def ws_to_tcp():
             try:
@@ -219,6 +217,8 @@ async def _relay_one_connection(
                         continue
                     local_writer.write(message)
                     await local_writer.drain()
+            except Exception:
+                pass
             finally:
                 try:
                     local_writer.close()
@@ -226,13 +226,13 @@ async def _relay_one_connection(
                 except Exception:
                     pass
 
-        await asyncio.wait(
-            [
-                asyncio.create_task(tcp_to_ws()),
-                asyncio.create_task(ws_to_tcp()),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        # Wait for both directions — FIRST_COMPLETED abandoned the peer mid-response
+        # (oc "unexpected EOF") and left ConnectionClosedOK as an unretrieved task error.
+        await asyncio.gather(tcp_to_ws(), ws_to_tcp(), return_exceptions=True)
+        try:
+            await ws.close()
+        except Exception:
+            pass
         return ready
 
 
