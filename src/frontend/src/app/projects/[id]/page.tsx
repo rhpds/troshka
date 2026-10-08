@@ -495,7 +495,16 @@ export default function ProjectCanvasPage() {
 
   const handleOffClick = async () => {
     if (disruptiveActionsDisabled) return;
-    if ((offAction === "pause" || offAction === "hibernate") && !powerWarnDismissed) {
+    if (offAction === "stop") {
+      // Match projects list: always confirm a full shut down (unlike pause/
+      // hibernate, which can be dismissed via power_warn_dismissed).
+      const confirmed = await appConfirm({
+        title: "Stop environment?",
+        message: `Stop project "${projectName}"? All VMs will be shut down.`,
+        confirmLabel: "Stop",
+      });
+      if (!confirmed) return;
+    } else if ((offAction === "pause" || offAction === "hibernate") && !powerWarnDismissed) {
       const checkboxRef = { current: false };
       const message =
         offAction === "hibernate" ? POWER_WARN_MESSAGE + HIBERNATE_WARN_SUFFIX : POWER_WARN_MESSAGE;
