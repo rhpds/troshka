@@ -123,6 +123,7 @@ def test_unauth_ip_ceiling_is_high_for_event_nat():
 
 
 def test_middleware_rates_by_bearer_token_not_only_ip(fake_redis, monkeypatch):
+    monkeypatch.setenv("TROSHKA_RATE_LIMIT_IN_TESTS", "1")
     monkeypatch.setattr(rl, "MAX_REQUESTS_PER_MINUTE", 2)
 
     async def ok(_request):

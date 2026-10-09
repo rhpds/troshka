@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +17,22 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _enforcement_enabled() -> bool:
+    """Skip Redis rate limits during pytest (shared TestClient IP blows the ceiling).
+
+    Set ``TROSHKA_RATE_LIMIT_IN_TESTS=1`` to exercise middleware under pytest.
+    """
+    if os.environ.get("TROSHKA_RATE_LIMIT_DISABLED") == "1":
+        return False
+    if (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        and os.environ.get("TROSHKA_RATE_LIMIT_IN_TESTS") != "1"
+    ):
+        return False
+    return True
+
 
 BAN_WINDOW = 60
 # High on purpose: shared event NATs must not trip on a few bad logins.
@@ -120,6 +137,8 @@ def is_banned(ip: str) -> bool:
 
 def check_request_rate(*, authorization: str | None, ip: str) -> tuple[bool, str]:
     """Return (allowed, reason). Per-credential when Bearer present, else per-IP."""
+    if not _enforcement_enabled():
+        return True, ""
     try:
         from app.core.redis import sliding_window_rate
 
@@ -143,6 +162,8 @@ def check_request_rate(*, authorization: str | None, ip: str) -> tuple[bool, str
 
 def check_tunnel_open_rate(ip: str) -> bool:
     """Per-IP tunnel WebSocket open rate (high ceiling for event NAT)."""
+    if not _enforcement_enabled():
+        return True
     try:
         from app.core.redis import sliding_window_rate
 
@@ -191,6 +212,8 @@ def decrement_deploy_count(user_id: str):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path in EXEMPT_PATHS:
+            return await call_next(request)
+        if not _enforcement_enabled():
             return await call_next(request)
 
         ip = _get_client_ip(request)

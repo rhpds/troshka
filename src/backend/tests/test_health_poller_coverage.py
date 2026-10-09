@@ -82,7 +82,7 @@ class TestCheckMeshHealth:
 
 
 class TestCheckIpChange:
-    @patch("app.services.provisioner.update_sg_troshkad_ip")
+    @patch("app.services.provisioner.ensure_sg_troshkad_ip")
     @patch("app.services.provisioner.get_public_ip")
     def test_ip_changed_updates_sgs(self, mock_ip, mock_sg):
         mock_ip.return_value = "2.2.2.2"
@@ -105,6 +105,30 @@ class TestCheckIpChange:
         finally:
             hp._last_known_ip = old_ip
 
+    @patch("app.services.provisioner.ensure_sg_troshkad_ip")
+    @patch("app.services.provisioner.get_public_ip")
+    def test_partial_failure_still_updates_when_ip_changed(self, mock_ip, mock_sg):
+        """OCP Virt may stay up while EC2 is SG-blocked after a location change."""
+        mock_ip.return_value = "2.2.2.2"
+        old_ip = hp._last_known_ip
+        hp._last_known_ip = "1.1.1.1"
+        try:
+            mock_prov = MagicMock()
+            mock_prov.security_group_id = "sg-123"
+            mock_prov.id = "prov-abcd1234"
+            mock_prov.get_credentials.return_value = {}
+            with patch("app.core.database.SessionLocal") as mock_sl:
+                mock_db = MagicMock()
+                mock_sl.return_value = mock_db
+                mock_db.query.return_value.filter.return_value.all.return_value = [
+                    mock_prov
+                ]
+                hp._check_ip_change_if_all_unreachable(3, 1)
+            mock_sg.assert_called_once()
+            assert hp._last_known_ip == "2.2.2.2"
+        finally:
+            hp._last_known_ip = old_ip
+
     @patch("app.services.provisioner.get_public_ip", return_value="1.1.1.1")
     def test_same_ip_no_action(self, mock_ip):
         old_ip = hp._last_known_ip
@@ -114,10 +138,6 @@ class TestCheckIpChange:
             # No error = success
         finally:
             hp._last_known_ip = old_ip
-
-    def test_partial_failure_no_action(self):
-        # Only 1 of 3 failed — not all unreachable
-        hp._check_ip_change_if_all_unreachable(3, 1)
 
     def test_zero_failures_no_action(self):
         hp._check_ip_change_if_all_unreachable(5, 0)
@@ -130,6 +150,15 @@ class TestCheckIpChange:
             hp._check_ip_change_if_all_unreachable(2, 2)
         finally:
             hp._last_known_ip = old_ip
+
+
+class TestAgentUnreachableWarning:
+    def test_merge_and_clear(self):
+        merged = hp._merge_agent_unreachable_warning(None, "63.210.244.119")
+        assert len(merged) == 1
+        assert merged[0]["reason"] == "agent_unreachable"
+        assert "63.210.244.119" in merged[0]["message"]
+        assert hp._clear_agent_unreachable_warning(merged) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

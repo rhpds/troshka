@@ -49,6 +49,7 @@ _STOPPED_POWER_STATES = frozenset(
 # Guest is running in the hypervisor but frozen (KubeVirt IO-error / admin pause).
 _PAUSED_POWER_STATES = frozenset({"paused"})
 _PAUSED_WARNING_MOUNT = "vm-paused"
+_AGENT_UNREACHABLE_MOUNT = "agent-unreachable"
 
 
 def _warning_for_pct(mount: str, pct: float) -> dict | None:
@@ -86,6 +87,46 @@ def _clear_paused_warning(warnings: list | None) -> list | None:
         w
         for w in warnings
         if not (isinstance(w, dict) and w.get("mount") == _PAUSED_WARNING_MOUNT)
+    ]
+    return out or None
+
+
+def _merge_agent_unreachable_warning(
+    warnings: list | None, egress_ip: str | None
+) -> list:
+    """Warn when troshkad is unreachable but the cloud instance still looks up.
+
+    Common cause: AWS SG :31337 allowlist missing the backend's current egress IP
+    (travel / new wifi). Hosts UI surfaces ``message`` on the warning tooltip.
+    """
+    ip = (egress_ip or "unknown").strip() or "unknown"
+    entry = {
+        "mount": _AGENT_UNREACHABLE_MOUNT,
+        "used_pct": 0,
+        "level": "warning",
+        "reason": "agent_unreachable",
+        "message": (
+            f"Cannot reach troshkad :31337 from backend egress {ip}. "
+            "If the instance is running, add this IP to the host security group "
+            "(TCP 31337)."
+        ),
+    }
+    out = [
+        w
+        for w in (warnings or [])
+        if not (isinstance(w, dict) and w.get("mount") == _AGENT_UNREACHABLE_MOUNT)
+    ]
+    out.append(entry)
+    return out
+
+
+def _clear_agent_unreachable_warning(warnings: list | None) -> list | None:
+    if not warnings:
+        return warnings
+    out = [
+        w
+        for w in warnings
+        if not (isinstance(w, dict) and w.get("mount") == _AGENT_UNREACHABLE_MOUNT)
     ]
     return out or None
 
@@ -150,12 +191,17 @@ _last_known_ip = _get_initial_ip()
 
 
 def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
-    """If all hosts failed health check, maybe our IP changed."""
-    global _last_known_ip
-    if hosts_failed == 0 or hosts_failed < hosts_checked:
-        return  # Some hosts are reachable, not an IP issue
+    """If any host failed health and our egress IP changed, allowlist the new IP.
 
-    from app.services.provisioner import get_public_ip, update_sg_troshkad_ip
+    Previously required *all* hosts to fail, which never fired when OCP Virt /
+    other providers stayed reachable while EC2 :31337 was SG-blocked after a
+    location change. Additive ensure keeps other backend IPs intact.
+    """
+    global _last_known_ip
+    if hosts_failed == 0 or hosts_checked == 0:
+        return
+
+    from app.services.provisioner import ensure_sg_troshkad_ip, get_public_ip
 
     current_ip = get_public_ip()
     if not current_ip:
@@ -164,13 +210,15 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
         return
 
     logger.warning(
-        "Public IP changed from %s to %s — updating security groups",
+        "Public IP changed from %s to %s (%d/%d hosts unreachable) — "
+        "ensuring security groups allow new egress",
         _last_known_ip,
         current_ip,
+        hosts_failed,
+        hosts_checked,
     )
     _last_known_ip = current_ip
 
-    # Update all provider SGs
     from app.core.database import SessionLocal
     from app.models.provider import Provider
 
@@ -183,7 +231,7 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
             try:
                 creds = provider.get_credentials()
                 assert provider.security_group_id is not None
-                update_sg_troshkad_ip(
+                ensure_sg_troshkad_ip(
                     provider.security_group_id, current_ip, credentials=creds
                 )
             except Exception:
@@ -346,6 +394,7 @@ def _handle_health_success(host, health, db, checked_pools: set) -> None:
         host.used_ram_mb = capacity["ram_used_mb"]
 
     host.storage_warnings = _evaluate_partitions(health)
+    host.storage_warnings = _clear_agent_unreachable_warning(host.storage_warnings)
     if host.storage_warnings:
         _handle_storage_auto_extend(host, db)
 
@@ -536,6 +585,17 @@ def _handle_health_failure(host, now_dt, db=None) -> None:
     if host.state == "paused":
         _skip_until[host.id] = time.time() + 30
         return
+    # Instance still "active" in Troshka but agent unreachable → often SG/egress IP.
+    if host.state == "active" and host.host_type != "kubevirt-cluster":
+        try:
+            from app.services.provisioner import get_public_ip
+
+            egress = get_public_ip()
+        except Exception:
+            egress = None
+        host.storage_warnings = _merge_agent_unreachable_warning(
+            host.storage_warnings, egress
+        )
     if host.agent_status == "connected" and host.last_health_at:
         elapsed = (now_dt - host.last_health_at).total_seconds()
         if elapsed > _DISCONNECT_AFTER_SECONDS:

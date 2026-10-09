@@ -233,7 +233,7 @@ def get_default_vpc_and_subnet(credentials: dict | None = None) -> tuple[str, st
 
 
 def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = None):
-    """Update the troshkad port (31337) SG rule to a new backend IP."""
+    """Replace the troshkad port (31337) SG rule with a single backend IP."""
     client = _get_ec2_client(credentials=credentials)
 
     # Get current rules
@@ -265,6 +265,38 @@ def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = No
         ],
     )
     logger.info("Updated SG %s troshkad rule to %s/32", sg_id, new_ip)
+
+
+def ensure_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = None):
+    """Ensure backend egress IP is allowed on troshkad :31337 (additive).
+
+    Unlike ``update_sg_troshkad_ip``, keeps existing CIDRs so multiple backend
+    locations (office / travel / CI) can coexist.
+    """
+    if not new_ip:
+        return False
+    cidr = f"{new_ip}/32"
+    client = _get_ec2_client(credentials=credentials)
+    sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    for perm in sg.get("IpPermissions", []):
+        if perm.get("FromPort") != 31337 or perm.get("ToPort") != 31337:
+            continue
+        for ipr in perm.get("IpRanges") or []:
+            if ipr.get("CidrIp") == cidr:
+                return False
+    client.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 31337,
+                "ToPort": 31337,
+                "IpRanges": [{"CidrIp": cidr, "Description": _TROSHKAD_RULE_DESC}],
+            }
+        ],
+    )
+    logger.info("Added SG %s troshkad allow for %s", sg_id, cidr)
+    return True
 
 
 CLOUD_INIT = """#cloud-config

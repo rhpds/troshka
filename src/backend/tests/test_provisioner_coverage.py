@@ -309,6 +309,56 @@ class TestUpdateSgTroshkadIp:
         assert new_cidr == "5.6.7.8/32"
 
 
+class TestEnsureSgTroshkadIp:
+    @patch("app.services.provisioner._get_ec2_client")
+    def test_adds_when_missing(self, mock_get_client):
+        from app.services.provisioner import ensure_sg_troshkad_ip
+
+        mock_ec2 = MagicMock()
+        mock_get_client.return_value = mock_ec2
+        mock_ec2.describe_security_groups.return_value = {
+            "SecurityGroups": [
+                {
+                    "IpPermissions": [
+                        {
+                            "FromPort": 31337,
+                            "ToPort": 31337,
+                            "IpRanges": [{"CidrIp": "9.9.9.9/32"}],
+                        }
+                    ]
+                }
+            ]
+        }
+        assert ensure_sg_troshkad_ip("sg-123", "5.6.7.8") is True
+        mock_ec2.revoke_security_group_ingress.assert_not_called()
+        add_call = mock_ec2.authorize_security_group_ingress.call_args
+        assert (
+            add_call.kwargs["IpPermissions"][0]["IpRanges"][0]["CidrIp"] == "5.6.7.8/32"
+        )
+
+    @patch("app.services.provisioner._get_ec2_client")
+    def test_noop_when_already_allowed(self, mock_get_client):
+        from app.services.provisioner import ensure_sg_troshkad_ip
+
+        mock_ec2 = MagicMock()
+        mock_get_client.return_value = mock_ec2
+        mock_ec2.describe_security_groups.return_value = {
+            "SecurityGroups": [
+                {
+                    "IpPermissions": [
+                        {
+                            "FromPort": 31337,
+                            "ToPort": 31337,
+                            "IpRanges": [{"CidrIp": "5.6.7.8/32"}],
+                        }
+                    ]
+                }
+            ]
+        }
+        assert ensure_sg_troshkad_ip("sg-123", "5.6.7.8") is False
+        mock_ec2.authorize_security_group_ingress.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _resolve_subnet_ids
 # ---------------------------------------------------------------------------
