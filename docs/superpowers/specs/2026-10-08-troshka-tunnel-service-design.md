@@ -80,7 +80,7 @@ Legacy single-stream mode (no multiplex): still supported for one TCP bridge aft
 | Max sessions per user | 20 |
 | Max sessions per project | 10 |
 | Dial timeout | 15s |
-| Session receive / ping interval | 60s (ping; session stays open with zero streams) |
+| Stream idle (no open streams) | 60s → close session (client re-dials on next oc) |
 | Nested connect timeout | 10s |
 
 Exceeding caps → close with 1013 + clear reason.

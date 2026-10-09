@@ -65,9 +65,9 @@ on **stdout** (status messages go to stderr). Wrapping with `eval "$(…)"` runs
 ## What it does
 
 1. Resolves the project and cluster(s) via the Troshka **API** (owner or admin).
-2. Spawns a background daemon that opens **one multiplexed WebSocket per cluster** to **troshka-tunnel**.
-3. Local `oc` TCP connections become streams on that session (not a new port-forward each time).
-4. Listens on `127.0.0.1:<ephemeral-port>` and rewrites a local kubeconfig with the correct `tls-server-name`.
+2. Spawns a background daemon that listens on `127.0.0.1:<ephemeral-port>` per cluster and dials **troshka-tunnel** as needed.
+3. Local `oc` TCP connections become multiplex streams; if the WebSocket was dropped (Route idle, server stream-idle), the daemon **re-establishes** it on the next connection.
+4. Rewrites a local kubeconfig with the correct `tls-server-name`.
 5. Writes `~/.troshka/kube/<project8>.yaml` (mode `0600`) plus `.state.json` / `.pid` / `.log`.
 6. Prints `export KUBECONFIG=…` on stdout once ready; `teardown` kills the daemon.
 
@@ -143,7 +143,7 @@ The tunnel service (not the API worker) picks a reachability path:
 | `API 401` / Not authenticated | `TROSHKA_API_KEY` unset or invalid |
 | `API tunnels moved to troshka-tunnel` | Old client hitting backend WS; upgrade `troshka-oc` / set `TROSHKA_TUNNEL_URL` |
 | `oc` → `EOF` / timeout | Nested API unreachable from tunnel dial path; check cluster Ready + gateway |
-| Dual-context `use`: first cluster EOFs after switching | Fixed in tunnel session idle handling (parked cluster WS must stay open). Upgrade troshka-tunnel; `teardown` + `use` again |
+| Dual-context `use`: first cluster EOFs after switching | `troshka-oc` re-dials the tunnel on the next `oc` (Route idle drops parked WS). Update `scripts/troshka-oc` and `teardown`/`use` again |
 | Tunnel handshake timeout | Tunnel service down (`:8201` locally / Route in prod) |
 | `No project matching …` | Wrong prefix/name, or key user does not own the project |
 | `No clusters have a harvested kubeconfig` | Install/recert not finished |

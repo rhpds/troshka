@@ -266,27 +266,75 @@ async def _open_multiplex_ws(project_id: str, cluster_id: str):
     return ws, ready
 
 
+def _ws_connection_open(ws) -> bool:
+    """True when a websockets client connection can still send."""
+    if ws is None:
+        return False
+    # websockets v15+: State.OPEN; older: .open / .closed
+    state = getattr(ws, "state", None)
+    if state is not None:
+        name = getattr(state, "name", str(state))
+        return name == "OPEN"
+    if hasattr(ws, "open"):
+        return bool(ws.open)
+    return getattr(ws, "closed", True) is False
+
+
 async def _serve_cluster_tunnel(
     project_id: str,
     cluster_id: str,
     port: int,
     ready_holder: dict,
 ) -> None:
-    """One multiplexed WS to troshka-tunnel; fan local TCP into streams."""
-    ws, ready = await _open_multiplex_ws(project_id, cluster_id)
-    ready_holder.update(ready)
+    """Local TCP listener that dials troshka-tunnel on demand.
+
+    Parked multi-cluster contexts routinely lose the Route/WebSocket to idle
+    timeouts. Re-establish the multiplex session when a new local ``oc``
+    connection arrives instead of trying to keep the WS forever.
+    """
     next_stream = 1
     streams: dict[int, asyncio.StreamWriter] = {}
     opened: dict[int, asyncio.Future] = {}
     lock = asyncio.Lock()
+    ws = None
+    pump: asyncio.Task | None = None
 
-    async def _pump_ws_to_local() -> None:
+    async def _drop_ws() -> None:
+        nonlocal ws, pump
+        old_pump, old_ws = pump, ws
+        pump, ws = None, None
+        if old_pump is not None:
+            old_pump.cancel()
+            try:
+                await old_pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        if old_ws is not None:
+            try:
+                await old_ws.close()
+            except Exception:
+                pass
+        for w in list(streams.values()):
+            try:
+                w.close()
+            except Exception:
+                pass
+        streams.clear()
+        for fut in list(opened.values()):
+            if not fut.done():
+                fut.set_exception(RuntimeError("tunnel reconnecting"))
+        opened.clear()
+
+    async def _pump_ws_to_local(active_ws) -> None:
         try:
-            async for message in ws:
+            async for message in active_ws:
                 if isinstance(message, str):
                     try:
                         msg = json.loads(message)
                     except json.JSONDecodeError:
+                        continue
+                    # Server may send keepalive pings; ignore.
+                    if msg.get("type") in ("ping", "pong"):
                         continue
                     sid = int(msg.get("stream_id") or 0)
                     typ = msg.get("type")
@@ -327,51 +375,91 @@ async def _serve_cluster_tunnel(
                     pass
             streams.clear()
 
-    pump = asyncio.create_task(_pump_ws_to_local())
+    async def _ensure_ws(*, force: bool = False):
+        nonlocal ws, pump, next_stream
+        if (
+            not force
+            and _ws_connection_open(ws)
+            and pump is not None
+            and not pump.done()
+        ):
+            return ws
+        await _drop_ws()
+        new_ws, ready = await _open_multiplex_ws(project_id, cluster_id)
+        ready_holder.clear()
+        ready_holder.update(ready)
+        # Fresh multiplex session → stream ids restart at 1.
+        next_stream = 1
+        ws = new_ws
+        pump = asyncio.create_task(_pump_ws_to_local(new_ws))
+        print(
+            f"troshka-oc: connected {cluster_id} via={ready.get('via')}",
+            file=sys.stderr,
+        )
+        return ws
+
+    async def _open_stream_on_ws(active_ws, sid: int, fut: asyncio.Future) -> None:
+        await active_ws.send(json.dumps({"type": "open", "stream_id": sid}))
+        await asyncio.wait_for(fut, timeout=30)
 
     async def _on_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         nonlocal next_stream
-        async with lock:
-            sid = next_stream
-            next_stream += 1
-            fut: asyncio.Future = asyncio.get_running_loop().create_future()
-            opened[sid] = fut
-        streams[sid] = writer
+        sid = 0
+        active_ws = None
         try:
-            await ws.send(json.dumps({"type": "open", "stream_id": sid}))
-            await asyncio.wait_for(fut, timeout=30)
+            async with lock:
+                active_ws = await _ensure_ws()
+                sid = next_stream
+                next_stream += 1
+                fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                opened[sid] = fut
+            streams[sid] = writer
+            try:
+                await _open_stream_on_ws(active_ws, sid, fut)
+            except Exception:
+                # One retry on a fresh tunnel (idle Route drop, 1011, etc.).
+                async with lock:
+                    opened.pop(sid, None)
+                    active_ws = await _ensure_ws(force=True)
+                    sid = next_stream
+                    next_stream += 1
+                    fut = asyncio.get_running_loop().create_future()
+                    opened[sid] = fut
+                    streams[sid] = writer
+                await _open_stream_on_ws(active_ws, sid, fut)
             while True:
                 data = await reader.read(65536)
                 if not data:
                     break
-                await ws.send(_pack_frame(sid, data))
+                await active_ws.send(_pack_frame(sid, data))
         except Exception as exc:
             print(f"troshka-oc stream {sid} ({cluster_id}): {exc}", file=sys.stderr)
         finally:
             opened.pop(sid, None)
             streams.pop(sid, None)
-            try:
-                await ws.send(json.dumps({"type": "close", "stream_id": sid}))
-            except Exception:
-                pass
+            if active_ws is not None:
+                try:
+                    await active_ws.send(
+                        json.dumps({"type": "close", "stream_id": sid})
+                    )
+                except Exception:
+                    pass
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
 
+    # Initial dial so ``use`` can report via/SNI before the first oc.
+    await _ensure_ws()
     try:
         server = await asyncio.start_server(_on_client, "127.0.0.1", port)
         async with server:
             await server.serve_forever()
     finally:
-        pump.cancel()
-        try:
-            await ws.close()
-        except Exception:
-            pass
+        await _drop_ws()
 
 
 def _write_merged_kubeconfig(
