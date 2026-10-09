@@ -141,6 +141,8 @@ The tunnel service (not the API worker) picks a reachability path:
 |---------|----------------|
 | `API 403` + HTML “Log In” | `TROSHKA_API_URL` is the **UI** host; use `troshka-api` |
 | `API 401` / Not authenticated | `TROSHKA_API_KEY` unset or invalid |
+| Tunnel `4001 Unauthorized` | Tunnel accepts **unscoped `trk_` Bearer only** (no JWT, SSO headers, or `?token=`) |
+| `403 banned` / `1013 too many tunnel opens` | Abuse controls (cold attacker IPs / extreme open rate); event NATs with successful auths are not IP-banned |
 | `API tunnels moved to troshka-tunnel` | Old client hitting backend WS; upgrade `troshka-oc` / set `TROSHKA_TUNNEL_URL` |
 | `oc` → `EOF` / timeout | Nested API unreachable from tunnel dial path; check cluster Ready + gateway |
 | Dual-context `use`: first cluster EOFs after switching | `troshka-oc` re-dials the tunnel on the next `oc` (Route idle drops parked WS). Update `scripts/troshka-oc` and `teardown`/`use` again |

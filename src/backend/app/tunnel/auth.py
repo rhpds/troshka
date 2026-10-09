@@ -1,4 +1,7 @@
-"""Short-lived DB auth for tunnel WebSockets (release session before dial)."""
+"""Short-lived DB auth for tunnel WebSockets (API keys only).
+
+Public tunnel Route is not behind oauth-proxy — never trust SSO headers or JWT.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,6 @@ import logging
 
 from fastapi import WebSocket
 
-from app.core.config import config
 from app.core.database import SessionLocal
 from app.models.project import Project
 from app.models.user import User
@@ -16,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 def _token_from_websocket(websocket: WebSocket) -> str | None:
+    """Bearer trk_… only — no query-string tokens (access-log leakage)."""
     auth = websocket.headers.get("authorization") or ""
-    if auth.lower().startswith("bearer "):
+    if auth.lower().startswith("bearer trk_"):
         return auth.split(" ", 1)[1].strip() or None
-    # Legacy query param (discouraged — appears in access logs).
-    return websocket.query_params.get("token")
+    return None
 
 
 def authorize_tunnel_session(
@@ -28,7 +30,7 @@ def authorize_tunnel_session(
 ) -> dict:
     """Authenticate and resolve dial context; DB is closed before return.
 
-    On success: ``{"ok": True, "user", "project_id", "cluster", "targets",
+    On success: ``{"ok": True, "user_id", "project_id", "cluster", "targets",
     "host", "provider"}``.
     On failure: ``{"ok": False, "code", "reason"}``.
     """
@@ -39,7 +41,7 @@ def authorize_tunnel_session(
     db = SessionLocal()
     try:
         token = _token_from_websocket(websocket)
-        user = _resolve_user(token, db, headers=dict(websocket.headers))
+        user = _resolve_user(token, db)
         if not user:
             return {"ok": False, "code": 4001, "reason": "Unauthorized"}
 
@@ -104,41 +106,18 @@ def authorize_tunnel_session(
         db.close()
 
 
-def _resolve_user(token: str | None, db, headers: dict) -> User | None:
-    if token and token.startswith("trk_"):
-        from app.models.api_key import ApiKey, hash_key
-
-        api_key = (
-            db.query(ApiKey).filter_by(key_hash=hash_key(token), is_active=True).first()
-        )
-        if not api_key or api_key.is_scoped:
-            return None
-        if api_key.expires_at and api_key.expires_at < datetime.datetime.now(
-            datetime.UTC
-        ):
-            return None
-        api_key.last_used_at = datetime.datetime.now(datetime.UTC)
-        return api_key.user
-
-    if not config.auth.oauth_enabled and not token:
-        from app.core.auth import _get_or_create_dev_user
-
-        return _get_or_create_dev_user(db)
-
-    email = headers.get("x-forwarded-email")
-    if email:
-        from app.core.auth import _upsert_sso_user
-
-        return _upsert_sso_user(email, headers.get("x-forwarded-user"), db)
-
-    if not token:
+def _resolve_user(token: str | None, db) -> User | None:
+    """Unscoped, active, non-expired Troshka API key only."""
+    if not token or not token.startswith("trk_"):
         return None
-    from app.core.auth import decode_jwt
+    from app.models.api_key import ApiKey, hash_key
 
-    payload = decode_jwt(token)
-    if not payload:
+    api_key = (
+        db.query(ApiKey).filter_by(key_hash=hash_key(token), is_active=True).first()
+    )
+    if not api_key or api_key.is_scoped:
         return None
-    email = payload.get("email") or payload.get("sub")
-    if not email:
+    if api_key.expires_at and api_key.expires_at < datetime.datetime.now(datetime.UTC):
         return None
-    return db.query(User).filter_by(email=email).first()
+    api_key.last_used_at = datetime.datetime.now(datetime.UTC)
+    return api_key.user
