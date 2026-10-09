@@ -27,3 +27,10 @@ def test_ws_connection_open_states():
     assert not oc._ws_connection_open(SimpleNamespace(open=False))
     assert oc._ws_connection_open(SimpleNamespace(closed=False))
     assert not oc._ws_connection_open(SimpleNamespace(closed=True))
+
+
+def test_reconnect_timeouts_are_bounded():
+    """Stream open must fail fast; idle drop must be short (no keep-alive)."""
+    oc = _load_troshka_oc()
+    assert 1 <= oc._STREAM_OPEN_TIMEOUT_S <= 15
+    assert 0.5 <= oc._IDLE_DROP_S <= 5

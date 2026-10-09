@@ -280,6 +280,14 @@ def _ws_connection_open(ws) -> bool:
     return getattr(ws, "closed", True) is False
 
 
+# How long to wait for a multiplex stream "opened" ack before treating the
+# WebSocket as dead. Keep this well under typical oc client timeouts.
+_STREAM_OPEN_TIMEOUT_S = 12
+# Drop the multiplex WS shortly after the last local stream ends so parked
+# contexts do not hold a half-open Route (re-dial on next oc).
+_IDLE_DROP_S = 1.5
+
+
 async def _serve_cluster_tunnel(
     project_id: str,
     cluster_id: str,
@@ -289,8 +297,8 @@ async def _serve_cluster_tunnel(
     """Local TCP listener that dials troshka-tunnel on demand.
 
     Parked multi-cluster contexts routinely lose the Route/WebSocket to idle
-    timeouts. Re-establish the multiplex session when a new local ``oc``
-    connection arrives instead of trying to keep the WS forever.
+    timeouts. Hold the session only while local ``oc`` streams are active, then
+    drop it and re-dial on the next connection instead of keep-alive.
     """
     next_stream = 1
     streams: dict[int, asyncio.StreamWriter] = {}
@@ -298,9 +306,17 @@ async def _serve_cluster_tunnel(
     lock = asyncio.Lock()
     ws = None
     pump: asyncio.Task | None = None
+    idle_drop_task: asyncio.Task | None = None
 
-    async def _drop_ws() -> None:
+    def _cancel_idle_drop() -> None:
+        nonlocal idle_drop_task
+        if idle_drop_task is not None:
+            idle_drop_task.cancel()
+            idle_drop_task = None
+
+    async def _drop_ws(*, close_locals: bool = True) -> None:
         nonlocal ws, pump
+        _cancel_idle_drop()
         old_pump, old_ws = pump, ws
         pump, ws = None, None
         if old_pump is not None:
@@ -314,18 +330,20 @@ async def _serve_cluster_tunnel(
                 await old_ws.close()
             except Exception:
                 pass
-        for w in list(streams.values()):
-            try:
-                w.close()
-            except Exception:
-                pass
-        streams.clear()
-        for fut in list(opened.values()):
-            if not fut.done():
-                fut.set_exception(RuntimeError("tunnel reconnecting"))
-        opened.clear()
+        if close_locals:
+            for w in list(streams.values()):
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            streams.clear()
+            for fut in list(opened.values()):
+                if not fut.done():
+                    fut.set_exception(RuntimeError("tunnel reconnecting"))
+            opened.clear()
 
     async def _pump_ws_to_local(active_ws) -> None:
+        nonlocal ws, pump
         try:
             async for message in active_ws:
                 if isinstance(message, str):
@@ -368,15 +386,25 @@ async def _serve_cluster_tunnel(
         except Exception as exc:
             print(f"troshka-oc ws pump ({cluster_id}): {exc}", file=sys.stderr)
         finally:
+            # Mark session dead immediately so the next open re-dials instead of
+            # trusting a half-open websockets State.OPEN.
+            if ws is active_ws:
+                ws = None
+                pump = None
             for w in list(streams.values()):
                 try:
                     w.close()
                 except Exception:
                     pass
             streams.clear()
+            for fut in list(opened.values()):
+                if not fut.done():
+                    fut.set_exception(RuntimeError("tunnel session closed"))
+            opened.clear()
 
     async def _ensure_ws(*, force: bool = False):
         nonlocal ws, pump, next_stream
+        _cancel_idle_drop()
         if (
             not force
             and _ws_connection_open(ws)
@@ -384,7 +412,7 @@ async def _serve_cluster_tunnel(
             and not pump.done()
         ):
             return ws
-        await _drop_ws()
+        await _drop_ws(close_locals=force)
         new_ws, ready = await _open_multiplex_ws(project_id, cluster_id)
         ready_holder.clear()
         ready_holder.update(ready)
@@ -400,35 +428,62 @@ async def _serve_cluster_tunnel(
 
     async def _open_stream_on_ws(active_ws, sid: int, fut: asyncio.Future) -> None:
         await active_ws.send(json.dumps({"type": "open", "stream_id": sid}))
-        await asyncio.wait_for(fut, timeout=30)
+        await asyncio.wait_for(fut, timeout=_STREAM_OPEN_TIMEOUT_S)
+
+    async def _allocate_stream(writer: asyncio.StreamWriter):
+        nonlocal next_stream
+        sid = next_stream
+        next_stream += 1
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        opened[sid] = fut
+        streams[sid] = writer
+        return sid, fut
+
+    async def _schedule_idle_drop() -> None:
+        nonlocal idle_drop_task
+
+        async def _idle() -> None:
+            try:
+                await asyncio.sleep(_IDLE_DROP_S)
+                async with lock:
+                    if streams or opened:
+                        return
+                    if ws is not None:
+                        print(
+                            f"troshka-oc: idle-drop {cluster_id} "
+                            "(re-dial on next oc)",
+                            file=sys.stderr,
+                        )
+                        await _drop_ws(close_locals=False)
+            except asyncio.CancelledError:
+                return
+
+        _cancel_idle_drop()
+        idle_drop_task = asyncio.create_task(_idle())
 
     async def _on_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        nonlocal next_stream
         sid = 0
         active_ws = None
         try:
+            # Serialize dial + stream open so oc's parallel discovery conns share
+            # one reconnect instead of stampeding force=True redials.
             async with lock:
                 active_ws = await _ensure_ws()
-                sid = next_stream
-                next_stream += 1
-                fut: asyncio.Future = asyncio.get_running_loop().create_future()
-                opened[sid] = fut
-            streams[sid] = writer
-            try:
-                await _open_stream_on_ws(active_ws, sid, fut)
-            except Exception:
-                # One retry on a fresh tunnel (idle Route drop, 1011, etc.).
-                async with lock:
+                sid, fut = await _allocate_stream(writer)
+                try:
+                    await _open_stream_on_ws(active_ws, sid, fut)
+                except Exception:
                     opened.pop(sid, None)
+                    streams.pop(sid, None)
+                    # Only nuke the session when nothing else is mid-flight;
+                    # otherwise fail this conn and let siblings finish/fail.
+                    if streams or opened:
+                        raise
                     active_ws = await _ensure_ws(force=True)
-                    sid = next_stream
-                    next_stream += 1
-                    fut = asyncio.get_running_loop().create_future()
-                    opened[sid] = fut
-                    streams[sid] = writer
-                await _open_stream_on_ws(active_ws, sid, fut)
+                    sid, fut = await _allocate_stream(writer)
+                    await _open_stream_on_ws(active_ws, sid, fut)
             while True:
                 data = await reader.read(65536)
                 if not data:
@@ -437,23 +492,27 @@ async def _serve_cluster_tunnel(
         except Exception as exc:
             print(f"troshka-oc stream {sid} ({cluster_id}): {exc}", file=sys.stderr)
         finally:
-            opened.pop(sid, None)
-            streams.pop(sid, None)
-            if active_ws is not None:
+            if active_ws is not None and sid:
                 try:
                     await active_ws.send(
                         json.dumps({"type": "close", "stream_id": sid})
                     )
                 except Exception:
                     pass
+            async with lock:
+                opened.pop(sid, None)
+                streams.pop(sid, None)
+                if not streams and not opened:
+                    await _schedule_idle_drop()
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
 
-    # Initial dial so ``use`` can report via/SNI before the first oc.
+    # Probe once so ``use`` can report via/SNI, then drop — do not hold idle.
     await _ensure_ws()
+    await _drop_ws(close_locals=False)
     try:
         server = await asyncio.start_server(_on_client, "127.0.0.1", port)
         async with server:
