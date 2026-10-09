@@ -21,6 +21,9 @@ MAX_STREAMS_PER_SESSION = _int_env("TROSHKA_TUNNEL__MAX_STREAMS_PER_SESSION", 32
 MAX_SESSIONS_PER_USER = _int_env("TROSHKA_TUNNEL__MAX_SESSIONS_PER_USER", 20)
 MAX_SESSIONS_PER_PROJECT = _int_env("TROSHKA_TUNNEL__MAX_SESSIONS_PER_PROJECT", 10)
 DIAL_TIMEOUT_S = _int_env("TROSHKA_TUNNEL__DIAL_TIMEOUT_S", 15)
+# Receive wait / server→client ping interval while a session has no traffic.
+# Must NOT close the session when this elapses with zero streams — multi-cluster
+# troshka-oc parks idle cluster WebSockets for the daemon lifetime.
 STREAM_IDLE_S = _int_env("TROSHKA_TUNNEL__STREAM_IDLE_S", 60)
 
 

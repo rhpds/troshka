@@ -105,8 +105,11 @@ class MultiplexSession:
                     self.websocket.receive(), timeout=STREAM_IDLE_S
                 )
             except TimeoutError:
-                # Idle session — keep waiting (streams have their own traffic).
-                if not self._streams:
+                # Parked sessions (multi-cluster troshka-oc use) often have zero
+                # open streams while the user works on another context. Do not
+                # tear down — only client disconnect / send failure ends us.
+                # Periodic ping keeps LB/proxies from treating the WS as dead.
+                if not await self._send_ping():
                     break
                 continue
             except Exception:
@@ -134,6 +137,14 @@ class MultiplexSession:
             except Exception:
                 await self._close_stream(stream_id)
 
+    async def _send_ping(self) -> bool:
+        """Return False when the WebSocket is gone."""
+        try:
+            await self.websocket.send_json({"type": "ping"})
+            return True
+        except Exception:
+            return False
+
     async def _handle_control(self, text: str) -> None:
         import json
 
@@ -142,6 +153,14 @@ class MultiplexSession:
         except json.JSONDecodeError:
             return
         typ = msg.get("type")
+        if typ == "ping":
+            try:
+                await self.websocket.send_json({"type": "pong"})
+            except Exception:
+                pass
+            return
+        if typ == "pong":
+            return
         stream_id = int(msg.get("stream_id") or 0)
         if typ == "open":
             await self._open_stream(stream_id)

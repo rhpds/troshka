@@ -143,6 +143,7 @@ The tunnel service (not the API worker) picks a reachability path:
 | `API 401` / Not authenticated | `TROSHKA_API_KEY` unset or invalid |
 | `API tunnels moved to troshka-tunnel` | Old client hitting backend WS; upgrade `troshka-oc` / set `TROSHKA_TUNNEL_URL` |
 | `oc` → `EOF` / timeout | Nested API unreachable from tunnel dial path; check cluster Ready + gateway |
+| Dual-context `use`: first cluster EOFs after switching | Fixed in tunnel session idle handling (parked cluster WS must stay open). Upgrade troshka-tunnel; `teardown` + `use` again |
 | Tunnel handshake timeout | Tunnel service down (`:8201` locally / Route in prod) |
 | `No project matching …` | Wrong prefix/name, or key user does not own the project |
 | `No clusters have a harvested kubeconfig` | Install/recert not finished |
