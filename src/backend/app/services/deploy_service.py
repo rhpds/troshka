@@ -8883,7 +8883,11 @@ def _resolve_project_provider(s, host, project):
 
 
 def _gateway_eip_id_for_forwards(topology: dict, node_data: dict) -> str:
-    """Pick an extIpId for auto-added API port forwards on an existing gateway."""
+    """Pick an extIpId for auto-added API port forwards on an existing gateway.
+
+    Showroom-only gateways often have no EIP slot (Routes handle access). Still
+    need a stable placeholder so ensure can attach API listen keys.
+    """
     for pf in node_data.get("portForwards") or []:
         eip = str(pf.get("extIpId") or "").strip()
         if eip:
@@ -8892,7 +8896,7 @@ def _gateway_eip_id_for_forwards(topology: dict, node_data: dict) -> str:
         eid = str(eip.get("id") or "").strip()
         if eid:
             return eid
-    return ""
+    return "route-api"
 
 
 def _ensure_topology_ocp_api_port_forwards(topology: dict) -> bool:
