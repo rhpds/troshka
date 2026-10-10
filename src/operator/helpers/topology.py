@@ -73,7 +73,9 @@ def _build_network_entry(data, node, node_id, networks_with_gateway):
         "staticLeases": [],
         "mtu": data.get("mtu"),
     }
-    if data.get("allowNestedMacs") or data.get("networkType") == "migration":
+    if "allowNestedMacs" in data:
+        entry["allowNestedMacs"] = bool(data.get("allowNestedMacs"))
+    elif data.get("networkType") == "migration":
         entry["allowNestedMacs"] = True
     return entry
 

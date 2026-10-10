@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
+import { Tooltip } from "@patternfly/react-core";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import { vmStatusLabel } from "@/lib/vmStatus";
@@ -47,27 +48,33 @@ import type {
 
 function HintIcon({ text }: { text: string }) {
   return (
-    <span
-      title={text}
-      aria-label={text}
-      style={{
-        fontSize: 9,
-        fontWeight: 600,
-        color: "var(--troshka-text-dim)",
-        cursor: "help",
-        border: "1px solid var(--troshka-border)",
-        borderRadius: "50%",
-        width: 14,
-        height: 14,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        lineHeight: 1,
-        flexShrink: 0,
-      }}
-    >
-      i
-    </span>
+    <Tooltip content={text} position="top" entryDelay={200} exitDelay={0} maxWidth="280px">
+      <span
+        role="button"
+        tabIndex={0}
+        aria-label={text}
+        className="nodrag nopan"
+        onClick={(e) => e.preventDefault()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          fontSize: 9,
+          fontWeight: 600,
+          color: "var(--troshka-text-dim)",
+          cursor: "help",
+          border: "1px solid var(--troshka-border)",
+          borderRadius: "50%",
+          width: 14,
+          height: 14,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 1,
+          flexShrink: 0,
+        }}
+      >
+        i
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1255,7 +1262,18 @@ export default function PropertiesPanel() {
   React.useEffect(() => {
     if (node?.type !== "networkNode") return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMtuInputValue(typeof networkMtu === "number" ? networkMtu.toString() : "");
+    if (typeof networkMtu === "number") {
+      setMtuInputValue(networkMtu.toString());
+    } else if (
+      typeof networkMtu === "string" &&
+      networkMtu !== "" &&
+      networkMtu !== "auto" &&
+      !Number.isNaN(parseInt(networkMtu, 10))
+    ) {
+      setMtuInputValue(networkMtu);
+    } else {
+      setMtuInputValue("");
+    }
     // Depend only on the persisted mtu (not the whole `data` object) so an
     // unrelated field edit that yields a new `data` reference does not reset
     // the input mid-type. See per-network-mtu design §11 (deferred niceties).
@@ -4060,6 +4078,40 @@ export default function PropertiesPanel() {
               {subtype === "network" && (
                 <>
                   <div className="props-field">
+                    <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      Type
+                      {!isBmcNetwork && (
+                        <HintIcon text="Migration = shared L2 for nested CNV live migration; nested MACs default on." />
+                      )}
+                    </label>
+                    {isBmcNetwork ? (
+                      <input className="props-input" value="BMC" disabled />
+                    ) : (
+                      <select
+                        className="props-select"
+                        value={
+                          (data as Record<string, any>).networkType === "migration"
+                            ? "migration"
+                            : "standard"
+                        }
+                        onChange={(e) => {
+                          if (e.target.value === "migration") {
+                            updateNodeData(node.id, {
+                              networkType: "migration",
+                              allowNestedMacs: true,
+                            });
+                          } else {
+                            updateNodeData(node.id, { networkType: "standard" });
+                          }
+                        }}
+                      >
+                        <option value="standard">Standard</option>
+                        <option value="migration">Migration</option>
+                      </select>
+                    )}
+                  </div>
+
+                  <div className="props-field">
                     <label className="props-label">CIDR</label>
                     {(() => {
                       const currentCidr = and?.cidr;
@@ -4128,14 +4180,29 @@ export default function PropertiesPanel() {
                   {!isBmcNetwork && <div className="props-field">
                     <label className="props-label">MTU</label>
                     {(() => {
-                      const mtuMode = and.mtu === "auto" || and.mtu == null ? "auto" : "custom";
-                      const mtuValue = typeof and.mtu === "number" ? and.mtu : 1500;
+                      const rawMtu = and.mtu;
+                      const parsedMtu =
+                        typeof rawMtu === "number"
+                          ? rawMtu
+                          : typeof rawMtu === "string" && rawMtu !== "auto" && rawMtu !== ""
+                            ? parseInt(rawMtu, 10)
+                            : NaN;
+                      const mtuMode =
+                        rawMtu === "auto" || rawMtu == null || rawMtu === "" || Number.isNaN(parsedMtu)
+                          ? "auto"
+                          : "custom";
+                      const mtuValue =
+                        !Number.isNaN(parsedMtu) && parsedMtu >= 1280 && parsedMtu <= 9000
+                          ? parsedMtu
+                          : 1500;
+                      const displayMtu =
+                        mtuInputValue !== "" ? mtuInputValue : String(mtuValue);
                       const inputVal = parseInt(mtuInputValue, 10);
                       const isInvalid = mtuInputValue !== "" && (!isNaN(inputVal) && (inputVal < 1280 || inputVal > 9000));
 
                       return (
                         <>
-                          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                             <select
                               className="props-select"
                               value={mtuMode}
@@ -4144,8 +4211,8 @@ export default function PropertiesPanel() {
                                   update("mtu", "auto");
                                   setMtuInputValue("");
                                 } else {
-                                  update("mtu", 1500);
-                                  setMtuInputValue("1500");
+                                  update("mtu", mtuValue);
+                                  setMtuInputValue(String(mtuValue));
                                 }
                               }}
                               style={{ flex: "0 0 auto", minWidth: 90 }}
@@ -4157,7 +4224,7 @@ export default function PropertiesPanel() {
                               <input
                                 type="number"
                                 className="props-input"
-                                value={mtuInputValue || mtuValue}
+                                value={displayMtu}
                                 onChange={(e) => {
                                   setMtuInputValue(e.target.value);
                                   const val = parseInt(e.target.value, 10);
@@ -4168,7 +4235,8 @@ export default function PropertiesPanel() {
                                 min={1280}
                                 max={9000}
                                 style={{
-                                  flex: 1,
+                                  flex: "1 1 0",
+                                  minWidth: 72,
                                   fontFamily: "monospace",
                                   borderColor: isInvalid ? "var(--troshka-red)" : undefined
                                 }}
@@ -4189,25 +4257,28 @@ export default function PropertiesPanel() {
                     })()}
                   </div>}
 
-                  {!isBmcNetwork && (
-                    <div className="props-field">
-                      <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(
-                            (data as Record<string, any>).allowNestedMacs ||
-                              (data as Record<string, any>).networkType === "migration"
-                          )}
-                          disabled={(data as Record<string, any>).networkType === "migration"}
-                          onChange={(e) =>
-                            update("allowNestedMacs", e.target.checked || undefined)
-                          }
-                        />
-                        Allow nested MACs
-                        <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Migration networks enable this automatically." />
-                      </label>
-                    </div>
-                  )}
+                  {!isBmcNetwork && (() => {
+                    const netType = (data as Record<string, any>).networkType;
+                    const nestedExplicit = (data as Record<string, any>).allowNestedMacs;
+                    // Explicit false wins; otherwise migration implies on.
+                    const nestedOn =
+                      nestedExplicit === false
+                        ? false
+                        : Boolean(nestedExplicit || netType === "migration");
+                    return (
+                      <div className="props-field">
+                        <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={nestedOn}
+                            onChange={(e) => update("allowNestedMacs", e.target.checked)}
+                          />
+                          Allow nested MACs
+                          <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Migration networks default on; uncheck to override." />
+                        </label>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>

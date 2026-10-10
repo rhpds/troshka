@@ -109,8 +109,8 @@ _OVN_PORT_SECURITY_ANN = "k8s.ovn.org/port-security"
 
 def network_allow_nested_macs(network_spec: dict) -> bool:
     """True when OVN port security should be off (nested macvlan / multi-MAC guests)."""
-    if network_spec.get("allowNestedMacs"):
-        return True
+    if "allowNestedMacs" in network_spec:
+        return bool(network_spec.get("allowNestedMacs"))
     return network_spec.get("networkType") == "migration"
 
 

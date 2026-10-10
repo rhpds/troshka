@@ -743,6 +743,24 @@ export function setVmPowerOnAtDeploy(vmId: string, enabled: boolean): void {
   }
 }
 
+/** Semantic port-forward shape for dirty compare (canvas vs deployed).
+ *
+ * Deploy / sync often add or drop keys (`extIpId: ""` vs omitted, `proto`,
+ * underscore enrichment) while the user-visible rule is unchanged — that made
+ * Apply Changes show Gateway Port Forwards MODIFIED with identical before/after.
+ */
+function _stablePortForward(pf: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    extPort: String(pf.extPort ?? ""),
+    intIp: String(pf.intIp ?? "").trim(),
+    intPort: String(pf.intPort ?? ""),
+    proto: String(pf.proto || "tcp").toLowerCase(),
+  };
+  const extIpId = String(pf.extIpId ?? "").trim();
+  if (extIpId) out.extIpId = extIpId;
+  return out;
+}
+
 export function stableNodeData(
   data: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -780,8 +798,11 @@ export function stableNodeData(
     }
     const userForwards = forwards
       .filter((pf) => !pf?.managedByShowroom)
+      .map(_stablePortForward)
       .sort((a, b) =>
-        String(a.extPort ?? "").localeCompare(String(b.extPort ?? "")),
+        `${a.extPort}|${a.intIp}|${a.intPort}`.localeCompare(
+          `${b.extPort}|${b.intIp}|${b.intPort}`,
+        ),
       );
     if (userForwards.length) stable.portForwards = userForwards;
     else delete stable.portForwards;

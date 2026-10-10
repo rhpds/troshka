@@ -1469,8 +1469,8 @@ def _resolve_vm_network_entry(
 
 def _network_allows_nested_macs(net_data: dict) -> bool:
     """True when nested macvlan / multi-MAC guests are allowed on this L2."""
-    if net_data.get("allowNestedMacs"):
-        return True
+    if "allowNestedMacs" in net_data:
+        return bool(net_data.get("allowNestedMacs"))
     return net_data.get("networkType") == "migration"
 
 

@@ -250,6 +250,90 @@ describe("computeTopologyDiff", () => {
     expect(computeTopologyDiff(state)).toEqual([]);
   });
 
+  it("ignores gateway portForward key drift with identical rules", () => {
+    const gw: Node = {
+      id: "gw1",
+      type: "networkNode",
+      position: { x: 0, y: 0 },
+      data: {
+        name: "gateway",
+        subtype: "gateway",
+        gatewayMode: "nat-portforward",
+        portForwards: [
+          { extPort: "6443", intIp: "10.0.0.10", intPort: "6443", proto: "tcp" },
+          { extPort: 6444, intIp: "10.0.0.110", intPort: 6443 },
+        ],
+      },
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [gw],
+      deployedNodeData: {
+        gw1: baseline({
+          name: "gateway",
+          subtype: "gateway",
+          gatewayMode: "nat-portforward",
+          portForwards: [
+            {
+              extPort: "6443",
+              intIp: "10.0.0.10",
+              intPort: "6443",
+              proto: "tcp",
+              extIpId: "",
+            },
+            {
+              extPort: "6444",
+              intIp: "10.0.0.110",
+              intPort: "6443",
+              proto: "tcp",
+              _private_ip: "10.0.0.5",
+            },
+          ],
+        }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+    expect(computeTopologyDirty(state)).toBe(false);
+  });
+
+  it("reports a real gateway portForward target change", () => {
+    const gw: Node = {
+      id: "gw1",
+      type: "networkNode",
+      position: { x: 0, y: 0 },
+      data: {
+        name: "gateway",
+        subtype: "gateway",
+        portForwards: [
+          { extPort: "6443", intIp: "10.0.0.99", intPort: "6443", proto: "tcp" },
+        ],
+      },
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [gw],
+      deployedNodeData: {
+        gw1: baseline({
+          name: "gateway",
+          subtype: "gateway",
+          portForwards: [
+            { extPort: "6443", intIp: "10.0.0.10", intPort: "6443", proto: "tcp" },
+          ],
+        }),
+      },
+    } as TopologyDiffState;
+    const diff = computeTopologyDiff(state);
+    expect(diff).toHaveLength(1);
+    expect(diff[0]).toMatchObject({
+      kind: "modified",
+      resourceType: "Gateway",
+      name: "gateway",
+    });
+    const pf = diff[0].fields.find((f) => f.key === "portForwards");
+    expect(pf?.from).toContain("10.0.0.10");
+    expect(pf?.to).toContain("10.0.0.99");
+  });
+
   it("ignores cluster-derived dnsDomain on member networks", () => {
     const net: Node = {
       id: "net1",

@@ -4659,10 +4659,11 @@ def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
 
 def _network_nested_mac_sig(data: dict | None) -> tuple:
     data = data or {}
-    return (
-        bool(data.get("allowNestedMacs")),
-        data.get("networkType") == "migration",
-    )
+    if "allowNestedMacs" in data:
+        enabled = bool(data.get("allowNestedMacs"))
+    else:
+        enabled = data.get("networkType") == "migration"
+    return (enabled,)
 
 
 def _vms_affected_by_nested_mac_network_changes(
