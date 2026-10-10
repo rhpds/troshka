@@ -68,6 +68,76 @@ def test_net_dict_builder_includes_mtu():
     assert nets[0]["mtu"] == 8900
 
 
+def test_find_vm_networks_sets_allow_nested_macs_for_migration():
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "nics": [
+                        {
+                            "id": "nic-abc123",
+                            "mac": "52:54:00:11:22:33",
+                            "model": "virtio",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "net1",
+                "type": "networkNode",
+                "data": {"networkType": "migration"},
+            },
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "source": "vm1",
+                "target": "net1",
+                "sourceHandle": "nic-abc123",
+            }
+        ],
+    }
+    nets = _find_vm_networks("vm1", topo, {"net1": 1001}, project_id="test")
+    assert nets[0]["allow_nested_macs"] is True
+
+
+def test_find_vm_networks_sets_allow_nested_macs_from_toggle():
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "nics": [
+                        {
+                            "id": "nic-abc123",
+                            "mac": "52:54:00:11:22:33",
+                            "model": "virtio",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "net1",
+                "type": "networkNode",
+                "data": {"allowNestedMacs": True},
+            },
+        ],
+        "edges": [
+            {
+                "id": "e1",
+                "source": "vm1",
+                "target": "net1",
+                "sourceHandle": "nic-abc123",
+            }
+        ],
+    }
+    nets = _find_vm_networks("vm1", topo, {"net1": 1001}, project_id="test")
+    assert nets[0]["allow_nested_macs"] is True
+
+
 def test_multihost_path_includes_mtu():
     """Verify _define_multihost_vms passes mtu_map to _create_vm_via_troshkad."""
     from app.services.deploy_service import _define_multihost_vms

@@ -1,4 +1,5 @@
 # src/troshkad/tests/test_vm_network_mtu.py
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 import troshkad
 
@@ -12,6 +13,31 @@ def test_network_arg_includes_mtu_size():
 def test_network_arg_omits_mtu_when_absent():
     net = {"bridge": "br-1001", "model": "virtio"}
     assert "mtu.size" not in troshkad._network_arg(net)
+
+
+def test_reconfigure_nics_sets_trust_guest_rx_filters():
+    root = ET.fromstring("<domain><devices/></domain>")
+    nics = [
+        {
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "bridge": "br-1001",
+            "model": "virtio",
+            "allow_nested_macs": True,
+        }
+    ]
+    troshkad._reconfigure_nics(root, nics)
+    iface = root.find(".//interface")
+    driver = iface.find("driver")
+    assert driver is not None
+    assert driver.get("trustGuestRxFilters") == "yes"
+
+
+def test_reconfigure_nics_omits_trust_by_default():
+    root = ET.fromstring("<domain><devices/></domain>")
+    nics = [{"mac": "aa:bb:cc:dd:ee:ff", "bridge": "br-1001", "model": "virtio"}]
+    troshkad._reconfigure_nics(root, nics)
+    iface = root.find(".//interface")
+    assert iface.find("driver") is None
 
 
 def test_setup_vxlan_bridge_sets_mtu():

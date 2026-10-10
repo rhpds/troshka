@@ -104,6 +104,16 @@ def vm_disk_pvc_name(vm_cr_name: str, disk_id: str) -> str:
     return f"{vm_cr_name}-disk-{short_disk_id(disk_id)}"
 
 
+_OVN_PORT_SECURITY_ANN = "k8s.ovn.org/port-security"
+
+
+def network_allow_nested_macs(network_spec: dict) -> bool:
+    """True when OVN port security should be off (nested macvlan / multi-MAC guests)."""
+    if network_spec.get("allowNestedMacs"):
+        return True
+    return network_spec.get("networkType") == "migration"
+
+
 def build_nad(network_cr):
     _spec = network_cr["spec"]
     name = network_cr["metadata"]["name"]
@@ -122,15 +132,20 @@ def build_nad(network_cr):
     if isinstance(mtu, int) and mtu > 0:
         config["mtu"] = mtu
 
+    metadata: dict[str, object] = {
+        "name": nad_name,
+        "namespace": namespace,
+        "ownerReferences": [owner_ref(network_cr)],
+        "labels": {"app": "troshka", "troshka-network": name},
+    }
+    if network_allow_nested_macs(_spec):
+        config["portSecurity"] = False
+        metadata["annotations"] = {_OVN_PORT_SECURITY_ANN: "false"}
+
     return {
         "apiVersion": "k8s.cni.cncf.io/v1",
         "kind": "NetworkAttachmentDefinition",
-        "metadata": {
-            "name": nad_name,
-            "namespace": namespace,
-            "ownerReferences": [owner_ref(network_cr)],
-            "labels": {"app": "troshka", "troshka-network": name},
-        },
+        "metadata": metadata,
         "spec": {"config": json.dumps(config)},
     }
 

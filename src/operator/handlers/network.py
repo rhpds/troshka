@@ -189,6 +189,23 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
     """Reconcile dnsmasq config when network spec changes (e.g. DNS records added)."""
     logger.info(f"Updating network {name} in {namespace}")
     api = client.CoreV1Api()
+    custom_api = client.CustomObjectsApi()
+
+    nad = build_nad(body)
+    nad_name = nad["metadata"]["name"]
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group="k8s.cni.cncf.io",
+            version="v1",
+            namespace=namespace,
+            plural="network-attachment-definitions",
+            name=nad_name,
+            body=nad,
+        )
+        logger.info(f"Updated NAD {nad_name}")
+    except client.ApiException as e:
+        if e.status != 404:
+            raise
 
     dnsmasq_conf = generate_dnsmasq_config(spec)
     cm_name = f"dnsmasq-{name}"

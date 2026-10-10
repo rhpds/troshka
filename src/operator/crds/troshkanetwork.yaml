@@ -66,6 +66,12 @@ spec:
                 externalAccess:
                   type: boolean
                   default: false
+                allowNestedMacs:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Disable OVN port security on this layer2 NAD and set
+                    trustGuestRxFilters on VM virtio NICs (nested macvlan / CCLM).
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

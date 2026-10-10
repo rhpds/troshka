@@ -4188,6 +4188,26 @@ export default function PropertiesPanel() {
                       );
                     })()}
                   </div>}
+
+                  {!isBmcNetwork && (
+                    <div className="props-field">
+                      <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(
+                            (data as Record<string, any>).allowNestedMacs ||
+                              (data as Record<string, any>).networkType === "migration"
+                          )}
+                          disabled={(data as Record<string, any>).networkType === "migration"}
+                          onChange={(e) =>
+                            update("allowNestedMacs", e.target.checked || undefined)
+                          }
+                        />
+                        Allow nested MACs
+                        <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Migration networks enable this automatically." />
+                      </label>
+                    </div>
+                  )}
                 </>
               )}
             </div>

@@ -1215,6 +1215,9 @@ def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
             net_data["bmcPassword"] = net_cfg.get("bmc_password", bmc_password)
         elif is_migration:
             net_data["networkType"] = "migration"
+            net_data["allowNestedMacs"] = net_cfg.get("allow_nested_macs", True)
+        elif net_cfg.get("allow_nested_macs"):
+            net_data["allowNestedMacs"] = True
         net_node = {
             "id": _id(),
             "type": "networkNode",
@@ -2590,6 +2593,11 @@ def _export_single_network(d):
             net_out["bmc_username"] = d["bmcUsername"]
         if d.get("bmcPassword"):
             net_out["bmc_password"] = d["bmcPassword"]
+    elif d.get("networkType") == "migration":
+        net_out["type"] = "migration"
+    if d.get("allowNestedMacs") and d.get("networkType") != "migration":
+        # migration implies nested MACs on import; only export the explicit toggle
+        net_out["allow_nested_macs"] = True
     return net_out
 
 

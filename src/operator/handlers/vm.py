@@ -1007,6 +1007,28 @@ def _resolve_nad_refs(custom_api, namespace):
     return nad_refs
 
 
+def _resolve_network_net_features(custom_api, namespace):
+    """Per TroshkaNetwork CR name: flags for virtio / OVN nested-MAC attachments."""
+    from helpers.k8s import network_allow_nested_macs
+
+    features: dict[str, dict[str, bool]] = {}
+    try:
+        networks = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkanetworks",
+        )
+        for net in networks.get("items", []):
+            net_name = net["metadata"]["name"]
+            spec = net.get("spec") or {}
+            if network_allow_nested_macs(spec):
+                features[net_name] = {"allowNestedMacs": True}
+    except Exception:
+        pass
+    return features
+
+
 def _apply_vm_warnings(
     patch,
     warnings: list[str],
@@ -1143,6 +1165,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     _raise_on_missing_network_refs(spec, patch)
 
     nad_refs = _resolve_nad_refs(custom_api, namespace)
+    network_net_features = _resolve_network_net_features(custom_api, namespace)
 
     video_config_enabled = is_video_config_enabled(custom_api)
     proactive_warnings = collect_kubevirt_vm_warnings(
@@ -1155,6 +1178,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         nad_refs,
         cloudinit_secret_name,
         video_config_enabled=video_config_enabled,
+        network_net_features=network_net_features,
     )
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
 
@@ -1564,6 +1588,7 @@ async def vm_update(
     _raise_on_missing_network_refs(new_spec, patch)
 
     # Rebuild and create KubeVirt VM with new spec
+    network_net_features = _resolve_network_net_features(custom_api, namespace)
     video_config_enabled = is_video_config_enabled(custom_api)
     proactive_warnings = collect_kubevirt_vm_warnings(
         new_spec, video_config_enabled=video_config_enabled
@@ -1575,6 +1600,7 @@ async def vm_update(
         nad_refs,
         cloudinit_secret_name,
         video_config_enabled=video_config_enabled,
+        network_net_features=network_net_features,
     )
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
     try:

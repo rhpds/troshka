@@ -4644,13 +4644,58 @@ def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
     dep_nodes = {
         n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "vmNode"
     }
-    return [
+    changed = [
         nid
         for nid in cur_nodes
         if nid in dep_nodes
         and _vm_data_for_kubevirt_diff(cur_nodes[nid].get("data"))
         != _vm_data_for_kubevirt_diff(dep_nodes[nid].get("data"))
     ]
+    for nid in _vms_affected_by_nested_mac_network_changes(current, deployed):
+        if nid not in changed and nid in cur_nodes:
+            changed.append(nid)
+    return changed
+
+
+def _network_nested_mac_sig(data: dict | None) -> tuple:
+    data = data or {}
+    return (
+        bool(data.get("allowNestedMacs")),
+        data.get("networkType") == "migration",
+    )
+
+
+def _vms_affected_by_nested_mac_network_changes(
+    current: dict, deployed: dict
+) -> list[str]:
+    """VMs on networks whose nested-MAC / migration settings changed.
+
+    NAD port-security updates alone are not enough — virtio NICs need
+    trustGuestRxFilters, which is applied when the TroshkaVM is rebuilt.
+    """
+    cur_nets = {
+        n["id"]: n for n in current.get("nodes", []) if n.get("type") == "networkNode"
+    }
+    dep_nets = {
+        n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "networkNode"
+    }
+    changed_net_ids = {
+        nid
+        for nid, node in cur_nets.items()
+        if nid in dep_nets
+        and _network_nested_mac_sig(node.get("data"))
+        != _network_nested_mac_sig(dep_nets[nid].get("data"))
+    }
+    if not changed_net_ids:
+        return []
+    affected: list[str] = []
+    for edge in current.get("edges") or []:
+        src, tgt = edge.get("source"), edge.get("target")
+        if src in changed_net_ids and tgt:
+            affected.append(tgt)
+        elif tgt in changed_net_ids and src:
+            affected.append(src)
+    return list(dict.fromkeys(affected))
 
 
 def _new_ocp_clusters(current: dict, deployed: dict) -> list[dict]:
@@ -5575,6 +5620,18 @@ def _apply_disk_changes(h, p_id, s, current, changes):
             logger.warning("Failed to resize disk %s: %s", dr["path"], e)
 
 
+def _nic_nested_mac_sig(nics: list[dict] | None) -> list[tuple]:
+    """Stable signature of bridge/mac + nested-MAC trust flag for reconfigure diffs."""
+    return sorted(
+        (
+            (n.get("bridge") or ""),
+            (n.get("mac") or "").lower(),
+            bool(n.get("allow_nested_macs")),
+        )
+        for n in (nics or [])
+    )
+
+
 def _vm_config_unchanged(
     current_cfg,
     boot_devs,
@@ -5583,15 +5640,22 @@ def _vm_config_unchanged(
     desired_bridges,
     desired_disks,
     cdrom_list,
+    desired_nics: list[dict] | None = None,
 ) -> bool:
     """True when live troshkad config already matches the desired topology."""
-    return (
+    if not (
         current_cfg["boot_devs"] == boot_devs
         and current_cfg["vcpus"] == vm["vcpus"]
         and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
         and current_bridges == desired_bridges
         and current_cfg["disks"] == desired_disks
         and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+    ):
+        return False
+    if desired_nics is None:
+        return True
+    return _nic_nested_mac_sig(current_cfg.get("nics")) == _nic_nested_mac_sig(
+        desired_nics
     )
 
 
@@ -5646,10 +5710,17 @@ def _reconfigure_existing_vm(
     vm_disks = _find_vm_disks(vm["node_id"], current)
     boot_devs = _resolve_boot_devs(vm, vm_disks, current)
     vm_networks = _find_vm_networks(vm["node_id"], current, vni_map, p_id)
-    nics = [
-        {"bridge": n["bridge"], "mac": n["mac"], "model": n.get("model", "virtio")}
-        for n in vm_networks
-    ] or None
+    nics = []
+    for n in vm_networks:
+        nic = {
+            "bridge": n["bridge"],
+            "mac": n["mac"],
+            "model": n.get("model", "virtio"),
+        }
+        if n.get("allow_nested_macs"):
+            nic["allow_nested_macs"] = True
+        nics.append(nic)
+    nics = nics or None
 
     changes = _detect_disk_changes(p_id, vm["node_id"], vm_disks, deployed, pool)
     disk_list = changes["disk_list"]
@@ -5665,14 +5736,18 @@ def _reconfigure_existing_vm(
         _reconfigure_existing_vm_missing_config(current, vm, diff)
         return
 
-    desired_nics = (
-        [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks]
-        if vm_networks
-        else []
-    )
+    desired_nics = []
+    for n in vm_networks or []:
+        dn = {"bridge": n["bridge"], "mac": n["mac"]}
+        if n.get("allow_nested_macs"):
+            dn["allow_nested_macs"] = True
+        desired_nics.append(dn)
     current_bridges = sorted(n["bridge"] for n in current_cfg["nics"])
     desired_bridges = sorted(n["bridge"] for n in desired_nics)
     desired_disks = [d["path"] for d in disk_list]
+    nested_mac_changed = _nic_nested_mac_sig(
+        current_cfg.get("nics")
+    ) != _nic_nested_mac_sig(desired_nics)
     if _vm_config_unchanged(
         current_cfg,
         boot_devs,
@@ -5681,6 +5756,7 @@ def _reconfigure_existing_vm(
         desired_bridges,
         desired_disks,
         cdrom_list,
+        desired_nics,
     ):
         logger.debug(
             "Reconfigure %s: VM %s unchanged, skipping",
@@ -5690,7 +5766,7 @@ def _reconfigure_existing_vm(
         return
 
     logger.info(
-        "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s bridges:%s disks:%s cdroms:%s",
+        "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s bridges:%s disks:%s cdroms:%s nested_macs:%s",
         p_id[:8],
         vm["name"],
         current_cfg["boot_devs"] != boot_devs,
@@ -5699,6 +5775,7 @@ def _reconfigure_existing_vm(
         current_bridges != desired_bridges,
         current_cfg["disks"] != desired_disks,
         sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
+        nested_mac_changed,
     )
     _set_deploy_progress(p_id, {"step": "reconfiguring", "detail": vm["name"]})
     needs_restart = _vm_reconfigure_needs_restart(
@@ -5711,6 +5788,8 @@ def _reconfigure_existing_vm(
         cdrom_list,
         restart_vm_ids,
     )
+    if nested_mac_changed:
+        needs_restart = True
     try:
         troshkad_reconfigure_vm(
             h,

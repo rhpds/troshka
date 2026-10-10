@@ -347,6 +347,41 @@ def test_build_kubevirt_vm_ios_nics_omit_pci_address():
     assert "pciAddress" not in iface
 
 
+def test_build_kubevirt_vm_nested_mac_sets_trust_guest_rx_filters():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "disks": [],
+            "nics": [
+                {
+                    "id": "nic-mig",
+                    "mac": "52:54:00:00:01",
+                    "model": "virtio",
+                    "networkRef": "net-migration",
+                },
+                {
+                    "id": "nic-lab",
+                    "mac": "52:54:00:00:02",
+                    "model": "virtio",
+                    "networkRef": "net-lab",
+                },
+            ],
+        },
+    }
+    body = build_kubevirt_vm(
+        vm_cr,
+        {},
+        {"net-migration": "net-migration-nad", "net-lab": "net-lab-nad"},
+        None,
+        network_net_features={"net-migration": {"allowNestedMacs": True}},
+    )
+    ifaces = body["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"]
+    assert ifaces[0]["trustGuestRxFilters"] is True
+    assert "trustGuestRxFilters" not in ifaces[1]
+
+
 def test_build_kubevirt_vm_rejects_missing_network_ref():
     import pytest
 

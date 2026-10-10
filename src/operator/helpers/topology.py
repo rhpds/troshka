@@ -59,7 +59,7 @@ def _build_network_entry(data, node, node_id, networks_with_gateway):
     if not dns_forwarders and data.get("dns") and gateway_ip:
         dns_forwarders = [gateway_ip]
 
-    return {
+    entry = {
         "id": node_id,
         "label": data.get("label", ""),
         "cidr": cidr,
@@ -73,6 +73,9 @@ def _build_network_entry(data, node, node_id, networks_with_gateway):
         "staticLeases": [],
         "mtu": data.get("mtu"),
     }
+    if data.get("allowNestedMacs") or data.get("networkType") == "migration":
+        entry["allowNestedMacs"] = True
+    return entry
 
 
 def extract_networks(topology):

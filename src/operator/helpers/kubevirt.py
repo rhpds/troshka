@@ -390,10 +390,11 @@ def _legacy_root_pci_address(nic_index: int) -> str:
     return f"0000:00:{slot:02x}.0"
 
 
-def _add_nics_to_domain(spec, domain, boot_idx):
+def _add_nics_to_domain(spec, domain, boot_idx, network_net_features=None):
     """Add network interface devices to domain configuration."""
     boot_order = spec.get("bootOrder", [])
     legacy_pci = _needs_legacy_root_pci_placement(spec)
+    net_features = network_net_features or {}
 
     for i, nic in enumerate(spec.get("nics", [])):
         nic_id = nic.get("id", f"nic-{i}")[:8]
@@ -406,6 +407,9 @@ def _add_nics_to_domain(spec, domain, boot_idx):
             iface["macAddress"] = mac
         if model and model != "virtio":
             iface["model"] = model
+        net_ref = nic.get("networkRef", "")
+        if net_ref and net_features.get(net_ref, {}).get("allowNestedMacs"):
+            iface["trustGuestRxFilters"] = True
         if legacy_pci:
             iface["pciAddress"] = _legacy_root_pci_address(i)
 
@@ -468,6 +472,7 @@ def build_kubevirt_vm(
     cloudinit_secret_name,
     *,
     video_config_enabled=False,
+    network_net_features=None,
 ):
     spec = vm_cr["spec"]
     name = vm_cr["metadata"]["name"]
@@ -483,7 +488,7 @@ def build_kubevirt_vm(
     volumes = []
     boot_idx = _add_disks_to_domain(spec, disk_pvcs, domain, volumes)
     _add_cdrom_if_present(spec, disk_pvcs, domain, volumes)
-    _add_nics_to_domain(spec, domain, boot_idx)
+    _add_nics_to_domain(spec, domain, boot_idx, network_net_features)
     _add_cloudinit_if_present(cloudinit_secret_name, domain, volumes)
 
     networks = _build_networks(spec, nad_refs)

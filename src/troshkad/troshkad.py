@@ -1710,6 +1710,7 @@ def _handle_vm_create(job, params):
     _run_cmd(job, cmd, timeout=600)
 
     _inject_domain_hwuuid(job, domain, _hwuuid)
+    _apply_nested_mac_trust(job, domain, networks)
 
     # Return the auto-generated domain UUID so the backend can store it
     dom_uuid = ""
@@ -2145,12 +2146,18 @@ def _handle_vm_config(job, params):
     for iface in root.findall(".//interface"):
         source = iface.find("source")
         mac = iface.find("mac")
-        nics.append(
-            {
-                "bridge": source.get("bridge", "") if source is not None else "",
-                "mac": mac.get("address", "") if mac is not None else "",
-            }
+        driver = iface.find("driver")
+        trust = (
+            driver is not None
+            and (driver.get("trustGuestRxFilters") or "").lower() in ("yes", "true", "1")
         )
+        entry = {
+            "bridge": source.get("bridge", "") if source is not None else "",
+            "mac": mac.get("address", "") if mac is not None else "",
+        }
+        if trust:
+            entry["allow_nested_macs"] = True
+        nics.append(entry)
 
     disks = []
     cdroms = []
@@ -2249,6 +2256,20 @@ def _reconfigure_boot_devs(root, boot_devs):
             dev_elem.remove(boot_child)
 
 
+def _iface_allow_nested_macs(nic: dict) -> bool:
+    """True when this NIC should trust guest RX filters (nested macvlan)."""
+    return bool(nic.get("allow_nested_macs") or nic.get("trust_guest_rx_filters"))
+
+
+def _set_trust_guest_rx_filters(iface):
+    """Ensure virtio interface trusts guest-advertised multicast/MAC filters."""
+    driver = iface.find("driver")
+    if driver is None:
+        driver = ET.SubElement(iface, "driver")
+        driver.set("name", "vhost")
+    driver.set("trustGuestRxFilters", "yes")
+
+
 def _reconfigure_nics(root, nics):
     """Replace all NIC interfaces in libvirt XML."""
     devices = root.find("devices")
@@ -2264,6 +2285,42 @@ def _reconfigure_nics(root, nics):
             mac_elem.set("address", nic["mac"])
         model = ET.SubElement(iface, "model")
         model.set("type", nic.get("model", "virtio"))
+        if _iface_allow_nested_macs(nic):
+            _set_trust_guest_rx_filters(iface)
+
+
+def _apply_nested_mac_trust(job, domain, networks):
+    """Post-define: set trustGuestRxFilters on NICs that allow nested MACs."""
+    if not any(_iface_allow_nested_macs(n) for n in networks):
+        return
+    xml_str = subprocess.check_output(
+        ["virsh", "dumpxml", domain], text=True, timeout=10
+    )
+    root = ET.fromstring(xml_str)
+    by_mac = {
+        (n.get("mac") or "").lower(): n
+        for n in networks
+        if _iface_allow_nested_macs(n) and n.get("mac")
+    }
+    by_bridge = {
+        n.get("bridge"): n for n in networks if _iface_allow_nested_macs(n)
+    }
+    changed = False
+    for iface in root.findall(".//interface"):
+        mac_el = iface.find("mac")
+        mac = (mac_el.get("address") if mac_el is not None else "") or ""
+        src = iface.find("source")
+        bridge = (src.get("bridge") if src is not None else "") or ""
+        if mac.lower() in by_mac or bridge in by_bridge:
+            _set_trust_guest_rx_filters(iface)
+            changed = True
+    if not changed:
+        return
+    tmp = f"/tmp/troshka-nested-mac-{domain}.xml"
+    ET.ElementTree(root).write(tmp, xml_declaration=False)
+    _run_cmd(job, ["virsh", "define", tmp], timeout=10)
+    os.unlink(tmp)
+    _job_log(job, f"Enabled trustGuestRxFilters on nested-MAC NICs for {domain}")
 
 
 def _add_disk_element(job, devices, disk_info, used_targets, domain):

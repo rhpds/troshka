@@ -1669,6 +1669,8 @@ def _create_network_crs(
         mtu = net.get("mtu")
         if isinstance(mtu, int) and mtu > 0:
             net_spec["mtu"] = mtu
+        if net.get("allowNestedMacs"):
+            net_spec["allowNestedMacs"] = True
 
         net_cr = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",

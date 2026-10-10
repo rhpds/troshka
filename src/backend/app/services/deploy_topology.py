@@ -1451,12 +1451,27 @@ def _resolve_vm_network_entry(
         return None
 
     vni = vni_map[network_node_id]
-    entry = {"bridge": f"br-{vni}", "mac": mac, "nic_id": handle, "model": model}
+    entry: dict[str, object] = {
+        "bridge": f"br-{vni}",
+        "mac": mac,
+        "nic_id": handle,
+        "model": model,
+    }
     if mtu_map:
         mtu = mtu_map.get(network_node_id)
         if mtu is not None:
             entry["mtu"] = mtu
+    net_data = (net_node or {}).get("data") or {}
+    if _network_allows_nested_macs(net_data):
+        entry["allow_nested_macs"] = True
     return entry
+
+
+def _network_allows_nested_macs(net_data: dict) -> bool:
+    """True when nested macvlan / multi-MAC guests are allowed on this L2."""
+    if net_data.get("allowNestedMacs"):
+        return True
+    return net_data.get("networkType") == "migration"
 
 
 def _extract_nic_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:

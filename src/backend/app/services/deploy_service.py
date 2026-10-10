@@ -1864,6 +1864,8 @@ def _create_vm_via_troshkad(
             entry["mac"] = net["mac"]
         if net.get("mtu") is not None:
             entry["mtu"] = net["mtu"]
+        if net.get("allow_nested_macs"):
+            entry["allow_nested_macs"] = True
         networks.append(entry)
 
     from app.services.headless import serial_exec_needs_headless
