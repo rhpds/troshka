@@ -2560,6 +2560,14 @@ class TestReconfigureExistingVm:
         from app.api.projects import _reconfigure_existing_vm
 
         mock_find_nets.return_value = [{"bridge": "br-100", "mac": "aa:bb:cc:dd:ee:ff"}]
+        mock_config.return_value = {
+            "boot_devs": ["hd"],
+            "vcpus": 2,
+            "ram_mb": 4096,
+            "nics": [{"bridge": "br-100", "mac": "aa:bb:cc:dd:ee:ff"}],
+            "disks": ["/vms/p1/d1.qcow2"],
+            "cdroms": [],
+        }
         vm = {
             "node_id": "vm1",
             "name": "test",

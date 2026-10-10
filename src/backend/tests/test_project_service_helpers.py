@@ -875,7 +875,7 @@ class TestReconfigureExistingVm(unittest.TestCase):
             "boot_devs": ["hd"],
             "vcpus": 2,
             "ram_mb": 4096,
-            "nics": [{"bridge": "br-100"}],
+            "nics": [{"bridge": "br-100", "mac": "52:54:00:11:22:33"}],
             "disks": ["/path/d1.qcow2"],
             "cdroms": [],
         }
