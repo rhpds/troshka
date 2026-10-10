@@ -108,9 +108,20 @@ _OVN_PORT_SECURITY_ANN = "k8s.ovn.org/port-security"
 
 
 def network_allow_nested_macs(network_spec: dict) -> bool:
-    """True when OVN port security should be off (nested macvlan / multi-MAC guests)."""
+    """True when OVN port security should be off (nested macvlan / multi-MAC guests).
+
+    Explicit ``allowNestedMacs`` wins. When the key is absent (or only present
+    because a CRD default injected ``false`` on a migration net), ``networkType:
+    migration`` still enables nested MACs.
+    """
     if "allowNestedMacs" in network_spec:
-        return bool(network_spec.get("allowNestedMacs"))
+        explicit = bool(network_spec.get("allowNestedMacs"))
+        if explicit:
+            return True
+        # Explicit false: honor it only for non-migration networks. Migration
+        # L2 requires nested MACs; a CRD/API default of false must not disable it.
+        if network_spec.get("networkType") != "migration":
+            return False
     return network_spec.get("networkType") == "migration"
 
 

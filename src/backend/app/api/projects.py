@@ -4659,11 +4659,15 @@ def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
 
 def _network_nested_mac_sig(data: dict | None) -> tuple:
     data = data or {}
-    if "allowNestedMacs" in data:
-        enabled = bool(data.get("allowNestedMacs"))
+    # Effective nested-MAC (migration always on) plus the explicit canvas stamp.
+    # Include the stamp so True↔False still forces VM rebuilds even when both
+    # sides are migration networks (CRD default false must be overwritten and
+    # trustGuestRxFilters reapplied on virtio NICs).
+    if data.get("networkType") == "migration" or data.get("allowNestedMacs"):
+        enabled = True
     else:
-        enabled = data.get("networkType") == "migration"
-    return (enabled,)
+        enabled = False
+    return (enabled, data.get("allowNestedMacs"))
 
 
 def _vms_affected_by_nested_mac_network_changes(

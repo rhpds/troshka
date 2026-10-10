@@ -86,10 +86,10 @@ def _network_entry_from_node(node: dict, topology: dict) -> dict | None:
     mtu = data.get("mtu")
     if isinstance(mtu, int) and mtu > 0:
         entry["mtu"] = mtu
-    if "allowNestedMacs" in data:
-        entry["allowNestedMacs"] = bool(data.get("allowNestedMacs"))
-    elif data.get("networkType") == "migration":
+    if data.get("networkType") == "migration" or data.get("allowNestedMacs"):
         entry["allowNestedMacs"] = True
+    elif "allowNestedMacs" in data:
+        entry["allowNestedMacs"] = False
     return entry
 
 

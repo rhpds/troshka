@@ -4259,22 +4259,20 @@ export default function PropertiesPanel() {
 
                   {!isBmcNetwork && (() => {
                     const netType = (data as Record<string, any>).networkType;
-                    const nestedExplicit = (data as Record<string, any>).allowNestedMacs;
-                    // Explicit false wins; otherwise migration implies on.
-                    const nestedOn =
-                      nestedExplicit === false
-                        ? false
-                        : Boolean(nestedExplicit || netType === "migration");
+                    const isMigration = netType === "migration";
+                    // Migration L2 always needs nested MACs; other nets are opt-in.
+                    const nestedOn = isMigration || Boolean((data as Record<string, any>).allowNestedMacs);
                     return (
                       <div className="props-field">
                         <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <input
                             type="checkbox"
                             checked={nestedOn}
-                            onChange={(e) => update("allowNestedMacs", e.target.checked)}
+                            disabled={isMigration}
+                            onChange={(e) => update("allowNestedMacs", e.target.checked || undefined)}
                           />
                           Allow nested MACs
-                          <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Migration networks default on; uncheck to override." />
+                          <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Always on for Migration type." />
                         </label>
                       </div>
                     );

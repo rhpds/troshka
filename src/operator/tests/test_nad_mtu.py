@@ -48,5 +48,12 @@ def test_nad_disables_port_security_for_migration_network():
 def test_network_allow_nested_macs_helper():
     assert network_allow_nested_macs({"allowNestedMacs": True})
     assert network_allow_nested_macs({"networkType": "migration"})
+    # CRD/API may inject allowNestedMacs:false — migration still wins
+    assert network_allow_nested_macs(
+        {"networkType": "migration", "allowNestedMacs": False}
+    )
+    assert not network_allow_nested_macs(
+        {"networkType": "standard", "allowNestedMacs": False}
+    )
     assert not network_allow_nested_macs({"networkType": "standard"})
     assert not network_allow_nested_macs({})
