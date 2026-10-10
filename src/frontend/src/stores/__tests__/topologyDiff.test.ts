@@ -296,6 +296,68 @@ describe("computeTopologyDiff", () => {
     expect(computeTopologyDirty(state)).toBe(false);
   });
 
+  it("ignores deploy-stamped route-api extIpId on identical gateway forwards", () => {
+    // Prod Beyond-the-Basics / CCLM: canvas omits extIpId; deployed_topology
+    // has extIpId:"route-api" (and different array order + managed showroom PF).
+    const gw: Node = {
+      id: "gw1",
+      type: "networkNode",
+      position: { x: 0, y: 0 },
+      data: {
+        name: "gateway",
+        subtype: "gateway",
+        gatewayMode: "nat-portforward",
+        portForwards: [
+          { intIp: "10.0.0.10", proto: "tcp", extPort: "6443", intPort: "6443" },
+          { intIp: "10.0.0.110", proto: "tcp", extPort: "6444", intPort: "6443" },
+          {
+            intIp: "172.30.250.3",
+            proto: "tcp",
+            extPort: "443",
+            intPort: "80",
+            managedByShowroom: true,
+          },
+        ],
+      },
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [gw],
+      deployedNodeData: {
+        gw1: baseline({
+          name: "gateway",
+          subtype: "gateway",
+          gatewayMode: "nat-portforward",
+          portForwards: [
+            {
+              intIp: "172.30.250.3",
+              proto: "tcp",
+              extPort: "443",
+              intPort: "80",
+              managedByShowroom: true,
+            },
+            {
+              intIp: "10.0.0.10",
+              proto: "tcp",
+              extIpId: "route-api",
+              extPort: "6443",
+              intPort: "6443",
+            },
+            {
+              intIp: "10.0.0.110",
+              proto: "tcp",
+              extIpId: "route-api",
+              extPort: "6444",
+              intPort: "6443",
+            },
+          ],
+        }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+    expect(computeTopologyDirty(state)).toBe(false);
+  });
+
   it("reports a real gateway portForward target change", () => {
     const gw: Node = {
       id: "gw1",

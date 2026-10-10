@@ -756,8 +756,10 @@ function _stablePortForward(pf: Record<string, unknown>): Record<string, unknown
     intPort: String(pf.intPort ?? ""),
     proto: String(pf.proto || "tcp").toLowerCase(),
   };
+  // Deploy stamps extIpId:"route-api" on OCP API route forwards; the canvas
+  // often omits it. Keep real EIP UUIDs so rebinding still dirties.
   const extIpId = String(pf.extIpId ?? "").trim();
-  if (extIpId) out.extIpId = extIpId;
+  if (extIpId && extIpId !== "route-api") out.extIpId = extIpId;
   return out;
 }
 
