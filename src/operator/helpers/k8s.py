@@ -150,7 +150,12 @@ def build_nad(network_cr):
         "labels": {"app": "troshka", "troshka-network": name},
     }
     if network_allow_nested_macs(_spec):
+        # portSecurity/annotation: legacy / docs; ignored by OVN-K 4.20.
+        # macSecurityMode: upstream API (ovn-kubernetes#6746) when the host
+        # cluster has it. Operator also clears LSP port_security on a timer
+        # (helpers/ovn_nested_macs.py) for clusters that lack that support.
         config["portSecurity"] = False
+        config["macSecurityMode"] = "disabled"
         metadata["annotations"] = {_OVN_PORT_SECURITY_ANN: "false"}
 
     return {

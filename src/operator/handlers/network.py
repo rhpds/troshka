@@ -8,8 +8,10 @@ from helpers.k8s import (
     CRD_VERSION,
     build_nad,
     build_dnsmasq_deployment,
+    network_allow_nested_macs,
 )
 from helpers.dnsmasq import generate_dnsmasq_config
+from helpers.ovn_nested_macs import ensure_nested_mac_port_security
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,18 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     patch.status["nadName"] = f"{name}-nad"
     patch.status["dhcpPodReady"] = True
     patch.status["gatewayPodReady"] = True
+    if network_allow_nested_macs(spec):
+        try:
+            ensure_nested_mac_port_security(
+                api, nad_name=f"{name}-nad", namespace=namespace
+            )
+        except Exception as e:
+            logger.warning(
+                "Initial nested-MAC OVN clear failed for %s/%s: %s",
+                namespace,
+                name,
+                e,
+            )
     logger.info(f"Network {name} ready")
 
 
@@ -249,6 +263,31 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
         },
     )
     logger.info(f"Triggered rollout restart for dnsmasq deployment {dep_name}")
+
+    if network_allow_nested_macs(spec):
+        try:
+            ensure_nested_mac_port_security(api, nad_name=nad_name, namespace=namespace)
+        except Exception as e:
+            logger.warning(
+                "Nested-MAC OVN clear after update failed for %s/%s: %s",
+                namespace,
+                name,
+                e,
+            )
+
+
+@kopf.timer(CRD_GROUP, CRD_VERSION, "troshkanetworks", interval=30.0, idle=15.0)
+async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
+    """Re-clear OVN virt-launcher port_security (ovnkube re-asserts on 4.20)."""
+    if not network_allow_nested_macs(spec):
+        return
+    api = client.CoreV1Api()
+    try:
+        ensure_nested_mac_port_security(
+            api, nad_name=f"{name}-nad", namespace=namespace
+        )
+    except Exception as e:
+        logger.warning("Nested-MAC OVN timer failed for %s/%s: %s", namespace, name, e)
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkanetworks")

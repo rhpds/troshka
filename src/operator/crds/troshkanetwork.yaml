@@ -69,11 +69,15 @@ spec:
                 allowNestedMacs:
                   type: boolean
                   description: >-
-                    Disable OVN port security on this layer2 NAD and set
-                    trustGuestRxFilters on VM virtio NICs (nested macvlan / CCLM).
-                    Omit to inherit from networkType (migration implies true).
-                    Do not default this field — a false default forces the key
-                    onto every CR and overrides migration inference.
+                    Allow nested macvlan / multi-MAC on this layer2 network
+                    (CCLM migration L2). Sets NAD macSecurityMode=disabled and
+                    portSecurity=false; the operator clears OVN virt-launcher
+                    LSP port_security when the host OVN-K ignores those fields.
+                    Also sets trustGuestRxFilters on VM virtio NICs when the
+                    CNV CRD supports it. Omit to inherit from networkType
+                    (migration implies true). Do not default this field — a
+                    false default forces the key onto every CR and overrides
+                    migration inference.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

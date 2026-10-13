@@ -31,6 +31,7 @@ def test_nad_disables_port_security_when_allow_nested_macs():
     nad = build_nad(cr)
     cfg = json.loads(nad["spec"]["config"])
     assert cfg["portSecurity"] is False
+    assert cfg["macSecurityMode"] == "disabled"
     assert nad["metadata"]["annotations"]["k8s.ovn.org/port-security"] == "false"
 
 
@@ -43,6 +44,7 @@ def test_nad_disables_port_security_for_migration_network():
     nad = build_nad(cr)
     cfg = json.loads(nad["spec"]["config"])
     assert cfg["portSecurity"] is False
+    assert cfg["macSecurityMode"] == "disabled"
 
 
 def test_network_allow_nested_macs_helper():

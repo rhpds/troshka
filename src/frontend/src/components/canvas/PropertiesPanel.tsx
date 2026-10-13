@@ -4272,7 +4272,7 @@ export default function PropertiesPanel() {
                             onChange={(e) => update("allowNestedMacs", e.target.checked || undefined)}
                           />
                           Allow nested MACs
-                          <HintIcon text="Disable OVN port security and enable trustGuestRxFilters on virtio NICs so guests can run macvlan / multi-MAC (CCLM migration L2). On libvirt hosts the same flag sets trustGuestRxFilters. Always on for Migration type." />
+                          <HintIcon text="Allow nested macvlan / multi-MAC (CCLM migration L2): NAD macSecurityMode=disabled, operator clears OVN virt-launcher port_security, trustGuestRxFilters when CNV supports it. Always on for Migration type." />
                         </label>
                       </div>
                     );
