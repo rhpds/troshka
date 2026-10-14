@@ -2430,6 +2430,10 @@ def _build_vm_cr(
         vm_cr["spec"]["headless"] = bool(vm.get("headless"))
     if vm.get("legacyRootBus"):
         vm_cr["spec"]["legacyRootBus"] = True
+    if vm.get("nestedVirt"):
+        vm_cr["spec"]["nestedVirt"] = True
+    if vm.get("cpuHostModel"):
+        vm_cr["spec"]["cpuHostModel"] = vm["cpuHostModel"]
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")
     if cdrom and cdrom.get("s3Path"):
         vm_cr["spec"]["cdrom"] = cdrom
@@ -2740,6 +2744,14 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     }
 
     bastion_boot_pvc = _find_bastion_boot_pvc(vms, vm_disks_map)
+
+    from helpers.cpu_homogeneity import choose_project_cpu_host_model
+
+    cpu_host_model = choose_project_cpu_host_model(core_api, topology, vms)
+    if cpu_host_model:
+        patch.status["cpuHostModel"] = cpu_host_model
+        for vm in vms:
+            vm["cpuHostModel"] = cpu_host_model
 
     _create_vm_crs(
         custom_api,

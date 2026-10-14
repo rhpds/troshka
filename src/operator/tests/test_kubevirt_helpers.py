@@ -258,6 +258,26 @@ def test_build_kubevirt_vm_nested_virt_uses_host_passthrough():
     assert cpu["cores"] == 2
 
 
+def test_build_kubevirt_vm_cpu_host_model_sets_node_selector():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "nestedVirt": True,
+            "cpuHostModel": "EPYC-Milan",
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    tmpl = body["spec"]["template"]["spec"]
+    assert tmpl["domain"]["cpu"]["model"] == "host-passthrough"
+    assert tmpl["nodeSelector"] == {
+        "host-model-cpu.node.kubevirt.io/EPYC-Milan": "true"
+    }
+
+
 def test_build_kubevirt_vm_no_cpu_model_by_default():
     vm_cr = {
         "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
@@ -271,6 +291,7 @@ def test_build_kubevirt_vm_no_cpu_model_by_default():
     body = build_kubevirt_vm(vm_cr, {}, {}, None)
     cpu = body["spec"]["template"]["spec"]["domain"]["cpu"]
     assert "model" not in cpu
+    assert "nodeSelector" not in body["spec"]["template"]["spec"]
 
 
 def test_build_kubevirt_vm_includes_video_and_input():

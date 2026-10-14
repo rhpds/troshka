@@ -498,6 +498,11 @@ def build_kubevirt_vm(
         "volumes": volumes,
         "networks": networks,
     }
+    cpu_host_model = spec.get("cpuHostModel")
+    if cpu_host_model:
+        from helpers.cpu_homogeneity import cpu_model_node_selector
+
+        template_spec["nodeSelector"] = cpu_model_node_selector(str(cpu_host_model))
     if spec.get("bmcEnabled"):
         template_spec["rebootPolicy"] = "Terminate"
 

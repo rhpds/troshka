@@ -4400,6 +4400,9 @@ def _deploy_added_vms_kubevirt(
             continue
         cr_name = f"vm-{vm_id[:8]}"
         vm_spec = _build_kubevirt_vm_spec(vm_id, vm, current)
+        cpu_host_model = (project_cr.get("status") or {}).get("cpuHostModel")
+        if cpu_host_model and not vm_spec.get("cpuHostModel"):
+            vm_spec["cpuHostModel"] = cpu_host_model
         vm_cr = _build_kubevirt_troshkavm_cr(
             cr_name, ns, p_id, vm_spec, owner_refs, labels
         )
@@ -4607,6 +4610,10 @@ def _apply_kubevirt_vm_changes(
                 plural="troshkavms",
                 name=cr_name,
             )
+            # Keep project CPU pin across reconfigure (not in canvas topology).
+            prev_cpu = (existing.get("spec") or {}).get("cpuHostModel")  # type: ignore[union-attr]
+            if prev_cpu and not vm_spec.get("cpuHostModel"):
+                vm_spec["cpuHostModel"] = prev_cpu
             existing["spec"] = vm_spec  # type: ignore[index]
             custom_api.replace_namespaced_custom_object(
                 group=_TROSHKA_DOMAIN,

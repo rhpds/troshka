@@ -151,6 +151,8 @@ def _build_vm_entry(data, node):
         vm["headless"] = bool(data.get("headless"))
     if data.get("legacyRootBus"):
         vm["legacyRootBus"] = True
+    if data.get("nestedVirt"):
+        vm["nestedVirt"] = True
     return vm
 
 

@@ -35,12 +35,14 @@ def test_build_vm_entry_optional_flags_and_pxe_cdrom():
         "label": "bastion",
         "headless": False,
         "legacyRootBus": True,
+        "nestedVirt": True,
         "pxeBootIsoId": "iso-9",
         "pxeBootIsoS3Path": "library/iso-9.iso",
     }
     vm = _build_vm_entry(data, node)
     assert vm["headless"] is False
     assert vm["legacyRootBus"] is True
+    assert vm["nestedVirt"] is True
     assert vm["cdrom"] == {
         "libraryIsoId": "iso-9",
         "s3Path": "library/iso-9.iso",

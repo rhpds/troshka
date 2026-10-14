@@ -118,6 +118,38 @@ def _raise_on_missing_network_refs(spec, patch):
     raise kopf.PermanentError(message)
 
 
+def _ensure_cpu_host_model(body, namespace):
+    """Copy TroshkaProject status.cpuHostModel onto the VM spec when missing.
+
+    Keeps reconfigure-added VMs on the same host CPU generation as the rest of
+    the project without requiring the backend to re-pick a model.
+    """
+    spec = body.setdefault("spec", {})
+    if spec.get("cpuHostModel"):
+        return
+    try:
+        custom_api = client.CustomObjectsApi()
+        projects = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+        )
+        items = projects.get("items", [])  # type: ignore[union-attr]
+        if not items:
+            return
+        model = (items[0].get("status") or {}).get("cpuHostModel")
+        if model:
+            spec["cpuHostModel"] = model
+            logger.info(
+                "Inherited cpuHostModel=%s from TroshkaProject in %s",
+                model,
+                namespace,
+            )
+    except Exception as e:
+        logger.debug("Could not inherit cpuHostModel in %s: %s", namespace, e)
+
+
 def _check_owner_exists(custom_api, owner_name, owner_namespace):
     """Check if the owner TroshkaVM CR still exists. Returns False if deleted."""
     try:
@@ -1172,6 +1204,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         spec, video_config_enabled=video_config_enabled
     )
     _apply_vm_warnings(patch, proactive_warnings)
+    _ensure_cpu_host_model(body, namespace)
     kv_vm = build_kubevirt_vm(
         body,
         disk_pvcs,
@@ -1594,6 +1627,7 @@ async def vm_update(
         new_spec, video_config_enabled=video_config_enabled
     )
     _apply_vm_warnings(patch, proactive_warnings)
+    _ensure_cpu_host_model(body, namespace)
     kv_vm = build_kubevirt_vm(
         body,
         disk_pvcs,

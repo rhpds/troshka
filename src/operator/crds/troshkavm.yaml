@@ -117,6 +117,13 @@ spec:
                     guest so it can run its own KVM-accelerated VMs. Pins the VM to compatible
                     CPUs and precludes cross-CPU live migration. Requires nested virtualization
                     enabled on the underlying cluster nodes.
+                cpuHostModel:
+                  type: string
+                  description: >-
+                    KubeVirt host-model CPU name (e.g. EPYC-Milan) used as a required
+                    nodeSelector (host-model-cpu.node.kubevirt.io/<model>). Set by the
+                    project handler so all VMs in a nested-virt / requires_kubevirt lab
+                    land on the same CPU generation for nested live migration.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
