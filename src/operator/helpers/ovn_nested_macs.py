@@ -1,9 +1,15 @@
 """Keep OVN LSP port security off for nested-MAC / migration networks.
 
 OCP 4.20 OVN-K ignores NAD ``portSecurity: false`` and does not yet honor
-``macSecurityMode: disabled``. Nested macvlan (CCLM lm-network) needs empty
-``port_security`` on virt-launcher LSPs; ovnkube re-asserts the primary MAC
-on reconcile, so Troshka must clear it periodically.
+``macSecurityMode: disabled`` on Multus NADs. Nested macvlan (CCLM
+lm-network) needs the OKEP-3926 shape on virt-launcher LSPs:
+
+- empty ``port_security``
+- ``addresses=unknown``
+- ``options:force_fdb_lookup=true`` (learn nested MACs via FDB)
+
+ovnkube re-asserts the primary MAC on reconcile, so Troshka must re-apply
+this periodically.
 """
 
 from __future__ import annotations
@@ -91,6 +97,15 @@ def _exec_nbctl(
     )
 
 
+def apply_nested_mac_lsp(nbctl: ExecFn, uuid: str) -> None:
+    """Apply OKEP-3926 nested-MAC settings to one virt-launcher LSP."""
+    nbctl(["lsp-set-port-security", uuid])
+    nbctl(["lsp-set-addresses", uuid, "unknown"])
+    # Required so OVN learns nested (macvlan) MACs via FDB instead of
+    # installing primary-MAC-only L2/port-security OpenFlow rules.
+    nbctl(["set", "logical_switch_port", uuid, "options:force_fdb_lookup=true"])
+
+
 def ensure_nested_mac_port_security(
     core_api: client.CoreV1Api,
     *,
@@ -98,9 +113,9 @@ def ensure_nested_mac_port_security(
     namespace: str,
     exec_fn: ExecFn | None = None,
 ) -> int:
-    """Clear OVN port_security on virt-launcher LSPs for ``nad_name``.
+    """Clear OVN port_security and enable FDB learning on virt-launcher LSPs.
 
-    Returns the number of LSPs cleared, or 0 if nothing to do / OVN unavailable.
+    Returns the number of LSPs updated, or 0 if nothing to do / OVN unavailable.
     """
     target: tuple[str, str] | None = None
     if exec_fn is None:
@@ -153,8 +168,7 @@ def ensure_nested_mac_port_security(
     cleared = 0
     for uuid in uuids:
         try:
-            nbctl(["lsp-set-port-security", uuid])
-            nbctl(["lsp-set-addresses", uuid, "unknown"])
+            apply_nested_mac_lsp(nbctl, uuid)
             cleared += 1
         except Exception as e:
             logger.warning(
@@ -167,8 +181,8 @@ def ensure_nested_mac_port_security(
             )
     if cleared:
         logger.info(
-            "Cleared OVN port_security on %d virt-launcher LSP(s) for %s/%s "
-            "(switch=%s)",
+            "Applied nested-MAC OVN settings on %d virt-launcher LSP(s) for "
+            "%s/%s (switch=%s)",
             cleared,
             namespace,
             nad_name,

@@ -68,7 +68,19 @@ def test_ensure_clears_virt_launcher_lsps():
     assert n == 2
     assert ["lsp-set-port-security", "aaaa"] in calls
     assert ["lsp-set-addresses", "aaaa", "unknown"] in calls
+    assert [
+        "set",
+        "logical_switch_port",
+        "aaaa",
+        "options:force_fdb_lookup=true",
+    ] in calls
     assert ["lsp-set-port-security", "cccc"] in calls
+    assert [
+        "set",
+        "logical_switch_port",
+        "cccc",
+        "options:force_fdb_lookup=true",
+    ] in calls
     assert ["lsp-set-port-security", "bbbb"] not in calls
 
 
