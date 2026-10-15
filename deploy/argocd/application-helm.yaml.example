@@ -26,6 +26,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: troshka
+  ignoreDifferences:
+    - group: ""
+      kind: Namespace
+      name: troshka
+      jsonPointers:
+        # Kubernetes retains this field even when the chart omits it.
+        - /spec/finalizers
   syncPolicy:
     automated:
       prune: false

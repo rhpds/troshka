@@ -32,6 +32,12 @@ helm install troshka deploy/helm/ -n troshka \
   RGW and `radosgw-admin` initialization. Kustomize can override the image in its
   `images` section. All S4 deployment paths use `Recreate` for the single RWO PVC.
 - **OAuth proxy has NO auto-rollout** — changing `--skip-auth-regex` or other args requires a manual `oc rollout restart deployment/troshka-oauth-proxy`. Do NOT add a checksum annotation to the OAuth proxy pod template — the template contains `randAlphaNum` for secrets, so any re-render regenerates the client-secret and breaks OAuth login.
+- ArgoCD should ignore `/spec/finalizers` on the `troshka` Namespace only:
+  Kubernetes retains its namespace finalizer even when Helm omits the field.
+  See `deploy/argocd/application-helm.yaml.example`. For an existing Application,
+  append this pointer to its Namespace rule, preserving other ignore rules and
+  private Helm values. This changes drift detection, not namespace finalizers
+  or OAuth credentials.
 ### Kustomize (`deploy/base/` + `deploy/overlays/`)
 ```bash
 oc apply -k deploy/overlays/postgres   # base + in-cluster PostgreSQL
