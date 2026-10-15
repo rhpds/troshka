@@ -181,7 +181,7 @@ class TestImportTemplate:
         assert resp.status_code == 400
         assert "template_yaml is required" in _detail_text(resp)
 
-    def test_import_missing_vms_section(self):
+    def test_import_missing_compute_definition(self):
         pid = _create_draft_project()
         resp = client.post(
             f"/api/v1/projects/{pid}/import-template",
@@ -189,7 +189,8 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "vms" in _detail_text(resp)
+        assert "Template schema validation failed" in _detail_text(resp)
+        assert any(e["path"] == "/" for e in resp.json()["detail"]["errors"])
 
     def test_import_missing_networks_section(self):
         pid = _create_draft_project()

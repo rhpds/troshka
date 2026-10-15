@@ -999,14 +999,15 @@ def test_import_template_lists_unknown_keys_in_detail():
     assert any("unknown keys: bogus_key" in e["message"] for e in detail["errors"])
 
 
-def test_import_template_missing_vms():
+def test_import_template_missing_compute_definition():
     pid = _create_project(name="import-no-vms")
     resp = client.post(
         f"/api/v1/projects/{pid}/import-template",
         json={"template_yaml": {"networks": {}}},
     )
     assert resp.status_code == 400
-    assert "vms" in _detail_text(resp)
+    assert "Template schema validation failed" in _detail_text(resp)
+    assert any(e["path"] == "/" for e in resp.json()["detail"]["errors"])
 
 
 def test_import_template_missing_networks():
