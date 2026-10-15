@@ -3,6 +3,9 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+import yaml
+
 from app.models.project import Project
 from app.models.provider import Provider
 from app.models.workload_run import WorkloadRun
@@ -49,7 +52,8 @@ def test_start_workload_run_creates_row_and_enqueues(monkeypatch):
         db.close()
 
 
-def test_run_workload_job_happy_path(monkeypatch):
+@pytest.mark.parametrize("cluster_only", [False, True])
+def test_run_workload_job_happy_path(monkeypatch, cluster_only):
     db = TestSession()
     proj = _active_project(db, name="rs2")
     assert proj is not None
@@ -58,6 +62,7 @@ def test_run_workload_job_happy_path(monkeypatch):
         kind="catalog_item",
         catalog_item="agd-v2.x.prod",
         status="pending",
+        target_map={"mode": "cluster"} if cluster_only else None,
     )
     db.add(run)
     db.commit()
@@ -97,6 +102,7 @@ def test_run_workload_job_happy_path(monkeypatch):
         kubeconfig=None,
         net_prelude="",
         limit=None,
+        cluster_only=False,
     ):
         build_run_calls.append(
             {
@@ -105,6 +111,7 @@ def test_run_workload_job_happy_path(monkeypatch):
                 "kubeconfig": kubeconfig,
                 "net_prelude": net_prelude,
                 "limit": limit,
+                "cluster_only": cluster_only,
             }
         )
         return ["bash", "-lc", "echo test"]
@@ -133,6 +140,11 @@ def test_run_workload_job_happy_path(monkeypatch):
         == "https://github.com/rhpds/agnosticd-v2.git"
     )
     assert build_run_calls[0]["scm_ref"] == "main"
+    assert build_run_calls[0]["cluster_only"] is cluster_only
+    inv = yaml.safe_load(
+        launched.call_args.kwargs["files"]["/workdir/inventory.troshka.yml"]
+    )
+    assert ("plugin" not in inv) is cluster_only
     db.close()
 
 

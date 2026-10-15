@@ -347,14 +347,15 @@ fi
 
 echo ""
 echo "=== Step 5: Wait for ArgoCD (infra01) ==="
-# troshka-tunnel runs the backend image (app.tunnel_main) — must roll with API.
-ARGO_DEPLOYS=("troshka-backend" "troshka-frontend" "troshka-tunnel")
+# Worker and tunnel both run the backend image and must roll with the API.
+ARGO_DEPLOYS=("troshka-backend" "troshka-frontend" "troshka-worker" "troshka-tunnel")
 ARGO_LABELS=(
   "app.kubernetes.io/name=troshka-backend"
   "app.kubernetes.io/name=troshka-frontend"
+  "app.kubernetes.io/name=troshka-worker"
   "app.kubernetes.io/name=troshka-tunnel"
 )
-ARGO_IMAGES=("troshka-backend" "troshka-frontend" "troshka-backend")
+ARGO_IMAGES=("troshka-backend" "troshka-frontend" "troshka-backend" "troshka-backend")
 
 ARGO_DIGESTS=()
 ALL_OK=true
@@ -378,8 +379,8 @@ if [ "$ALL_OK" = true ]; then
         continue
       fi
       pod_image=$(oc get pods -n troshka --kubeconfig="$KC" \
-        -l "${ARGO_LABELS[$idx]}" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
-      if ! echo "$pod_image" | grep -qF "${ARGO_DIGESTS[$idx]}"; then
+        -l "${ARGO_LABELS[$idx]}" -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}' 2>/dev/null || echo "")
+      if [ -z "$pod_image" ] || echo "$pod_image" | grep -qvF "${ARGO_DIGESTS[$idx]}"; then
         ALL_MATCH=false
         break
       fi
@@ -391,12 +392,13 @@ if [ "$ALL_OK" = true ]; then
           && ! oc get deploy troshka-tunnel -n troshka --kubeconfig="$KC" >/dev/null 2>&1; then
           continue
         fi
-        oc rollout status "deploy/${dep}" -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
+        oc rollout status "deploy/${dep}" -n troshka --kubeconfig="$KC" --timeout=120s
       done
       break
     fi
     if [ "$i" -eq 60 ]; then
       echo "  Timed out (10 min) — check ArgoCD manually"
+      exit 1
     fi
     echo "  Waiting for ArgoCD... ($((i * 10))s)"
     sleep 10
@@ -404,5 +406,9 @@ if [ "$ALL_OK" = true ]; then
 fi
 
 echo ""
+if [ "$ALL_OK" != true ]; then
+  echo "  ERROR: Cannot verify rollout without production image digests"
+  exit 1
+fi
 echo "=== Done ==="
 oc get pods -n troshka --kubeconfig="$KC" | grep -E "backend|frontend|worker|tunnel" | head -8

@@ -4,6 +4,30 @@ from unittest.mock import MagicMock, patch
 from app.services.workloads import pod_launch
 
 
+def test_cluster_runner_skips_vm_inventory_dependency():
+    cmd = pod_launch.build_run_command(
+        SimpleNamespace(),
+        pod_launch.RunPaths(),
+        agnosticd_v2_url="https://example/repo",
+        scm_ref="main",
+        cluster_only=True,
+    )[-1]
+    assert "troshka-ansible-collection" not in cmd
+
+
+def test_vm_runner_installs_inventory_collection_before_main():
+    cmd = pod_launch.build_run_command(
+        SimpleNamespace(),
+        pod_launch.RunPaths(),
+        agnosticd_v2_url="https://example/repo",
+        scm_ref="main",
+    )[-1]
+    assert "ansible-galaxy collection install" in cmd
+    assert cmd.index("troshka-ansible-collection") < cmd.index(
+        "ansible-playbook main.yml"
+    )
+
+
 def test_build_artifact_files_maps_paths():
     paths = pod_launch.RunPaths()
     files = pod_launch.build_artifact_files(

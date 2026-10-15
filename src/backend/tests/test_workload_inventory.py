@@ -22,6 +22,15 @@ def test_build_inventory_yaml_shape():
     assert doc["connection_mode"] == "ssh"
 
 
+def test_cluster_inventory_is_explicit_localhost_without_api_credentials():
+    doc = yaml.safe_load(
+        inventory.build_inventory_yaml(
+            "https://api.example", "trk_secret", "p1", cluster_only=True
+        )
+    )
+    assert doc == {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}
+
+
 def test_validate_ok_with_bastion():
     topo = {
         "nodes": [_vm("b", "bastions"), _vm("m", "masters", vm_id="v2")],

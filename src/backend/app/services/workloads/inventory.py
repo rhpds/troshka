@@ -10,8 +10,17 @@ class InventoryError(Exception):
 
 
 def build_inventory_yaml(
-    api_url: str, api_key: str, project_id: str, connection_mode: str = "ssh"
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    connection_mode: str = "ssh",
+    *,
+    cluster_only: bool = False,
 ) -> str:
+    if cluster_only:
+        return yaml.safe_dump(
+            {"all": {"hosts": {"localhost": {"ansible_connection": "local"}}}}
+        )
     return yaml.safe_dump(
         {
             "plugin": "troshka.cloud.troshka",

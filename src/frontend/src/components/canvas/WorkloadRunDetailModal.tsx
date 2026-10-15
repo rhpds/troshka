@@ -377,7 +377,7 @@ export function WorkloadRunLogPanel({
           minHeight: 0,
         }}
       >
-        {log || <span style={{ opacity: 0.5 }}>{loading ? "Loading run log…" : "No log yet."}</span>}
+        {log || <span style={{ opacity: 0.5 }}>{loading ? "Loading run log…" : TERMINAL.has(status) ? "No saved log is available for this completed run." : "No log yet."}</span>}
       </pre>
     </div>
   );

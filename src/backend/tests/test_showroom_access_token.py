@@ -24,6 +24,35 @@ def test_ensure_showroom_access_token_reuses_existing():
     assert store["_showroom_access_token"] == "existing-token-value"
 
 
+def test_pattern_clones_get_independent_showroom_capabilities():
+    from app.api.patterns import _remap_topology
+
+    pattern = {
+        "_showroom_access_token": "source-project-token",
+        "_showroom_url": "https://source.example/?token=source-project-token",
+        "nodes": [
+            {
+                "id": "showroom",
+                "type": "containerNode",
+                "data": {
+                    "name": "showroom",
+                    "_showroom_access_token": "source-project-token",
+                    "_showroom_url": "https://source.example/",
+                },
+            }
+        ],
+    }
+    first, second = _remap_topology(pattern), _remap_topology(pattern)
+    for clone in (first, second):
+        assert "_showroom_access_token" not in clone
+        assert "_showroom_url" not in clone
+        assert "_showroom_access_token" not in clone["nodes"][0]["data"]
+    tokens = {ensure_showroom_access_token(first), ensure_showroom_access_token(second)}
+    assert len(tokens) == 2
+    assert "source-project-token" not in tokens
+    assert pattern["_showroom_access_token"] == "source-project-token"
+
+
 def test_ensure_showroom_access_token_mints_when_missing():
     store: dict = {}
     token = ensure_showroom_access_token(store)

@@ -206,6 +206,7 @@ def run_workload_job(run_id: str) -> None:
             key,
             project.id,
             connection_mode=_inventory_connection_mode(run.target_map),
+            cluster_only=not _should_validate_inventory(run.target_map),
         )
 
         paths = RunPaths()
@@ -241,6 +242,7 @@ def run_workload_job(run_id: str) -> None:
             kubeconfig=kubeconfig,
             net_prelude=net_prelude,
             limit=_run_limit(run.target_map),
+            cluster_only=not _should_validate_inventory(run.target_map),
         )
 
         from app.services.ocp.ops_pod_scaffold import kubevirt_cluster_api_host_aliases
@@ -792,12 +794,26 @@ def _read_runner_logs_kubevirt(host, run_id: str) -> str:
         )
         return _sanitize_runner_log_text(result if isinstance(result, str) else "")
     except Exception:  # noqa: BLE001
+        logger.warning(
+            "Unable to read workload runner log for %s", run_id[:8], exc_info=True
+        )
         return ""
 
 
 def _coalesce_runner_logs(current: str, previous: str) -> str:
     """Prefer the latest non-empty log so finalize does not wipe a good tail."""
     return current or previous or ""
+
+
+def _persist_workload_log(run_id: str, logs: str) -> None:
+    """Checkpoint the bounded tail before a restart or runner replacement."""
+    if not logs:
+        return
+    with SessionLocal() as db:
+        run = db.get(WorkloadRun, run_id)
+        if run is not None and run.status not in _TERMINAL_STATUSES:
+            run.log_ref = logs[-_LOG_TAIL_BYTES:]
+            db.commit()
 
 
 def _runner_pod_kubevirt_ctx(host, run_id: str):
@@ -920,13 +936,16 @@ def monitor_workload_run(run_id: str, host_id: str) -> None:
             if row is not None and row.status in _TERMINAL_STATUSES:
                 _release_workload_monitor_lock(run_id)
                 return
+            if row is not None:
+                last_logs = last_logs or row.log_ref or ""
         finally:
             db_check.close()
 
         # Read logs and extract progress. Keep the last non-empty tail so a
         # post-exit empty read (KubeVirt exec race) does not wipe finalize.
         logs = _coalesce_runner_logs(_read_runner_pod_logs(host, run_id), last_logs)
-        if logs:
+        if logs and logs != last_logs:
+            _persist_workload_log(run_id, logs)
             last_logs = logs
         progress = parse_workload_progress(logs)
 
@@ -949,7 +968,9 @@ def monitor_workload_run(run_id: str, host_id: str) -> None:
 
     # Timeout
     logger.warning("Workload monitor %s: timed out", run_id[:8])
-    _finalize_workload_run(run_id, "timeout", "Monitor timeout after 2 hours")
+    _finalize_workload_run(
+        run_id, "timeout", last_logs + "\nMonitor timeout after 2 hours"
+    )
     _release_workload_monitor_lock(run_id)
 
 
@@ -1042,7 +1063,7 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
                 return
             run.status = status
             run.ended_at = _now()
-            run.log_ref = (error_or_logs or "")[-_LOG_TAIL_BYTES:]
+            run.log_ref = (error_or_logs or run.log_ref or "")[-_LOG_TAIL_BYTES:]
             if status == "error" or status == "timeout":
                 run.error = error_or_logs[:2000]
             project_id = run.project_id

@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.models.host import Host
 from app.models.project import Project
 from app.models.provider import Provider
@@ -143,6 +145,71 @@ def test_coalesce_runner_logs_keeps_last_nonempty():
     )
     assert run_service._coalesce_runner_logs("new", "prior") == "new"
     assert run_service._coalesce_runner_logs("", "") == ""
+
+
+def test_snapshot_survives_empty_finalize_and_preserves_terminal_run(monkeypatch):
+    db = TestSession()
+    run = WorkloadRun(kind="ad_hoc", role_fqcn="x", status="running")
+    db.add(run)
+    db.commit()
+    rid = run.id
+    db.close()
+    monkeypatch.setattr(run_service, "SessionLocal", TestSession)
+    text = "x" * (run_service._LOG_TAIL_BYTES + 50)
+    run_service._persist_workload_log(rid, text)
+    run_service._finalize_workload_run(rid, "succeeded", "")
+    run_service._persist_workload_log(rid, "late output")
+    with TestSession() as db:
+        saved = db.get(WorkloadRun, rid)
+        assert saved.status == "succeeded"
+        assert saved.log_ref == text[-run_service._LOG_TAIL_BYTES :]
+
+
+def test_resumed_monitor_finalizes_with_saved_tail(monkeypatch):
+    db = TestSession()
+    run = WorkloadRun(kind="ad_hoc", status="running", log_ref="saved PLAY RECAP")
+    db.add(run)
+    db.commit()
+    rid = run.id
+    db.close()
+    monkeypatch.setattr(run_service, "SessionLocal", TestSession)
+    monkeypatch.setattr(run_service, "_detached_host_copy", lambda _: object())
+    monkeypatch.setattr(run_service, "_refresh_workload_monitor_lock", lambda _: None)
+    monkeypatch.setattr(run_service, "_release_workload_monitor_lock", lambda _: None)
+    monkeypatch.setattr(run_service, "_read_runner_pod_logs", lambda *_: "")
+    monkeypatch.setattr(run_service, "_is_runner_pod_running", lambda *_: False)
+    monkeypatch.setattr(
+        run_service, "_check_runner_pod_exit_status", lambda *_: "succeeded"
+    )
+    monkeypatch.setattr(run_service, "_publish_workload_progress", lambda *_: None)
+    finalize = MagicMock()
+    monkeypatch.setattr(run_service, "_finalize_workload_run", finalize)
+    run_service.monitor_workload_run(rid, "host")
+    finalize.assert_called_once_with(rid, "succeeded", "saved PLAY RECAP")
+
+
+def test_monitor_checkpoints_logs_before_interruption(monkeypatch):
+    with TestSession() as db:
+        run = WorkloadRun(kind="ad_hoc", status="running")
+        db.add(run)
+        db.commit()
+        rid = run.id
+    monkeypatch.setattr(run_service, "SessionLocal", TestSession)
+    monkeypatch.setattr(run_service, "_detached_host_copy", lambda _: object())
+    monkeypatch.setattr(run_service, "_refresh_workload_monitor_lock", lambda _: None)
+    monkeypatch.setattr(
+        run_service, "_read_runner_pod_logs", lambda *_: "TASK [install]"
+    )
+    monkeypatch.setattr(run_service, "_publish_workload_progress", lambda *_: None)
+
+    def interrupted(*_):
+        raise InterruptedError("worker stopped")
+
+    monkeypatch.setattr(run_service, "_is_runner_pod_running", interrupted)
+    with pytest.raises(InterruptedError):
+        run_service.monitor_workload_run(rid, "host")
+    with TestSession() as db:
+        assert db.get(WorkloadRun, rid).log_ref == "TASK [install]"
 
 
 def test_is_runner_pod_running_troshkad_checks_state(monkeypatch):

@@ -8,6 +8,16 @@ describe("WorkloadRunDetailModal", () => {
   beforeEach(() => vi.unstubAllGlobals());
   afterEach(() => vi.unstubAllGlobals());
 
+  it("explains that a completed run has no saved log", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ id: "run-empty", status: "succeeded", log: "" }),
+    } as Response)));
+    render(<WorkloadRunDetailModal runId="run-empty" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("No saved log is available for this completed run.")).toBeInTheDocument());
+    expect(screen.queryByText("No log yet.")).not.toBeInTheDocument();
+  });
+
   it("fetches and renders the run name, status, time, and log", async () => {
     vi.stubGlobal(
       "fetch",

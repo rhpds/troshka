@@ -7907,11 +7907,20 @@ def _kubevirt_create_or_resume_cr(
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
     _kubevirt_prebake_showroom(topology, project_id, provider, driver)
+    from app.services.showroom_scaffold import SHOWROOM_ACCESS_TOKEN_KEY
+
+    token = topology.get(SHOWROOM_ACCESS_TOKEN_KEY)
+    if token:
+        # Save before long imports so recovery can reuse the token baked into
+        # the CR, even if a canvas save removes it from editable topology.
+        deployed = copy.deepcopy(project.deployed_topology or topology)
+        deployed[SHOWROOM_ACCESS_TOKEN_KEY] = token
+        project.deployed_topology = deployed
     showroom_changed = inject_showroom_gateway_port_forwards(
         topology, project.vni_map or {}, "kubevirt"
     )
     api_pf_changed = _ensure_topology_ocp_api_port_forwards(topology)
-    if showroom_changed or api_pf_changed:
+    if showroom_changed or api_pf_changed or token:
         project.topology = topology
         db.commit()
     logger.info(

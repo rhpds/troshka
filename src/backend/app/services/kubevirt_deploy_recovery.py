@@ -4,6 +4,8 @@ Enqueue ``resume_kubevirt_deploy_monitor`` with an RQ timeout of at least 10800
 seconds and retain the project's RQ job reference for the same duration.
 """
 
+import copy
+
 from app.core.database import SessionLocal
 from app.core.redis import delete_progress, set_progress
 from app.models.host import Host
@@ -87,7 +89,15 @@ def resume_kubevirt_deploy_monitor(project_id: str):
                 project_id,
                 {"type": "project-state", "state": "deploying", "deploy_error": None},
             )
-            topology = project.topology or {}
+            topology = copy.deepcopy(project.topology or {})
+            # Canvas saves scrub capabilities; resume with the deployed token.
+            from app.services.showroom_scaffold import SHOWROOM_ACCESS_TOKEN_KEY
+
+            deployed = getattr(project, "deployed_topology", None) or {}
+            if deployed.get(SHOWROOM_ACCESS_TOKEN_KEY):
+                topology[SHOWROOM_ACCESS_TOKEN_KEY] = deployed[
+                    SHOWROOM_ACCESS_TOKEN_KEY
+                ]
             _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db)
             if project.state == "active":
                 _deploy_after_special_host(

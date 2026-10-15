@@ -189,6 +189,39 @@ def test_teardown_skips_dns_when_none():
     mk_del.assert_not_called()
 
 
+def test_native_cr_creation_persists_showroom_token_before_launch(monkeypatch):
+    project = SimpleNamespace(deployed_topology={}, topology={}, vni_map={})
+    topology = {"nodes": []}
+    driver = MagicMock()
+    driver.get_project_status.return_value = None
+    db = MagicMock()
+
+    def prebake(topo, *_):
+        topo["_showroom_access_token"] = "new-runtime-capability"
+
+    def launch(*_, **__):
+        assert (
+            project.deployed_topology["_showroom_access_token"]
+            == "new-runtime-capability"
+        )
+        assert db.commit.called
+        return "project-test"
+
+    monkeypatch.setattr(ds, "_kubevirt_prebake_showroom", prebake)
+    monkeypatch.setattr(ds, "_ensure_topology_ocp_api_port_forwards", lambda _: False)
+    monkeypatch.setattr(
+        "app.services.deploy_topology.inject_showroom_gateway_port_forwards",
+        lambda *_: False,
+    )
+    driver.deploy_project.side_effect = launch
+    assert (
+        ds._kubevirt_create_or_resume_cr(
+            object(), driver, "project-id", project, topology, db, {}, {}, {}, ""
+        )
+        == "project-test"
+    )
+
+
 def test_maybe_setup_skips_route_providers():
     host = SimpleNamespace(provider_id="p")
     prov = SimpleNamespace(type="kubevirt")

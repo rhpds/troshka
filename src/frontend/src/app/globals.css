@@ -1108,6 +1108,20 @@ html:not(.pf-v6-theme-dark) .vm-node-warning {
   50% { opacity: 1; stroke-width: 3; }
 }
 
+.react-flow__edge.animated.edge-storage-flow .react-flow__edge-path {
+  animation: storageFlow 0.6s linear infinite;
+}
+
+@keyframes storageFlow {
+  to { stroke-dashoffset: var(--troshka-edge-dash-offset, -10px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge.animated.edge-storage-flow .react-flow__edge-path {
+    animation: none;
+  }
+}
+
 /* ---- Selection edges ---- */
 
 .react-flow__edge.selected .react-flow__edge-path {

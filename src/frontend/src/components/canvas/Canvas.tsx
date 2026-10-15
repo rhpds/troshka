@@ -54,6 +54,7 @@ import {
   isPodContainer,
   isStorageSourceHandle,
   isVmDiskLeftHandle,
+  withStorageFlowAnimation,
 } from "@/lib/storageEdgeStyle";
 import {
   isGatewayNode,
@@ -253,9 +254,9 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         .map((e) =>
           isClusterAnchorEdge(e)
             ? { ...e, type: CLUSTER_ANCHOR_EDGE_TYPE, zIndex: -1 }
-            : e,
+            : withStorageFlowAnimation(e, allNodes),
         ),
-    [allEdges, hiddenNodeIds, clusterMemberIds],
+    [allEdges, hiddenNodeIds, clusterMemberIds, allNodes],
   );
   const onNodesChange = useCanvasStore((s) => s.onNodesChange);
   const storeOnEdgesChange = useCanvasStore((s) => s.onEdgesChange);

@@ -1,5 +1,6 @@
 /** Shared storage/disk edge styling (VM, pod, and disk nodes). */
 import type { Edge, Node } from "@xyflow/react";
+import type { CSSProperties } from "react";
 
 export const STORAGE_EDGE_STYLE = {
   stroke: "rgba(251, 191, 36, 0.6)",
@@ -8,6 +9,33 @@ export const STORAGE_EDGE_STYLE = {
 };
 
 export const STORAGE_EDGE_CLASS = "edge-storage-pulse";
+
+function edgeDashCycle(edge: Edge): number {
+  const parts = String(edge.style?.strokeDasharray ?? "5 5").trim().split(/[\s,]+/).map(Number);
+  const cycle = parts.reduce((sum, value) => sum + value, 0) * (parts.length % 2 ? 2 : 1);
+  return Number.isFinite(cycle) && cycle > 0 ? cycle : 10;
+}
+
+/** Display-only animation for saved and newly created infrastructure links. */
+export function withStorageFlowAnimation(edge: Edge, nodes: Node[]): Edge {
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  if (!source || !target) return edge;
+  const pair = [source, target];
+  const showroomStorage = pair.some((node) => node.type === "storageNode") &&
+    pair.some((node) => node.type === "containerNode" &&
+      (node.data.isShowroom || node.data.name === "showroom"));
+  const cephCluster = pair.some((node) => node.type === "cephClusterNode") &&
+    pair.some((node) => node.type === "clusterNode");
+  const showroomGateway = pair.some((node) => node.type === "containerNode" &&
+    (node.data.isShowroom || node.data.name === "showroom")) &&
+    pair.some((node) => node.data.subtype === "gateway");
+  if (!showroomStorage && !cephCluster && !showroomGateway) return edge;
+  const classes = new Set((edge.className || "").split(/\s+/).filter(Boolean));
+  classes.add("edge-storage-flow");
+  const style = { ...edge.style, "--troshka-edge-dash-offset": `${-edgeDashCycle(edge)}px` } as CSSProperties;
+  return { ...edge, animated: true, className: [...classes].join(" "), style };
+}
 
 export const STORAGE_SOURCE_HANDLE = "right";
 

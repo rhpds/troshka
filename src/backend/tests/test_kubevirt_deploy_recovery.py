@@ -70,6 +70,19 @@ def test_attaches_to_existing_cr_and_runs_completion_hooks(recovery):
     r.db.close.assert_called_once()
 
 
+def test_recovery_preserves_runtime_showroom_token_without_mutating_canvas(recovery):
+    r = recovery
+    r.project.deployed_topology = {"_showroom_access_token": "existing-capability"}
+
+    def complete(_pid, project, _provider, _driver, topology, _db):
+        assert topology["_showroom_access_token"] == "existing-capability"
+        project.state = "active"
+
+    r.module._poll_kubevirt_deploy.side_effect = complete
+    r.module.resume_kubevirt_deploy_monitor(r.project.id)
+    assert "_showroom_access_token" not in r.project.topology
+
+
 @pytest.mark.parametrize("phase", ["Pending", "Error", "NotFound", None])
 def test_rejects_missing_or_unsafe_cr_without_changing_state(recovery, phase):
     r = recovery

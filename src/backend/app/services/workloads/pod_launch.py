@@ -16,6 +16,12 @@ _WORKDIR = "/workdir"
 _API_WAIT_RETRIES = 30
 _API_WAIT_DELAY_S = 10
 _ANSIBLE_BUILTIN_COMMAND = "ansible.builtin.command"
+# Same reviewed collection revision bundled in the ops-pod image. Workload EEs
+# are supplied by the catalog and need not contain Troshka's inventory plugin.
+_TROSHKA_COLLECTION = (
+    "git+https://github.com/rhpds/troshka-ansible-collection.git,"
+    "b7cfe39def29e8716565029c28e7210f4eddaf41"  # pragma: allowlist secret -- public source revision
+)
 
 
 @dataclass
@@ -296,6 +302,7 @@ def build_run_command(
     kubeconfig: str | None = None,
     net_prelude: str = "",
     limit: str | None = None,
+    cluster_only: bool = False,
 ) -> list[str]:
     """Build the runner pod command: clone agnosticd-v2, install collections, run playbook.
 
@@ -345,6 +352,10 @@ def build_run_command(
         f" -e @'{safe_extra_vars}'"
         " -e config=openshift-workloads"
     )
+    if not cluster_only:
+        script_parts.append(
+            f"ansible-galaxy collection install '{_TROSHKA_COLLECTION}'"
+        )
     # Mint cluster-admin token + build `clusters` (after deps, before main.yml).
     if has_kubeconfig:
         script_parts.extend(_mint_prelude_steps(paths, paths.log))

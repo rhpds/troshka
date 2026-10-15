@@ -297,6 +297,11 @@ def _remap_topology(topology: dict) -> dict:
     """
     topo = copy.deepcopy(topology)
 
+    # Capability URLs belong to one deployed project, never to its clones.
+    for store in [topo] + [n.get("data", {}) for n in topo.get("nodes", [])]:
+        store.pop("_showroom_access_token", None)
+        store.pop("_showroom_url", None)
+
     id_map: dict[str, str] = {}
     handle_id_map: dict[str, str] = {}
 
