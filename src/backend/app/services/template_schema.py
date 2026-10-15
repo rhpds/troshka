@@ -88,9 +88,13 @@ def _humanize_validation_message(message: str) -> str:
 
 
 def _format_validation_error(err: ValidationError) -> dict[str, str]:
+    message = _humanize_validation_message(err.message)
+    if err.validator == "not" and isinstance(err.instance, dict):
+        if err.instance.get("bootable") and err.instance.get("ocp_mount"):
+            message = "Boot disks cannot have an OCP mount path"
     return {
         "path": _json_pointer(list(err.absolute_path)),
-        "message": _humanize_validation_message(err.message),
+        "message": message,
     }
 
 

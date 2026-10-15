@@ -1,0 +1,197 @@
+{
+  "date_utc": "2026-10-15",
+  "method": {
+    "virtual_bytes": 2147483648,
+    "qcow2_object_bytes": 2148073472,
+    "allocation": "fully populated, nonzero, uncompressed; sixteen 128MiB qemu-io writes",
+    "importer_image": "registry.redhat.io/container-native-virtualization/virt-cdi-importer-rhel9@sha256:f512c6e0a46d526f88094ecb965f57d2b997caf90f8e8924d9582718f7991748",
+    "storage": "RBD Filesystem data and scratch PVCs",
+    "same_node_for_all_runs": true,
+    "node_cpu_capacity": 72,
+    "conversion_interval": "CDI New phase: Convert through New phase: Resize",
+    "transfer_interval": "CDI New phase: TransferScratch through New phase: Convert",
+    "transfer_rate_unit": "decimal MB/s (1000000 bytes/s)",
+    "import_time_excludes_scheduling": true,
+    "conversion_peak_sampling_seconds": 0.1,
+    "cleanup_verified": true
+  },
+  "baseline_runs": [
+    {
+      "run": 1,
+      "cpu_limit": "750m",
+      "import_seconds": 28.34354191273451,
+      "transfer_seconds": 14.692264642566442,
+      "transfer_MB_per_second": 146.20438198319675,
+      "conversion_seconds": 12.449939016252756,
+      "conversion_cpu_seconds": 9.296445,
+      "conversion_average_cores": 0.74670606722362,
+      "conversion_throttled_seconds": 6.709869
+    },
+    {
+      "run": 2,
+      "cpu_limit": "2",
+      "import_seconds": 16.30115532130003,
+      "transfer_seconds": 9.906022015959024,
+      "transfer_MB_per_second": 216.84521481371252,
+      "conversion_seconds": 6.043495854362845,
+      "conversion_cpu_seconds": 8.794009,
+      "conversion_average_cores": 1.4551195552904266,
+      "conversion_throttled_seconds": 0.324913
+    },
+    {
+      "run": 3,
+      "cpu_limit": "2",
+      "import_seconds": 14.610664587467909,
+      "transfer_seconds": 8.243439324200153,
+      "transfer_MB_per_second": 260.5797638000355,
+      "conversion_seconds": 5.7930047158151865,
+      "conversion_cpu_seconds": 8.636638,
+      "conversion_average_cores": 1.4908736353038958,
+      "conversion_throttled_seconds": 0.172412
+    },
+    {
+      "run": 4,
+      "cpu_limit": "750m",
+      "import_seconds": 24.222825368866324,
+      "transfer_seconds": 10.57443132251501,
+      "transfer_MB_per_second": 203.13843898407433,
+      "conversion_seconds": 12.038864990696311,
+      "conversion_cpu_seconds": 8.937353,
+      "conversion_average_cores": 0.7423750500488897,
+      "conversion_throttled_seconds": 5.579691
+    }
+  ],
+  "scaling_runs": [
+    {
+      "run": 1,
+      "cpu_limit": "2",
+      "import_seconds": 16.497188411653042,
+      "transfer_seconds": 9.842613592743874,
+      "transfer_MB_per_second": 218.24218250156574,
+      "conversion_seconds": 5.8759610038250685,
+      "conversion_cpu_seconds": 8.547886,
+      "conversion_average_cores": 1.4547213629286497,
+      "conversion_peak_cores_100ms": 2.10989698042432,
+      "conversion_throttled_seconds": 0.104585,
+      "conversion_throttled_periods": 2
+    },
+    {
+      "run": 2,
+      "cpu_limit": "4",
+      "import_seconds": 14.689646411687136,
+      "transfer_seconds": 7.945724282413721,
+      "transfer_MB_per_second": 270.3433187021519,
+      "conversion_seconds": 6.007252838462591,
+      "conversion_cpu_seconds": 8.733445,
+      "conversion_average_cores": 1.4538167836190345,
+      "conversion_peak_cores_100ms": 2.327031967456996,
+      "conversion_throttled_seconds": 0.0,
+      "conversion_throttled_periods": 0
+    },
+    {
+      "run": 3,
+      "cpu_limit": "10",
+      "import_seconds": 14.825067488476634,
+      "transfer_seconds": 8.836593331769109,
+      "transfer_MB_per_second": 243.08841556364234,
+      "conversion_seconds": 5.572111815214157,
+      "conversion_cpu_seconds": 8.154047,
+      "conversion_average_cores": 1.4633674395650313,
+      "conversion_peak_cores_100ms": 1.6987433637512361,
+      "conversion_throttled_seconds": 0.0,
+      "conversion_throttled_periods": 0
+    },
+    {
+      "run": 4,
+      "cpu_limit": "10",
+      "import_seconds": 13.798918949440122,
+      "transfer_seconds": 7.634230799973011,
+      "transfer_MB_per_second": 281.37392335683563,
+      "conversion_seconds": 5.732269253581762,
+      "conversion_cpu_seconds": 8.384354,
+      "conversion_average_cores": 1.4626587881860407,
+      "conversion_peak_cores_100ms": 2.051580841203261,
+      "conversion_throttled_seconds": 0.0,
+      "conversion_throttled_periods": 0
+    },
+    {
+      "run": 5,
+      "cpu_limit": "4",
+      "import_seconds": 16.080493243411183,
+      "transfer_seconds": 9.806381396949291,
+      "transfer_MB_per_second": 219.04853432156466,
+      "conversion_seconds": 5.74664974398911,
+      "conversion_cpu_seconds": 8.507703,
+      "conversion_average_cores": 1.4804631183410648,
+      "conversion_peak_cores_100ms": 3.5233478298382552,
+      "conversion_throttled_seconds": 0.0,
+      "conversion_throttled_periods": 0
+    },
+    {
+      "run": 6,
+      "cpu_limit": "2",
+      "import_seconds": 15.859380831941962,
+      "transfer_seconds": 9.103777127340436,
+      "transfer_MB_per_second": 235.9540926753262,
+      "conversion_seconds": 6.22197737172246,
+      "conversion_cpu_seconds": 9.261532,
+      "conversion_average_cores": 1.4885190746741797,
+      "conversion_peak_cores_100ms": 2.8705080442527517,
+      "conversion_throttled_seconds": 0.420966,
+      "conversion_throttled_periods": 5
+    }
+  ],
+  "scaling_groups": [
+    {
+      "cpu_limit": 2,
+      "repeats": 2,
+      "conversion_seconds_mean": 6.048969187773764,
+      "conversion_seconds_range": [
+        5.8759610038250685,
+        6.22197737172246
+      ],
+      "conversion_cpu_cores_avg": 1.4721035474933954,
+      "conversion_cpu_cores_peak_100ms": 2.8705080442527517,
+      "conversion_throttled_seconds_mean": 0.2627755,
+      "import_seconds_mean": 16.178284621797502,
+      "transfer_MB_per_second_mean": 227.09813758844598
+    },
+    {
+      "cpu_limit": 4,
+      "repeats": 2,
+      "conversion_seconds_mean": 5.876951291225851,
+      "conversion_seconds_range": [
+        5.74664974398911,
+        6.007252838462591
+      ],
+      "conversion_cpu_cores_avg": 1.4668445547388342,
+      "conversion_cpu_cores_peak_100ms": 3.5233478298382552,
+      "conversion_throttled_seconds_mean": 0.0,
+      "import_seconds_mean": 15.38506982754916,
+      "transfer_MB_per_second_mean": 244.6959265118583,
+      "conversion_gain_percent_vs_previous_limit": 2.843755542607124
+    },
+    {
+      "cpu_limit": 10,
+      "repeats": 2,
+      "conversion_seconds_mean": 5.65219053439796,
+      "conversion_seconds_range": [
+        5.572111815214157,
+        5.732269253581762
+      ],
+      "conversion_cpu_cores_avg": 1.4630080938842218,
+      "conversion_cpu_cores_peak_100ms": 2.051580841203261,
+      "conversion_throttled_seconds_mean": 0.0,
+      "import_seconds_mean": 14.311993218958378,
+      "transfer_MB_per_second_mean": 262.231169460239,
+      "conversion_gain_percent_vs_previous_limit": 3.82444477910602
+    }
+  ],
+  "lowest_limit_within_10percent_of_best_conversion_cpu": 2,
+  "limitations": [
+    "Two repeats per CPU limit; timings include storage and network variability.",
+    "Two GiB data cannot establish scaling for production images hundreds of GiB in size.",
+    "100ms CPU peaks can straddle CFS quota periods; average cores describe sustained use.",
+    "Baseline runs did not collect 100ms CPU samples."
+  ]
+}

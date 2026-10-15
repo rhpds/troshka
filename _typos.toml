@@ -1,3 +1,5 @@
 [default.extend-words]
+# Ceph's upstream logging-provider identifier.
+Dout = "Dout"
 # "Cach" is used as a substring match for cache progress messages
 Cach = "Cach"

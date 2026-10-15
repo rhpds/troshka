@@ -296,12 +296,12 @@ class TestExportHelpers:
         assert out["bmc_ip"] == "10.0.0.9"
         out2 = {"role": "control-plane"}
         _export_vm_bmc_fields({"bmcEnabled": True}, out2)
-        assert "bmc" not in out2
+        assert out2["bmc"] is True
 
     def test_export_vm_tags_if_custom(self):
         out = {}
         _export_vm_tags_if_custom({"tags": {"AnsibleGroup": "controllers"}}, out)
-        assert out == {}
+        assert out == {"tags": {"AnsibleGroup": "controllers"}}
         _export_vm_tags_if_custom({"tags": {"env": "lab"}}, out)
         assert out["tags"] == {"env": "lab"}
 

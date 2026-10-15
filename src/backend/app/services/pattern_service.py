@@ -941,11 +941,20 @@ def _restart_kubevirt_vms(custom_api, namespace):
         log.warning("Failed to restart VMs after capture: %s", e)
 
 
-def _enqueue_pattern_sync(pattern_id: str, source_provider_id: str | None) -> None:
+def _enqueue_pattern_sync(
+    pattern_id: str, source_provider_id: str | None, *, size_bytes: int = 0
+) -> None:
     """Kick off eager OBC->central S4 replication for a freshly captured pattern."""
     if not source_provider_id:
         return
-    enqueue_job(sync_pattern_to_central, pattern_id, queue_name="default")
+    from app.services.pattern_sync import sync_copy_deadline
+
+    enqueue_job(
+        sync_pattern_to_central,
+        pattern_id,
+        queue_name="default",
+        job_timeout=sync_copy_deadline(size_bytes) + 660,
+    )
 
 
 def _import_operator_ceph_helpers():
@@ -1474,7 +1483,9 @@ def _finish_kubevirt_capture(
 
     _clear_capture_progress(pattern_id)
     notify_pattern(pattern_id, {"type": "capture-complete"})
-    _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
+    _enqueue_pattern_sync(
+        pattern_id, pattern.source_provider_id, size_bytes=pattern.total_size_bytes
+    )
     _save_pattern_metadata_to_s3(pattern, pattern_id)
 
     if restart_after:
@@ -2526,7 +2537,9 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     # troshkad/ocpvirt capture fails cross-provider deploys with "storage not
     # ready". Enqueue after commit so the sync worker sees the OBC rows.
     if pattern.source_provider_id:
-        _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
+        _enqueue_pattern_sync(
+            pattern_id, pattern.source_provider_id, size_bytes=pattern.total_size_bytes
+        )
 
     _save_pattern_metadata_to_s3(pattern, pattern_id)
     log.info("Pattern %s capture complete", pattern_id)

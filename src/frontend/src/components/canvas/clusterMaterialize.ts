@@ -1,6 +1,6 @@
 import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
-import { coerceDiskSpecs } from "@/stores/canvasStore";
+import { coerceDiskSpecs, useCanvasStore } from "@/stores/canvasStore";
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
 import {
   collectUsedIps,
@@ -244,6 +244,13 @@ function buildMemberNics(
   return { nics, nicEdges };
 }
 
+export function roleDiskSpecs(cluster: ClusterConfig, role: "control-plane" | "worker"): DiskSpec[] {
+  const cp = role === "control-plane";
+  return coerceDiskSpecs(cp ? cluster.controlPlaneDisks : cluster.workerDisks) ?? [
+    { sizeGb: (cp ? cluster.controlPlaneDisk : cluster.workerDisk) ?? (cp ? 120 : 100), bootable: true },
+  ];
+}
+
 function buildMemberDisks(
   role: "control-plane" | "worker",
   cluster: ClusterConfig,
@@ -256,13 +263,7 @@ function buildMemberDisks(
   diskEdges: Edge[];
   bootDevices: string[];
 } {
-  const specs = coerceDiskSpecs(
-    (role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks) as
-      | DiskSpec[]
-      | undefined,
-  ) ?? [
-    { sizeGb: role === "control-plane" ? 120 : 100, bootable: true },
-  ];
+  const specs = roleDiskSpecs(cluster, role);
   const diskNodes: Node[] = [];
   const diskControllers: VMDiskController[] = [];
   const diskEdges: Edge[] = [];
@@ -278,7 +279,7 @@ function buildMemberDisks(
       position: { x: baseX, y: baseY + 60 + i * 40 },
       parentId: cluster.nodeId,
       hidden: true, // Collapse member disk sub-nodes — keep in data for deploy but hide rendering
-      data: { label: `${memberId}-d${i}`, name: `${memberId}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
+      data: { label: `${memberId}-d${i}`, name: `${memberId}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢", ...(spec.ocpMount ? { ocpMount: spec.ocpMount } : {}) },
     } as Node);
     diskEdges.push({
       id: `edge-${diskId}-to-${memberId}`,
@@ -308,6 +309,51 @@ function buildMemberDisks(
   return { diskNodes, diskControllers, diskEdges, bootDevices };
 }
 
+const MEMBER_VM_DEFAULT_FIELDS = [
+  ["firmware", "firmware"],
+  ["secure_boot", "secureBoot"],
+  ["power_on", "powerOnAtDeploy"],
+  ["bmc", "bmcEnabled"],
+  ["nested_virt", "nestedVirt"],
+  ["machine_type", "machineType"],
+  ["legacy_root_bus", "legacyRootBus"],
+  ["serial_only", "headless"],
+  ["serial_exec", "serialExecType"],
+  ["pxe_boot_iso_id", "pxeBootIsoId"],
+  ["pxe_boot_iso_name", "pxeBootIsoName"],
+  ["cloud_init", "cloudInit"],
+  ["minimal_cloud_init", "ciMinimalCloudInit"],
+  ["login_user", "ciLoginUser"],
+  ["cloud_user_password", "ciCloudUserPassword"],
+  ["userdata_only", "ciUserDataOnly"],
+  ["user_data", "ciUserData"],
+  ["packages", "ciPackages"],
+  ["network_config", "ciNetworkConfig"],
+  ["affinity_group", "affinityGroup"],
+  ["separate_host", "separateHost"],
+  ["recert", "recertEnabled"],
+  ["ocp_monitor", "ocpMonitor"],
+  ["configure_bastion_browser", "configureBastionBrowser"],
+] as const;
+
+/** Translate behavior defaults without copying shared identities or role sizing. */
+function memberVmDefaults(cluster: ClusterConfig): Record<string, unknown> {
+  const raw = cluster.vmDefaults ?? {};
+  const data: Record<string, unknown> = { firmware: "uefi", secureBoot: false, powerOnAtDeploy: true, bootMethod: "disk" };
+  for (const [source, target] of MEMBER_VM_DEFAULT_FIELDS) {
+    const value = raw[source] ?? raw[target];
+    if (value !== undefined && value !== null) data[target] = structuredClone(value);
+  }
+  if (data.serialExecType !== undefined) data.serialExecType = memberSerialExecProfile(data.serialExecType);
+  return data;
+}
+
+function memberSerialExecProfile(value: unknown): string {
+  if (value === true) return "linux"; // Generated OCP members always use RHCOS.
+  if (value === false) return "";
+  return String(value).toLowerCase();
+}
+
 function makeMemberNode(
   cluster: ClusterConfig,
   spec: RoleSpec,
@@ -330,13 +376,13 @@ function makeMemberNode(
     draggable: false, // Members are cluster-managed (count/editor) — not hand-movable
     deletable: false, // Members are cluster-managed — remove via the cluster's node counts
     data: {
+      ...memberVmDefaults(cluster),
       label: name,
       name,
       os: "rhcos",
       vcpus: spec.cpu,
-      ram: Math.max(1, Math.round(spec.memoryMb / MB_PER_GB)),
+      ram: spec.memoryMb / MB_PER_GB,
       disk: spec.disk,
-      firmware: "uefi",
       status: "stopped",
       icon: "\u{1F5A5}",
       nics,
@@ -345,7 +391,7 @@ function makeMemberNode(
       clusterId: cluster.id,
       clusterRole: spec.role,
       generated: true,
-      tags: { AnsibleGroup: spec.ansibleGroup },
+      tags: { AnsibleGroup: spec.ansibleGroup, ...((cluster.vmDefaults?.tags as Record<string, string> | undefined) ?? {}) },
     },
   } as Node;
 
@@ -443,7 +489,9 @@ function removeSurplus(
   surplus: number,
 ): { nodes: Node[]; edges: Edge[] } {
   const generated = members.filter(
-    (n) => (n.data as Record<string, unknown>)?.generated === true,
+    (n) => n.data.generated === true &&
+      !useCanvasStore.getState().deployedVmIds.has(n.id) &&
+      !((n.data.clusterOverrides as string[] | undefined)?.length),
   );
   // Remove the highest-index generated members first; never a user VM.
   const toRemoveMemberIds = new Set(generated.slice(-surplus).map((n) => n.id));
@@ -690,7 +738,9 @@ export function applyClusterNetworks(
   // Get all members of this cluster
   const allMembers = resultNodes.filter((n) => {
     const d = n.data as Record<string, unknown>;
-    return n.type === "vmNode" && d?.clusterId === cluster.id;
+    return n.type === "vmNode" && d?.clusterId === cluster.id && d.generated === true &&
+      !useCanvasStore.getState().deployedVmIds.has(n.id) &&
+      !((d.clusterOverrides as string[] | undefined) ?? []).includes("nics");
   });
 
   // For each member, diff-apply networks to preserve existing NIC ids/MACs
@@ -843,7 +893,7 @@ export function reconcileClusterVms(
       : n,
   );
 
-  return applyClusterBmc(cluster, resultNodes, resultEdges);
+  return applyClusterBmc(cluster, resultNodes, resultEdges, useCanvasStore.getState().deployedVmIds);
 }
 
 /**
@@ -874,15 +924,16 @@ export function applyClusterSizing(
   let changed = false;
   const out = nodes.map((n) => {
     const d = n.data as Record<string, unknown>;
-    if (n.type !== "vmNode" || d?.clusterId !== cluster.id || d?.generated !== true) {
+    if (n.type !== "vmNode" || d?.clusterId !== cluster.id || d?.generated !== true || useCanvasStore.getState().deployedVmIds.has(n.id)) {
       return n;
     }
     const role = memberRole(n);
     const spec = role ? specByRole.get(role) : undefined;
     if (!spec) return n;
-    const vcpus = spec.cpu;
-    const ram = Math.max(1, Math.round(spec.memoryMb / MB_PER_GB));
-    const disk = spec.disk;
+    const overrides = new Set((d.clusterOverrides as string[] | undefined) ?? []);
+    const vcpus = overrides.has("vcpus") ? d.vcpus : spec.cpu;
+    const ram = overrides.has("ram") ? d.ram : spec.memoryMb / MB_PER_GB;
+    const disk = overrides.has("disk") ? d.disk : spec.disk;
     if (d.vcpus === vcpus && d.ram === ram && d.disk === disk) return n;
     changed = true;
     return { ...n, data: { ...d, vcpus, ram, disk } };
@@ -890,14 +941,37 @@ export function applyClusterSizing(
   return changed ? out : nodes;
 }
 
-/**
- * Rebuild disk storageNodes + edges for all EXISTING members of the cluster,
- * matching the role-specific disk lists (controlPlaneDisks / workerDisks).
- * Diff-based and ID-stable: reuses existing disk node IDs for disk indices that
- * still exist, removes stale disk nodes, adds new ones for new disks.
- * Rebuilds diskControllers + bootDevices to match the new disk specs.
- * Idempotent: re-running with unchanged disk specs yields byte-identical nodes/edges.
- * Pure: returns same array reference when nothing changes.
+function memberRoleDiskBindings(
+  member: Node,
+  nodes: Node[],
+  edges: Edge[],
+  controllers: VMDiskController[],
+) {
+  const existingDiskNodes = new Map<number, Node>();
+  const existingDiskEdges = new Map<number, Edge>();
+  // Imported templates use UUID storage IDs, so follow controller attachments.
+  for (const dc of controllers) {
+    const index = dc.name.match(/^disk(\d+)$/)?.[1];
+    if (index === undefined) continue;
+    const edge = edges.find(e => e.target === member.id && e.targetHandle === `dp-${dc.id}-left`);
+    const disk = edge && nodes.find(n => n.id === edge.source && n.type === "storageNode" && n.data.format !== "iso");
+    if (!disk || !edge) continue;
+    existingDiskNodes.set(Number(index), disk);
+    existingDiskEdges.set(Number(index), edge);
+  }
+  // Tolerate incomplete draft topology whose generated disks have no edges yet.
+  nodes.filter(n => n.type === "storageNode" && n.id.startsWith(`${member.id}-disk-`))
+    .forEach(node => {
+      const index = node.id.match(/disk-(\d+)$/)?.[1];
+      if (index !== undefined && !existingDiskNodes.has(Number(index))) {
+        existingDiskNodes.set(Number(index), node);
+      }
+    });
+  const existingDiskNodeIds = new Set([...existingDiskNodes.values()].map(node => node.id));
+  return { existingDiskNodes, existingDiskEdges, existingDiskNodeIds };
+}
+/** Apply role disks to undeployed generated members that still inherit disks.
+ * Keep imported disk/controller identities, custom metadata and ISO attachments.
  */
 export function applyClusterDisks(
   cluster: ClusterConfig,
@@ -910,7 +984,10 @@ export function applyClusterDisks(
   // Get all members of this cluster
   const allMembers = resultNodes.filter((n) => {
     const d = n.data as Record<string, unknown>;
-    return n.type === "vmNode" && d?.clusterId === cluster.id;
+    const overrides = (d.clusterOverrides as string[] | undefined) ?? [];
+    return n.type === "vmNode" && d?.clusterId === cluster.id && d.generated === true &&
+      !useCanvasStore.getState().deployedVmIds.has(n.id) &&
+      !overrides.some(key => ["disk", "disks", "diskControllers", "bootDevices"].includes(key));
   });
 
   // For each member, rebuild disks to match cluster disk specs
@@ -919,28 +996,10 @@ export function applyClusterDisks(
     if (!role) continue;
 
     // Get the disk specs for this role
-    const diskSpecs = role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks;
-    const targetSpecs = coerceDiskSpecs(diskSpecs as DiskSpec[] | undefined) ?? [
-      { sizeGb: role === "control-plane" ? 120 : 100, bootable: true },
-    ];
-
-    // Collect existing disk nodes for this member
-    const existingDiskNodeIds = new Set<string>();
-    const existingDiskNodes = new Map<number, Node>();
-    for (const n of resultNodes) {
-      if (
-        n.type === "storageNode" &&
-        n.id.startsWith(`${member.id}-disk-`)
-      ) {
-        const match = n.id.match(/disk-(\d+)$/);
-        if (match) {
-          const idx = parseInt(match[1], 10);
-          existingDiskNodeIds.add(n.id);
-          existingDiskNodes.set(idx, n);
-        }
-      }
-    }
-
+    const targetSpecs = roleDiskSpecs(cluster, role);
+    const prevDcs = (member.data.diskControllers as VMDiskController[] | undefined) ?? [];
+    const { existingDiskNodes, existingDiskEdges, existingDiskNodeIds } =
+      memberRoleDiskBindings(member, resultNodes, resultEdges, prevDcs);
     // Build new disk nodes, controllers, and edges
     const newDiskNodes: Node[] = [];
     const newDiskControllers: VMDiskController[] = [];
@@ -953,20 +1012,23 @@ export function applyClusterDisks(
     targetSpecs.forEach((spec, i) => {
       const existingNode = existingDiskNodes.get(i);
       const diskId = existingNode?.id ?? `${member.id}-disk-${i}`;
-      const dcId = generateDiskControllerId();
+      const previousController = prevDcs.find(dc => dc.name === `disk${i}`);
+      const dcId = previousController?.id ?? generateDiskControllerId();
 
-      newDiskControllers.push({ id: dcId, name: `disk${i}`, bus: spec.bus ?? "virtio" });
+      newDiskControllers.push({ ...previousController, id: dcId, name: `disk${i}`, bus: spec.bus ?? "virtio" });
       newDiskNodes.push({
         id: diskId,
         type: "storageNode",
-        position: { x: baseX, y: baseY + 60 + i * 40 },
+        ...existingNode,
+        position: existingNode?.position ?? { x: baseX, y: baseY + 60 + i * 40 },
         parentId: cluster.nodeId,
         hidden: true, // Collapse member disk sub-nodes
-        data: { label: `${member.id}-d${i}`, name: `${member.id}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
+        data: { label: `${member.id}-d${i}`, name: `${member.id}-d${i}`, format: "qcow2", icon: "🛢", ...existingNode?.data, size: spec.sizeGb, ocpMount: spec.ocpMount },
       } as Node);
 
       newDiskEdges.push({
-        id: `edge-${diskId}-to-${member.id}`,
+        ...existingDiskEdges.get(i),
+        id: existingDiskEdges.get(i)?.id ?? `edge-${diskId}-to-${member.id}`,
         source: diskId,
         target: member.id,
         sourceHandle: "right",
@@ -986,23 +1048,15 @@ export function applyClusterDisks(
     }
 
     // Preserve existing cdrom controller id when present; otherwise seed cdrom0.
-    const prevDcs =
-      ((member.data as Record<string, unknown>).diskControllers as VMDiskController[] | undefined) ??
-      [];
-    const prevCdrom = prevDcs.find((dc) => String(dc.name || "").startsWith("cdrom"));
-    newDiskControllers.push(
-      prevCdrom
-        ? { ...prevCdrom, name: prevCdrom.name || "cdrom0", bus: prevCdrom.bus || "sata" }
-        : { id: generateDiskControllerId(), name: "cdrom0", bus: "sata" },
-    );
+    newDiskControllers.push(...prevDcs.filter(dc => !/^disk\d+$/.test(dc.name)));
+    if (!prevDcs.some(dc => dc.name.startsWith("cdrom"))) {
+      newDiskControllers.push({ id: generateDiskControllerId(), name: "cdrom0", bus: "sata" });
+    }
 
     // Identify stale disk nodes to remove
-    const staleDiskNodeIds = new Set<string>();
-    for (const [idx, node] of existingDiskNodes) {
-      if (idx >= targetSpecs.length) {
-        staleDiskNodeIds.add(node.id);
-      }
-    }
+    const staleDiskNodeIds = new Set([...existingDiskNodes]
+      .filter(([index]) => index >= targetSpecs.length)
+      .map(([, node]) => node.id));
 
     // Remove stale disk nodes
     resultNodes = resultNodes.filter((n) => !staleDiskNodeIds.has(n.id));
@@ -1010,22 +1064,18 @@ export function applyClusterDisks(
     // Remove stale disk edges + old member disk edges for this member
     resultEdges = resultEdges.filter(
       (e) =>
-        !(e.target === member.id && (e.targetHandle?.startsWith("dp-") ?? false)) &&
+        !(e.target === member.id && existingDiskNodeIds.has(e.source)) &&
         !staleDiskNodeIds.has(e.source) &&
         !staleDiskNodeIds.has(e.target),
     );
 
     // Merge new disk nodes into result (replace existing ones if updating)
     const nodeIdSet = new Set(resultNodes.map((n) => n.id));
-    for (const diskNode of newDiskNodes) {
-      if (nodeIdSet.has(diskNode.id)) {
-        // Replace existing
-        resultNodes = resultNodes.map((n) => (n.id === diskNode.id ? diskNode : n));
-      } else {
-        // Add new
-        resultNodes = [...resultNodes, diskNode];
-      }
-    }
+    const newDiskById = new Map(newDiskNodes.map(node => [node.id, node]));
+    resultNodes = [
+      ...resultNodes.map(node => newDiskById.get(node.id) ?? node),
+      ...newDiskNodes.filter(node => !nodeIdSet.has(node.id)),
+    ];
 
     // Update the member node's diskControllers and bootDevices
     resultNodes = resultNodes.map((n) =>

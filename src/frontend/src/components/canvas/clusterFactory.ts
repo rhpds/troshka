@@ -4,10 +4,9 @@ import type { ClusterConfig } from "@/stores/canvasStore";
 /**
  * Default cluster sizing + config values.
  *
- * These MUST match Plan 1's backend normalization defaults exactly
- * (see docs/superpowers/plans/2026-09-01-multi-cluster-ocp-plan1-data-model.md):
- *   CP     cpu 8  / memory 32768 / disk 120
- *   worker cpu 4  / memory 8192  / disk 100
+ * Palette clusters use a 120 GB boot disk and a 100 GB container-storage disk:
+ *   CP     cpu 8  / memory 32768
+ *   worker cpu 4  / memory 8192
  *   type "sno", controlPlane 1, workers 0, recert on.
  *
  * ocpVersion defaults to "" and is auto-set to the latest Full Support release
@@ -30,15 +29,15 @@ const CLUSTER_DEFAULTS = {
   controlPlaneDisk: 120,
   workerCpu: 4,
   workerMemory: 8192,
-  workerDisk: 100,
+  workerDisk: 120,
   baseDomain: "local",
   apiVip: "",
   ingressVip: "",
   ocpVersion: "", // auto-set to latest Full Support once the version list loads
   pullThroughRegistry: null as string | null,
   usePullThroughRegistry: true,
-  controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
-  workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
+  controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100, ocpMount: "/var/lib/containers" }],
+  workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100, ocpMount: "/var/lib/containers" }],
   // OCP control-plane options (projected onto member VMs at deploy).
   recert: true, // SNO default regenerates certs for a unique identity
   monitorHealth: true,
@@ -92,8 +91,8 @@ export function makeCluster(
       apiVip: CLUSTER_DEFAULTS.apiVip,
       ingressVip: CLUSTER_DEFAULTS.ingressVip,
       networkIds: [],
-      controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
-      workerDisks: [...CLUSTER_DEFAULTS.workerDisks],
+      controlPlaneDisks: CLUSTER_DEFAULTS.controlPlaneDisks.map(disk => ({ ...disk })),
+      workerDisks: CLUSTER_DEFAULTS.workerDisks.map(disk => ({ ...disk })),
     },
   };
 
@@ -117,8 +116,8 @@ export function makeCluster(
     pullThroughRegistry: CLUSTER_DEFAULTS.pullThroughRegistry ?? undefined,
     usePullThroughRegistry: CLUSTER_DEFAULTS.usePullThroughRegistry,
     networkIds: [],
-    controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
-    workerDisks: [...CLUSTER_DEFAULTS.workerDisks],
+    controlPlaneDisks: CLUSTER_DEFAULTS.controlPlaneDisks.map(disk => ({ ...disk })),
+    workerDisks: CLUSTER_DEFAULTS.workerDisks.map(disk => ({ ...disk })),
     recert: CLUSTER_DEFAULTS.recert,
     monitorHealth: CLUSTER_DEFAULTS.monitorHealth,
     configureBastionBrowser: CLUSTER_DEFAULTS.configureBastionBrowser,

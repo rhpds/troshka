@@ -94,3 +94,6 @@ src/backend/.vni_hwm
 
 # Local operational scripts (datacenter-specific, keep locally)
 scripts/seed-netlab-central-s4.sh
+
+# Local operational diagnostic output
+.ci-watch-result.txt

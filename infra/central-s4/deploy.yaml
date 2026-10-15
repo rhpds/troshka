@@ -8,6 +8,8 @@
     # Gold patterns + library; size for many full OCP 4.x patterns (~300Gi each).
     s4_pvc_size: 1Ti
     s4_bucket: troshka-gold-images
+    # Override with the validated image digest when rolling out a server fix.
+    s4_image: quay.io/rh-aiservices-bu/s4:latest
     kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config') }}"
     # Single S4 pod serves all dedicated instances (sync-central + pattern disk pulls).
     # RWO PVC => replicas must stay 1 unless s4_access_mode is ReadWriteMany (CephFS).
@@ -114,7 +116,7 @@
                               values: ["true"]
                 containers:
                   - name: s4
-                    image: quay.io/rh-aiservices-bu/s4:latest
+                    image: "{{ s4_image }}"
                     env:
                       - name: AWS_ACCESS_KEY_ID
                         valueFrom:
@@ -289,7 +291,7 @@
                 restartPolicy: Never
                 containers:
                   - name: setup
-                    image: quay.io/rh-aiservices-bu/s4:latest
+                    image: "{{ s4_image }}"
                     command:
                       - /bin/sh
                       - -c

@@ -5,6 +5,8 @@ import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
 import { formatApiDetail } from "@/lib/apiError";
+import { TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
+import { summarizeDeployProgress } from "@/lib/deployProgress";
 import {
   formatTemplateVersionLabel,
   pickDefaultOcpVersion,
@@ -573,7 +575,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                 <textarea
                   value={yamlContent}
                   onChange={(e) => { setYamlContent(e.target.value); setYamlFileName(""); }}
-                  placeholder={"networks:\n  network-00:\n    cidr: 10.0.0.0/24\n    dhcp: true\nvms:\n  vm-00:\n    vcpus: 2\n    ram_gb: 4\n    ..."}
+                  placeholder={TEMPLATE_YAML_EXAMPLE}
                   style={{
                     width: "100%", height: 200, fontFamily: "monospace", fontSize: 12,
                     padding: 12, borderRadius: 8, resize: "vertical",
@@ -1374,8 +1376,8 @@ export default function ProjectsPage() {
                   style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 200, flex: 1 }}>
                       <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</strong>
                       {p.guid && (
                         <span style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", fontFamily: "monospace", flexShrink: 0 }}>
@@ -1401,7 +1403,7 @@ export default function ProjectsPage() {
                         {p.owner_email ? p.owner_email.split("@")[0] : "system"}
                       </span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: "100%", minWidth: 0 }}>
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 4,
                       background: `${stateColors[p.state] || "#94a3b8"}22`,
@@ -1453,11 +1455,12 @@ export default function ProjectsPage() {
                       </span>
                     )}
                     {p.state === "deploying" && p.deploy_progress?.detail && p.deploy_progress?.step !== "queued" && (
-                      <span style={{
+                      <span title={p.deploy_progress.detail} style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
                         background: "rgba(251,191,36,0.15)", color: "#fbbf24",
+                        maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                       }}>
-                        {p.deploy_progress.step ? `${p.deploy_progress.step}: ${p.deploy_progress.detail}` : p.deploy_progress.detail}
+                        {summarizeDeployProgress(p.deploy_progress)}
                       </span>
                     )}
                     {(p.state === "deploying" || p.state === "stopping" || p.state === "starting" || p.state === "deleting") && (

@@ -1,0 +1,4 @@
+# Non-secret overrides for the infra01 deployment. Supply credentials separately.
+# Keep this capacity aligned with the existing PVC; Kubernetes cannot shrink it.
+s4:
+  storageSize: 4Ti

@@ -32,6 +32,8 @@
           app.kubernetes.io/name: troshka-s4
       spec:
         replicas: 1
+        strategy:
+          type: Recreate
         selector:
           matchLabels:
             app.kubernetes.io/name: troshka-s4
@@ -42,7 +44,7 @@
           spec:
             containers:
               - name: s4
-                image: quay.io/rh-aiservices-bu/s4:latest
+                image: "{{ troshka_s4_image }}"
                 env:
                   - name: AWS_ACCESS_KEY_ID
                     value: "{{ _s4_access_key }}"

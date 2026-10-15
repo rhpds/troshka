@@ -224,7 +224,7 @@ cd troshka
 # Or start components individually
 ./dev-services.sh backend start    # FastAPI on port 8200
 ./dev-services.sh frontend start   # Next.js on port 3100
-./dev-services.sh db start         # PostgreSQL on port 5433
+./dev-services.sh db start         # PostgreSQL on port 5434
 ```
 
 Open http://localhost:3100 — dev mode auto-authenticates as admin.
@@ -236,7 +236,8 @@ Open http://localhost:3100 — dev mode auto-authenticates as admin.
 | Frontend | http://localhost:3100 | Next.js dev server (hot-reloads) |
 | Backend API | http://localhost:8200 | FastAPI (restart required for changes) |
 | API Docs | http://localhost:8200/docs | Swagger UI |
-| PostgreSQL | localhost:5433 | Podman container |
+| PostgreSQL | localhost:5434 | Podman container |
+| Redis | localhost:6380 | Podman container |
 
 ### Utility Scripts
 

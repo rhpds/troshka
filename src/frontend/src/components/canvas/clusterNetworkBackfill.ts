@@ -54,8 +54,6 @@ export function backfillClusterNetworkIds(
 const _DEPLOY_ONLY_CLUSTER_FIELDS = [
   "_generatedInstallConfig",
   "_generatedAgentConfig",
-  "controlPlaneDisks",
-  "workerDisks",
 ];
 
 /**

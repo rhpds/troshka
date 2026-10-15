@@ -17,3 +17,11 @@ def test_no_enqueue_without_source_provider():
     with patch.object(pattern_service, "enqueue_job") as enq:
         pattern_service._enqueue_pattern_sync("pat-123", None)
         enq.assert_not_called()
+
+
+def test_large_capture_worker_outlives_its_copy_job():
+    with patch.object(pattern_service, "enqueue_job") as enq:
+        pattern_service._enqueue_pattern_sync(
+            "large", "provider", size_bytes=2 * 1024**4
+        )
+        assert enq.call_args.kwargs["job_timeout"] > 74000

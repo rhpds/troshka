@@ -182,7 +182,7 @@ export function makeBmcEdge(bmcNetId: string, vmId: string): Edge {
 
 function clusterMemberIds(cluster: ClusterConfig, nodes: Node[]): string[] {
   return nodes
-    .filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id)
+    .filter((n) => n.type === "vmNode" && n.data.clusterId === cluster.id && n.data.bmcEnabled !== false)
     .map((n) => n.id);
 }
 
@@ -194,8 +194,9 @@ export function applyClusterBmc(
   cluster: ClusterConfig,
   nodes: Node[],
   edges: Edge[],
+  skipMemberIds: ReadonlySet<string> = new Set(),
 ): { nodes: Node[]; edges: Edge[] } {
-  const memberIds = new Set(clusterMemberIds(cluster, nodes));
+  const memberIds = new Set(clusterMemberIds(cluster, nodes).filter(id => !skipMemberIds.has(id)));
   if (memberIds.size === 0) return { nodes, edges };
 
   let nextNodes = [...nodes];

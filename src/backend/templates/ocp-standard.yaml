@@ -1,6 +1,6 @@
 name: ocp-standard
 display_name: "OpenShift Standard 3+2"
-description: "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)"
+description: "3 CP + 2 workers — 4 vCPU, 16 GB, 120 GB + 250 GB container storage each"
 category: openshift
 install_method: agent
 # The in-cluster ops pod runs the agent install and drives status (no bastion
@@ -12,10 +12,58 @@ versions: ["4.19", "4.20", "4.21", "4.22", "5.0"]
 ocp:
   - name: ocp
     type: standard
+    control_plane_cpu: 4
+    control_plane_memory_gb: 16
+    worker_cpu: 4
+    worker_memory_gb: 16
     ocp_version: "4.22"
     base_domain: local
     api_vip: 10.0.0.4
     ingress_vip: 10.0.0.5
+    control_plane_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    worker_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    vm_defaults:
+      firmware: uefi
+      bmc: true
+    nodes:
+      cp-0:
+        role: control-plane
+        bmc_ip: 192.168.100.10
+        nics:
+          - network: cluster
+            ip: 10.0.0.10
+      cp-1:
+        role: control-plane
+        bmc_ip: 192.168.100.11
+        nics:
+          - network: cluster
+            ip: 10.0.0.11
+      cp-2:
+        role: control-plane
+        bmc_ip: 192.168.100.12
+        nics:
+          - network: cluster
+            ip: 10.0.0.12
+      worker-0:
+        role: worker
+        bmc_ip: 192.168.100.20
+        nics:
+          - network: cluster
+            ip: 10.0.0.20
+      worker-1:
+        role: worker
+        bmc_ip: 192.168.100.21
+        nics:
+          - network: cluster
+            ip: 10.0.0.21
 
 gateway:
   outbound_ports:
@@ -40,77 +88,6 @@ networks:
   bmc:
     type: bmc
     cidr: 192.168.100.0/24
-
-vms:
-  cp-0:
-    role: control-plane
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.10
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
-        ip: 10.0.0.10
-
-  cp-1:
-    role: control-plane
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.11
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
-        ip: 10.0.0.11
-
-  cp-2:
-    role: control-plane
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.12
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
-        ip: 10.0.0.12
-
-  worker-0:
-    role: worker
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.20
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
-        ip: 10.0.0.20
-
-  worker-1:
-    role: worker
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.21
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
-        ip: 10.0.0.21
 
 showroom:
   enabled: true

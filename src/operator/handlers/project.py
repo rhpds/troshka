@@ -2694,6 +2694,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         return
 
     patch.status["phase"] = "Deploying"
+    patch.status["deployStartedAt"] = time.time()
     patch.status["vmStates"] = {}
     patch.status["deployProgress"] = {
         "percent": 0,
@@ -3500,10 +3501,31 @@ def _ensure_project_containers(spec, status, namespace, name, body, patch):
     logger.info("TroshkaProject %s: started %d container(s)", name, len(containers))
 
 
+def _check_deploy_failure(status, namespace, patch, custom_api):
+    """Stop waiting on missing images, failed disks, or an expired deployment."""
+    from helpers.disk_health import deployment_disk_error
+
+    error = deployment_disk_error(custom_api, namespace)
+    started_at = status.get("deployStartedAt")
+    if not started_at:
+        patch.status["deployStartedAt"] = time.time()
+    elif time.time() - float(started_at) > 7200:
+        error = error or "Deployment timed out after 2 hours waiting for disks and VMs"
+    if error:
+        patch.status["phase"] = "Error"
+        patch.status["error"] = error
+        patch.status["deployProgress"] = {"stage": "Failed", "detail": error}
+        return True
+    return False
+
+
 def _handle_deploying_phase(
     spec, status, namespace, name, body, patch, custom_api, vm_items, ready_count
 ):
     """Handle all sub-phases of the Deploying state."""
+    if _check_deploy_failure(status, namespace, patch, custom_api):
+        return
+
     if _handle_recert(status, namespace, name, patch):
         return
 
@@ -3566,6 +3588,8 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     )
     vm_items = vms.get("items", [])
     if not vm_items:
+        if phase == "Deploying":
+            _check_deploy_failure(status, namespace, patch, custom_api)
         return
 
     vmi_states = _fetch_vmi_states(custom_api, namespace)

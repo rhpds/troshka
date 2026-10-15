@@ -1,7 +1,8 @@
 """Tests for pattern_sync — OBC->central sync worker with capacity guard."""
 
 import uuid
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy.orm import Session
 
@@ -139,6 +140,67 @@ def test_rclone_job_body_copies_all_keys():
     assert "patterns/x/b.qcow2" in cmd
     assert "obc-bucket" in cmd
     assert "troshka-images" in cmd
+
+
+def test_rclone_job_limits_multipart_parts_and_buffers_for_large_disks():
+    body = pattern_sync.build_sync_rclone_job(
+        "sync-large",
+        "troshka-cache",
+        ["patterns/large.qcow2"],
+        {"bucket": "source"},
+        {"bucket": "destination"},
+        size_bytes=2 * 1024**4,
+    )
+    container = body["spec"]["template"]["spec"]["containers"][0]
+    command = container["command"][-1]
+    assert "--s3-max-upload-parts 900" in command
+    assert "--s3-upload-concurrency 1" in command
+    assert "--transfers 1" in command
+    assert "--size-only" in command
+    # Rclone grows its part buffers for large known-size files. The job must
+    # reserve enough memory even for a 2 TiB disk, and enough time to copy it.
+    assert int(container["resources"]["limits"]["memory"].removesuffix("Mi")) >= 3000
+    assert body["spec"]["activeDeadlineSeconds"] > 3600
+
+
+def test_retrying_job_is_not_failed_until_retries_are_exhausted():
+    api = MagicMock()
+    api.read_namespaced_job.side_effect = [
+        SimpleNamespace(status=SimpleNamespace(succeeded=0, failed=1, conditions=[])),
+        SimpleNamespace(status=SimpleNamespace(succeeded=1, failed=1, conditions=[])),
+    ]
+    with patch.object(pattern_sync.time, "sleep"):
+        assert pattern_sync._poll_job(api, "sync", timeout=30) is True
+
+
+def test_sync_exception_is_saved_as_visible_central_failure():
+    db = _sync_session()
+    try:
+        pattern, disk = _pattern_with_disks(db, str(uuid.uuid4()))
+        db.commit()
+        with (
+            patch.object(pattern_sync, "SessionLocal", return_value=db),
+            patch.object(pattern_sync, "_max_central_bytes", return_value=None),
+            patch.object(
+                pattern_sync, "get_cluster_s3_config", return_value={"bucket": "source"}
+            ),
+            patch.object(
+                pattern_sync, "_get_s3_config", return_value={"bucket": "central"}
+            ),
+            patch.object(
+                pattern_sync, "_run_rclone_job", side_effect=RuntimeError("OOMKilled")
+            ),
+        ):
+            pattern_sync.sync_pattern_to_central(pattern.id)
+        central = (
+            db.query(PatternLocation)
+            .filter_by(pattern_disk_id=disk.id, location_type="central")
+            .one()
+        )
+        assert central.state == "error"
+        assert "OOMKilled" in central.error_message
+    finally:
+        Session.close(db)
 
 
 # ---------------------------------------------------------------------------

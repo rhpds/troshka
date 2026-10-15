@@ -578,7 +578,9 @@ def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
     )
 
 
-def _agent_create_image_resume_cmd(indent: str, cluster_dir: str) -> str:
+def _agent_create_image_resume_cmd(
+    indent: str, cluster_dir: str, extra_manifests: str = ""
+) -> str:
     """Run create-image only when the ISO and installer state are not already present.
 
     Each cluster gets its own ``XDG_CACHE_HOME`` under ``<cluster_dir>/.cache`` so
@@ -603,6 +605,7 @@ def _agent_create_image_resume_cmd(indent: str, cluster_dir: str) -> str:
         f"{i}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
         f"{i}  if [ -d .src/openshift ]; then "
         f"mkdir -p openshift && cp -f .src/openshift/*.yaml openshift/; fi\n"
+        + extra_manifests
         + create
         + f"{i}fi\n"
     )
@@ -723,6 +726,7 @@ def _cluster_install_block(
     deferred_workers: list[dict] | None = None,
     *,
     early_disk_eject: bool = True,
+    extra_manifests: str = "",
 ) -> str:
     """One cluster's install steps, wrapped in a backgrounded subshell.
 
@@ -754,7 +758,7 @@ def _cluster_install_block(
         + "_rc=$?; kill $HTTP_PID 2>/dev/null || true; "
         + f'if [ "$_rc" -ne 0 ]; then echo "[{cluster_key}] install failed"; fi; '
         + "exit $_rc' EXIT\n"
-        + _agent_create_image_resume_cmd("  ", cluster_dir)
+        + _agent_create_image_resume_cmd("  ", cluster_dir, extra_manifests)
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _start_disk_write_eject_watch_cmd(
@@ -1071,6 +1075,18 @@ def _self_assign_net_ips(net_ip_assignments: list[tuple[str, str]] | None) -> st
     return "".join(lines)
 
 
+def _cluster_mount_manifests(topology, cluster, workdir, single_cluster):
+    from app.services.ocp.agent_template import (
+        _generate_ocp_mount_script,
+        _mount_topology_for_cluster,
+    )
+
+    scoped = _mount_topology_for_cluster(topology, cluster, single_cluster)
+    return _generate_ocp_mount_script(
+        scoped, f"{workdir}/{_cluster_key(cluster)}", "    "
+    )
+
+
 def build_ops_pod_install_script(
     clusters: list[dict],
     bmc_by_cluster: dict[str, tuple[list[str], str]],
@@ -1127,6 +1143,9 @@ def build_ops_pod_install_script(
                 serving_ip=serving_ip,
                 deferred_workers=deferred_workers_for_cluster(topo, cluster),
                 early_disk_eject=early_disk_eject,
+                extra_manifests=_cluster_mount_manifests(
+                    topo, cluster, workdir, len(clusters) == 1
+                ),
             )
         )
     parts.append(_ops_pod_join_and_hold_cmd())

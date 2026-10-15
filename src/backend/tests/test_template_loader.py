@@ -5,16 +5,138 @@ import pytest
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 
 
+def test_cclm_explicit_members_mount_container_storage_on_second_disk():
+    from app.services.ocp.agent_template import _collect_ocp_mounts
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    topology = generate_topology_from_template(
+        resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    )
+    disks = {
+        n["data"]["name"]: n["data"]
+        for n in topology["nodes"]
+        if n["type"] == "storageNode" and n["data"].get("name", "").endswith("-disk1")
+    }
+    assert set(disks) == {
+        "source-cp-0-disk1",
+        "source-worker-0-disk1",
+        "source-worker-1-disk1",
+        "dest-cp-0-disk1",
+    }
+    assert all(disk.get("ocpMount") == "/var/lib/containers" for disk in disks.values())
+    assert (
+        _collect_ocp_mounts(topology)
+        == [{"device": "/dev/vdb", "mount": "/var/lib/containers"}] * 4
+    )
+
+
+@pytest.mark.parametrize("mount", ["/srv/custom-containers", ""])
+def test_explicit_vm_mount_overrides_cluster_mount_without_mutating_vm_disks(mount):
+    import copy
+
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    resolved["ocp"][0]["nodes"]["source-cp-0"]["disks"] = [{}, {"ocp_mount": mount}]
+    before = copy.deepcopy(resolved)
+    topology = generate_topology_from_template(resolved)
+    disks = {
+        n["data"].get("name"): n["data"]
+        for n in topology["nodes"]
+        if n["type"] == "storageNode"
+    }
+    assert disks["source-cp-0-disk1"].get("ocpMount", "") == mount
+    assert disks["source-worker-0-disk1"]["ocpMount"] == "/var/lib/containers"
+    assert resolved == before
+
+
+def test_vm_disk_overrides_inherit_size_boot_and_mount_from_ocp_defaults():
+    from app.services.template_loader import materialize_cluster_vms
+
+    cluster = {
+        "id": "source",
+        "name": "source",
+        "controlPlane": 1,
+        "workers": 0,
+        "controlPlaneCpu": 4,
+        "controlPlaneMemory": 16384,
+        "workerCpu": 4,
+        "workerMemory": 16384,
+        "controlPlaneDisks": [
+            {"sizeGb": 250, "bootable": True},
+            {"sizeGb": 500, "ocpMount": "/var/lib/containers"},
+        ],
+    }
+    vms = {"cp": {"role": "control-plane", "disks": [{"size_gb": 300}, {}]}}
+    result = materialize_cluster_vms([cluster], vms)
+    assert result["cp"]["disks"][0]["size_gb"] == 300
+    assert result["cp"]["disks"][0]["bootable"] is True
+    assert result["cp"]["disks"][1]["size_gb"] == 500
+    assert result["cp"]["disks"][1]["ocp_mount"] == "/var/lib/containers"
+    assert vms["cp"]["disks"] == [{"size_gb": 300}, {}]
+
+
+def test_explicit_cluster_members_inherit_compute_unless_overridden():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+        template_vm_definitions,
+    )
+
+    resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    for _, vm in template_vm_definitions(resolved):
+        vm.pop("vcpus", None)
+        vm.pop("ram_gb", None)
+    resolved["ocp"][0]["nodes"]["source-worker-1"].update(vcpus=12, ram_gb=48)
+    topology = generate_topology_from_template(resolved)
+    members = {
+        n["data"]["name"]: n["data"] for n in topology["nodes"] if n["type"] == "vmNode"
+    }
+    assert members["source-cp-0"]["vcpus"] == 16
+    assert members["source-cp-0"]["ram"] == 64
+    assert members["source-worker-0"]["vcpus"] == 8
+    assert members["source-worker-0"]["ram"] == 32
+    assert members["source-worker-1"]["vcpus"] == 12
+    assert members["source-worker-1"]["ram"] == 48
+    assert members["dest-cp-0"]["vcpus"] == 16
+    assert members["dest-cp-0"]["ram"] == 64
+
+
+@pytest.mark.parametrize(
+    "template,count",
+    [("ocp-sno", 1), ("okd-sno", 1), ("ocp-compact", 3), ("ocp-standard", 5)],
+)
+def test_openshift_quickstarts_inherit_container_disk_mounts(template, count):
+    from app.services.ocp.agent_template import _collect_ocp_mounts
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    topology = generate_topology_from_template(
+        resolve_template(template, templates_dir=TEMPLATES_DIR)
+    )
+    assert (
+        _collect_ocp_mounts(topology)
+        == [{"device": "/dev/vdb", "mount": "/var/lib/containers"}] * count
+    )
+
+
 def test_load_sno_template():
     from app.services.template_loader import load_template
 
     tmpl = load_template("ocp-sno", templates_dir=TEMPLATES_DIR)
     assert tmpl["name"] == "ocp-sno"
-    assert "vms" in tmpl
-    assert "cp-0" in tmpl["vms"]
+    assert "cp-0" in tmpl["ocp"][0]["nodes"]
     # SNO installs in-cluster via the ops pod (install_via: pod) — no bastion VM.
     assert tmpl.get("install_via") == "pod"
-    assert "bastion" not in tmpl["vms"]
+    assert "bastion" not in tmpl.get("vms", {})
 
 
 def test_load_okd_sno_template():
@@ -30,7 +152,7 @@ def test_load_okd_sno_template():
     assert tmpl.get("distribution") == "okd-scos"
     assert tmpl.get("requires_pull_secret") is False
     assert tmpl.get("install_via") == "pod"
-    assert "bastion" not in tmpl["vms"]
+    assert "bastion" not in tmpl.get("vms", {})
 
     resolved = resolve_template("okd-sno", templates_dir=TEMPLATES_DIR)
     assert resolved["distribution"] == "okd-scos"
@@ -53,11 +175,10 @@ def test_load_compact_template():
 
     tmpl = load_template("ocp-compact", templates_dir=TEMPLATES_DIR)
     assert tmpl["name"] == "ocp-compact"
-    assert "vms" in tmpl
-    assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
+    assert len([k for k in tmpl["ocp"][0]["nodes"] if k.startswith("cp-")]) == 3
     # Bastionless: installs in-cluster via the ops pod, no bastion VM.
     assert tmpl.get("install_via") == "pod"
-    assert "bastion" not in tmpl["vms"]
+    assert "bastion" not in tmpl.get("vms", {})
 
 
 def test_load_standard_template():
@@ -65,12 +186,11 @@ def test_load_standard_template():
 
     tmpl = load_template("ocp-standard", templates_dir=TEMPLATES_DIR)
     assert tmpl["name"] == "ocp-standard"
-    assert "vms" in tmpl
-    assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
-    assert len([k for k in tmpl["vms"] if k.startswith("worker-")]) == 2
+    assert len([k for k in tmpl["ocp"][0]["nodes"] if k.startswith("cp-")]) == 3
+    assert len([k for k in tmpl["ocp"][0]["nodes"] if k.startswith("worker-")]) == 2
     # Bastionless: installs in-cluster via the ops pod, no bastion VM.
     assert tmpl.get("install_via") == "pod"
-    assert "bastion" not in tmpl["vms"]
+    assert "bastion" not in tmpl.get("vms", {})
 
 
 def test_resolve_sno_has_vms():
@@ -78,8 +198,7 @@ def test_resolve_sno_has_vms():
 
     resolved = resolve_template("ocp-sno", overrides={}, templates_dir=TEMPLATES_DIR)
     assert resolved["install_method"] == "agent"
-    assert "vms" in resolved
-    assert "cp-0" in resolved["vms"]
+    assert "cp-0" in resolved["ocp"][0]["nodes"]
 
 
 def test_resolve_template_carries_showroom():

@@ -306,7 +306,8 @@ export default function GettingStartedPage() {
           <p>
             You can also import a pre-built topology from a YAML file. On a blank canvas, click the
             {" "}<strong>Import Template YAML</strong> button, then paste or upload your template.
-            The YAML must contain <code>vms</code> and <code>networks</code> sections.
+            The YAML must contain <code>networks</code> and either <code>vms</code> or <code>ocp</code> sections.
+            OpenShift templates can define member roles and static NIC addresses in <code>ocp[].nodes</code>.
             After import, the canvas auto-layouts the topology and you can edit it before deploying.
           </p>
         </Step>

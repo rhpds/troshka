@@ -1,34 +1,35 @@
 import asyncio
-import kopf
+import copy
 import logging
 import time
 from typing import cast
-from kubernetes import client
+
+import kopf
 from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
+    TOOLS_IMAGE,
     golden_pvc_name,
     owner_ref,
     short_disk_id,
     vm_disk_pvc_name,
-    TOOLS_IMAGE,
 )
 from helpers.kubevirt import (
-    build_kubevirt_vm,
-    build_cloudinit_secret,
-    build_datavolume_from_s3,
-    build_blank_pvc,
-    build_clone_datavolume,
-    build_recert_job,
     CACHE_NAMESPACE,
     admission_api_error_summary,
+    build_blank_pvc,
+    build_clone_datavolume,
+    build_cloudinit_secret,
+    build_datavolume_from_s3,
+    build_kubevirt_vm,
+    build_recert_job,
     collect_kubevirt_vm_warnings,
     is_video_config_enabled,
     parse_admission_api_warnings,
     storage_quantity_gi,
 )
-
 from helpers.topology import collect_vm_nic_network_errors, enrich_vm_nics
+from kubernetes import client
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +120,17 @@ def _raise_on_missing_network_refs(spec, patch):
 
 
 def _ensure_cpu_host_model(body, namespace):
-    """Copy TroshkaProject status.cpuHostModel onto the VM spec when missing.
+    """Return a mutable VM body inheriting the project's CPU model when missing.
 
     Keeps reconfigure-added VMs on the same host CPU generation as the rest of
     the project without requiring the backend to re-pick a model.
     """
+    # Kopf's Body is read-only; nested dictionaries also belong to Kopf's event
+    # snapshot. Detach them before CPU inheritance or NIC enrichment.
+    body = copy.deepcopy(dict(body))
     spec = body.setdefault("spec", {})
     if spec.get("cpuHostModel"):
-        return
+        return body
     try:
         custom_api = client.CustomObjectsApi()
         projects = custom_api.list_namespaced_custom_object(
@@ -137,7 +141,7 @@ def _ensure_cpu_host_model(body, namespace):
         )
         items = projects.get("items", [])  # type: ignore[union-attr]
         if not items:
-            return
+            return body
         model = (items[0].get("status") or {}).get("cpuHostModel")
         if model:
             spec["cpuHostModel"] = model
@@ -148,6 +152,7 @@ def _ensure_cpu_host_model(body, namespace):
             )
     except Exception as e:
         logger.debug("Could not inherit cpuHostModel in %s: %s", namespace, e)
+    return body
 
 
 def _check_owner_exists(custom_api, owner_name, owner_namespace):
@@ -1129,6 +1134,8 @@ async def vm_resume(meta, status, patch, **_):
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_create(spec, meta, namespace, name, body, patch, **_):
+    body = _ensure_cpu_host_model(body, namespace)
+    spec = body["spec"]
     logger.info(f"Creating VM {name} in {namespace}")
     patch.status["state"] = "Creating"
 
@@ -1204,7 +1211,6 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         spec, video_config_enabled=video_config_enabled
     )
     _apply_vm_warnings(patch, proactive_warnings)
-    _ensure_cpu_host_model(body, namespace)
     kv_vm = build_kubevirt_vm(
         body,
         disk_pvcs,
@@ -1592,6 +1598,9 @@ async def vm_update(
         _mark_observed(patch, meta)
         return
 
+    body = _ensure_cpu_host_model(body, namespace)
+    new_spec = body["spec"]
+
     kv_name = status.get("kubevirtVmName", f"troshka-{name}")
     logger.info(f"TroshkaVM {name} updated — reconciling KubeVirt VM {kv_name}")
     patch.status["state"] = "Reconfiguring"
@@ -1627,7 +1636,6 @@ async def vm_update(
         new_spec, video_config_enabled=video_config_enabled
     )
     _apply_vm_warnings(patch, proactive_warnings)
-    _ensure_cpu_host_model(body, namespace)
     kv_vm = build_kubevirt_vm(
         body,
         disk_pvcs,

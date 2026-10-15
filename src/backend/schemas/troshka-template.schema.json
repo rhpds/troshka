@@ -4,7 +4,11 @@
   "title": "TroshkaTemplate",
   "description": "Troshka project template YAML document (imported via API or shipped under src/backend/templates).",
   "type": "object",
-  "required": ["vms", "networks"],
+  "required": ["networks"],
+  "anyOf": [
+    { "required": ["vms"] },
+    { "required": ["ocp"], "properties": { "ocp": { "minItems": 1 } } }
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -165,6 +169,7 @@
     "disk": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [{ "$ref": "#/$defs/nonBootMountDisk" }],
       "properties": {
         "name": { "type": "string", "maxLength": 128 },
         "size_gb": { "type": "integer", "minimum": 1, "maximum": 65536 },
@@ -203,7 +208,7 @@
         "role": { "type": "string", "maxLength": 64 },
         "cluster": { "type": "string", "maxLength": 128 },
         "vcpus": { "type": "integer", "minimum": 1, "maximum": 256 },
-        "ram_gb": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "ram_gb": { "type": "number", "minimum": 0.5, "maximum": 2048 },
         "os": { "type": "string", "maxLength": 64 },
         "firmware": { "type": "string", "maxLength": 32 },
         "bmc": { "type": "boolean" },
@@ -386,11 +391,22 @@
         }
       }
     },
+    "nonBootMountDisk": {
+      "not": {
+        "required": ["bootable", "ocp_mount"],
+        "properties": {
+          "bootable": { "const": true },
+          "ocp_mount": { "minLength": 1 }
+        }
+      }
+    },
     "ocpClusterDisk": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [{ "$ref": "#/$defs/nonBootMountDisk" }],
       "properties": {
         "size_gb": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "bus": { "type": "string", "maxLength": 32 },
         "bootable": { "type": "boolean" },
         "ocp_mount": { "type": "string", "maxLength": 256 }
       }
@@ -418,6 +434,35 @@
         "distribution": {
           "type": "string",
           "enum": ["ocp", "okd", "okd-scos", "scos"]
+        },
+        "vm_defaults": {
+          "allOf": [
+            { "$ref": "#/$defs/vm" },
+            { "not": { "anyOf": [
+              { "required": ["role"] }, { "required": ["cluster"] },
+              { "required": ["vcpus"] }, { "required": ["ram_gb"] },
+              { "required": ["disks"] }, { "required": ["nics"] },
+              { "required": ["os"] }, { "required": ["bmc_ip"] },
+              { "required": ["uuid"] }, { "required": ["isos"] },
+              { "required": ["pxe_boot_iso_id"] }, { "required": ["pxe_boot_iso_name"] },
+              { "required": ["recert"] }, { "required": ["ocp_monitor"] },
+              { "required": ["configure_bastion_browser"] }
+            ] } }
+          ],
+          "description": "Shared VM behavior settings; role sizing, disks and networks stay on the OCP definition."
+        },
+        "nodes": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": { "$ref": "#/$defs/vm" }
+        },
+        "control_plane_memory_gb": {
+          "type": "number", "minimum": 0.5, "maximum": 2048,
+          "description": "Control-plane RAM in GiB; preferred over legacy control_plane_memory in MiB."
+        },
+        "worker_memory_gb": {
+          "type": "number", "minimum": 0.5, "maximum": 2048,
+          "description": "Worker RAM in GiB; preferred over legacy worker_memory in MiB."
         },
         "control_plane_cpu": { "type": "integer", "minimum": 1, "maximum": 256 },
         "control_plane_memory": {

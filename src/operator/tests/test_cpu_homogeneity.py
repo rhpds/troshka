@@ -1,5 +1,10 @@
 """Unit tests for project host-CPU homogeneity helpers."""
 
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 from helpers.cpu_homogeneity import (
     cpu_model_node_selector,
     host_model_label,
@@ -8,6 +13,42 @@ from helpers.cpu_homogeneity import (
     project_needs_cpu_homogeneity,
     project_resource_request,
 )
+
+
+@pytest.mark.parametrize("existing_model", [None, "EPYC-Rome"])
+def test_cpu_inheritance_handles_real_kopf_body_without_mutation(existing_model):
+    # The operator test conftest replaces kopf with MagicMock. A fresh process
+    # exercises the real read-only handler input and real decorator imports.
+    script = """
+import copy
+import sys
+from unittest.mock import patch
+from kopf._cogs.structs.bodies import Body
+from handlers.vm import _ensure_cpu_host_model
+
+raw = {"metadata": {"name": "test-vm"}, "spec": {"nics": [{"name": "nic0"}]}}
+if sys.argv[1] != "None":
+    raw["spec"]["cpuHostModel"] = sys.argv[1]
+before = copy.deepcopy(raw)
+body = Body(raw)
+with patch("handlers.vm.client.CustomObjectsApi") as api:
+    api.return_value.list_namespaced_custom_object.return_value = {
+        "items": [{"status": {"cpuHostModel": "EPYC-Milan"}}]
+    }
+    enriched = _ensure_cpu_host_model(body, "test-namespace")
+assert enriched["spec"]["cpuHostModel"] == (sys.argv[1] if sys.argv[1] != "None" else "EPYC-Milan")
+enriched["spec"]["nics"][0]["networkRef"] = "resolved"
+assert raw == before
+assert dict(body) == before
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(existing_model)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class _Meta:

@@ -12,10 +12,27 @@ versions: ["4.19", "4.20", "4.21", "4.22", "5.0"]
 ocp:
   - name: ocp
     type: sno
+    control_plane_cpu: 8
+    control_plane_memory_gb: 32
     ocp_version: "4.22"
     base_domain: local
     api_vip: 10.0.0.10
     ingress_vip: 10.0.0.10
+    control_plane_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    vm_defaults:
+      firmware: uefi
+      bmc: true
+    nodes:
+      cp-0:
+        role: control-plane
+        bmc_ip: 192.168.100.10
+        nics:
+          - network: cluster
+            ip: 10.0.0.10
 
 gateway:
   outbound_ports:
@@ -39,24 +56,6 @@ networks:
   bmc:
     type: bmc
     cidr: 192.168.100.0/24
-
-vms:
-  cp-0:
-    role: control-plane
-    vcpus: 8
-    ram_gb: 32
-    os: rhcos
-    firmware: uefi
-    bmc: true
-    bmc_ip: 192.168.100.10
-    recert: true
-    disks:
-      - size_gb: 120
-      - size_gb: 250
-        ocp_mount: /var/lib/containers
-    nics:
-      - network: cluster
-        ip: 10.0.0.10
 
 showroom:
   enabled: true

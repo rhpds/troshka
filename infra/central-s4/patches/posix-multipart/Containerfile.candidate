@@ -1,0 +1,11 @@
+FROM quay.io/rh-aiservices-bu/s4@sha256:25f29f0953e17627bc3f8fb04f6be51a00b10a2599d3c8ab3a2bdb76511ebc90
+USER 0
+LABEL org.opencontainers.image.source="https://github.com/ceph/ceph" \
+      io.troshka.s4.patch="posix-list-parts-clear-map"
+# Public upstream source commit, not a credential.
+# pragma: allowlist nextline secret
+LABEL org.opencontainers.image.revision="3d0e4c36934c9146a9cd9b1c7f5b03f0cd9daa84"
+COPY runtime/usr/bin/ /usr/bin/
+COPY runtime/usr/lib64/ /usr/lib64/
+RUN ldconfig && /usr/bin/radosgw --version && /usr/bin/radosgw-admin --version
+USER 1001

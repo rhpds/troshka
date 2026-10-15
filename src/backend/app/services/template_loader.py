@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import random
@@ -218,7 +219,7 @@ def _cluster_and_bmc_net_names(networks: dict) -> tuple[str, str]:
 
 def _collect_nic_ips_on_network(resolved: dict, network_name: str) -> set[str]:
     used: set[str] = set()
-    for vm_cfg in (resolved.get("vms") or {}).values():
+    for _, vm_cfg in template_vm_definitions(resolved):
         for nic in vm_cfg.get("nics") or []:
             if nic.get("network") == network_name and nic.get("ip"):
                 used.add(str(nic["ip"]))
@@ -344,6 +345,8 @@ def _is_worker(cfg):
 def _count_cluster_roles(cluster_name, vms_def, single_cluster):
     cp = wk = 0
     for cfg in (vms_def or {}).values():
+        if cfg.get("os", "rhcos") != "rhcos":
+            continue
         if not single_cluster and cfg.get("cluster") != cluster_name:
             continue
         if _is_control_plane(cfg):
@@ -371,6 +374,19 @@ def _coerce_workers(workers, fallback: int) -> int:
         return fallback
 
 
+def _cluster_network_names(entry):
+    if "networks" in entry:
+        return entry["networks"]
+    return list(
+        dict.fromkeys(
+            nic["network"]
+            for cfg in (entry.get("nodes") or {}).values()
+            for nic in (cfg.get("nics") or [])
+            if nic.get("network")
+        )
+    )
+
+
 def _apply_topology_cluster_optionals(entry, cluster_obj, normalized, install_workers):
     """Attach optional distribution / disks / networks onto a cluster object."""
     from app.services.ocp.client_mirror import normalize_distribution
@@ -386,8 +402,22 @@ def _apply_topology_cluster_optionals(entry, cluster_obj, normalized, install_wo
         cluster_obj["workerDisks"] = normalized["workerDisks"]
     if normalized.get("networkIds"):
         cluster_obj["networkIds"] = normalized["networkIds"]
-    if entry.get("networks"):
-        cluster_obj["_networkNames"] = entry["networks"]
+    network_names = _cluster_network_names(entry)
+    if network_names or "networks" in entry:
+        cluster_obj["_networkNames"] = network_names
+    if entry.get("vm_defaults"):
+        cluster_obj["vmDefaults"] = copy.deepcopy(entry["vm_defaults"])
+
+
+def _cluster_memory_mib(entry, role, default):
+    """Accept explicit GiB and legacy MiB without silently resolving conflicts."""
+    gib_key, mib_key = f"{role}_memory_gb", f"{role}_memory"
+    if gib_key not in entry:
+        return entry.get(mib_key, default)
+    mib = entry[gib_key] * 1024
+    if mib_key in entry and entry[mib_key] != mib:
+        raise ValueError(f"Conflicting {gib_key} and {mib_key}")
+    return mib
 
 
 def _build_one_topology_cluster(entry, vms_def, single):
@@ -409,8 +439,8 @@ def _build_one_topology_cluster(entry, vms_def, single):
         "controlPlane": control_plane,
         "workers": workers,
         "controlPlaneCpu": entry.get("control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]),
-        "controlPlaneMemory": entry.get(
-            "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
+        "controlPlaneMemory": _cluster_memory_mib(
+            entry, "control_plane", _CP_SIZE_DEFAULTS["memory"]
         ),
         # Prefer list-derived legacy ints from normalize_cluster_disks.
         "controlPlaneDisk": normalized.get(
@@ -418,7 +448,9 @@ def _build_one_topology_cluster(entry, vms_def, single):
             entry.get("control_plane_disk", _CP_SIZE_DEFAULTS["disk"]),
         ),
         "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
-        "workerMemory": entry.get("worker_memory", _WORKER_SIZE_DEFAULTS["memory"]),
+        "workerMemory": _cluster_memory_mib(
+            entry, "worker", _WORKER_SIZE_DEFAULTS["memory"]
+        ),
         "workerDisk": normalized.get(
             "workerDisk",
             entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
@@ -461,7 +493,9 @@ def _existing_role_names(vms_def, cluster_name, role, single):
     return [
         n
         for n, c in vms_def.items()
-        if _has_role(c, role) and (single or c.get("cluster") == cluster_name)
+        if c.get("os", "rhcos") == "rhcos"
+        and _has_role(c, role)
+        and (single or c.get("cluster") == cluster_name)
     ]
 
 
@@ -488,7 +522,7 @@ def _make_node(cluster, role, cpu, memory, disks, network_ids):
         "os": "rhcos",
         "cluster": cluster["name"],
         "vcpus": cpu,
-        "ram_gb": round(memory / 1024),
+        "ram_gb": memory / 1024,
         "disks": [_disk_spec_to_template(d) for d in disks],
         "nics": [{"network": nid} for nid in (network_ids or [])],
         # Mark auto-generated so count-driven add/remove (canvas + backend) only
@@ -511,6 +545,63 @@ def _topup(vms, cluster, role, want, cpu, memory, disks, network_ids, single):
             continue
         vms[name] = _make_node(cluster, role, cpu, memory, disks, network_ids)
         shortfall -= 1
+
+
+def _inherit_disk_defaults(disks: list[dict], defaults: list[dict]) -> list[dict]:
+    """Merge role defaults by disk index; fields explicitly set on a VM win."""
+    inherited = []
+    for index, original in enumerate(disks):
+        overrides = dict(original)
+        if "ocpMount" in overrides and "ocp_mount" not in overrides:
+            overrides["ocp_mount"] = overrides.pop("ocpMount")
+        if "sizeGb" in overrides and "size_gb" not in overrides:
+            overrides["size_gb"] = overrides.pop("sizeGb")
+        disk = _disk_spec_to_template(defaults[index]) if index < len(defaults) else {}
+        disk.update(overrides)
+        inherited.append(disk)
+    return inherited
+
+
+def _validate_vm_ocp_mounts(vm_name, disks):
+    """Never generate a formatting mount for a VM's boot disk."""
+    for index, disk in enumerate(disks):
+        if (disk.get("ocp_mount") or disk.get("ocpMount")) and (
+            index == 0 or disk.get("bootable")
+        ):
+            raise ValueError(
+                f"VM '{vm_name}' disk {index}: ocp_mount cannot target a boot disk"
+            )
+
+
+def _canonical_vm_settings(settings):
+    cfg = copy.deepcopy(settings)
+    for alias, canonical in (
+        ("nestedVirt", "nested_virt"),
+        ("machineType", "machine_type"),
+        ("legacyRootBus", "legacy_root_bus"),
+        ("headless", "serial_only"),
+    ):
+        if alias in cfg and canonical not in cfg:
+            cfg[canonical] = cfg.pop(alias)
+    return cfg
+
+
+def _inherit_role_settings(vms, cluster, role, defaults, single):
+    prefix = "controlPlane" if role == "control-plane" else "worker"
+    for name in _existing_role_names(vms, cluster["name"], role, single):
+        cfg = _canonical_vm_settings(cluster.get("vmDefaults") or {})
+        cfg.update(_canonical_vm_settings(vms[name]))
+        cfg.setdefault("vcpus", cluster[f"{prefix}Cpu"])
+        # OCP definitions store memory in MiB; VM templates use GiB.
+        cfg.setdefault("ram_gb", cluster[f"{prefix}Memory"] / 1024)
+        network_ids = cluster.get("_networkNames", cluster.get("networkIds", []))
+        cfg.setdefault("nics", [{"network": nid} for nid in network_ids])
+        disks = cfg.get("disks")
+        if disks is None:
+            disks = [_disk_spec_to_template(d) for d in defaults]
+        cfg["disks"] = _inherit_disk_defaults(disks, defaults)
+        _validate_vm_ocp_mounts(name, cfg["disks"])
+        vms[name] = cfg
 
 
 def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
@@ -546,6 +637,12 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
             network_ids,
             single,
         )
+        _inherit_role_settings(
+            vms, cluster, "control-plane", normalized["controlPlaneDisks"], single
+        )
+        _inherit_role_settings(
+            vms, cluster, "worker", normalized["workerDisks"], single
+        )
     return vms
 
 
@@ -580,6 +677,28 @@ def _cluster_id_for_vm(vms_def, clusters):
     return mapping
 
 
+def _expand_cluster_nodes(ocp_list, vms_def):
+    """Flatten cluster-local VM definitions, preserving legacy global VMs."""
+    vms = copy.deepcopy(vms_def or {})
+    for entry in ocp_list:
+        for name, cfg in (entry.get("nodes") or {}).items():
+            if name in vms:
+                raise ValueError(f"Duplicate VM name: {name}")
+            member = copy.deepcopy(cfg)
+            if member.get("cluster", entry["name"]) != entry["name"]:
+                raise ValueError(f"Node {name} belongs to a different cluster")
+            member["cluster"] = entry["name"]
+            vms[name] = member
+    return vms
+
+
+def template_vm_definitions(template):
+    """Yield original VM definitions from legacy and cluster-local mappings."""
+    yield from (template.get("vms") or {}).items()
+    for entry in normalize_ocp_section(template.get("ocp")):
+        yield from (entry.get("nodes") or {}).items()
+
+
 def _prepare_ocp_clusters(tmpl, vms_def):
     """Normalize the ocp section, materialize VMs, and map membership.
 
@@ -589,6 +708,7 @@ def _prepare_ocp_clusters(tmpl, vms_def):
     from app.services.ocp.client_mirror import normalize_distribution
 
     ocp_list = normalize_ocp_section(tmpl.get("ocp"))
+    vms_def = _expand_cluster_nodes(ocp_list, vms_def)
     root_dist = tmpl.get("distribution")
     if root_dist:
         for entry in ocp_list:
@@ -1060,7 +1180,12 @@ def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dic
             tmpl = yaml.safe_load(f.read_text())
             if not isinstance(tmpl, dict):
                 continue
-            if not (tmpl.get("extends") or tmpl.get("vms")):
+            if not (
+                tmpl.get("extends")
+                or tmpl.get("vms")
+                or tmpl.get("ocp")
+                or tmpl.get("containers")
+            ):
                 continue
             result.append(_parse_template_entry(f, tmpl))
         except Exception as e:
@@ -1447,23 +1572,26 @@ def _cdrom_controller():
     return {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
 
 
+_VM_SETTING_FIELDS = (
+    ("cloud_init", "cloudInit"),
+    ("minimal_cloud_init", "ciMinimalCloudInit"),
+    ("login_user", "ciLoginUser"),
+    ("cloud_user_password", "ciCloudUserPassword"),
+    ("userdata_only", "ciUserDataOnly"),
+    ("user_data", "ciUserData"),
+    ("packages", "ciPackages"),
+    ("network_config", "ciNetworkConfig"),
+    ("affinity_group", "affinityGroup"),
+    ("machine_type", "machineType"),
+    ("separate_host", "separateHost"),
+)
+
+
 def _apply_vm_cloud_init_fields(vm_cfg, vm_data):
-    if vm_cfg.get("cloud_init"):
-        vm_data["cloudInit"] = True
-    if vm_cfg.get("minimal_cloud_init"):
-        vm_data["ciMinimalCloudInit"] = True
-    if vm_cfg.get("login_user"):
-        vm_data["ciLoginUser"] = vm_cfg["login_user"]
-    if vm_cfg.get("cloud_user_password"):
-        vm_data["ciCloudUserPassword"] = vm_cfg["cloud_user_password"]
-    if vm_cfg.get("userdata_only"):
-        vm_data["ciUserDataOnly"] = True
-    if vm_cfg.get("user_data"):
-        vm_data["ciUserData"] = vm_cfg["user_data"]
-    if vm_cfg.get("packages"):
-        vm_data["ciPackages"] = vm_cfg["packages"]
-    if vm_cfg.get("network_config"):
-        vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
+    """Preserve explicitly empty settings as well as nonempty VM values."""
+    for source, target in _VM_SETTING_FIELDS:
+        if source in vm_cfg:
+            vm_data[target] = copy.deepcopy(vm_cfg[source])
 
 
 def _apply_vm_smbios_uuid(vm_name, vm_cfg, vm_data):
@@ -1486,7 +1614,12 @@ def _apply_vm_pxe_and_serial(vm_cfg, vm_data):
     if vm_cfg.get("pxe_boot_iso_name"):
         vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
     if vm_cfg.get("serial_exec"):
-        vm_data["serialExecType"] = str(vm_cfg["serial_exec"]).lower()
+        serial_exec = vm_cfg["serial_exec"]
+        vm_data["serialExecType"] = (
+            "linux" if serial_exec is True else str(serial_exec).lower()
+        )
+    elif "serial_exec" in vm_cfg:
+        vm_data["serialExecType"] = ""
     # serial_only (template) ↔ headless (topology / TroshkaVM). Accept headless alias.
     serial_only = vm_cfg.get("serial_only")
     if serial_only is None:
@@ -1503,13 +1636,13 @@ def _apply_vm_machine_and_bus(vm_cfg, vm_data):
     legacy_root_bus = vm_cfg.get("legacy_root_bus")
     if legacy_root_bus is None:
         legacy_root_bus = vm_cfg.get("legacyRootBus")
-    if legacy_root_bus:
-        vm_data["legacyRootBus"] = True
+    if legacy_root_bus is not None:
+        vm_data["legacyRootBus"] = bool(legacy_root_bus)
 
 
 def _apply_vm_role_tags(vm_cfg, vm_data, role):
     """Set tags from config or role-based AnsibleGroup defaults."""
-    if vm_cfg.get("tags"):
+    if "tags" in vm_cfg:
         vm_data["tags"] = vm_cfg["tags"]
     elif role == "control-plane":
         vm_data["tags"] = {"AnsibleGroup": "controllers"}
@@ -1529,10 +1662,10 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     _apply_vm_cloud_init_fields(vm_cfg, vm_data)
     if vm_cfg.get("affinity_group"):
         vm_data["affinityGroup"] = vm_cfg["affinity_group"]
-    if vm_cfg.get("separate_host"):
-        vm_data["separateHost"] = vm_cfg["separate_host"]
-    if vm_cfg.get("nested_virt") or vm_cfg.get("nestedVirt"):
-        vm_data["nestedVirt"] = True
+    if "separate_host" in vm_cfg:
+        vm_data["separateHost"] = bool(vm_cfg["separate_host"])
+    if "nested_virt" in vm_cfg or "nestedVirt" in vm_cfg:
+        vm_data["nestedVirt"] = vm_cfg.get("nested_virt", vm_cfg.get("nestedVirt"))
 
 
 def _build_vm_iso_nodes(
@@ -1643,6 +1776,7 @@ def _vm_icon_for_os(os_type):
 
 def _build_vm_disk_set(vm_name, disks_cfg, vm_x, vm_row_y, is_cluster_member):
     """Build disk controllers/nodes/edges and boot device ids for a VM."""
+    _validate_vm_ocp_mounts(vm_name, disks_cfg)
     disk_controllers = []
     disk_nodes = []
     disk_edges_list = []
@@ -1766,7 +1900,7 @@ def _build_vm_data(
 
     _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip)
 
-    if force_nested_virt and os_type == "rhcos" and not vm_data.get("nestedVirt"):
+    if force_nested_virt and os_type == "rhcos" and "nestedVirt" not in vm_data:
         vm_data["nestedVirt"] = True
 
     # Propagate the auto-generated marker (Ruling B) so a template-materialized
@@ -2799,6 +2933,8 @@ def _export_vm_isos(
 
 
 def _export_vm_role(d):
+    if d.get("clusterRole") in ("control-plane", "worker"):
+        return d["clusterRole"]
     tags = d.get("tags", {})
     ag = tags.get("AnsibleGroup", "")
     if "bastions" in ag:
@@ -2825,63 +2961,49 @@ def _export_standalone_ocp_vm_flags(d, vm_out):
 
 
 def _export_vm_bmc_fields(d, vm_out):
-    """Export BMC enabled/ip flags when they differ from role defaults."""
-    if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
-        vm_out["bmc"] = True
+    """Keep explicit BMC values so shared defaults cannot change a roundtrip."""
+    if "bmcEnabled" in d:
+        vm_out["bmc"] = bool(d["bmcEnabled"])
     if d.get("bmcIp"):
         vm_out["bmc_ip"] = d["bmcIp"]
 
 
 def _export_vm_tags_if_custom(d, vm_out):
-    """Export tags unless they match the default AnsibleGroup for a role."""
-    tags = d.get("tags", {})
-    if (
-        tags
-        and tags != {"AnsibleGroup": "controllers"}
-        and tags != {"AnsibleGroup": "bastions,showroom"}
-    ):
-        vm_out["tags"] = tags
+    """Keep explicit tags, including empty overrides of shared defaults."""
+    if "tags" in d:
+        vm_out["tags"] = copy.deepcopy(d["tags"])
 
 
 def _export_vm_flags(d, vm_out):
-    if d.get("secureBoot"):
-        vm_out["secure_boot"] = True
+    if "nestedVirt" in d:
+        vm_out["nested_virt"] = d["nestedVirt"]
+    if "secureBoot" in d:
+        vm_out["secure_boot"] = bool(d["secureBoot"])
     smbios_uuid = d.get("smbiosUuid") or d.get("uuid")
     if smbios_uuid:
         vm_out["uuid"] = smbios_uuid
-    if not d.get("powerOnAtDeploy", True):
-        vm_out["power_on"] = False
+    if "powerOnAtDeploy" in d:
+        vm_out["power_on"] = bool(d["powerOnAtDeploy"])
     # OCP flags (recert/ocp_monitor/configure_bastion_browser) are cluster-level
     # now — exported on the ``ocp:`` cluster, not per-VM — for cluster members.
     # Non-member VMs (legacy standalone RHCOS) still export them per-VM.
     _export_standalone_ocp_vm_flags(d, vm_out)
-    if d.get("serialExecType") and d.get("serialExecType") != "linux":
-        vm_out["serial_exec"] = d["serialExecType"]
-    if d.get("headless"):
-        vm_out["serial_only"] = True
+    if "serialExecType" in d:
+        vm_out["serial_exec"] = d["serialExecType"] or False
+    if "headless" in d:
+        vm_out["serial_only"] = bool(d["headless"])
     if d.get("machineType"):
         vm_out["machine_type"] = d["machineType"]
-    if d.get("legacyRootBus"):
-        vm_out["legacy_root_bus"] = True
+    if "legacyRootBus" in d:
+        vm_out["legacy_root_bus"] = bool(d["legacyRootBus"])
     _export_vm_bmc_fields(d, vm_out)
     _export_vm_tags_if_custom(d, vm_out)
 
 
 def _export_vm_cloud_init(d, vm_out):
-    if d.get("cloudInit"):
-        vm_out["cloud_init"] = True
-    if d.get("ciCloudUserPassword"):
-        vm_out["cloud_user_password"] = d["ciCloudUserPassword"]
-    if d.get("ciUserData"):
-        vm_out["user_data"] = d["ciUserData"]
-    if d.get("ciPackages"):
-        vm_out["packages"] = d["ciPackages"]
-    if d.get("ciNetworkConfig"):
-        vm_out["network_config"] = d["ciNetworkConfig"]
-    if d.get("affinityGroup"):
-        vm_out["affinity_group"] = d["affinityGroup"]
-    if d.get("separateHost"):
-        vm_out["separate_host"] = True
+    for target, source in _VM_SETTING_FIELDS:
+        if source in d:
+            vm_out[target] = copy.deepcopy(d[source])
 
 
 def _export_vm_nics(d, nic_to_net):
@@ -3202,14 +3324,15 @@ _OCP_EXPORT_FIELDS = [
     ("ingressVip", "ingress_vip"),
     ("workers", "workers"),
     ("controlPlaneCpu", "control_plane_cpu"),
-    ("controlPlaneMemory", "control_plane_memory"),
+    ("controlPlaneMemory", "control_plane_memory_gb"),
     # Legacy scalar control_plane_disk / worker_disk are not in the template
     # schema — disk lists below are the supported shape.
     ("workerCpu", "worker_cpu"),
-    ("workerMemory", "worker_memory"),
+    ("workerMemory", "worker_memory_gb"),
     ("ocpVersion", "ocp_version"),
     ("ocpDistribution", "distribution"),
     ("pullThroughRegistry", "pull_through_registry"),
+    ("vmDefaults", "vm_defaults"),
 ]
 
 
@@ -3232,7 +3355,7 @@ def _copy_ocp_export_fields(cluster, entry):
         val = cluster[src]
         if val is None:
             continue
-        entry[dst] = val
+        entry[dst] = val / 1024 if dst.endswith("_memory_gb") else copy.deepcopy(val)
 
 
 def _normalize_export_cluster_disk(disk: dict) -> dict:
@@ -3484,7 +3607,9 @@ def generate_topology_from_template(
         if not showroom.get("enabled"):
             raise ValueError("Template must have a 'vms' or 'containers' section")
 
-    topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
+    topo = _generate_topology_from_vms(
+        copy.deepcopy(resolved), bmc_password, external_access
+    )
     from app.services.auto_layout import auto_layout
 
     # auto_layout is cluster-aware: it re-lays cluster members inside their

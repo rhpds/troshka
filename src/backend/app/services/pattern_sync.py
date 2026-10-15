@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import time
+import uuid
+from typing import cast
 
 from sqlalchemy import select
 
@@ -29,6 +32,11 @@ _SYNC_POLL_INTERVAL = 10
 # ---------------------------------------------------------------------------
 # Config helper
 # ---------------------------------------------------------------------------
+
+
+def sync_copy_deadline(size_bytes: int) -> int:
+    """Bound a copy at a conservative 30 MiB/s plus one hour for retries."""
+    return max(_SYNC_POLL_TIMEOUT, math.ceil(size_bytes / (30 * 1024**2)) + 3600)
 
 
 def _max_central_bytes() -> int | None:
@@ -64,16 +72,30 @@ def central_capacity_available(db, additional_bytes: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def build_sync_rclone_job(name, namespace, keys, src_cfg, dst_cfg) -> dict:
+def build_sync_rclone_job(
+    name, namespace, keys, src_cfg, dst_cfg, *, size_bytes=0, largest_object_bytes=None
+) -> dict:
     """Build a BatchV1 Job that rclone-copies each key OBC(src) -> central(dst)."""
     src_endpoint = src_cfg.get("endpoint") or src_cfg.get("endpoint_url", "")
     dst_endpoint = dst_cfg.get("endpoint_url") or dst_cfg.get("endpoint", "")
     src_bucket = src_cfg.get("bucket", "")
     dst_bucket = dst_cfg.get("bucket", "troshka-images")
+    # S4's POSIX multipart completion fails across the 1,000-part page boundary.
+    # Rclone enlarges chunks automatically for known-size objects to respect
+    # this cap. Reserve memory for that larger buffer, not just the base chunk.
+    largest = size_bytes if largest_object_bytes is None else largest_object_bytes
+    # Temporary S4 pagination workaround. Retire only after a released S4 image
+    # passes >1000-part tests; see infra/central-s4/patches/posix-multipart/README.md.
+    chunk_mib = max(256, math.ceil(largest / (900 * 1024**2)))
+    if chunk_mib > 5120:
+        raise ValueError("Disk exceeds S4's safe 900-part upload size (4500 GiB)")
+    memory_mib = max(4096, chunk_mib * 4 + 1024)
+    deadline = sync_copy_deadline(size_bytes)
 
     copies = "\n".join(
         f'rclone copyto "src:{src_bucket}/{k}" "dst:{dst_bucket}/{k}" '
-        "--s3-chunk-size 64M --s3-upload-concurrency 4 "
+        f"--s3-chunk-size {chunk_mib}M --s3-max-upload-parts 900 "
+        "--s3-upload-concurrency 1 --transfers 1 --multi-thread-streams 0 --size-only "
         "--log-level INFO --stats 15s --stats-one-line;"
         for k in keys
     )
@@ -99,6 +121,7 @@ def build_sync_rclone_job(name, namespace, keys, src_cfg, dst_cfg) -> dict:
         "REOF\n" + copies
     )
     env = [
+        {"name": "GOMEMLIMIT", "value": str(memory_mib * 1024**2 * 3 // 4)},
         {"name": "SRC_ACCESS_KEY_ID", "value": src_cfg.get("access_key_id", "")},
         {
             "name": "SRC_SECRET_ACCESS_KEY",
@@ -120,8 +143,8 @@ def build_sync_rclone_job(name, namespace, keys, src_cfg, dst_cfg) -> dict:
         },
         "spec": {
             "backoffLimit": 3,
-            "activeDeadlineSeconds": _SYNC_POLL_TIMEOUT,
-            "ttlSecondsAfterFinished": 600,
+            "activeDeadlineSeconds": deadline,
+            "ttlSecondsAfterFinished": 86400,
             "template": {
                 "spec": {
                     "restartPolicy": "Never",
@@ -132,8 +155,11 @@ def build_sync_rclone_job(name, namespace, keys, src_cfg, dst_cfg) -> dict:
                             "command": ["sh", "-c", cmd],
                             "env": env,
                             "resources": {
-                                "requests": {"cpu": "500m", "memory": "512Mi"},
-                                "limits": {"cpu": "2", "memory": "2Gi"},
+                                "requests": {
+                                    "cpu": "500m",
+                                    "memory": f"{max(1024, chunk_mib * 2)}Mi",
+                                },
+                                "limits": {"cpu": "2", "memory": f"{memory_mib}Mi"},
                             },
                         }
                     ],
@@ -170,22 +196,26 @@ def _submit_job(batch_api, body: dict) -> None:
             raise
 
 
-def _poll_job(batch_api, name: str) -> bool:
+def _poll_job(batch_api, name: str, timeout: int = _SYNC_POLL_TIMEOUT) -> bool:
     """Poll until the Job succeeds or fails; return True on success."""
     waited = 0
-    while waited < _SYNC_POLL_TIMEOUT:
+    while waited < timeout:
         job = batch_api.read_namespaced_job(name=name, namespace=SYNC_NAMESPACE)
         status = job.status
         if status and status.succeeded:
             return True
-        if status and status.failed:
+        if status and any(
+            c.type == "Failed" and c.status == "True" for c in (status.conditions or [])
+        ):
             return False
         time.sleep(_SYNC_POLL_INTERVAL)
         waited += _SYNC_POLL_INTERVAL
     return False
 
 
-def _run_rclone_job(provider, name, keys, src_cfg, dst_cfg) -> bool:
+def _run_rclone_job(
+    provider, name, keys, src_cfg, dst_cfg, *, size_bytes=0, largest_object_bytes=None
+) -> bool:
     """Create the rclone Job on the source cluster and poll to completion."""
     from kubernetes import client as k8s_client
 
@@ -195,9 +225,24 @@ def _run_rclone_job(provider, name, keys, src_cfg, dst_cfg) -> bool:
     batch_api = k8s_client.BatchV1Api(api_client)
 
     _ensure_namespace(core_api, k8s_client)
-    body = build_sync_rclone_job(name, SYNC_NAMESPACE, keys, src_cfg, dst_cfg)
+    body = build_sync_rclone_job(
+        name,
+        SYNC_NAMESPACE,
+        keys,
+        src_cfg,
+        dst_cfg,
+        size_bytes=size_bytes,
+        largest_object_bytes=largest_object_bytes,
+    )
     _submit_job(batch_api, body)
-    return _poll_job(batch_api, name)
+    if _poll_job(batch_api, name, timeout=body["spec"]["activeDeadlineSeconds"] + 60):
+        return True
+    job = cast(k8s_client.V1Job, batch_api.read_namespaced_job(name, SYNC_NAMESPACE))
+    conditions = (job.status.conditions or []) if job.status else []
+    details = [f"{c.reason}: {c.message}" for c in conditions if c.type == "Failed"]
+    raise RuntimeError(
+        f"Central copy job {name} failed: " + ("; ".join(details) or "timed out")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +336,7 @@ def _finalize_central_sync(db, pending, keys: list[str], pattern_id: str) -> Non
 def sync_pattern_to_central(pattern_id: str) -> None:
     """RQ worker: copy a pattern's disks from source OBC to central S4."""
     db = SessionLocal()
+    pending = []
     try:
         pattern = db.scalars(select(Pattern).filter_by(id=pattern_id)).first()
         if not pattern or not pattern.source_provider_id:
@@ -326,8 +372,16 @@ def sync_pattern_to_central(pattern_id: str) -> None:
             return
 
         keys = [pd.s3_key for pd, _ in pending]
-        job_name = f"sync-{pattern_id[:8]}"
-        if not _run_rclone_job(provider, job_name, keys, src_cfg, dst_cfg):
+        job_name = f"sync-{pattern_id[:8]}-{uuid.uuid4().hex[:8]}"
+        if not _run_rclone_job(
+            provider,
+            job_name,
+            keys,
+            src_cfg,
+            dst_cfg,
+            size_bytes=addl,
+            largest_object_bytes=max(pd.size_bytes or 0 for pd, _ in pending),
+        ):
             _mark_sync_failed(db, pending, "rclone sync job failed or timed out")
             return
         missing = _verify_central_readback(dst_cfg, keys)
@@ -345,5 +399,10 @@ def sync_pattern_to_central(pattern_id: str) -> None:
             )
             return
         _finalize_central_sync(db, pending, keys, pattern_id)
+    except Exception as exc:
+        log.exception("Central copy failed for pattern %s", pattern_id)
+        db.rollback()
+        if pending:
+            _mark_sync_failed(db, pending, f"Central copy failed: {exc}")
     finally:
         db.close()

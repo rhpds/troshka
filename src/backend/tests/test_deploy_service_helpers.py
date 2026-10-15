@@ -9091,6 +9091,16 @@ class TestFormatImportProgressValueError:
 
 
 class TestFormatDvStatusLineImportInProgress:
+    def test_s3_numeric_progress_is_conversion_after_scratch_download(self):
+        from app.services.deploy_service import _format_dv_status_line
+
+        dv = {
+            "spec": {"source": {"s3": {"url": "https://store/bucket/disk.qcow2"}}},
+            "status": {"phase": "ImportInProgress", "progress": "4.00%"},
+        }
+
+        assert _format_dv_status_line("disk", dv) == "disk: converting image 4.00%"
+
     def test_import_in_progress_delegates(self):
         from app.services.deploy_service import _format_dv_status_line
 
@@ -10319,6 +10329,37 @@ class TestPushKubevirtDeployProgressExtended:
 
 class TestComputeDeployStepExtended:
     @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_disk_transfer_outranks_partially_started_vms(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        lines = ["worker: done", "source: downloading 84.04%"]
+        step, detail, _ = _compute_deploy_step(
+            "pid",
+            {},
+            lines,
+            {"stage": "Starting VMs", "detail": "2/4 started", "percent": 80},
+        )
+
+        assert step == "transferring disks"
+        assert "Starting VMs: 2/4 started" in detail
+        assert "source: downloading 84.04%" in detail
+
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_disk_conversion_outranks_vm_waiting(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        step, detail, _ = _compute_deploy_step(
+            "pid",
+            {},
+            ["source: writing to storage — please wait"],
+            {"stage": "Waiting for VMs", "detail": "2/4 started"},
+        )
+
+        assert step == "transferring disks"
+        assert "Waiting for VMs: 2/4 started" in detail
+        assert "writing to storage" in detail
+
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
     def test_with_dv_lines_not_done(self, mock_get):
         from app.services.deploy_service import _compute_deploy_step
 
@@ -10328,7 +10369,7 @@ class TestComputeDeployStepExtended:
 
         step, detail, percent = _compute_deploy_step("pid", status, dv_lines, progress)
 
-        assert step == "images"
+        assert step == "transferring disks"
         assert "disk1" in detail
         assert percent == 30
 

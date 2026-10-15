@@ -439,13 +439,14 @@ def _wait_for_workers_converged_cmd(
         f"'{{.status.conditions[?(@.type==\"Ready\")].status}}' 2>/dev/null || true)\n"
         f'{i}    [ "$_st" = "True" ] && ready=$((ready + 1))\n'
         f"{i}  done\n"
-        f'{i}  echo "[{cluster_key}] deferred workers Ready: $ready/{expected}"\n'
         f'{i}  if [ "$ready" -ge {expected} ]; then\n'
         f"{i}    stable=$((stable + 1))\n"
-        f'{i}    [ "$stable" -ge {stable_checks} ] && break\n'
         f"{i}  else\n"
         f"{i}    stable=0\n"
         f"{i}  fi\n"
+        f'{i}  echo "[{cluster_key}] workers stabilizing: $ready/{expected} '
+        f'currently Ready (stable checks $stable/{stable_checks})"\n'
+        f'{i}  [ "$stable" -ge {stable_checks} ] && break\n'
         f"{i}  sleep {sleep_secs}\n"
         f"{i}done\n"
         f'{i}[ "$stable" -ge {stable_checks} ] || {{ echo "[{cluster_key}] worker '

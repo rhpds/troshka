@@ -454,6 +454,7 @@ function ClusterNumberField({
   label,
   value,
   min = 0,
+  step = 1,
   onCommit,
   disabled = false,
   hint,
@@ -461,6 +462,7 @@ function ClusterNumberField({
   label: string;
   value: number;
   min?: number;
+  step?: number | "any";
   onCommit: (n: number) => void;
   disabled?: boolean;
   hint?: string;
@@ -473,12 +475,13 @@ function ClusterNumberField({
         aria-label={label}
         className="props-input"
         min={min}
+        step={step}
         value={value}
         disabled={disabled}
         title={hint}
         onChange={(e) => {
           if (disabled) return;
-          const n = parseInt(e.target.value, 10);
+          const n = step === "any" ? parseFloat(e.target.value) : parseInt(e.target.value, 10);
           onCommit(Number.isNaN(n) ? min : Math.max(min, n));
         }}
         style={disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
@@ -533,6 +536,83 @@ function ClusterTextField({
   );
 }
 
+const OCP_MOUNT_HELP = "Optional. Applied on first boot during the next OpenShift install.";
+const OCP_BOOT_MOUNT_HELP = "Boot disks cannot use an OCP mount path. Select another boot disk first.";
+const OCP_MOUNT_BOOT_HELP = "Clear the OCP mount path before enabling boot.";
+
+function attachedVmDataDisks(vm: Node, nodes: Node[], edges: Edge[]): Node[] {
+  return edges.flatMap(edge => {
+    let diskId: string | undefined;
+    if (edge.target === vm.id && edge.targetHandle?.startsWith("dp-")) diskId = edge.source;
+    if (edge.source === vm.id && edge.sourceHandle?.startsWith("dp-")) diskId = edge.target;
+    const disk = nodes.find(node => node.id === diskId && node.type === "storageNode" && node.data.format !== "iso");
+    return disk ? [disk] : [];
+  });
+}
+
+function storageIsBootDisk(disk: Node, vm: Node | undefined, edge: Edge | undefined, nodes: Node[], edges: Edge[]): boolean {
+  if (disk.data.bootable === true) return true;
+  if (!vm) return disk.data.bootable !== false;
+  const bootDevices = vm.data.bootDevices as string[] | undefined;
+  if (bootDevices?.includes(disk.id)) return true;
+  const controllers = (vm.data.diskControllers ?? []) as Array<{ id: string; bootable?: boolean }>;
+  if (controllers.some(controller => controller.bootable === true && edge?.targetHandle === `dp-${controller.id}-left`)) return true;
+  // Deployment orders explicit boot disks first, then falls back to attachment
+  // edge order. ISO attachments do not become the root filesystem disk.
+  const attached = attachedVmDataDisks(vm, nodes, edges);
+  const firstBootDisk = bootDevices?.map(id => attached.find(node => node.id === id)).find(Boolean) ?? attached[0];
+  return firstBootDisk?.id === disk.id;
+}
+
+function OcpMountPathInput({
+  value,
+  onChange,
+  showHelp = true,
+  disabled = false,
+}: {
+  value?: string;
+  onChange: (value: string | undefined) => void;
+  showHelp?: boolean;
+  disabled?: boolean;
+}) {
+  const inputId = React.useId();
+  return (
+    <div className="props-field" style={{ width: "100%", minWidth: 0 }}>
+      <label className="props-label" htmlFor={inputId}>OCP mount path</label>
+      <input
+        id={inputId}
+        className="props-input"
+        value={value ?? ""}
+        placeholder="/var/lib/containers"
+        disabled={disabled}
+        title={disabled ? OCP_BOOT_MOUNT_HELP : undefined}
+        onChange={(event) => onChange(event.target.value.trim() || undefined)}
+        aria-describedby={[showHelp ? `${inputId}-help` : "", disabled ? `${inputId}-reason` : ""].filter(Boolean).join(" ") || undefined}
+      />
+      {value && (
+        <button
+          type="button"
+          className="props-library-btn"
+          style={{ fontSize: 11, marginTop: 4, alignSelf: "flex-start" }}
+          onClick={() => onChange(undefined)}
+        >
+          Clear OCP mount path
+        </button>
+      )}
+      {showHelp && (
+        <span id={`${inputId}-help`} style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
+          {OCP_MOUNT_HELP}
+        </span>
+      )}
+      {disabled && (
+        <span id={`${inputId}-reason`} style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
+          {OCP_BOOT_MOUNT_HELP}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function DiskListEditor({
   disks,
   onChange,
@@ -545,6 +625,7 @@ function DiskListEditor({
     const raw = d as DiskSpec & { size_gb?: number };
     return raw.sizeGb != null ? d : { ...d, sizeGb: raw.size_gb ?? 50 };
   });
+  const hasBootDisk = displayDisks.some(disk => disk.bootable);
 
   const handleAddDisk = () => {
     const newDisk: DiskSpec = { sizeGb: 50, bus: "virtio", bootable: false };
@@ -585,6 +666,7 @@ function DiskListEditor({
             key={idx}
             style={{
               display: "flex",
+              flexWrap: "wrap",
               gap: 8,
               alignItems: "center",
               padding: "8px",
@@ -597,7 +679,9 @@ function DiskListEditor({
             <label style={{ display: "flex", alignItems: "center", gap: 4, flex: 1 }}>
               <input
                 type="checkbox"
-                checked={disk.bootable ?? false}
+                checked={disk.bootable || (!hasBootDisk && idx === 0)}
+                disabled={Boolean(disk.ocpMount?.trim())}
+                title={disk.ocpMount?.trim() ? OCP_MOUNT_BOOT_HELP : undefined}
                 onChange={() => handleSetBoot(idx)}
                 style={{ cursor: "pointer" }}
               />
@@ -653,6 +737,12 @@ function DiskListEditor({
             >
               ✕
             </button>
+            <OcpMountPathInput
+              value={disk.ocpMount}
+              disabled={Boolean(disk.bootable) || (!hasBootDisk && idx === 0)}
+              onChange={(ocpMount) => handleUpdateDisk(idx, { ocpMount })}
+              showHelp={false}
+            />
           </div>
         ))
       )}
@@ -663,6 +753,7 @@ function DiskListEditor({
       >
         + Add Disk
       </button>
+      <span style={{ fontSize: 10, color: "var(--troshka-text-dim)" }}>{OCP_MOUNT_HELP}</span>
     </div>
   );
 }
@@ -894,7 +985,7 @@ function ClusterEditor({
       <div className="props-section">
         <div className="props-section-title">Control Plane Sizing</div>
         <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onSizing({ controlPlaneCpu: v })} />
-        <ClusterNumberField label="Control Plane Memory (GB)" min={32} value={Math.round((cluster.controlPlaneMemory ?? 32768) / 1024)} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
+        <ClusterNumberField label="Control Plane Memory (GB)" min={32} step="any" value={(cluster.controlPlaneMemory ?? 32768) / 1024} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
       </div>
       <div className="props-divider" />
 
@@ -912,7 +1003,7 @@ function ClusterEditor({
           <div className="props-section">
             <div className="props-section-title">Worker Sizing</div>
             <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
-            <ClusterNumberField label="Worker Memory (GB)" min={1} value={Math.round((cluster.workerMemory ?? 8192) / 1024)} onCommit={(v) => onSizing({ workerMemory: v * 1024 })} />
+            <ClusterNumberField label="Worker Memory (GB)" min={1} step="any" value={(cluster.workerMemory ?? 8192) / 1024} onCommit={(v) => onSizing({ workerMemory: v * 1024 })} />
           </div>
           <div className="props-divider" />
 
@@ -5168,6 +5259,8 @@ export default function PropertiesPanel() {
         const connVmEdge = edges.find((e) => e.source === node.id || e.target === node.id);
         const connVmId = connVmEdge ? (connVmEdge.source === node.id ? connVmEdge.target : connVmEdge.source) : null;
         const diskIsDeployed = connVmId ? useCanvasStore.getState().deployedVmIds.has(connVmId) : false;
+        const connectedVm = nodes.find(n => n.id === connVmId && n.type === "vmNode");
+        const isBootDisk = storageIsBootDisk(node, connectedVm, connVmEdge, nodes, edges);
         return (
           <>
             <div className="props-section">
@@ -5308,11 +5401,18 @@ export default function PropertiesPanel() {
                     </select>
                   </div>
                 </div>
+                <OcpMountPathInput
+                  value={data.ocpMount as string | undefined}
+                  disabled={isBootDisk}
+                  onChange={(ocpMount) => update("ocpMount", ocpMount)}
+                />
                 <div className="props-field">
                   <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <input
                       type="checkbox"
-                      checked={(data as Record<string, any>).bootable as boolean ?? true}
+                      checked={isBootDisk}
+                      disabled={Boolean((data.ocpMount as string | undefined)?.trim())}
+                      title={data.ocpMount ? OCP_MOUNT_BOOT_HELP : undefined}
                       onChange={(e) => update("bootable", e.target.checked)}
                     />
                     Bootable

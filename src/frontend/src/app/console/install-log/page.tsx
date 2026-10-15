@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useEffect } from "react";
+import React, { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ClusterInstallLogPanel } from "@/components/canvas/ClusterInstallLogModal";
 
@@ -9,10 +9,6 @@ function InstallLogConsolePage() {
   const projectId = searchParams.get("project") || "";
   const clusterKey = searchParams.get("cluster") || "";
   const clusterName = searchParams.get("name") || clusterKey;
-
-  useEffect(() => {
-    document.title = clusterName ? `${clusterName} — Status & Log` : "Install Status";
-  }, [clusterName]);
 
   if (!projectId || !clusterKey) {
     return (

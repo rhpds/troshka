@@ -21,6 +21,16 @@ helm install troshka deploy/helm/ -n troshka \
 - Migration runs as Helm pre-install/pre-upgrade hook
 - Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)
 - ConfigMap changes trigger pod restart via `checksum/config` annotation
+- infra01's expanded S4 PVC is recorded in the non-secret
+  `deploy/helm/values-infra01.yaml` override. Include it with `-f` for Helm, or
+  reference it in Argo CD's Helm `valueFiles` once the file is on the configured
+  Git revision. Supply secrets separately; do not commit private Argo values.
+- S4 image selection is configurable through Helm `s4.image`, Ansible
+  `troshka_s4_image`, or the standalone central-S4 playbook's `s4_image`. Pin a
+  validated image digest when deploying the server fix; the existing upstream
+  default is not a claim that its multipart bug is fixed. Use the same image for
+  RGW and `radosgw-admin` initialization. Kustomize can override the image in its
+  `images` section. All S4 deployment paths use `Recreate` for the single RWO PVC.
 - **OAuth proxy has NO auto-rollout** — changing `--skip-auth-regex` or other args requires a manual `oc rollout restart deployment/troshka-oauth-proxy`. Do NOT add a checksum annotation to the OAuth proxy pod template — the template contains `randAlphaNum` for secrets, so any re-render regenerates the client-secret and breaks OAuth login.
 ### Kustomize (`deploy/base/` + `deploy/overlays/`)
 ```bash
@@ -42,6 +52,32 @@ ansible-playbook deploy/ansible/deploy.yaml \
 - Task order: namespace → RBAC → secrets → PostgreSQL → S4 → backend → migration → frontend → OAuth
 - Secrets auto-generated on first deploy, preserved on re-deploy
 - Undeploy: `ansible-playbook deploy/ansible/undeploy.yaml`
+
+### CDI importer CPU tuning on provider clusters
+
+The measured conversion knee was approximately 2 CPUs: a fully populated 2 GiB
+QCOW2 converted in 6.05 s at 2 CPUs, 5.88 s at 4, and 5.65 s at 10 (two runs per
+limit). The earlier 750m baseline averaged 12.24 s. Larger disks and concurrent
+imports require their own measurements; these are not guaranteed production rates.
+
+`infra/ocpvirt-cdi-storage-resources.patch.yaml` records the recommended 2-CPU
+limit using `HyperConverged.spec.resourceRequirements.storageWorkloads`. This is
+an explicit, **cluster-wide** OpenShift Virtualization setting, including CDI
+pods outside Troshka. It is not applied automatically by the Troshka chart or
+operator. The patch preserves existing requests and memory settings, and does
+not resize pods already running. Review its scope before applying:
+
+```bash
+oc --kubeconfig=$HOME/secrets/<provider-cluster>.kubeconfig patch \
+  hyperconverged kubevirt-hyperconverged -n openshift-cnv --type=merge \
+  --patch-file infra/ocpvirt-cdi-storage-resources.patch.yaml
+```
+
+See [temporary production hotpatching](production-hotpatching.md) for source
+overlays, their removal after an image rollout, and safe in-place importer CPU
+resizing. The current production importer was individually resized to 4 CPUs;
+the cluster-wide default has not been changed.
+
 ### OCP Virt package repo
 Standalone playbook (not part of `deploy.yaml`) for dedicated-CI ocpvirt hosts:
 

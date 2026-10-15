@@ -1006,7 +1006,9 @@ def create_project_from_template(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    _resolve_template_library_items(db, user, resolved.get("vms", {}))
+    _resolve_template_library_items(
+        db, user, resolved.get("vms", {}), resolved.get("ocp")
+    )
 
     topology = generate_topology_from_template(
         resolved,
@@ -1203,10 +1205,12 @@ def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
         vm_cfg["isos"] = kept_isos
 
 
-def _resolve_template_library_items(db, user, vms_def):
+def _resolve_template_library_items(db, user, vms_def, ocp=None):
     """Resolve and validate all library item references in the template VMs."""
+    from app.services.template_loader import template_vm_definitions
+
     missing = []
-    for vm_name, vm_cfg in vms_def.items():
+    for vm_name, vm_cfg in template_vm_definitions({"vms": vms_def, "ocp": ocp}):
         _resolve_vm_library_refs(db, user.id, vm_name, vm_cfg, missing)
     if missing:
         raise HTTPException(
@@ -1250,7 +1254,9 @@ def import_template(
             body if body.get("install_via") is not None else resolved
         )
         ensure_bastion_for_install_via(resolved, install_via)
-        _resolve_template_library_items(db, user, resolved.get("vms", {}))
+        _resolve_template_library_items(
+            db, user, resolved.get("vms", {}), resolved.get("ocp")
+        )
         topology = generate_topology_from_template(resolved)
         topology["ocpInstallVia"] = install_via
     except ValueError as e:
@@ -1305,12 +1311,21 @@ def _apply_password_mode_cfg(cfg: dict, key: str, mode: str, custom: str) -> Non
 
 
 def _apply_password_mode(result: dict, mode: str, custom: str = ""):
+    from app.services.template_loader import (
+        normalize_ocp_section,
+        template_vm_definitions,
+    )
+
     if mode == "current":
         return
     for net_cfg in result.get("networks", {}).values():
         _apply_password_mode_cfg(net_cfg, "bmc_password", mode, custom)
-    for vm_cfg in result.get("vms", {}).values():
+    for _, vm_cfg in template_vm_definitions(result):
         _apply_password_mode_cfg(vm_cfg, "cloud_user_password", mode, custom)
+    for cluster in normalize_ocp_section(result.get("ocp")):
+        _apply_password_mode_cfg(
+            cluster.get("vm_defaults") or {}, "cloud_user_password", mode, custom
+        )
 
 
 def _strip_library_ids_from_export(result):

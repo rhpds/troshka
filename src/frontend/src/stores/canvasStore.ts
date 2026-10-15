@@ -214,7 +214,7 @@ export function coerceDiskSpec(disk: Record<string, unknown> | DiskSpec): DiskSp
   if (d.bus === "virtio" || d.bus === "sata" || d.bus === "scsi") {
     out.bus = d.bus;
   }
-  if (d.bootable) out.bootable = true;
+  if (typeof d.bootable === "boolean") out.bootable = d.bootable;
   const mount = d.ocpMount ?? d.ocp_mount;
   if (typeof mount === "string" && mount) out.ocpMount = mount;
   return out;
@@ -249,6 +249,14 @@ export function normalizeClusterDiskFields(cluster: ClusterConfig): ClusterConfi
   return next;
 }
 
+/** Individual edits opt those resources out of subsequent role-default updates. */
+function clusterOverridePatch(node: Node, fields: string[]): Record<string, unknown> {
+  if (node.type !== "vmNode" || !node.data.clusterId || fields.length === 0) return {};
+  return { clusterOverrides: Array.from(new Set([
+    ...((node.data.clusterOverrides as string[] | undefined) ?? []), ...fields,
+  ])) };
+}
+
 /**
  * A multi-cluster OCP definition, mirroring the `topology.clusters[]` element
  * shape persisted by the backend (Plan 1). One entry per OCP cluster; VM nodes
@@ -281,6 +289,8 @@ export interface ClusterConfig {
   dnsNetworkId?: string;
   controlPlaneDisks?: DiskSpec[];
   workerDisks?: DiskSpec[];
+  /** Template-format VM behavior defaults, applied only to newly generated members. */
+  vmDefaults?: Record<string, unknown>;
   /** OCP control-plane options (projected onto member VMs at deploy). */
   recert?: boolean;
   monitorHealth?: boolean;
@@ -863,7 +873,7 @@ function edgeCompareKey(e: {
 // Only the USER-EDITABLE cluster fields participate in the dirty check. The
 // deployed baseline (deployed_topology.clusters) is deploy-ENRICHED with many
 // fields the canvas ClusterConfig never has (_generatedInstallConfig/_generated
-// AgentConfig, normalized controlPlaneDisks/workerDisks, resolved apiVip/
+// AgentConfig, resolved apiVip/
 // ingressVip, normalized baseDomain, monitorHealth/recert/configureBastionBrowser
 // defaults). Comparing whole objects made every deployed OCP project perpetually
 // dirty. Compare just the fields the user can change (all immutable-after-deploy
@@ -881,6 +891,9 @@ const _CLUSTER_DIRTY_FIELDS = [
   "workerCpu",
   "workerMemory",
   "workerDisk",
+  "controlPlaneDisks",
+  "workerDisks",
+  "vmDefaults",
   "pullThroughRegistry",
   "usePullThroughRegistry",
   "networkIds",
@@ -892,11 +905,20 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
       Object.fromEntries(
         _CLUSTER_DIRTY_FIELDS.map((k) => [
           k,
-          (c as unknown as Record<string, unknown>)[k] ?? null,
+          clusterComparableField(c, k),
         ]),
       ),
     ),
   );
+}
+
+function clusterComparableField(c: ClusterConfig, key: typeof _CLUSTER_DIRTY_FIELDS[number]): unknown {
+  if (key === "controlPlaneDisks" || key === "workerDisks") {
+    const cp = key === "controlPlaneDisks";
+    const disks = coerceDiskSpecs(c[key]) ?? [{ sizeGb: (cp ? c.controlPlaneDisk : c.workerDisk) ?? (cp ? 120 : 100), bootable: true }];
+    return disks.map(disk => ({ ...disk, bus: disk.bus ?? "virtio", bootable: disk.bootable ?? false }));
+  }
+  return (c as unknown as Record<string, unknown>)[key] ?? null;
 }
 
 /** Per-cluster install status — never infer from a sibling or project-wide OCP health.
@@ -1883,11 +1905,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   updateNodeData: (nodeId, data) => {
     const isStatusOnly = Object.keys(data).length === 1 && "status" in data;
     const handlesChanged = "nics" in data || "diskControllers" in data;
+    const resourceFields = Object.keys(data).filter(key => ["vcpus", "ram", "disk", "diskControllers", "bootDevices", "nics"].includes(key));
+    const source = get().nodes.find(node => node.id === nodeId);
+    const diskEdited = source?.type === "storageNode" && ["size", "format", "ocpMount", "imageId", "isoId"].some(key => key in data);
+    const diskOwners = new Set(diskEdited ? get().edges.filter(edge => edge.source === nodeId && edge.targetHandle?.startsWith("dp-")).map(edge => edge.target) : []);
     set({
       nodes: get().nodes.map((node) =>
         node.id === nodeId
-          ? { ...node, data: { ...node.data, ...data } }
-          : node,
+          ? { ...node, data: { ...node.data, ...data, ...clusterOverridePatch(node, resourceFields) } }
+          : diskOwners.has(node.id)
+            ? { ...node, data: { ...node.data, ...clusterOverridePatch(node, ["disks"]) } }
+            : node,
       ),
       // Force React Flow to re-route edges by creating new edge references
       ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
@@ -2279,8 +2307,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             for (const f of [
               "_generatedInstallConfig",
               "_generatedAgentConfig",
-              "controlPlaneDisks",
-              "workerDisks",
             ] as const) {
               delete c[f];
             }

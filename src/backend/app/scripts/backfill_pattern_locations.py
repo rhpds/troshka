@@ -61,14 +61,26 @@ def backfill_central_locations(db, s3_client, bucket) -> tuple[int, list[str]]:
 def run_backfill() -> None:
     from app.core.database import SessionLocal
     from app.core.redis import enqueue_job
-    from app.services.pattern_sync import sync_pattern_to_central
+    from app.models.pattern import Pattern
+    from app.services.pattern_sync import sync_copy_deadline, sync_pattern_to_central
     from app.services.s3_storage import _bucket, _get_s3_client
 
     db = SessionLocal()
     try:
         created, need_sync = backfill_central_locations(db, _get_s3_client(), _bucket())
         for pattern_id in need_sync:
-            enqueue_job(sync_pattern_to_central, pattern_id, queue_name="default")
+            pattern = db.get(Pattern, pattern_id)
+            if pattern is None:
+                continue
+            enqueue_job(
+                sync_pattern_to_central,
+                pattern_id,
+                queue_name="default",
+                job_timeout=sync_copy_deadline(
+                    sum(d.size_bytes or 0 for d in pattern.disks)
+                )
+                + 660,
+            )
         log.info(
             "Backfill complete: %d central rows created, %d patterns enqueued for sync",
             created,

@@ -246,7 +246,7 @@ describe("seedClustersFromDeployed — rebuild empty canvas clusters", () => {
     expect(out[0].id).toBe("ocp");
     expect(out[0].ocpVersion).toBe("4.22");
     expect((out[0] as unknown as Record<string, unknown>)._generatedInstallConfig).toBeUndefined();
-    expect((out[0] as unknown as Record<string, unknown>).controlPlaneDisks).toBeUndefined();
+    expect(out[0].controlPlaneDisks).toEqual(deployed[0].controlPlaneDisks);
   });
 
   it("leaves a non-empty canvas list untouched", async () => {

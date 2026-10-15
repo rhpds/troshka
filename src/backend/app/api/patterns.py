@@ -383,6 +383,50 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
 _SOURCE_ORDER = ("gold", "central", "obc")
 
 
+def _pattern_central_sync(p: Pattern, db: Session | None) -> dict | None:
+    """Keep capture availability distinct from a failed/pending central copy."""
+    if db is None or not p.source_provider_id or not p.disks:
+        return None
+    rows = (
+        db.query(PatternLocation)
+        .filter(
+            PatternLocation.pattern_disk_id.in_([d.id for d in p.disks]),
+        )
+        .all()
+    )
+    if len(
+        {
+            r.pattern_disk_id
+            for r in rows
+            if r.location_type == "gold" and r.state == "synced"
+        }
+    ) == len(p.disks):
+        return None
+    rows = [r for r in rows if r.location_type == "central"]
+    return _central_sync_summary(rows, len(p.disks))
+
+
+def _central_sync_summary(rows: list[PatternLocation], total_disks: int) -> dict:
+    errors = sorted(
+        {r.error_message for r in rows if r.state == "error" and r.error_message}
+    )
+    synced = len({r.pattern_disk_id for r in rows if r.state == "synced"})
+    states = {r.state for r in rows}
+    state = "pending"
+    if "error" in states:
+        state = "error"
+    elif synced == total_disks:
+        state = "synced"
+    elif "syncing" in states:
+        state = "syncing"
+    return {
+        "state": state,
+        "error": "; ".join(errors) or None,
+        "synced_disks": synced,
+        "total_disks": total_disks,
+    }
+
+
 def _pattern_storage_sources(p: Pattern, db: Session | None) -> list[str]:
     """Synced storage backends for this pattern: gold, central, and/or obc."""
     if not db or not p.disks:
@@ -454,6 +498,7 @@ def _pattern_to_list_dict(
         "is_sno": is_sno,
         "recert": p.recert,
         "sync_status": sync_status,
+        "central_sync": _pattern_central_sync(p, db),
         "source_provider_id": p.source_provider_id,
         "sources": sources,
         "readonly": "gold" in sources,
@@ -500,6 +545,7 @@ def _pattern_to_detail_dict(p: Pattern, db: Session | None = None) -> dict:
             for d in p.disks
         ],
         "sync_status": sync_status,
+        "central_sync": _pattern_central_sync(p, db),
         "locations": locations,
         "sources": sources,
         "readonly": "gold" in sources,

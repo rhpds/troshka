@@ -39,6 +39,7 @@ import {
   type OcpRedeployMode,
 } from "@/lib/redeployOcp";
 import { formatApiDetail } from "@/lib/apiError";
+import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
@@ -1250,8 +1251,6 @@ export default function ProjectCanvasPage() {
               const row = { ...c } as Record<string, unknown>;
               delete row._generatedInstallConfig;
               delete row._generatedAgentConfig;
-              delete row.controlPlaneDisks;
-              delete row.workerDisks;
               return row as unknown as (typeof store.clusters)[number];
             }),
           });
@@ -2140,7 +2139,7 @@ export default function ProjectCanvasPage() {
             <textarea
               value={importYaml}
               onChange={(e) => { setImportYaml(e.target.value); setImportError(""); }}
-              placeholder={"networks:\n  cluster:\n    cidr: 10.0.0.0/24\n    dhcp: true\n\nvms:\n  bastion:\n    role: bastion\n    vcpus: 4\n    ram_gb: 8\n    ..."}
+              placeholder={TEMPLATE_YAML_EXAMPLE}
               style={{
                 width: "100%", height: 300, fontFamily: "monospace", fontSize: 12,
                 padding: 12, borderRadius: 8, resize: "vertical",
@@ -2249,13 +2248,9 @@ export default function ProjectCanvasPage() {
                       setImporting(false);
                       return;
                     }
-                    if (!parsed || typeof parsed !== "object") {
-                      setImportError("Template must be a YAML mapping");
-                      setImporting(false);
-                      return;
-                    }
-                    if (!parsed.vms || !parsed.networks) {
-                      setImportError("Template must contain 'vms' and 'networks' sections");
+                    const sectionError = templateImportError(parsed);
+                    if (sectionError) {
+                      setImportError(sectionError);
                       setImporting(false);
                       return;
                     }

@@ -35,7 +35,7 @@ import ClusterInstallLogModal from "./ClusterInstallLogModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM, onRequestDuplicateCluster, type ClusterConfig } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
-import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks, syncClusterCanvasState } from "@/components/canvas/clusterMaterialize";
+import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks, syncClusterCanvasState, roleDiskSpecs } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import { appConfirm } from "@/lib/confirm";
 import { confirmPowerWarn } from "@/lib/powerWarn";
@@ -152,10 +152,9 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         ocpVersion: srcCluster.ocpVersion,
         pullThroughRegistry: srcCluster.pullThroughRegistry,
         usePullThroughRegistry: srcCluster.usePullThroughRegistry,
-        controlPlaneDisks: srcCluster.controlPlaneDisks
-          ? [...srcCluster.controlPlaneDisks]
-          : cluster.controlPlaneDisks,
-        workerDisks: srcCluster.workerDisks ? [...srcCluster.workerDisks] : cluster.workerDisks,
+        controlPlaneDisks: roleDiskSpecs(srcCluster, "control-plane").map(disk => ({ ...disk })),
+        workerDisks: roleDiskSpecs(srcCluster, "worker").map(disk => ({ ...disk })),
+        vmDefaults: srcCluster.vmDefaults ? structuredClone(srcCluster.vmDefaults) : undefined,
         recert: srcCluster.recert,
         monitorHealth: srcCluster.monitorHealth,
         installOnDeploy: srcCluster.installOnDeploy,
@@ -172,6 +171,9 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           controlPlane: merged.controlPlane,
           workers: merged.workers,
           baseDomain: merged.baseDomain,
+          controlPlaneDisks: merged.controlPlaneDisks,
+          workerDisks: merged.workerDisks,
+          vmDefaults: merged.vmDefaults,
         },
       };
       addNode(boundaryNode);

@@ -48,6 +48,162 @@ beforeEach(() => {
 });
 
 describe("PropertiesPanel cluster editor", () => {
+  it("displays and persists fractional memory without changing integer count inputs", () => {
+    useCanvasStore.setState({ clusters: [{ ...useCanvasStore.getState().clusters[0], controlPlaneMemory: 33280, workerMemory: 12800 }] });
+    render(<PropertiesPanel />);
+    const cpMemory = screen.getByLabelText("Control Plane Memory (GB)");
+    const workerMemory = screen.getByLabelText("Worker Memory (GB)");
+    expect(cpMemory).toHaveValue(32.5);
+    expect(workerMemory).toHaveValue(12.5);
+    fireEvent.change(cpMemory, { target: { value: "33.25" } });
+    fireEvent.change(workerMemory, { target: { value: "13.25" } });
+    expect(useCanvasStore.getState().clusters[0].controlPlaneMemory).toBe(34048);
+    expect(useCanvasStore.getState().clusters[0].workerMemory).toBe(13568);
+    expect(cpMemory).toHaveAttribute("min", "32");
+    expect(workerMemory).toHaveAttribute("min", "1");
+    expect(screen.getByLabelText(/^workers$/i)).not.toHaveAttribute("step", "any");
+  });
+
+  it("shows preset OCP mount paths for control-plane and worker disks", () => {
+    const cluster = useCanvasStore.getState().clusters[0];
+    useCanvasStore.setState({ clusters: [{ ...cluster,
+      controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 250, ocpMount: "/var/lib/containers" }],
+      workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 250, ocpMount: "/var/lib/containers" }],
+    }] });
+    render(<PropertiesPanel />);
+    const mounts = screen.getAllByRole("textbox", { name: "OCP mount path" });
+    expect(mounts).toHaveLength(4);
+    expect(mounts[1]).toHaveValue("/var/lib/containers");
+    expect(mounts[3]).toHaveValue("/var/lib/containers");
+    expect(mounts[0]).toHaveAttribute("placeholder", "/var/lib/containers");
+  });
+
+  it("persists edited role mount paths and clears blank values", () => {
+    const cluster = useCanvasStore.getState().clusters[0];
+    useCanvasStore.setState({ clusters: [{ ...cluster,
+      controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 250, ocpMount: "/var/lib/containers" }],
+      workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 250, ocpMount: "/var/lib/containers" }],
+    }] });
+    render(<PropertiesPanel />);
+    const mounts = screen.getAllByRole("textbox", { name: "OCP mount path" });
+    fireEvent.change(mounts[1], { target: { value: "/srv/containers" } });
+    expect(useCanvasStore.getState().clusters[0].controlPlaneDisks![1].ocpMount).toBe("/srv/containers");
+    fireEvent.change(mounts[3], { target: { value: "" } });
+    expect(useCanvasStore.getState().clusters[0].workerDisks![1].ocpMount).toBeUndefined();
+    const saved = JSON.parse(JSON.stringify(useCanvasStore.getState().clusters[0]));
+    expect(saved.controlPlaneDisks[1].ocpMount).toBe("/srv/containers");
+    expect(saved.workerDisks[1]).not.toHaveProperty("ocpMount");
+  });
+
+  it("shows, edits and clears an individual disk OCP mount path", () => {
+    useCanvasStore.setState({ selectedNodeId: "disk", nodes: [{ id: "disk", type: "storageNode", position: { x: 0, y: 0 },
+      data: { name: "container-storage", label: "container-storage", format: "qcow2", size: 250, bootable: false, ocpMount: "/var/lib/containers" },
+    }] });
+    render(<PropertiesPanel />);
+    const mount = screen.getByRole("textbox", { name: "OCP mount path" });
+    expect(mount).toHaveValue("/var/lib/containers");
+    fireEvent.change(mount, { target: { value: "/srv/containers" } });
+    expect(useCanvasStore.getState().nodes[0].data.ocpMount).toBe("/srv/containers");
+    fireEvent.change(mount, { target: { value: "" } });
+    expect(useCanvasStore.getState().nodes[0].data.ocpMount).toBeUndefined();
+    expect(screen.getByText(/first boot.*next OpenShift install/i)).toBeInTheDocument();
+  });
+
+  it("protects role boot disks and requires clearing a mount before making a disk bootable", () => {
+    const cluster = useCanvasStore.getState().clusters[0];
+    useCanvasStore.setState({ clusters: [{ ...cluster, workers: 0,
+      controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 250, ocpMount: "/var/lib/containers" }],
+    }] });
+    render(<PropertiesPanel />);
+    const mounts = screen.getAllByRole("textbox", { name: "OCP mount path" });
+    const boot = screen.getAllByRole("checkbox", { name: "Boot" });
+    expect(mounts[0]).toBeDisabled();
+    expect(mounts[0]).toHaveAccessibleDescription(/boot disks cannot/i);
+    expect(boot[1]).toBeDisabled();
+    fireEvent.change(mounts[1], { target: { value: "" } });
+    expect(boot[1]).toBeEnabled();
+    fireEvent.click(boot[1]);
+    expect(mounts[1]).toBeDisabled();
+    expect(mounts[0]).toBeEnabled();
+    expect(useCanvasStore.getState().clusters[0].controlPlaneDisks![1]).toMatchObject({ bootable: true });
+    expect(useCanvasStore.getState().clusters[0].controlPlaneDisks![1].ocpMount).toBeUndefined();
+  });
+
+  it.each(["bootDevices", "controller"])("protects individual disks selected by connected VM %s", (source) => {
+    useCanvasStore.setState({ selectedNodeId: "root-disk", nodes: [
+      { id: "vm", type: "vmNode", position: { x: 0, y: 0 }, data: {
+        name: "vm", bootDevices: source === "bootDevices" ? ["root-disk"] : [],
+        diskControllers: [{ id: "root", name: "disk0", bus: "virtio", bootable: source === "controller" }],
+      } },
+      { id: "root-disk", type: "storageNode", position: { x: 0, y: 0 }, data: { name: "root", format: "qcow2", size: 120, bootable: false } },
+    ], edges: [{ id: "disk-edge", source: "root-disk", target: "vm", targetHandle: "dp-root-left" }] });
+    render(<PropertiesPanel />);
+    expect(screen.getByRole("textbox", { name: "OCP mount path" })).toBeDisabled();
+  });
+
+  it.each([["root-disk", true], ["data-disk", false]])("uses the first actual attached disk fallback for %s when bootDevices is empty", (selectedId, disabled) => {
+    useCanvasStore.setState({ selectedNodeId: selectedId, nodes: [
+      { id: "vm", type: "vmNode", position: { x: 0, y: 0 }, data: { name: "vm", bootDevices: [],
+        diskControllers: [{ id: "data", name: "disk1", bus: "virtio" }, { id: "root", name: "disk0", bus: "virtio" }],
+      } },
+      { id: "installer", type: "storageNode", position: { x: 0, y: 0 }, data: { name: "iso", format: "iso" } },
+      { id: "root-disk", type: "storageNode", position: { x: 0, y: 0 }, data: { name: "root", format: "qcow2", size: 120, bootable: false } },
+      { id: "data-disk", type: "storageNode", position: { x: 0, y: 0 }, data: { name: "data", format: "qcow2", size: 250, bootable: false } },
+    ], edges: [
+      { id: "iso-edge", source: "installer", target: "vm", targetHandle: "dp-cdrom-left" },
+      { id: "root-edge", source: "root-disk", target: "vm", targetHandle: "dp-root-left" },
+      { id: "data-edge", source: "data-disk", target: "vm", targetHandle: "dp-data-left" },
+    ] });
+    render(<PropertiesPanel />);
+    const mount = screen.getByRole("textbox", { name: "OCP mount path" });
+    if (disabled) expect(mount).toBeDisabled();
+    else expect(mount).toBeEnabled();
+  });
+
+  it("requires clearing an individual mount path before enabling boot", () => {
+    useCanvasStore.setState({ selectedNodeId: "disk", nodes: [{ id: "disk", type: "storageNode", position: { x: 0, y: 0 },
+      data: { name: "data", format: "qcow2", size: 250, bootable: false, ocpMount: "/var/lib/containers" },
+    }] });
+    render(<PropertiesPanel />);
+    const boot = screen.getByRole("checkbox", { name: "Bootable" });
+    const mount = screen.getByRole("textbox", { name: "OCP mount path" });
+    expect(boot).toBeDisabled();
+    expect(mount).toBeEnabled();
+    fireEvent.change(mount, { target: { value: "" } });
+    expect(boot).toBeEnabled();
+    fireEvent.click(boot);
+    expect(mount).toBeDisabled();
+  });
+
+  it.each(["cluster", "individual"])("allows repairing legacy boot-and-mount conflicts in %s disk properties", (target) => {
+    if (target === "cluster") {
+      useCanvasStore.setState({ clusters: [{ ...useCanvasStore.getState().clusters[0], workers: 0,
+        controlPlaneDisks: [{ sizeGb: 120, bootable: true, ocpMount: "/var/lib/containers" }],
+      }] });
+    } else {
+      useCanvasStore.setState({ selectedNodeId: "disk", nodes: [{ id: "disk", type: "storageNode", position: { x: 0, y: 0 },
+        data: { name: "root", format: "qcow2", size: 120, bootable: true, ocpMount: "/var/lib/containers" },
+      }] });
+    }
+    render(<PropertiesPanel />);
+    const mount = screen.getByRole("textbox", { name: "OCP mount path" });
+    const boot = screen.getByRole("checkbox", { name: target === "cluster" ? "Boot" : "Bootable" });
+    expect(mount).toBeDisabled();
+    expect(boot).toBeDisabled();
+    const clear = screen.getByRole("button", { name: "Clear OCP mount path" });
+    expect(clear).toBeEnabled();
+    fireEvent.click(clear);
+    expect(mount).toHaveValue("");
+    expect(mount).toBeDisabled();
+    expect(boot).toBeEnabled();
+    expect(boot).toBeChecked();
+    expect(screen.queryByRole("button", { name: "Clear OCP mount path" })).not.toBeInTheDocument();
+    const storedMount = target === "cluster"
+      ? useCanvasStore.getState().clusters[0].controlPlaneDisks![0].ocpMount
+      : useCanvasStore.getState().nodes[0].data.ocpMount;
+    expect(storedMount).toBeUndefined();
+  });
+
   it("edits worker count into the cluster", async () => {
     render(<PropertiesPanel />);
     const workers = screen.getByLabelText(/^workers$/i);

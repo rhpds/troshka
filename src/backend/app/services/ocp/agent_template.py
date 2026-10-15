@@ -121,28 +121,141 @@ def _find_ocp_mount_device(node_id, edges, nodes_by_id):
     return None
 
 
+def _ocp_mount_device_for_vm(storage_id, vm_node, topology):
+    """Resolve the actual disk order and reject destructive root/boot mounts."""
+    from app.services.deploy_topology import _find_vm_disks, _order_vm_disks_by_boot
+
+    data = vm_node.get("data", {})
+    if data.get("os") != "rhcos":
+        return None
+    boot_devices = data.get("bootDevices") or []
+    disks = _order_vm_disks_by_boot(
+        _find_vm_disks(vm_node["id"], topology), boot_devices
+    )
+    disks = [disk for disk in disks if disk.get("format") != "iso"]
+    if not any(disk["node_id"] == storage_id for disk in disks):
+        return None
+    if disks[0]["node_id"] == storage_id or storage_id in boot_devices:
+        raise ValueError(
+            f"VM '{data.get('name', vm_node['id'])}': ocp_mount cannot target a boot disk"
+        )
+    bus_indexes = {}
+    for disk in disks:
+        prefix = _DISK_BUS_DEV_PREFIX.get(disk.get("bus", "virtio"), "vd")
+        index = bus_indexes.get(prefix, 0)
+        if disk["node_id"] == storage_id:
+            return f"/dev/{prefix}{chr(ord('a') + index)}"
+        bus_indexes[prefix] = index + 1
+    return None
+
+
+def _safe_ocp_mount_device(storage_id, topology):
+    device = None
+    for vm in topology.get("nodes", []):
+        if vm.get("type") == "vmNode":
+            resolved = _ocp_mount_device_for_vm(storage_id, vm, topology)
+            device = resolved or device
+    return device
+
+
 def _collect_ocp_mounts(topology):
     """Find storage nodes with ocpMount and return list of (disk_index, mount_path).
 
     disk_index is the 0-based position of the disk on its parent VM (vda=0, vdb=1, etc.).
     """
     mounts = []
-    edges = topology.get("edges", [])
-    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
-
     for node in topology.get("nodes", []):
         if node.get("type") != "storageNode":
             continue
         mount_path = node.get("data", {}).get("ocpMount")
         if not mount_path:
             continue
-        dev = _find_ocp_mount_device(node["id"], edges, nodes_by_id)
+        dev = _safe_ocp_mount_device(node["id"], topology)
         if dev:
             mounts.append({"device": dev, "mount": mount_path})
     return mounts
 
 
-def _generate_ocp_mount_script(topology):
+def _machine_config_role(node):
+    return "worker" if _node_role(node) == "worker" else "master"
+
+
+def _record_role_mount(mounts, role, mount_path, device):
+    key = (role, mount_path)
+    if key in mounts and mounts[key] != device:
+        raise ValueError(f"Conflicting devices for {role} mount {mount_path}")
+    mounts[key] = device
+
+
+def _validate_role_mount_roots(mounts, members, topology):
+    for vm in members:
+        root = _boot_disk_device_name(vm, topology)
+        role = _machine_config_role(vm)
+        for (mount_role, mount_path), device in mounts.items():
+            if mount_role == role and device == root:
+                raise ValueError(
+                    f"{role} mount {mount_path} cannot target boot disk {root} "
+                    f"on VM '{vm.get('data', {}).get('name', vm['id'])}'"
+                )
+
+
+def _collect_role_ocp_mounts(topology):
+    from app.services.deploy_topology import _find_vm_disks
+
+    storage = {
+        node["id"]: node.get("data", {})
+        for node in topology.get("nodes", [])
+        if node.get("type") == "storageNode"
+    }
+    if not any(data.get("ocpMount") for data in storage.values()):
+        return []
+    members = [
+        node
+        for node in topology.get("nodes", [])
+        if node.get("type") == "vmNode" and node.get("data", {}).get("os") == "rhcos"
+    ]
+    mounts = {}
+    for vm in members:
+        role = _machine_config_role(vm)
+        for disk in _find_vm_disks(vm["id"], topology):
+            storage_id = disk["node_id"]
+            mount_path = storage.get(storage_id, {}).get("ocpMount")
+            if mount_path:
+                device = _ocp_mount_device_for_vm(storage_id, vm, topology)
+                if device:
+                    _record_role_mount(mounts, role, mount_path, device)
+    _validate_role_mount_roots(mounts, members, topology)
+    return [
+        {"role": role, "mount": mount, "device": device}
+        for (role, mount), device in mounts.items()
+    ]
+
+
+def _mount_topology_for_cluster(topology, cluster, single_cluster=False):
+    scoped = dict(topology)
+    scoped["nodes"] = [
+        node
+        for node in topology.get("nodes", [])
+        if node.get("type") != "vmNode"
+        or node.get("data", {}).get("clusterId") == cluster.get("id")
+        or (single_cluster and not node.get("data", {}).get("clusterId"))
+    ]
+    return scoped
+
+
+def _validate_topology_ocp_mounts(topology):
+    clusters = topology.get("clusters") or []
+    if not clusters:
+        _collect_role_ocp_mounts(topology)
+    for cluster in clusters:
+        _collect_role_ocp_mounts(
+            _mount_topology_for_cluster(topology, cluster, len(clusters) == 1)
+        )
+
+
+def _generate_ocp_mount_script(
+    topology, install_dir="/home/cloud-user/ocp-install", indent="    "
+):
     """Generate shell script lines to create MachineConfig extra manifests for ocp_mount disks.
 
     Follows the Red Hat Solution 4952011 pattern:
@@ -154,23 +267,25 @@ def _generate_ocp_mount_script(topology):
 
     import yaml as _yaml  # type: ignore[import-untyped]
 
-    mounts = _collect_ocp_mounts(topology)
+    mounts = _collect_role_ocp_mounts(topology)
     if not mounts:
         return ""
 
-    lines = "    # Create extra manifests for disk mounts\n"
-    lines += _MKDIR_OCP_INSTALL
+    manifest_dir = shlex.quote(f"{install_dir}/openshift")
+    lines = f"{indent}# Create extra manifests for disk mounts\n"
+    lines += f"{indent}mkdir -p {manifest_dir}\n"
     for m in mounts:
         dev = m["device"]
         mount_path = m["mount"]
+        role = m["role"]
         mount_unit = mount_path.strip("/").replace("/", "-")
         dev_unit = dev.replace("/dev/", "dev-").replace("/", "-")
         mc = {
             "apiVersion": "machineconfiguration.openshift.io/v1",
             "kind": "MachineConfig",
             "metadata": {
-                "labels": {"machineconfiguration.openshift.io/role": "master"},
-                "name": f"98-{mount_unit}",
+                "labels": {"machineconfiguration.openshift.io/role": role},
+                "name": f"98-{role}-{mount_unit}",
             },
             "spec": {
                 "config": {
@@ -246,9 +361,9 @@ def _generate_ocp_mount_script(topology):
         }
         mc_yaml = _yaml.dump(mc, default_flow_style=False)
         mc_b64 = _b64.b64encode(mc_yaml.encode()).decode()
-        fname = f"98-{mount_unit}.yaml"
-        lines += f"    echo '{mc_b64}' | base64 -d > /home/cloud-user/ocp-install/openshift/{fname}\n"
-        lines += f"    echo 'Created MachineConfig for {mount_path} on {dev}'\n"
+        fname = f"98-{role}-{mount_unit}.yaml"
+        lines += f"{indent}echo '{mc_b64}' | base64 -d > {manifest_dir}/{fname}\n"
+        lines += f"{indent}echo 'Created MachineConfig for {mount_path} on {dev}'\n"
     return lines
 
 
@@ -883,6 +998,11 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     Updates the cluster object's apiVip/ingressVip (when derived, not explicit).
     Returns the resolved ``(api_vip, ingress_vip)``.
     """
+    _collect_role_ocp_mounts(
+        _mount_topology_for_cluster(
+            topology, cluster, len(topology.get("clusters") or []) <= 1
+        )
+    )
     resolved = config.get("resolved", {})
     members = _cluster_members_for(topology, cluster)
     install_members = install_member_nodes(cluster, members, topology)
@@ -1016,6 +1136,8 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
             "No password provided. Set common_password in the API request "
             "or in the template YAML."
         )
+
+    _validate_topology_ocp_mounts(topology)
 
     # Make every cluster member (backend- OR canvas-created) deploy-ready before
     # counts, BMC host entries, and rendezvous selection read their fields.

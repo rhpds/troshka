@@ -3,12 +3,57 @@
 > Extracted from the top-level `CLAUDE.md` to keep it lean. Read this file when working on the topics below.
 
 ### Template Import/Export
-- **Import**: `POST /projects/{id}/import-template` — takes `template_yaml` dict, generates topology via `resolve_inline_template` + `generate_topology_from_template` (includes auto-layout), patches project in-place. Frontend validates YAML syntax and required sections (`vms`, `networks`) before sending. Only works on `draft` projects.
+- **Import**: `POST /projects/{id}/import-template` — takes `template_yaml` dict, generates topology via `resolve_inline_template` + `generate_topology_from_template` (includes auto-layout), patches project in-place. Templates require `networks` and either `vms` or `ocp`. Only works on `draft` projects.
 - **Export**: `GET /projects/{id}/export-template` and `GET /patterns/{id}/export-template` — reverse-maps canvas topology JSONB to simple `infra_template.yaml` format via `export_topology_to_template()`. Returns YAML with `text/yaml` content type. Includes OCP metadata, disconnected config, bastion services, and DNS records if present on the topology.
 - **Inline templates**: `resolve_inline_template()` accepts template YAML from external sources (e.g. agnosticv `#include`) without needing files on disk
 - **Round-trip**: import → edit on canvas → export produces valid template YAML that can be re-imported or used in agnosticv
 - **Library item references**: disks can include `library_item_id` / `library_item_name` to reference a library image; VMs can include `pxe_boot_iso_id` / `pxe_boot_iso_name` for PXE boot ISOs. Import validates all referenced items exist in the DB. Blank disks (no `library_item_id`) create empty qcow2 at the specified `size_gb`.
 - **Frontend UI**: "Import Template YAML" button on blank canvas opens paste/upload modal. "Export Template" button in action bar (next to MegaConsole/Save as Pattern) opens confirmation modal noting only infra topology is exported (not disk images — use Save as Pattern for that).
+
+### OCP Member Definitions
+
+OCP templates can define every cluster member inside `ocp`, without a top-level
+`vms` section. Role CPU, memory and disk lists supply defaults for named members
+and nodes generated from cluster counts. Memory uses `control_plane_memory_gb`
+and `worker_memory_gb` (GiB); the legacy `*_memory` fields remain MiB. Conflicting
+values are rejected rather than silently choosing one unit.
+
+```yaml
+ocp:
+  - name: ocp
+    type: sno
+    control_plane_cpu: 8
+    control_plane_memory_gb: 32
+    control_plane_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    vm_defaults:
+      bmc: true
+      firmware: uefi
+      nested_virt: true
+    nodes:
+      cp-0:
+        role: control-plane
+        bmc_ip: 192.168.100.10
+        nics:
+          - network: cluster
+            ip: 10.0.0.10
+```
+
+`vm_defaults` accepts shared VM behavior settings, including secure boot, power,
+machine type and cloud-init settings. Identity (`uuid`, `bmc_ip`), sizing, disks,
+OS, NICs and ISO attachments belong to individual nodes or their existing role
+definitions. OCP policy flags (`recert`, `ocp_monitor`,
+`configure_bastion_browser`) remain directly on the cluster. Node
+settings override inherited values, including explicit `false` and empty NIC or
+disk lists. Partial disk definitions inherit role fields by disk index. Static
+addresses belong to the named node; generated nodes inherit cluster networks.
+When `ocp.networks` is omitted, those defaults are inferred from the named nodes'
+NIC networks in declaration order. An explicit list overrides that inference.
+Top-level `vms` remains supported for standalone VMs and legacy templates.
+
 ### Cloud-Init
 - Seed ISO with NoCloud datasource (cidata volume label)
 - `instance-id` must be unique per deploy (UUID suffix) for cloud-init to re-run

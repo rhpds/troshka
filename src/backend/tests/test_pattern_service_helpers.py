@@ -631,7 +631,7 @@ class TestFinalizePatternCapture:
         db.scalars.return_value = scalar_result
         _finalize_pattern_capture(pattern, "pat-sync", None, MagicMock(), db)
 
-        mock_enqueue.assert_called_once_with("pat-sync", "prov-obc")
+        mock_enqueue.assert_called_once_with("pat-sync", "prov-obc", size_bytes=1000)
         _clear_capture_progress("pat-sync")
 
     @patch("app.services.pattern_service._enqueue_pattern_sync")

@@ -39,3 +39,10 @@
 - Auto-renewal: health poller checks CA expiry (renews at 90 days), re-signs and pushes host certs hourly via troshkad `tls/update-certs` endpoint
 - Provider credentials mapping: use `_boto_client()` helper — `get_credentials()` returns `access_key_id` which must be mapped to `aws_access_key_id` for boto3
 - **Placement**: auto-selects pool with most free RAM, syncs capacity before placing, sorts by least-loaded host. Admins can override pool at deploy time.
+
+### S4 upstream follow-up
+
+The temporary 900-part upload limit must remain until an upstream S4 image
+containing the Ceph POSIX pagination fix passes multipart boundary and integrity
+tests. Track the release evidence and removal criteria in
+[`infra/central-s4/patches/posix-multipart/README.md`](../../infra/central-s4/patches/posix-multipart/README.md#upstream-follow-up-retire-the-900-part-workaround).

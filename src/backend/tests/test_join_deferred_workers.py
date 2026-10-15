@@ -277,7 +277,8 @@ def test_build_join_cmd_emits_node_image_and_redfish():
     assert ".deferred-workers-joined" in script
     assert "waiting for worker source-worker-0 to become Ready" in script
     assert "worker source-worker-0 joined (ISO ejected)" in script
-    assert "deferred workers Ready" in script
+    assert "workers stabilizing" in script
+    assert "currently Ready (stable checks $stable/3)" in script
     assert "waiting for deferred workers to converge" in script
     assert "deferred workers converged" in script
     assert script.index("deferred workers joined") < script.index(

@@ -12,17 +12,20 @@ describe("ClusterConfig defaults", () => {
     const { cluster } = makeCluster("ocp", { x: 0, y: 0 });
     expect(cluster.controlPlaneDisks).toEqual([
       { sizeGb: 120, bootable: true },
-      { sizeGb: 100 },
+      { sizeGb: 100, ocpMount: "/var/lib/containers" },
     ]);
     expect(cluster.workerDisks).toEqual([
       { sizeGb: 120, bootable: true },
-      { sizeGb: 100 },
+      { sizeGb: 100, ocpMount: "/var/lib/containers" },
     ]);
     expect(cluster.networkIds).toEqual([]);
   });
 });
 
 describe("normalizeClusterDiskFields", () => {
+  it("preserves explicit false boot flags", () => {
+    expect(coerceDiskSpec({ sizeGb: 123, bootable: false, bus: "scsi" })).toEqual({ sizeGb: 123, bootable: false, bus: "scsi" });
+  });
   it("converts size_gb / ocp_mount and syncs legacy single-disk ints", () => {
     expect(coerceDiskSpec({ size_gb: 250, bootable: true })).toEqual({
       sizeGb: 250,

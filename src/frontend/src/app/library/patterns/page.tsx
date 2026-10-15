@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AlertModal from "@/components/AlertModal";
+import PatternSyncNotice, { PatternAvailability, type PatternCentralSync } from "@/components/canvas/PatternSyncNotice";
 import { appConfirm } from "@/lib/confirm";
 import TagEditor from "@/components/TagEditor";
 import {
@@ -42,6 +43,7 @@ interface Pattern {
   description: string;
   visibility: string;
   state: string;
+  central_sync?: PatternCentralSync | null;
   disk_count: number;
   total_size_gb: number;
   total_size_bytes: number;
@@ -511,7 +513,7 @@ export default function PatternsPage() {
                       ) : pattern.state === "error" ? (
                         <Label color="red">error</Label>
                       ) : pattern.state === "available" ? (
-                        <Label color="green">ready</Label>
+                        <PatternAvailability sync={pattern.central_sync} />
                       ) : (
                         <Label color="grey">{pattern.state}</Label>
                       )}
@@ -522,6 +524,7 @@ export default function PatternsPage() {
                   </div>
                 </CardTitle>
                 <CardBody>
+                  <PatternSyncNotice sync={pattern.central_sync} />
                   {pattern.description && (
                     <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
                   )}

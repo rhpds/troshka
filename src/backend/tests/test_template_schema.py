@@ -33,8 +33,102 @@ def _template_files() -> list[Path]:
 def test_shipped_templates_validate(path: Path):
     doc = yaml.safe_load(path.read_text())
     prepared = validate_template_document(doc)
-    assert isinstance(prepared.get("vms"), dict)
+    assert isinstance(prepared.get("vms"), dict) or prepared.get("ocp")
     assert isinstance(prepared.get("networks"), dict)
+
+
+def test_ocp_nodes_and_shared_behavior_validate_without_top_level_vms():
+    doc = {
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [
+            {
+                "name": "ocp",
+                "type": "sno",
+                "control_plane_memory_gb": 32,
+                "worker_memory_gb": 16,
+                "vm_defaults": {"bmc": True, "nested_virt": True, "firmware": "uefi"},
+                "nodes": {
+                    "cp-0": {
+                        "role": "control-plane",
+                        "nics": [{"network": "cluster", "ip": "10.0.0.10"}],
+                    }
+                },
+            }
+        ],
+    }
+    assert validate_template_document(doc) == doc
+
+
+def test_cclm_collapsed_clusters_keep_sno_plus_workers_and_static_addresses():
+    from app.services.template_loader import generate_topology_from_template
+
+    doc = yaml.safe_load((_BACKEND_TEMPLATES / "ocp-cclm.yaml").read_text())
+    assert "vms" not in doc
+    topology = generate_topology_from_template(validate_template_document(doc))
+    source, destination = topology["clusters"]
+    assert (source["type"], source["controlPlane"], source["workers"]) == ("sno", 1, 2)
+    assert (
+        destination["type"],
+        destination["controlPlane"],
+        destination["workers"],
+    ) == ("sno", 1, 0)
+    members = {
+        n["data"]["name"]: n["data"] for n in topology["nodes"] if n["type"] == "vmNode"
+    }
+    assert set(members) == {
+        "source-cp-0",
+        "source-worker-0",
+        "source-worker-1",
+        "dest-cp-0",
+    }
+    assert all(data["bmcEnabled"] and data["nestedVirt"] for data in members.values())
+    assert all(data["firmware"] == "uefi" for data in members.values())
+    for node, ip in [
+        ("source-cp-0", "10.0.0.10"),
+        ("source-worker-0", "10.0.0.20"),
+        ("source-worker-1", "10.0.0.21"),
+        ("dest-cp-0", "10.0.0.110"),
+    ]:
+        assert any(nic.get("ip") == ip for nic in members[node]["nics"])
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("control_plane_memory_gb", 0),
+        ("worker_memory_gb", "32"),
+        ("vm_defaults", {"bmc_ip": "192.168.100.10"}),
+        ("vm_defaults", {"ram_gb": 32}),
+        ("vm_defaults", {"pxe_boot_iso_name": "installer"}),
+        ("vm_defaults", {"isos": [{"library_item_name": "installer"}]}),
+        ("vm_defaults", {"recert": True}),
+        ("vm_defaults", {"typo_firmware": "uefi"}),
+    ],
+)
+def test_ocp_defaults_reject_invalid_units_and_shared_identity(key, value):
+    doc = {
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "ocp", key: value}],
+    }
+    with pytest.raises(TemplateSchemaError):
+        validate_template_document(doc)
+
+
+@pytest.mark.parametrize("role_disk", [False, True])
+def test_boot_disk_cannot_have_an_ocp_mount_path(role_disk):
+    disk = {"size_gb": 120, "bootable": True, "ocp_mount": "/var/lib/containers"}
+    doc = {
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "ocp", "type": "sno"}],
+    }
+    if role_disk:
+        doc["ocp"][0]["control_plane_disks"] = [disk]
+    else:
+        doc["ocp"][0]["nodes"] = {"cp-0": {"role": "control-plane", "disks": [disk]}}
+    with pytest.raises(
+        TemplateSchemaError, match="Boot disks cannot have an OCP mount path"
+    ):
+        validate_template_document(doc)
 
 
 def test_legacy_ocp_mapping_normalized_before_validate():

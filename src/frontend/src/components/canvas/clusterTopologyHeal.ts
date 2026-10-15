@@ -10,8 +10,6 @@ export const LEGACY_GHOST_NODE_ID = "cluster-ocp";
 const DEPLOY_ONLY_CLUSTER_FIELDS = [
   "_generatedInstallConfig",
   "_generatedAgentConfig",
-  "controlPlaneDisks",
-  "workerDisks",
 ] as const;
 
 export function isLegacyMigrationGhost(c: ClusterConfig): boolean {
@@ -56,6 +54,9 @@ function clusterConfigFromBoundaryNode(
     workerCpu: deployed?.workerCpu ?? 4,
     workerMemory: deployed?.workerMemory ?? 8192,
     workerDisk: deployed?.workerDisk ?? 100,
+    controlPlaneDisks: deployed?.controlPlaneDisks ?? (d.controlPlaneDisks as ClusterConfig["controlPlaneDisks"]),
+    workerDisks: deployed?.workerDisks ?? (d.workerDisks as ClusterConfig["workerDisks"]),
+    vmDefaults: deployed?.vmDefaults ?? (d.vmDefaults as ClusterConfig["vmDefaults"]),
     baseDomain: (d.baseDomain as string) || deployed?.baseDomain || "local",
     apiVip: (d.apiVip as string) || deployed?.apiVip || "",
     ingressVip: (d.ingressVip as string) || deployed?.ingressVip || "",

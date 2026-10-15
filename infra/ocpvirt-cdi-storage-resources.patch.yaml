@@ -1,0 +1,9 @@
+# Merge patch for HyperConverged.spec, not a standalone Kubernetes resource.
+# Cluster-wide: affects future CDI storage utility pods, including non-Troshka
+# imports/uploads/clones. Apply explicitly after reviewing provider-cluster scope.
+# Preserve existing CPU requests and all memory settings.
+spec:
+  resourceRequirements:
+    storageWorkloads:
+      limits:
+        cpu: "2"

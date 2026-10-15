@@ -21,7 +21,10 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
   { label: "Node installing", re: /reached installation stage|to installing|preparing-for-installation|preparing-successful/i },
   { label: "Writing image to disk", re: /Writing image to disk/i },
   { label: "Bootstrap Kube API", re: /Waiting for bootkube|Bootstrap Kube API Initialized/i },
-  { label: "Cluster operators", re: /Working towards|waiting for the cluster to initialize|Could not update|Cluster operators/i },
+  { label: "Waiting for the cluster to initialize", re: /waiting for the cluster to initialize/i },
+  // Initialization messages also contain CVO progress/operator details. Only
+  // separate operator messages should advance past cluster initialization.
+  { label: "Cluster operators", re: /^(?![^\n]*waiting for the cluster to initialize)[^\n]*(?:Working towards|Could not update|Cluster operators)/im },
   { label: "Install complete", re: /install complete|Cluster is installed|Install is complete|installation completed/i },
 ];
 
@@ -140,10 +143,17 @@ export function parseWorkerReady(log: string): { ready: number; expected: number
   for (const line of log.split("\n")) {
     const m =
       line.match(/deferred workers Ready:\s*(\d+)\/(\d+)/i) ||
+      line.match(/workers stabilizing:\s*(\d+)\/(\d+)/i) ||
       line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
     if (m) last = { ready: parseInt(m[1], 10), expected: parseInt(m[2], 10) };
   }
   return last;
+}
+
+export function workerStageLabel(label: string, state: StageState): string {
+  if (label !== "Worker nodes converged") return label;
+  if (state === "active") return "Workers stabilizing";
+  return state === "done" ? "Workers ready" : "Worker stability check";
 }
 
 export function deriveStages(
@@ -160,7 +170,7 @@ export function deriveStages(
   const completeIdx = stages.length - 1;
   const workersJoined = /deferred workers joined/i.test(log);
   const workersConverged = /deferred workers converged/i.test(log);
-  const workersReadyPoll = /deferred workers Ready:/i.test(log);
+  const workersReadyPoll = /deferred workers Ready:|workers stabilizing:/i.test(log);
   const clusterReady = clusterStatus === "ready";
   return stages.map((s, i) => {
     let state: StageState = "pending";
@@ -242,6 +252,11 @@ export function ClusterInstallLogPanel({
 }: ClusterInstallLogPanelProps) {
   const [resolvedCluster, setResolvedCluster] = useState<ClusterConfig | undefined>(clusterProp);
   const [resolvedNodes, setResolvedNodes] = useState(nodesProp);
+  const [resolvedProjectName, setResolvedProjectName] = useState("");
+  const displayProjectName = resolvedProjectName || projectId;
+  const displayClusterName = resolvedCluster?.name?.trim() || clusterName.trim() || clusterKey;
+  const panelIdentity = [displayProjectName, displayClusterName].filter(Boolean).join(": ");
+  const panelTitle = `${panelIdentity} — Status & Log`;
   const [log, setLog] = useState("");
   const [clusterStatus, setClusterStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -278,12 +293,22 @@ export function ClusterInstallLogPanel({
   }, [nodesProp]);
 
   useEffect(() => {
-    if (!standalone || !projectId) return;
+    setResolvedProjectName("");
+  }, [projectId]);
+
+  useEffect(() => {
+    if (standalone) document.title = panelTitle;
+  }, [standalone, panelTitle]);
+
+  useEffect(() => {
+    if (!projectId) return;
     let cancelled = false;
     fetch(`/api/v1/projects/${projectId}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (cancelled || !data?.topology) return;
+        if (cancelled || !data) return;
+        setResolvedProjectName(typeof data.name === "string" ? data.name.trim() : "");
+        if (!data.topology) return;
         if (!clusterProp) {
           const clusters = Array.isArray(data.topology.clusters) ? data.topology.clusters : [];
           const found = clusters.find(
@@ -299,7 +324,7 @@ export function ClusterInstallLogPanel({
     return () => {
       cancelled = true;
     };
-  }, [standalone, projectId, clusterKey, clusterProp, nodesProp]);
+  }, [projectId, clusterKey, clusterProp, nodesProp]);
 
   useEffect(() => {
     if (!projectId || !clusterKey) return;
@@ -575,7 +600,11 @@ export function ClusterInstallLogPanel({
       <div style={panelStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 10 }}>
-            <span>☸ {clusterName} — Status &amp; Log</span>
+            <span>
+              <span style={{ fontWeight: 600, color: "var(--pf-t--global--text--color--regular)" }}>{displayProjectName}</span>
+              {": "}
+              <span style={{ fontWeight: 500, color: "var(--troshka-cyan, var(--pf-t--global--color--brand--default))" }}>{displayClusterName}</span>
+            </span>
             <span
               style={{
                 fontSize: 12,
@@ -767,7 +796,7 @@ export function ClusterInstallLogPanel({
                             : "var(--pf-t--global--text--color--subtle)",
                     }}
                   >
-                    {s.label}
+                    {workerStageLabel(s.label, s.state)}
                   </span>
                 </div>
                 {/* Operators still initializing (from the log) render UNDER the
@@ -790,16 +819,18 @@ export function ClusterInstallLogPanel({
                 {(s.label === "Worker nodes joined" ||
                   s.label === "Worker nodes converged") &&
                   s.state === "active" &&
-                  workerReady &&
-                  workerReady.ready < workerReady.expected && (
+                  workerReady && (
                   <div style={{ fontSize: 10, marginTop: 2, marginBottom: 2, lineHeight: 1.8, paddingLeft: 22 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#22d3ee" }}>
                       <span
                         className="project-btn-spinner"
                         style={{ width: 8, height: 8, display: "inline-block", verticalAlign: "middle" }}
                       />
-                      {workerReady.ready}/{workerReady.expected} Ready
+                      {workerReady.ready}/{workerReady.expected} currently reporting Ready
                     </div>
+                    {s.label === "Worker nodes converged" && (
+                      <div style={{ color: "var(--troshka-text-dim, #94a3b8)" }}>Confirming stable readiness</div>
+                    )}
                   </div>
                 )}
                 </React.Fragment>

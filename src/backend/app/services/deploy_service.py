@@ -2527,6 +2527,7 @@ def _build_ops_pod_runner_script(
     from app.services.ocp.ops_pod_install import (
         _BASE_ISO_PORT,
         _cluster_install_block,
+        _cluster_mount_manifests,
         _ensure_installers_cmd,
         _ensure_ptr_registries_cmd,
         _recert_cluster_block,
@@ -2568,6 +2569,9 @@ def _build_ops_pod_runner_script(
                 serving_ip=serving_ip,
                 deferred_workers=deferred_workers_for_cluster(topology, cluster),
                 early_disk_eject=early_disk_eject,
+                extra_manifests=_cluster_mount_manifests(
+                    topology, cluster, workdir, len(clusters) == 1
+                ),
             )
         )
     if recert_clusters:
@@ -6777,13 +6781,17 @@ def _format_import_progress(friendly, dv, dv_progress):
     if running_reason == "Error":
         return f"{friendly}: error — {running_msg[:40]}"
     if dv_progress and dv_progress != "N/A":
+        # CDI's S3 copy to scratch exposes no progress; numeric progress starts
+        # when qemu-img converts that completed download into the target disk.
+        source = dv.get("spec", {}).get("source", {})
+        action = "converting image" if source.get("s3") else "downloading"
         try:
             pct = float(dv_progress.rstrip("%"))
             if pct >= 99.0:
                 return f"{friendly}: writing to storage — please wait"
-            return f"{friendly}: downloading {dv_progress}"
+            return f"{friendly}: {action} {dv_progress}"
         except ValueError:
-            return f"{friendly}: downloading {dv_progress}"
+            return f"{friendly}: {action} {dv_progress}"
     if running_reason == "TransferRunning":
         return f"{friendly}: downloading starting"
     return f"{friendly}: importing image"
@@ -6969,6 +6977,31 @@ def _index_clone_and_cache_dvs(
     return clone_by_label, cache_by_label
 
 
+def _add_disk_download_progress(
+    core_api, provider, best_status, cache_by_label, clone_by_label
+):
+    """Enrich the selected importing DV without overriding later CDI phases."""
+    from app.services.disk_transfer_progress import get_s3_download_progress
+
+    if not getattr(provider, "id", None):
+        return
+    for label, status in best_status.items():
+        if status not in ("importing image", "downloading starting"):
+            continue
+        dv = cache_by_label.get(label) or clone_by_label.get(label)
+        if not isinstance(dv, dict) or not isinstance(dv.get("metadata"), dict):
+            continue
+        metadata = dv["metadata"]
+        if not all(metadata.get(field) for field in ("name", "namespace", "uid")):
+            continue
+        try:
+            measured = get_s3_download_progress(core_api, dv, str(provider.id))
+            if measured:
+                best_status[label] = measured
+        except Exception:
+            pass
+
+
 def _collect_dv_progress(project_id, provider, topology):
     """Collect DataVolume progress lines for deploy status display."""
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
@@ -6976,7 +7009,7 @@ def _collect_dv_progress(project_id, provider, topology):
     dv_lines: list[str] = []
     try:
         golden_name_map = _golden_name_map_from_topology(topology)
-        custom_api, _, api_client = _get_k8s_clients(provider)
+        custom_api, core_api, api_client = _get_k8s_clients(provider)
         proj_ns = _project_ns(provider, project_id)
         all_dvs = _list_project_datavolumes(custom_api, proj_ns)
         clone_by_label, cache_by_label = _index_clone_and_cache_dvs(
@@ -6989,6 +7022,9 @@ def _collect_dv_progress(project_id, provider, topology):
             )
             for label in all_labels
         }
+        _add_disk_download_progress(
+            core_api, provider, best_status, cache_by_label, clone_by_label
+        )
         _fill_missing_disk_labels(topology, best_status)
         dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
         ceph_lines = _collect_ceph_restore_progress(custom_api, api_client, proj_ns)
@@ -7155,6 +7191,25 @@ def _active_ceph_restore_step(all_disks_done, op_stage, op_detail, status):
 
 def _fallback_deploy_step(op_stage, op_detail, dv_detail, dv_lines, last):
     """Non-ceph step/detail once disks-done and ceph-restore paths are ruled out."""
+    active_transfers = any(
+        not line.startswith("ceph-")
+        and _dv_status_suffix(line).startswith(
+            (
+                "downloading",
+                "importing image",
+                "converting image",
+                "writing to storage",
+                "cloning",
+            )
+        )
+        for line in (dv_lines or [])
+    )
+    if active_transfers:
+        vm_detail = ""
+        if _is_vm_lifecycle_stage(op_stage):
+            vm_detail = f"{op_stage}: {op_detail}" if op_detail else op_stage
+        detail = "\n".join(part for part in (vm_detail, dv_detail) if part)
+        return "transferring disks", detail
     if _is_vm_lifecycle_stage(op_stage):
         return op_stage.lower(), op_detail or op_stage.lower()
     if dv_lines:

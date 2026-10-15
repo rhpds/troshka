@@ -1,0 +1,10 @@
+--- a/src/rgw/driver/posix/rgw_sal_posix.cc
++++ b/src/rgw/driver/posix/rgw_sal_posix.cc
+@@ -4269,6 +4269,7 @@
+ {
+   int ret;
+   int last_num = 0;
++  parts.clear();
+
+   ret = load(dpp);
+   if (ret < 0) {
