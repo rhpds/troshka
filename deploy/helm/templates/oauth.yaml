@@ -52,7 +52,7 @@ secret: {{ $clientSecret | quote }}
 redirectURIs:
   - "https://{{ .Values.route.host }}/oauth/callback"
 grantMethod: auto
-respondWithChallenges: false
+# OpenShift omits false respondWithChallenges; leave its default unset to avoid drift.
 ---
 apiVersion: apps/v1
 kind: Deployment
