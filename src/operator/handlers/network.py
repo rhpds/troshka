@@ -185,8 +185,11 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     patch.status["gatewayPodReady"] = True
     if network_allow_nested_macs(spec):
         try:
-            ensure_nested_mac_port_security(
-                api, nad_name=f"{name}-nad", namespace=namespace
+            await asyncio.to_thread(
+                ensure_nested_mac_port_security,
+                api,
+                nad_name=f"{name}-nad",
+                namespace=namespace,
             )
         except Exception as e:
             logger.warning(
@@ -266,7 +269,12 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
 
     if network_allow_nested_macs(spec):
         try:
-            ensure_nested_mac_port_security(api, nad_name=nad_name, namespace=namespace)
+            await asyncio.to_thread(
+                ensure_nested_mac_port_security,
+                api,
+                nad_name=nad_name,
+                namespace=namespace,
+            )
         except Exception as e:
             logger.warning(
                 "Nested-MAC OVN clear after update failed for %s/%s: %s",
@@ -278,13 +286,16 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkanetworks", interval=30.0, idle=15.0)
 async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
-    """Re-clear OVN virt-launcher port_security (ovnkube re-asserts on 4.20)."""
+    """Heal every OVN zone without blocking other operator handlers."""
     if not network_allow_nested_macs(spec):
         return
     api = client.CoreV1Api()
     try:
-        ensure_nested_mac_port_security(
-            api, nad_name=f"{name}-nad", namespace=namespace
+        await asyncio.to_thread(
+            ensure_nested_mac_port_security,
+            api,
+            nad_name=f"{name}-nad",
+            namespace=namespace,
         )
     except Exception as e:
         logger.warning("Nested-MAC OVN timer failed for %s/%s: %s", namespace, name, e)

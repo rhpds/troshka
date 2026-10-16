@@ -1,5 +1,12 @@
 """Unit tests for OVN nested-MAC port_security helpers."""
 
+import asyncio
+import importlib
+import threading
+from types import SimpleNamespace
+
+import pytest
+from helpers import ovn_nested_macs
 from helpers.ovn_nested_macs import (
     ensure_nested_mac_port_security,
     nad_logical_switch_name,
@@ -97,3 +104,75 @@ def test_ensure_noop_when_switch_missing():
         exec_fn=exec_fn,
     )
     assert n == 0
+
+
+@pytest.mark.parametrize("unavailable", [None, "node-one"])
+def test_ensure_repairs_each_node_database(monkeypatch, unavailable):
+    """A successful first database must not hide restricted ports elsewhere."""
+    pods = [
+        SimpleNamespace(
+            metadata=SimpleNamespace(name=name),
+            status=SimpleNamespace(phase=phase),
+            spec=SimpleNamespace(containers=[SimpleNamespace(name=container)]),
+        )
+        for name, phase, container in [
+            ("node-one", "Running", "nbdb"),
+            ("node-two", "Running", "nbdb"),
+            ("pending", "Pending", "nbdb"),
+            ("no-db", "Running", "other"),
+        ]
+    ]
+    api = SimpleNamespace(
+        list_namespaced_pod=lambda *a, **kw: SimpleNamespace(items=pods)
+    )
+    settings = {name: {} for name in ("node-one", "node-two")}
+
+    def exec_nbctl(core_api, pod_name, container, args):
+        assert core_api is api
+        assert container == "nbdb"
+        if pod_name == unavailable:
+            raise RuntimeError("database unavailable")
+        if args == ["ls-list"]:
+            return "switch (net.abc.nad_ovn_layer2_switch)"
+        if args[0] == "lsp-list":
+            return "port-uuid (troshka-x_virt-launcher-one)"
+        settings[pod_name][args[0]] = args[1:]
+        return ""
+
+    monkeypatch.setattr(ovn_nested_macs, "_exec_nbctl", exec_nbctl)
+    count = ensure_nested_mac_port_security(
+        api, nad_name="net-abc-nad", namespace="troshka-x"
+    )
+
+    expected = {
+        "lsp-set-port-security": ["port-uuid"],
+        "lsp-set-addresses": ["port-uuid", "unknown"],
+        "set": ["logical_switch_port", "port-uuid", "options:force_fdb_lookup=true"],
+    }
+    assert settings["node-two"] == expected
+    assert settings["node-one"] == ({} if unavailable else expected)
+    assert count == (1 if unavailable else 2)
+
+
+def test_periodic_heal_does_not_block_operator_event_loop(monkeypatch):
+    from handlers import network
+
+    monkeypatch.setattr(
+        network.kopf.timer, "side_effect", lambda *a, **kw: lambda fn: fn
+    )
+    importlib.reload(network)
+    event_thread = threading.get_ident()
+    worker_threads = []
+
+    def heal(*args, **kwargs):
+        worker_threads.append(threading.get_ident())
+
+    monkeypatch.setattr(network, "ensure_nested_mac_port_security", heal)
+    monkeypatch.setattr(network.client, "CoreV1Api", lambda: object())
+    asyncio.run(
+        network.network_nested_mac_ovn_timer(
+            spec={"allowNestedMacs": True}, name="net-abc", namespace="troshka-x"
+        )
+    )
+    assert len(worker_threads) == 1
+    assert worker_threads[0] != event_thread

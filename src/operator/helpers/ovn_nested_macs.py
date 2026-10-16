@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable
+from collections.abc import Callable
+from functools import partial
 
 from kubernetes import client
 from kubernetes.stream import stream
@@ -60,22 +61,24 @@ def virt_launcher_lsp_uuids(lsp_list_output: str) -> list[str]:
     return uuids
 
 
-def find_nbdb_pod(core_api: client.CoreV1Api) -> tuple[str, str] | None:
-    """Return (pod_name, container_name) for an ovnkube-node nbdb, if any."""
+def find_nbdb_pods(core_api: client.CoreV1Api) -> list[tuple[str, str]]:
+    """Return every running node-local NBDB; these are not cluster replicas."""
     try:
         pods = core_api.list_namespaced_pod(
             OVN_NAMESPACE, label_selector=_OVN_NODE_LABEL
         )
     except client.ApiException as e:
         logger.warning("Cannot list ovnkube-node pods: %s", e)
-        return None
+        return []
+    targets = []
     for pod in pods.items:
         if getattr(pod.status, "phase", None) != "Running":
             continue
         for container in pod.spec.containers or []:
             if container.name == _NBDB_CONTAINER:
-                return pod.metadata.name, _NBDB_CONTAINER
-    return None
+                targets.append((pod.metadata.name, _NBDB_CONTAINER))
+                break
+    return targets
 
 
 def _exec_nbctl(
@@ -115,31 +118,44 @@ def ensure_nested_mac_port_security(
 ) -> int:
     """Clear OVN port_security and enable FDB learning on virt-launcher LSPs.
 
-    Returns the number of LSPs updated, or 0 if nothing to do / OVN unavailable.
+    Returns the number of node-local LSP records updated (not unique ports).
+    Each OVN interconnect zone has its own NBDB, including remote port records.
     """
-    target: tuple[str, str] | None = None
-    if exec_fn is None:
-        target = find_nbdb_pod(core_api)
-        if target is None:
-            logger.warning(
-                "No ovnkube-node/nbdb in %s — cannot clear nested-MAC port "
-                "security for %s/%s",
-                OVN_NAMESPACE,
-                namespace,
-                nad_name,
-            )
-            return 0
+    if exec_fn is not None:
+        return _ensure_database(exec_fn, nad_name, namespace, "injected")
+    targets = find_nbdb_pods(core_api)
+    if not targets:
+        logger.warning(
+            "No ovnkube-node/nbdb in %s for %s/%s",
+            OVN_NAMESPACE,
+            namespace,
+            nad_name,
+        )
+        return 0
+    return sum(
+        _ensure_database(
+            partial(_exec_nbctl, core_api, pod, container),
+            nad_name,
+            namespace,
+            pod,
+        )
+        for pod, container in targets
+    )
 
-    def nbctl(args: list[str]) -> str:
-        if exec_fn is not None:
-            return exec_fn(args)
-        assert target is not None
-        return _exec_nbctl(core_api, target[0], target[1], args)
+
+def _ensure_database(nbctl: ExecFn, nad_name: str, namespace: str, pod: str) -> int:
+    """Repair one zone independently so a failed zone cannot skip the rest."""
 
     try:
         ls_list = nbctl(["ls-list"])
     except Exception as e:
-        logger.warning("ovn-nbctl ls-list failed for %s/%s: %s", namespace, nad_name, e)
+        logger.warning(
+            "ovn-nbctl ls-list failed on %s for %s/%s: %s",
+            pod,
+            namespace,
+            nad_name,
+            e,
+        )
         return 0
 
     switch = resolve_logical_switch(ls_list, nad_name)
@@ -182,10 +198,11 @@ def ensure_nested_mac_port_security(
     if cleared:
         logger.info(
             "Applied nested-MAC OVN settings on %d virt-launcher LSP(s) for "
-            "%s/%s (switch=%s)",
+            "%s/%s (switch=%s, nbdb=%s)",
             cleared,
             namespace,
             nad_name,
             switch,
+            pod,
         )
     return cleared
