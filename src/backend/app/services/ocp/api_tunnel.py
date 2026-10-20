@@ -614,20 +614,32 @@ def open_troshkad_tunnel_socket(
     return ssock
 
 
+async def _websocket_payloads(websocket):
+    """Decode nonempty data frames until the client disconnects."""
+    while True:
+        message = await websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            return
+        data = message.get("bytes")
+        if data is None and message.get("text") is not None:
+            data = message["text"].encode()
+        if data:
+            yield data
+
+
+async def _close_websocket(websocket) -> None:
+    try:
+        await websocket.close()
+    except Exception:
+        pass
+
+
 async def bridge_websocket_to_tcp(websocket, reader, writer) -> None:
     """Relay binary WebSocket frames ↔ TCP until either side closes."""
 
     async def ws_to_tcp():
         try:
-            while True:
-                message = await websocket.receive()
-                if message.get("type") == "websocket.disconnect":
-                    break
-                data = message.get("bytes")
-                if data is None and message.get("text") is not None:
-                    data = message["text"].encode()
-                if not data:
-                    continue
+            async for data in _websocket_payloads(websocket):
                 writer.write(data)
                 await writer.drain()
         except Exception:
@@ -651,28 +663,46 @@ async def bridge_websocket_to_tcp(websocket, reader, writer) -> None:
 
     # Drain both directions; FIRST_COMPLETED closed the peer mid-response.
     await asyncio.gather(ws_to_tcp(), tcp_to_ws(), return_exceptions=True)
+    await _close_websocket(websocket)
+
+
+def _close_tunnel_socket(ssock) -> None:
+    """Release both resources even if the port-forward cleanup fails."""
     try:
-        await websocket.close()
+        pf = getattr(ssock, "_troshka_portforward", None)
+        if pf is not None:
+            pf.close()
     except Exception:
         pass
+    try:
+        ssock.close()
+    except Exception:
+        pass
+
+
+async def _socket_to_websocket(websocket, ssock) -> None:
+    """Forward any prefetched response before reading the blocking socket."""
+    loop = asyncio.get_running_loop()
+    prefetch = getattr(ssock, "_troshka_prefetch", b"") or b""
+    try:
+        if prefetch:
+            await websocket.send_bytes(prefetch)
+        while True:
+            data = await loop.run_in_executor(None, ssock.recv, 65536)
+            if not data:
+                break
+            await websocket.send_bytes(data)
+    except Exception:
+        logger.debug("sock→ws closed", exc_info=True)
 
 
 async def bridge_websocket_to_socket(websocket, ssock) -> None:
     """Relay WebSocket ↔ a blocking SSL/socket (troshkad tunnel)."""
     loop = asyncio.get_running_loop()
-    prefetch = getattr(ssock, "_troshka_prefetch", b"") or b""
 
     async def ws_to_sock():
         try:
-            while True:
-                message = await websocket.receive()
-                if message.get("type") == "websocket.disconnect":
-                    break
-                data = message.get("bytes")
-                if data is None and message.get("text") is not None:
-                    data = message["text"].encode()
-                if not data:
-                    continue
+            async for data in _websocket_payloads(websocket):
                 await loop.run_in_executor(None, ssock.sendall, data)
         except Exception:
             logger.debug("ws→sock closed", exc_info=True)
@@ -682,32 +712,10 @@ async def bridge_websocket_to_socket(websocket, ssock) -> None:
             except Exception:
                 pass
 
-    async def sock_to_ws():
-        try:
-            if prefetch:
-                await websocket.send_bytes(prefetch)
-            while True:
-                data = await loop.run_in_executor(None, ssock.recv, 65536)
-                if not data:
-                    break
-                await websocket.send_bytes(data)
-        except Exception:
-            logger.debug("sock→ws closed", exc_info=True)
-
     try:
-        await asyncio.gather(ws_to_sock(), sock_to_ws(), return_exceptions=True)
-        try:
-            await websocket.close()
-        except Exception:
-            pass
+        await asyncio.gather(
+            ws_to_sock(), _socket_to_websocket(websocket, ssock), return_exceptions=True
+        )
+        await _close_websocket(websocket)
     finally:
-        try:
-            pf = getattr(ssock, "_troshka_portforward", None)
-            if pf is not None:
-                pf.close()
-        except Exception:
-            pass
-        try:
-            ssock.close()
-        except Exception:
-            pass
+        _close_tunnel_socket(ssock)

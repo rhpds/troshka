@@ -576,15 +576,7 @@ def _enqueue_agent_reinstall_for_ip_change(host) -> None:
         )
 
 
-def _handle_health_failure(host, now_dt, db=None) -> None:
-    """Process a failed health check — update status and schedule backoff."""
-    # Cloud sync first so OCP Virt IO-pauses surface as state=paused immediately
-    # instead of waiting for the disconnect timeout while troshkad SYN_SENTs pile up.
-    if db is not None and _sync_cloud_powerstate(host, db):
-        return
-    if host.state == "paused":
-        _skip_until[host.id] = time.time() + 30
-        return
+def _warn_agent_unreachable(host) -> None:
     # Instance still "active" in Troshka but agent unreachable → often SG/egress IP.
     if host.state == "active" and host.host_type != "kubevirt-cluster":
         try:
@@ -596,6 +588,34 @@ def _handle_health_failure(host, now_dt, db=None) -> None:
         host.storage_warnings = _merge_agent_unreachable_warning(
             host.storage_warnings, egress
         )
+
+
+def _schedule_disconnected_retry(host, now_dt) -> None:
+    """Back off disconnected hosts; expire inactive pattern buffers."""
+    if (
+        host.host_type == "pattern_buffer"
+        and host.last_health_at
+        and (now_dt - host.last_health_at).total_seconds() > 600
+    ):
+        host.state = "stopped"
+        _skip_until[host.id] = time.time() + 86400
+        logger.info(
+            "Host %s (pattern buffer) auto-stopped after 10min disconnect",
+            host.id[:8],
+        )
+    else:
+        _skip_until[host.id] = time.time() + 30
+
+
+def _handle_health_failure(host, now_dt, db=None) -> None:
+    """Process a failed health check — update status and schedule backoff."""
+    # Cloud state takes precedence over agent failure and timeout handling.
+    if db is not None and _sync_cloud_powerstate(host, db):
+        return
+    if host.state == "paused":
+        _skip_until[host.id] = time.time() + 30
+        return
+    _warn_agent_unreachable(host)
     if host.agent_status == "connected" and host.last_health_at:
         elapsed = (now_dt - host.last_health_at).total_seconds()
         if elapsed > _DISCONNECT_AFTER_SECONDS:
@@ -609,20 +629,7 @@ def _handle_health_failure(host, now_dt, db=None) -> None:
         else:
             _skip_until[host.id] = time.time() + 15
     elif host.agent_status == "disconnected":
-        # Pattern buffers: auto-mark stopped after 10min if cloud check unavailable
-        if (
-            host.host_type == "pattern_buffer"
-            and host.last_health_at
-            and (now_dt - host.last_health_at).total_seconds() > 600
-        ):
-            host.state = "stopped"
-            _skip_until[host.id] = time.time() + 86400
-            logger.info(
-                "Host %s (pattern buffer) auto-stopped after 10min disconnect",
-                host.id[:8],
-            )
-        else:
-            _skip_until[host.id] = time.time() + 30
+        _schedule_disconnected_retry(host, now_dt)
     else:
         _skip_until[host.id] = time.time() + 60
 
