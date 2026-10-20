@@ -6,6 +6,13 @@ import RedeployOcpModal from "../RedeployOcpModal";
 import DuplicateVMModal from "../canvas/DuplicateVMModal";
 
 describe("modal dismissal", () => {
+  it("gives duplicate UUID choices accessible names from nested label text", () => {
+    render(<DuplicateVMModal vmName="test-vm" hasUuid={true} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: /Generate new UUID/ })).toBeChecked();
+    const clone = screen.getByRole("radio", { name: /Clone UUID/ });
+    fireEvent.click(clone);
+    expect(clone).toBeChecked();
+  });
   it.each(["confirm", "redeploy", "duplicate"] as const)(
     "%s dismisses only for a direct backdrop click",
     (kind) => {

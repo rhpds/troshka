@@ -122,6 +122,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("create-project OCP form", () => {
@@ -140,6 +141,10 @@ describe("create-project OCP form", () => {
   });
 
   it("still submits the project-level OCP fields on create", async () => {
+    const random = vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+      (array as Uint8Array).fill(0);
+      return array;
+    });
     await navigateToOcpTemplateForm();
 
     // Wait for auto-selected image/iso (library fetch) so Create is enabled.
@@ -154,6 +159,7 @@ describe("create-project OCP form", () => {
 
     await waitFor(() => expect(lastFromTemplateBody).not.toBeNull());
     expect(lastFromTemplateBody).toMatchObject({
+      common_password: "aaaaaaaaaaaa",
       template_id: "ocp-sno",
       auto_install_ocp: true,
       external_access: true,
@@ -163,6 +169,7 @@ describe("create-project OCP form", () => {
       cluster_name: "ocp",
       base_domain: "ocp.local",
     });
+    expect(random).toHaveBeenCalled();
   });
 
   it("defaults to the pod install method and posts install_via: pod", async () => {

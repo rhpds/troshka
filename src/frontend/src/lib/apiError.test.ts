@@ -7,6 +7,12 @@ describe("formatApiDetail", () => {
     expect(formatApiDetail("boom")).toBe("boom");
   });
 
+  it("serializes objects before the primitive string conversion", () => {
+    expect(formatApiDetail({ unexpected: "detail" })).toBe('{"unexpected":"detail"}');
+    expect(formatApiDetail(42)).toBe("42");
+    expect(formatApiDetail(false)).toBe("false");
+  });
+
   it("formats schema validation detail with paths", () => {
     const text = formatApiDetail({
       message: "Template schema validation failed: /name: bad (and 1 more)",

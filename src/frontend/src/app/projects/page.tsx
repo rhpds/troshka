@@ -7,6 +7,7 @@ import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
 import { formatApiDetail } from "@/lib/apiError";
+import { generateImportPassword } from "@/lib/importPassword";
 import { TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { summarizeDeployProgress } from "@/lib/deployProgress";
 import {
@@ -150,10 +151,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [bastionImageId, setBastionImageId] = useState("");
   const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
-  const [commonPassword, setCommonPassword] = useState(() => {
-    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  });
+  const [commonPassword, setCommonPassword] = useState(generateImportPassword);
   const [bastionBmcIp, setBastionBmcIp] = useState("192.168.100.50");
   const [bmcIpError, setBmcIpError] = useState("");
   const [autoDeploy, setAutoDeploy] = useState(true);
