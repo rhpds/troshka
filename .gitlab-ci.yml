@@ -120,10 +120,14 @@ test-troshkad:
 test-frontend:
   stage: test
   image: node:22
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "1Gi"
+    KUBERNETES_MEMORY_LIMIT: "2Gi"
   script:
     - cd src/frontend
     - npm ci
-    - npm run test:coverage
+    # Shared runners expose more CPUs than this job's memory budget can support.
+    - npm run test:coverage -- --maxWorkers=2 --minWorkers=1
   artifacts:
     paths:
       - src/frontend/coverage/lcov.info
