@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
@@ -61,12 +63,12 @@ function SecretRow({
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
       <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>{rowLabel}</span>
-      <code
+      <button type="button"
         style={{ fontSize: 11, flex: 1, cursor: masked ? "pointer" : undefined, userSelect: "all" }}
-        onClick={masked ? () => onToggle(revealKey) : undefined}
+        onClick={masked ? () => onToggle(revealKey) : undefined} disabled={!masked} className="plain-button code-action"
       >
         {shown}
-      </code>
+      </button>
       <PaletteCopyBtn value={value} label={copyLabel || rowLabel} />
     </div>
   );
@@ -471,12 +473,12 @@ interface SnapshotItem {
 export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }) {
   const [showDesc, setShowDesc] = useState(false);
   const [showBmc, setShowBmc] = useState(false);
-  const bmcHeaderRef = React.useRef<HTMLDivElement>(null);
+  const bmcHeaderRef = React.useRef<HTMLButtonElement>(null);
   const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
   const [showOcpInfo, setShowOcpInfo] = useState(false);
   /** Local oc command section expanded in OPENSHIFT INFO. */
   const [ocpLocalOcOpen, setOcpLocalOcOpen] = useState(false);
-  const ocpHeaderRef = React.useRef<HTMLDivElement>(null);
+  const ocpHeaderRef = React.useRef<HTMLButtonElement>(null);
   const [ocpFlyoutPos, setOcpFlyoutPos] = useState({ top: 0, left: 220 });
   const [budgetDraft, setBudgetDraft] = useState("");
   useEffect(() => {
@@ -801,15 +803,15 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       )}
       {bmcInfo.bmcEnabled && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)", position: "relative" }}>
-          <div
+          <button type="button"
             ref={bmcHeaderRef}
-            className="palette-section-title"
+            className="plain-button palette-section-title"
             style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={toggleBmc}
           >
             <span>BMC INFO</span>
             <span style={{ fontSize: 9 }}>{showBmc ? "▾" : "▸"}</span>
-          </div>
+          </button>
           {showBmc && (
             <div
               id="bmc-info-flyout"
@@ -892,15 +894,15 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       )}
       {ocpInfo.ocpPresent && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)", position: "relative" }}>
-          <div
+          <button type="button"
             ref={ocpHeaderRef}
-            className="palette-section-title"
+            className="plain-button palette-section-title"
             style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={toggleOcpInfo}
           >
             <span>OPENSHIFT INFO</span>
             <span style={{ fontSize: 9 }}>{showOcpInfo ? "▾" : "▸"}</span>
-          </div>
+          </button>
           {showOcpInfo && (
             <div
               id="ocp-info-flyout"
@@ -1111,10 +1113,18 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   return (
                     <div key={vm.id} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>{label}</span>
-                      <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
-                        onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has(key)) s.delete(key); else s.add(key); return s; })}
-                      >{revealedPasswords.has(key) ? pw : "••••••"}</code>
-                      <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy">Copy</span>
+                      <button type="button" style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                        onClick={() => setRevealedPasswords((prev) => {
+                          const s = new Set(prev);
+                          if (s.has(key)) {
+                            s.delete(key);
+                          } else {
+                            s.add(key);
+                          }
+                          return s;
+                        })} className="plain-button code-action"
+                      >{revealedPasswords.has(key) ? pw : "••••••"}</button>
+                      <button type="button" style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy" className="plain-button">Copy</button>
                     </div>
                   );
                 });
@@ -1128,7 +1138,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       const vmName = (vm.data as any)?.label || (vm.data as any)?.name || "vm";
                       const label = kcVms.length > 1 ? `kubeconfig (${vmName})` : "kubeconfig";
                       return (
-                        <span key={vm.id} style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }}
+                        <button type="button" key={vm.id} style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }}
                           onClick={() => {
                             const kc = (vm.data as any)?.ocpKubeconfig || "";
                             const blob = new Blob([kc], { type: "application/x-yaml" });
@@ -1136,8 +1146,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                             const a = document.createElement("a");
                             a.href = url; a.download = `kubeconfig-${vmName}.yaml`; a.click();
                             URL.revokeObjectURL(url);
-                          }}
-                        >{label}</span>
+                          }} className="plain-button"
+                        >{label}</button>
                       );
                     })}
                   </div>
@@ -1148,11 +1158,11 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         </div>
       )}
       {ocpLogModal && (
-        <div style={{
+        <ModalBackdrop label="OpenShift details" style={{
           position: "fixed", inset: 0, zIndex: 10000,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(0,0,0,0.6)",
-        }} onClick={() => setOcpLogModal(false)}>
+        }} onClose={() => { setOcpLogModal(false); }}>
           <div style={{
             background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: "80vw", maxWidth: 800, maxHeight: "80vh",
@@ -1171,7 +1181,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               {ocpLog || <span style={{ opacity: 0.5 }}><span className="project-btn-spinner" style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />Loading install log...</span>}
             </pre>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {sections.map((section) => (
         <React.Fragment key={section.title}>

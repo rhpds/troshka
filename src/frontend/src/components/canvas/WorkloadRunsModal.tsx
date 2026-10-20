@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useMemo, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { formatWorkloadStatusLabel } from "@/components/canvas/WorkloadRunDetailModal";
@@ -94,7 +96,7 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
   };
 
   return (
-    <div
+    <ModalBackdrop label="Workload"
       style={{
         position: "fixed",
         inset: 0,
@@ -104,8 +106,8 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+      onClose={() => {
+        onClose();
       }}
     >
       <div
@@ -123,7 +125,7 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
       >
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
           <h2 style={{ margin: 0 }}>Workloads</h2>
-          <button onClick={onClose}>✕</button>
+          <button type="button" onClick={onClose}>✕</button>
         </div>
 
         <section style={{ marginBottom: 20 }} data-testid="workload-chain-section">
@@ -279,7 +281,7 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
                     <td style={{ padding: "6px 8px" }}>{run.created_at?.slice(0, 19).replace("T", " ")}</td>
                     <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {["pending", "queued", "running"].includes(run.status) && (
-                        <button
+                        <button type="button"
                           className="props-library-btn"
                           style={{ marginRight: 6, color: "#f87171" }}
                           disabled={busyId === run.id}
@@ -288,7 +290,7 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
                           {busyId === run.id ? "…" : "Cancel"}
                         </button>
                       )}
-                      <button className="props-library-btn" onClick={() => onOpenRun(run.id)}>
+                      <button type="button" className="props-library-btn" onClick={() => onOpenRun(run.id)}>
                         View
                       </button>
                     </td>
@@ -299,6 +301,6 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
           </table>
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

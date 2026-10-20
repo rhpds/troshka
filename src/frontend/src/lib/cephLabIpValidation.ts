@@ -47,11 +47,11 @@ export function collectIpsOnNetwork(
   const hosts = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
   if (hosts) {
     const base =
-      (parseInt(hosts[1], 10) << 24) +
-      (parseInt(hosts[2], 10) << 16) +
-      (parseInt(hosts[3], 10) << 8) +
-      parseInt(hosts[4], 10);
-    const bits = parseInt(hosts[5], 10);
+      (Number.parseInt(hosts[1], 10) << 24) +
+      (Number.parseInt(hosts[2], 10) << 16) +
+      (Number.parseInt(hosts[3], 10) << 8) +
+      Number.parseInt(hosts[4], 10);
+    const bits = Number.parseInt(hosts[5], 10);
     const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
     const network = (base & mask) >>> 0;
     claimed.set(
@@ -129,11 +129,11 @@ function ipInCidr(ip: string, cidr: string): boolean {
   const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
   if (ipNum === null || !match) return false;
   const base =
-    (parseInt(match[1], 10) << 24) +
-    (parseInt(match[2], 10) << 16) +
-    (parseInt(match[3], 10) << 8) +
-    parseInt(match[4], 10);
-  const bits = parseInt(match[5], 10);
+    (Number.parseInt(match[1], 10) << 24) +
+    (Number.parseInt(match[2], 10) << 16) +
+    (Number.parseInt(match[3], 10) << 8) +
+    Number.parseInt(match[4], 10);
+  const bits = Number.parseInt(match[5], 10);
   const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
   return (ipNum & mask) === (base & mask);
 }

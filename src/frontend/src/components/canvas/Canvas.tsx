@@ -129,7 +129,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
       const existing = new Set(st.clusters.map((c) => c.name));
       const m = srcCluster.name.match(/^(.*?)-(\d+)$/);
       const base = m ? m[1] : srcCluster.name;
-      let n = m ? parseInt(m[2], 10) + 1 : 2;
+      let n = m ? Number.parseInt(m[2], 10) + 1 : 2;
       while (existing.has(`${base}-${n}`)) n++;
       const newName = `${base}-${n}`;
 
@@ -788,7 +788,10 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           useCanvasStore.getState().clusters.map((c) => c.name),
         );
         let clusterName = "ocp";
-        for (let i = 2; existingClusterNames.has(clusterName); i++) clusterName = `ocp-${i}`;
+        let suffix = 2;
+        while (existingClusterNames.has(clusterName)) {
+          clusterName = `ocp-${suffix++}`;
+        }
         const { node, cluster } = makeCluster(clusterName, position);
         addNode(node);
         addCluster(cluster);
@@ -1041,7 +1044,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
             </button>
             {selectedVmNodes.length > 0 && (
               <>
-                <button
+                <button type="button"
                   title="Start/Resume VMs"
                   onClick={() => {
                     selectedVmNodes.forEach((n) => {
@@ -1053,7 +1056,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
                 >
                   ▶ Start VMs
                 </button>
-                <button
+                <button type="button"
                   title="Graceful Shutdown VMs"
                   onClick={async () => {
                     if (!(await appConfirm({ message: `Shut down ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Shut down" }))) return;
@@ -1062,7 +1065,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
                 >
                   ■ Stop VMs
                 </button>
-                <button
+                <button type="button"
                   title="Pause VMs"
                   onClick={async () => {
                     if (!(await confirmPowerWarn("pause", { title: `Pause ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Pause" }))) return;
@@ -1071,7 +1074,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
                 >
                   ⏸ Pause VMs
                 </button>
-                <button
+                <button type="button"
                   title={supportsHibernate ? "Hibernate VMs" : "Not supported on this host type"}
                   disabled={!supportsHibernate}
                   style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}

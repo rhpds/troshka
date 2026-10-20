@@ -688,6 +688,12 @@ function normalizeShowroomContainer(c: unknown): unknown {
 // showroom/gateway objects independently and may emit the same fields in a
 // different key order. A plain JSON.stringify would read that as "changed", so
 // dirty comparisons canonicalize with sorted keys instead.
+function compareCanonicalStrings(a: string, b: string): number {
+  // Keep canonical data independent of the browser's locale.
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 export function stableStringify(v: unknown): string {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
   if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
@@ -695,7 +701,7 @@ export function stableStringify(v: unknown): string {
   return (
     "{" +
     Object.keys(obj)
-      .sort()
+      .sort(compareCanonicalStrings)
       .map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k]))
       .join(",") +
     "}"
@@ -984,7 +990,7 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
   const depEdges = (deployed?.edges || []).filter(
     (e) => !isShowroomGatewayEdge(e as unknown as Edge),
   );
-  const depEdgeKey = depEdges.map(edgeCompareKey).sort().join("|");
+  const depEdgeKey = depEdges.map(edgeCompareKey).sort(compareCanonicalStrings).join("|");
   return {
     deployedDiskSizes: depSizes,
     deployedNodeData: depNodeData,

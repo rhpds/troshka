@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useRef, useState } from "react";
 
 const TERMINAL = new Set(["succeeded", "error", "timeout", "cancelled"]);
@@ -293,7 +295,7 @@ export function WorkloadRunLogPanel({
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexShrink: 0 }}>
           {canCancel && (
-            <button
+            <button type="button"
               data-testid="workload-run-cancel"
               onClick={handleCancel}
               disabled={cancelling}
@@ -310,7 +312,7 @@ export function WorkloadRunLogPanel({
             </button>
           )}
           {canRetry && (
-            <button
+            <button type="button"
               data-testid="workload-run-retry"
               onClick={handleRetry}
               disabled={retrying}
@@ -326,12 +328,12 @@ export function WorkloadRunLogPanel({
             </button>
           )}
           {onPopOut && (
-            <button onClick={onPopOut} title="Open in a separate window" style={headerBtnStyle}>
+            <button type="button" onClick={onPopOut} title="Open in a separate window" style={headerBtnStyle}>
               Pop out
             </button>
           )}
           {log && (
-            <button
+            <button type="button"
               onClick={(e) => {
                 navigator.clipboard.writeText(log);
                 const btn = e.currentTarget;
@@ -346,7 +348,7 @@ export function WorkloadRunLogPanel({
             </button>
           )}
           {onClose && (
-            <button
+            <button type="button"
               onClick={onClose}
               style={{
                 background: "transparent",
@@ -405,7 +407,7 @@ export default function WorkloadRunDetailModal({
   };
 
   return (
-    <div
+    <ModalBackdrop label="Workload"
       style={{
         position: "fixed",
         inset: 0,
@@ -415,9 +417,9 @@ export default function WorkloadRunDetailModal({
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={onClose}
+      onClose={() => { onClose(); }}
     >
-      <div onClick={(e) => e.stopPropagation()}>
+      <div >
         <WorkloadRunLogPanel
           runId={activeRunId}
           wsNudge={wsNudge}
@@ -429,6 +431,6 @@ export default function WorkloadRunDetailModal({
           }}
         />
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

@@ -175,7 +175,7 @@ function monthLabel(iso: string | null): string {
 
 function csvCell(value: string | number | null | undefined): string {
   if (value == null || value === "") return "";
-  const s = typeof value === "number" ? String(value) : String(value);
+  const s = String(value);
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }

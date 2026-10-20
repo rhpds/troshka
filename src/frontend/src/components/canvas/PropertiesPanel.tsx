@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useState, useEffect, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import { Tooltip } from "@patternfly/react-core";
@@ -49,11 +51,11 @@ import type {
 function HintIcon({ text }: { text: string }) {
   return (
     <Tooltip content={text} position="top" entryDelay={200} exitDelay={0} maxWidth="280px">
-      <span
-        role="button"
-        tabIndex={0}
+      <button type="button"
+
+
         aria-label={text}
-        className="nodrag nopan"
+        className="plain-button nodrag nopan"
         onClick={(e) => e.preventDefault()}
         onMouseDown={(e) => e.stopPropagation()}
         style={{
@@ -73,7 +75,7 @@ function HintIcon({ text }: { text: string }) {
         }}
       >
         i
-      </span>
+      </button>
     </Tooltip>
   );
 }
@@ -315,7 +317,7 @@ function OutboundRulesEditor({
           <option value="udp">UDP</option>
           <option value="icmp">ICMP</option>
         </select>
-        <button
+        <button type="button"
           onClick={addRule}
           style={{
             padding: "3px 8px", borderRadius: 3, fontSize: 11, cursor: "pointer",
@@ -481,7 +483,7 @@ function ClusterNumberField({
         title={hint}
         onChange={(e) => {
           if (disabled) return;
-          const n = step === "any" ? parseFloat(e.target.value) : parseInt(e.target.value, 10);
+          const n = step === "any" ? Number.parseFloat(e.target.value) : Number.parseInt(e.target.value, 10);
           onCommit(Number.isNaN(n) ? min : Math.max(min, n));
         }}
         style={disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
@@ -691,7 +693,7 @@ function DiskListEditor({
               type="number"
               min={1}
               value={disk.sizeGb}
-              onChange={(e) => handleUpdateDisk(idx, { sizeGb: parseInt(e.target.value, 10) || 1 })}
+              onChange={(e) => handleUpdateDisk(idx, { sizeGb: Number.parseInt(e.target.value, 10) || 1 })}
               style={{
                 width: 60,
                 padding: "4px 6px",
@@ -715,7 +717,7 @@ function DiskListEditor({
               <option value="sata">sata</option>
               <option value="scsi">scsi</option>
             </select>
-            <button
+            <button type="button"
               onClick={() => handleRemoveDisk(idx)}
               title="Remove disk"
               aria-label="Remove disk"
@@ -746,7 +748,7 @@ function DiskListEditor({
           </div>
         ))
       )}
-      <button
+      <button type="button"
         onClick={handleAddDisk}
         className="props-library-btn"
         style={{ fontSize: 12, padding: "6px 8px", alignSelf: "flex-start" }}
@@ -1359,7 +1361,7 @@ export default function PropertiesPanel() {
       typeof networkMtu === "string" &&
       networkMtu !== "" &&
       networkMtu !== "auto" &&
-      !Number.isNaN(parseInt(networkMtu, 10))
+      !Number.isNaN(Number.parseInt(networkMtu, 10))
     ) {
       setMtuInputValue(networkMtu);
     } else {
@@ -1409,9 +1411,7 @@ export default function PropertiesPanel() {
                   ? "props-icon-network"
                   : nodeType === "clusterNode"
                     ? "props-icon-network"
-                    : nodeType === "cephClusterNode"
-                      ? "props-icon-storage"
-                      : "props-icon-storage"
+                    : "props-icon-storage"
           }`}
         >
           {nodeType === "vmNode"
@@ -1878,10 +1878,10 @@ export default function PropertiesPanel() {
           <div className="props-divider" />
 
           <div className="props-section">
-            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("identity")}>
+            <button type="button" className="plain-button props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("identity")}>
               <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("identity") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
               Identity
-            </div>
+            </button>
             {!isCollapsed("identity") && <>
             <div className="props-field">
               <label className="props-label">SMBIOS UUID</label>
@@ -1899,13 +1899,13 @@ export default function PropertiesPanel() {
                       style={{ fontFamily: "monospace", fontSize: 11, flex: 1, ...(!explicit && deployed ? { opacity: 0.6 } : {}) }}
                     />
                     {display ? (
-                      <button
+                      <button type="button"
                         style={{ background: "none", border: "1px solid var(--troshka-border)", borderRadius: 4, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 6px", fontSize: 10, flexShrink: 0 }}
                         onClick={() => update("smbiosUuid", undefined)}
                         title="Clear UUID (will be auto-generated at deploy)"
                       >&#x2715;</button>
                     ) : (
-                      <button
+                      <button type="button"
                         style={{ background: "none", border: "1px solid var(--troshka-border)", borderRadius: 4, color: "var(--troshka-accent)", cursor: "pointer", padding: "2px 6px", fontSize: 10, flexShrink: 0 }}
                         onClick={() => update("smbiosUuid", crypto.randomUUID())}
                         title="Generate UUID"
@@ -2351,7 +2351,7 @@ export default function PropertiesPanel() {
                         <div className="props-field">
                           <label className="props-label">Rotation Rate</label>
                           <select className="props-select" value={port.rotationRate ?? 1} onChange={(e) => {
-                            const val = parseInt(e.target.value);
+                            const val = Number.parseInt(e.target.value);
                             const updated = [...ports]; updated[i] = { ...port, rotationRate: val }; update("diskControllers", updated);
                           }}>
                             <option value={1}>SSD (non-rotational)</option>
@@ -3007,7 +3007,7 @@ export default function PropertiesPanel() {
                                                   ? {
                                                       ...t,
                                                       sshPort: raw
-                                                        ? parseInt(raw, 10) || undefined
+                                                        ? Number.parseInt(raw, 10) || undefined
                                                         : undefined,
                                                     }
                                                   : t,
@@ -3063,7 +3063,7 @@ export default function PropertiesPanel() {
                                           }}
                                           style={{ fontFamily: "monospace", fontSize: 11, flex: 1, minWidth: 0 }}
                                         />
-                                        <button
+                                        <button type="button"
                                           className="props-library-btn"
                                           style={{ fontSize: 11, flex: "0 0 auto", width: 28, padding: "0 4px" }}
                                           title="Remove host"
@@ -3082,7 +3082,7 @@ export default function PropertiesPanel() {
                                       </div>
                                     ))}
                                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                      <button
+                                      <button type="button"
                                         className="props-library-btn"
                                         style={{ fontSize: 11 }}
                                         onClick={() => {
@@ -3103,7 +3103,7 @@ export default function PropertiesPanel() {
                                           h.startsWith("oauth-openshift."),
                                         )
                                       ) && (
-                                        <button
+                                        <button type="button"
                                           className="props-library-btn"
                                           style={{ fontSize: 11 }}
                                           title="Fill in the console + oauth hosts for embedding the OpenShift web console"
@@ -3193,7 +3193,7 @@ export default function PropertiesPanel() {
                                         onChange={(e) => {
                                           const next = showroomTabs.map((t) =>
                                             t.id === tab.id
-                                              ? { ...t, proxyPort: parseInt(e.target.value, 10) || 80 }
+                                              ? { ...t, proxyPort: Number.parseInt(e.target.value, 10) || 80 }
                                               : t,
                                           );
                                           updateShowroomTabs(node!.id, next);
@@ -3236,7 +3236,7 @@ export default function PropertiesPanel() {
                           );
                         })}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          <button
+                          <button type="button"
                             className="props-library-btn"
                             style={{ fontSize: 11 }}
                             onClick={() =>
@@ -3255,7 +3255,7 @@ export default function PropertiesPanel() {
                           {!showroomTabs.some(
                             (t) => t.type === "terminal" && t.target === "clusters",
                           ) && (
-                            <button
+                            <button type="button"
                               className="props-library-btn"
                               style={{ fontSize: 11 }}
                               title="An in-showroom oc shell with every deployed cluster's kubeconfig (no bastion VM)"
@@ -3269,7 +3269,7 @@ export default function PropertiesPanel() {
                               + OpenShift Cluster Terminal Tab
                             </button>
                           )}
-                          <button
+                          <button type="button"
                             className="props-library-btn"
                             style={{ fontSize: 11 }}
                             onClick={() =>
@@ -3281,7 +3281,7 @@ export default function PropertiesPanel() {
                           >
                             + Web Proxy Tab
                           </button>
-                          <button
+                          <button type="button"
                             className="props-library-btn"
                             style={{ fontSize: 11 }}
                             onClick={() =>
@@ -3306,7 +3306,7 @@ export default function PropertiesPanel() {
                           if (available.length === 0) return null;
                           return (
                             <div style={{ marginTop: 6 }}>
-                              <button
+                              <button type="button"
                                 className="props-library-btn"
                                 style={{ fontSize: 11 }}
                                 onClick={() => setConsoleMenuOpen((o) => !o)}
@@ -3324,7 +3324,7 @@ export default function PropertiesPanel() {
                                   }}
                                 >
                                   {available.map((c) => (
-                                    <button
+                                    <button type="button"
                                       key={c.id}
                                       className="props-library-btn"
                                       style={{ fontSize: 11, textAlign: "left" }}
@@ -3711,10 +3711,13 @@ export default function PropertiesPanel() {
                   <>
           {isShowroom && (
             <div className="props-section">
-              <div
-                className="props-section-title"
-                style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button
+                type="button"
+                className="plain-button props-section-title"
+                style={{ display: "flex", alignItems: "center", gap: 6, width: "auto" }}
                 onClick={() => toggleSection("podAdvanced")}
+                aria-expanded={!isCollapsed("podAdvanced")}
               >
                 <span
                   style={{
@@ -3725,7 +3728,8 @@ export default function PropertiesPanel() {
                 >
                   &#9660;
                 </span>
-                Advanced
+                <span>Advanced</span>
+              </button>
                 <HintIcon text="Init and main containers are scaffolded from content and tabs; edit only for debugging or custom sidecars." />
               </div>
             </div>
@@ -3958,7 +3962,7 @@ export default function PropertiesPanel() {
                             min={1}
                             value={wettyAttrs.sshPort}
                             onChange={(e) =>
-                              updateWettyField({ sshPort: parseInt(e.target.value, 10) || 22 })
+                              updateWettyField({ sshPort: Number.parseInt(e.target.value, 10) || 22 })
                             }
                           />
                         </div>
@@ -3970,7 +3974,7 @@ export default function PropertiesPanel() {
                             min={1}
                             value={wettyAttrs.port}
                             onChange={(e) =>
-                              updateWettyField({ port: parseInt(e.target.value, 10) || 8001 })
+                              updateWettyField({ port: Number.parseInt(e.target.value, 10) || 8001 })
                             }
                           />
                         </div>
@@ -4276,8 +4280,8 @@ export default function PropertiesPanel() {
                         typeof rawMtu === "number"
                           ? rawMtu
                           : typeof rawMtu === "string" && rawMtu !== "auto" && rawMtu !== ""
-                            ? parseInt(rawMtu, 10)
-                            : NaN;
+                            ? Number.parseInt(rawMtu, 10)
+                            : Number.NaN;
                       const mtuMode =
                         rawMtu === "auto" || rawMtu == null || rawMtu === "" || Number.isNaN(parsedMtu)
                           ? "auto"
@@ -4288,8 +4292,8 @@ export default function PropertiesPanel() {
                           : 1500;
                       const displayMtu =
                         mtuInputValue !== "" ? mtuInputValue : String(mtuValue);
-                      const inputVal = parseInt(mtuInputValue, 10);
-                      const isInvalid = mtuInputValue !== "" && (!isNaN(inputVal) && (inputVal < 1280 || inputVal > 9000));
+                      const inputVal = Number.parseInt(mtuInputValue, 10);
+                      const isInvalid = mtuInputValue !== "" && (!Number.isNaN(inputVal) && (inputVal < 1280 || inputVal > 9000));
 
                       return (
                         <>
@@ -4318,8 +4322,8 @@ export default function PropertiesPanel() {
                                 value={displayMtu}
                                 onChange={(e) => {
                                   setMtuInputValue(e.target.value);
-                                  const val = parseInt(e.target.value, 10);
-                                  if (!isNaN(val) && val >= 1280 && val <= 9000) {
+                                  const val = Number.parseInt(e.target.value, 10);
+                                  if (!Number.isNaN(val) && val >= 1280 && val <= 9000) {
                                     update("mtu", val);
                                   }
                                 }}
@@ -4575,7 +4579,7 @@ export default function PropertiesPanel() {
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
+                              <button type="button" className="troshka-btn-icon-danger" title="Remove" onClick={() => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records.splice(i, 1);
                                 update("dnsRecords", records);
@@ -5427,7 +5431,7 @@ export default function PropertiesPanel() {
               <>
                 <div className="props-divider" />
                 <div className="props-section">
-                  <button
+                  <button type="button"
                     className="props-library-btn"
                     style={{ color: "#ef4444", borderColor: "#ef4444" }}
                     onClick={() => {
@@ -5719,7 +5723,7 @@ export default function PropertiesPanel() {
         <>
           <div className="props-divider" />
           <div className="props-section">
-            <button
+            <button type="button"
               className="props-library-btn"
               style={{ color: "#ef4444", borderColor: "#ef4444" }}
               onClick={async () => {
@@ -5753,7 +5757,7 @@ export default function PropertiesPanel() {
         <>
           <div className="props-divider" />
           <div className="props-section">
-            <button
+            <button type="button"
               className="props-library-btn"
               onClick={async () => {
                 const label = (node.data as Record<string, unknown>)?.isShowroom
@@ -5789,7 +5793,7 @@ export default function PropertiesPanel() {
           const isMemberVm =
             nodeType === "vmNode" && !!(data as Record<string, unknown>).clusterId;
           return (
-            <button
+            <button type="button"
               className="props-delete-btn"
               disabled={isMemberVm}
               title={
@@ -5942,11 +5946,11 @@ export default function PropertiesPanel() {
         />
       )}
       {wipeDiskModal && (
-        <div className="start-order-overlay" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>
-          <div className="start-order-modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+        <ModalBackdrop label="Wipe disk" className="start-order-overlay" onClose={() => { if (!wipeDiskLoading) setWipeDiskModal(null);  }}>
+          <div className="start-order-modal" style={{ maxWidth: 460 }} >
             <div className="start-order-header">
               <span>Wipe Disk</span>
-              <button onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>&#x2715;</button>
+              <button type="button" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>&#x2715;</button>
             </div>
             <div className="start-order-body" style={{ padding: 16 }}>
               {!wipeDiskLoading ? (
@@ -5978,8 +5982,8 @@ export default function PropertiesPanel() {
             <div className="start-order-footer">
               {!wipeDiskLoading ? (
                 <>
-                  <button className="start-order-btn cancel" onClick={() => setWipeDiskModal(null)}>Cancel</button>
-                  <button
+                  <button type="button" className="start-order-btn cancel" onClick={() => setWipeDiskModal(null)}>Cancel</button>
+                  <button type="button"
                     className="start-order-btn save"
                     style={{ background: "rgba(239,68,68,0.15)", borderColor: "#ef4444", color: "#ef4444" }}
                     onClick={async () => {
@@ -6025,7 +6029,7 @@ export default function PropertiesPanel() {
               ) : null}
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>

@@ -126,7 +126,7 @@ function memberIndex(n: Node): number {
   const m = String((n.data as Record<string, unknown>).name || n.id || "").match(
     /-(\d+)$/,
   );
-  return m ? parseInt(m[1], 10) : 0;
+  return m ? Number.parseInt(m[1], 10) : 0;
 }
 
 /** Split members into CP and worker rows; unclassified nodes slot with CPs (backend parity). */

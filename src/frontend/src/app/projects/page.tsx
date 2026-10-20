@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
@@ -427,11 +429,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   });
 
   return (
-    <div style={{
+    <ModalBackdrop label="Project settings" style={{
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    }} onClose={() => { onClose(); }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: mode === "template-picker" ? 640 : 500, maxWidth: "90vw",
@@ -493,7 +495,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
               {templates.map((t) => (
-                <div
+                <button type="button"
                   key={t.id}
                   style={{
                     ...optionStyle(false),
@@ -528,7 +530,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                         }
                       }
                     }
-                  }}
+                  }} className="plain-button"
                 >
                   <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}>
                     {t.distribution === "okd-scos" ? (
@@ -547,7 +549,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   <div style={{ fontWeight: 600, fontSize: 13, textAlign: "center" }}>{t.name}</div>
                   <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, textAlign: "center", lineHeight: 1.3 }}>{t.description}</div>
                   {t.deploy_time && <div style={{ fontSize: 11, opacity: 0.5, marginTop: 6 }}>⏱ {t.deploy_time}</div>}
-                </div>
+                </button>
               ))}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
@@ -998,7 +1000,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               </div>
             )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); setYamlContent(""); setYamlFileName(""); setCreateError(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button type="button" onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); setYamlContent(""); setYamlFileName(""); setCreateError(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
               </button>
               {mode === "yaml" && (
@@ -1023,7 +1025,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   }} />
                 </label>
               )}
-              <button
+              <button type="button"
                 onClick={handleCreate}
                 disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
                   const t = templates.find((x) => x.id === selectedTemplate);
@@ -1051,7 +1053,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
           </div>
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

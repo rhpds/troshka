@@ -2291,6 +2291,8 @@ def _reconfigure_nics(root, nics):
 
 def _apply_nested_mac_trust(job, domain, networks):
     """Post-define: set trustGuestRxFilters on NICs that allow nested MACs."""
+    import tempfile
+
     if not any(_iface_allow_nested_macs(n) for n in networks):
         return
     xml_str = subprocess.check_output(
@@ -2316,10 +2318,10 @@ def _apply_nested_mac_trust(job, domain, networks):
             changed = True
     if not changed:
         return
-    tmp = f"/tmp/troshka-nested-mac-{domain}.xml"
-    ET.ElementTree(root).write(tmp, xml_declaration=False)
-    _run_cmd(job, ["virsh", "define", tmp], timeout=10)
-    os.unlink(tmp)
+    with tempfile.NamedTemporaryFile(prefix="troshka-nested-mac-", suffix=".xml") as tmp:
+        ET.ElementTree(root).write(tmp, xml_declaration=False)
+        tmp.flush()
+        _run_cmd(job, ["virsh", "define", tmp.name], timeout=10)
     _job_log(job, f"Enabled trustGuestRxFilters on nested-MAC NICs for {domain}")
 
 

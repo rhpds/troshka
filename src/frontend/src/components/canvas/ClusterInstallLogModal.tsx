@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useRef, useState } from "react";
 import { useCanvasStore, type ClusterConfig } from "@/stores/canvasStore";
 
@@ -145,7 +147,7 @@ export function parseWorkerReady(log: string): { ready: number; expected: number
       line.match(/deferred workers Ready:\s*(\d+)\/(\d+)/i) ||
       line.match(/workers stabilizing:\s*(\d+)\/(\d+)/i) ||
       line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
-    if (m) last = { ready: parseInt(m[1], 10), expected: parseInt(m[2], 10) };
+    if (m) last = { ready: Number.parseInt(m[1], 10), expected: Number.parseInt(m[2], 10) };
   }
   return last;
 }
@@ -642,7 +644,7 @@ export function ClusterInstallLogPanel({
           </h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {!terminal && !isRecert && (
-              <button
+              <button type="button"
                 onClick={handleCancelInstall}
                 disabled={cancelling || restarting}
                 style={{
@@ -660,7 +662,7 @@ export function ClusterInstallLogPanel({
               </button>
             )}
             {(failed || stuck) && !isRecert && (
-              <button
+              <button type="button"
                 onClick={handleRestartInstall}
                 disabled={restarting || cancelling}
                 style={{
@@ -678,7 +680,7 @@ export function ClusterInstallLogPanel({
               </button>
             )}
             {onPopOut && (
-              <button
+              <button type="button"
                 onClick={onPopOut}
                 title="Open in a separate window"
                 style={{
@@ -695,7 +697,7 @@ export function ClusterInstallLogPanel({
               </button>
             )}
             {log && (
-              <button
+              <button type="button"
                 onClick={(e) => {
                   navigator.clipboard.writeText(log);
                   const btn = e.currentTarget;
@@ -717,7 +719,7 @@ export function ClusterInstallLogPanel({
                 Copy All
               </button>
             )}
-            <button
+            <button type="button"
               onClick={handleClose}
               style={{
                 background: "transparent",
@@ -843,20 +845,20 @@ export function ClusterInstallLogPanel({
                 {kubeadminPw && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                     <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>kubeadmin</span>
-                    <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }} onClick={() => setRevealPw((v) => !v)}>
+                    <button type="button" style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }} onClick={() => setRevealPw((v) => !v)} className="plain-button code-action">
                       {revealPw ? kubeadminPw : "••••••"}
-                    </code>
-                    <span
+                    </button>
+                    <button type="button"
                       style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }}
                       onClick={() => navigator.clipboard.writeText(kubeadminPw)}
-                      title="Copy"
+                      title="Copy" className="plain-button"
                     >
                       Copy
-                    </span>
+                    </button>
                   </div>
                 )}
                 {hasKubeconfig && (
-                  <span
+                  <button type="button"
                     style={{ cursor: "pointer", fontSize: 10, opacity: 0.7, textDecoration: "underline" }}
                     onClick={async () => {
                       // Download live from the backend (deployed_topology) so it
@@ -877,10 +879,10 @@ export function ClusterInstallLogPanel({
                       a.download = `kubeconfig-${clusterName}.yaml`;
                       a.click();
                       URL.revokeObjectURL(url);
-                    }}
+                    }} className="plain-button"
                   >
                     Download kubeconfig
-                  </span>
+                  </button>
                 )}
               </div>
             )}
@@ -938,7 +940,7 @@ export default function ClusterInstallLogModal() {
   };
 
   return (
-    <div
+    <ModalBackdrop label="OpenShift details"
       style={{
         position: "fixed",
         inset: 0,
@@ -948,9 +950,9 @@ export default function ClusterInstallLogModal() {
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={close}
+      onClose={() => { close(); }}
     >
-      <div onClick={(e) => e.stopPropagation()}>
+      <div >
         <ClusterInstallLogPanel
           projectId={projectId}
           clusterKey={target.clusterKey}
@@ -961,6 +963,6 @@ export default function ClusterInstallLogModal() {
           onPopOut={handlePopOut}
         />
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

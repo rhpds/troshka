@@ -727,7 +727,7 @@ class TestHeadVmediaHelpers:
         handler.send_response.assert_called_with(404)
         handler.end_headers.assert_called()
 
-    @patch("urllib.request.urlopen")
+    @patch.object(entrypoint.urllib.request, "urlopen")
     def test_head_upstream_url_success(self, mock_urlopen):
         resp = MagicMock()
         resp.headers = {"Content-Length": "42"}
@@ -736,5 +736,6 @@ class TestHeadVmediaHelpers:
         mock_urlopen.return_value = resp
         handler = MagicMock()
         entrypoint._head_upstream_url(handler, "http://example.com/iso")
+        mock_urlopen.assert_called_once()
         handler.send_response.assert_called_with(200)
         handler.send_header.assert_any_call("Content-Length", "42")

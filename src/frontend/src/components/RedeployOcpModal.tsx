@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import type { OcpClusterStatus, OcpRedeployMode } from "@/lib/redeployOcp";
 
 interface RedeployOcpModalProps {
@@ -20,11 +22,11 @@ export default function RedeployOcpModal({
     .join("\n");
 
   return (
-    <div className="start-order-overlay" onClick={onCancel}>
+    <ModalBackdrop label="Redeploy OpenShift" className="start-order-overlay" onClose={() => { onCancel(); }}>
       <div
         className="start-order-modal"
         style={{ maxWidth: 560 }}
-        onClick={(e) => e.stopPropagation()}
+
       >
         <div className="start-order-header">
           <span>Redeploy OpenShift clusters</span>
@@ -83,6 +85,6 @@ export default function RedeployOcpModal({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

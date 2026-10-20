@@ -31,11 +31,11 @@ export function parseWettyCommand(
     if (arg.startsWith("--base=")) {
       attrs.basePath = arg.slice(7).replace(/^\/+|\/+$/g, "");
     } else if (arg.startsWith("--port=")) {
-      attrs.port = parseInt(arg.slice(6), 10) || attrs.port;
+      attrs.port = Number.parseInt(arg.slice(6), 10) || attrs.port;
     } else if (arg.startsWith("--ssh-host=")) {
       attrs.sshHost = arg.slice(11);
     } else if (arg.startsWith("--ssh-port=")) {
-      attrs.sshPort = parseInt(arg.slice(11), 10) || 22;
+      attrs.sshPort = Number.parseInt(arg.slice(11), 10) || 22;
     } else if (arg.startsWith("--ssh-user=")) {
       attrs.sshUser = arg.slice(11);
     } else if (arg.startsWith("--ssh-pass=")) {

@@ -368,7 +368,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
       <div className="vm-node-footer nopan nodrag">
         {isDeployed && !statusPending && !isRunning && !isStopping && !isRestarting && !isRedeploying && !isNotFound && (
-          <button
+          <button type="button"
             className="vm-node-action power-stopped"
             title={isPaused ? "Resume" : "Start"}
             onClick={(e) => { e.stopPropagation(); vmAction(isPaused ? "unpause" : "start"); }}
@@ -379,7 +379,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         )}
         {isDeployed && isRunning && !isRedeploying && !isNotFound && (
           <>
-            <button
+            <button type="button"
               className="vm-node-action power-running"
               title="Graceful Shutdown"
               onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Shut down "${d.name}"?`, confirmLabel: "Shut down" })) vmAction("stop"); }}
@@ -387,7 +387,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
             </button>
-            <button
+            <button type="button"
               className="vm-node-action power-running"
               title="Pause"
               onClick={async (e) => {
@@ -399,7 +399,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             >
               {actionPending === "pause" ? <span className="vm-btn-spinner" /> : "⏸"}
             </button>
-            <button
+            <button type="button"
               className="vm-node-action power-running"
               title={supportsHibernate ? "Hibernate" : "Not supported on this host type"}
               onClick={async (e) => {
@@ -413,7 +413,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             >
               {actionPending === "hibernate" ? <span className="vm-btn-spinner" /> : "💤"}
             </button>
-            <button
+            <button type="button"
               className="vm-node-action power-running"
               title="Force Power Off"
               onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Force power off "${d.name}"? This may cause data loss.`, confirmLabel: "Force off", variant: "danger" })) vmAction("forcestop"); }}
@@ -422,13 +422,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             >
               {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
             </button>
-            <button className="vm-node-action restart" title="Restart" onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Restart "${d.name}"?`, confirmLabel: "Restart" })) vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
+            <button type="button" className="vm-node-action restart" title="Restart" onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Restart "${d.name}"?`, confirmLabel: "Restart" })) vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
               {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
             </button>
           </>
         )}
         {!d.clusterId && (
-          <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); requestDuplicateVM(id); }}>
+          <button type="button" className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); requestDuplicateVM(id); }}>
             ⧉
           </button>
         )}

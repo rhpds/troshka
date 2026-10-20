@@ -79,7 +79,7 @@ export default function NodeContextMenu({
         className="node-context-menu"
         style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
       >
-        <button onClick={() => { hideNode(nodeId); onClose(); }}>
+        <button type="button" onClick={() => { hideNode(nodeId); onClose(); }}>
           👁 Hide
         </button>
       </div>
@@ -93,7 +93,7 @@ export default function NodeContextMenu({
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
       {isDeployed && isTransitioning && (
-        <button disabled style={{ opacity: 0.6, cursor: "not-allowed" }}>
+        <button type="button" disabled style={{ opacity: 0.6, cursor: "not-allowed" }}>
           {vmStatus === "starting" ? "▶ Starting…" : "■ Stopping…"}
         </button>
       )}
@@ -102,7 +102,7 @@ export default function NodeContextMenu({
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
           </button>
-          <button onClick={() => {
+          <button type="button" onClick={() => {
             onClose();
             setTimeout(async () => {
               if (!(await confirmPowerWarn("pause", { title: `Pause "${vmName}"?`, confirmLabel: "Pause" }))) return;
@@ -111,7 +111,7 @@ export default function NodeContextMenu({
           }}>
             ⏸ Pause
           </button>
-          <button
+          <button type="button"
             disabled={!supportsHibernate}
             title={supportsHibernate ? undefined : "Not supported on this host type"}
             style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
@@ -135,7 +135,7 @@ export default function NodeContextMenu({
         </>
       )}
       {isDeployed && isPaused && !isTransitioning && !isRedeploying && !isNotFound && (
-        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/unpause`, { method: "POST" }); onClose(); }}>
+        <button type="button" onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/unpause`, { method: "POST" }); onClose(); }}>
           ▶ Resume
         </button>
       )}
@@ -158,7 +158,7 @@ export default function NodeContextMenu({
         </button>
       )}
       {projectState === "active" && onRunWorkload && (
-        <button
+        <button type="button"
           onClick={() => {
             if (isClusterNode) {
               // clusterNode: find cluster id
@@ -188,7 +188,7 @@ export default function NodeContextMenu({
       )}
       {!isClusterMember && (
         <>
-          <button onClick={() => {
+          <button type="button" onClick={() => {
             if (isVm && onDuplicateVM) {
               onDuplicateVM(nodeId);
             } else {
@@ -214,7 +214,7 @@ export default function NodeContextMenu({
         </button>
       )}
       {isDeployed && !isRedeploying && (
-        <button className="danger" onClick={() => {
+        <button type="button" className="danger" onClick={() => {
           const updateNodeData = useCanvasStore.getState().updateNodeData;
           onClose();
           setTimeout(async () => {

@@ -1133,7 +1133,7 @@ async def vm_resume(meta, status, patch, **_):
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
-async def vm_create(spec, meta, namespace, name, body, patch, **_):
+async def vm_create(meta, namespace, name, body, patch, **_):
     body = _ensure_cpu_host_model(body, namespace)
     spec = body["spec"]
     logger.info(f"Creating VM {name} in {namespace}")

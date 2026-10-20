@@ -3,7 +3,7 @@ export function pickDefaultOcpVersion(versions: string[]): string {
   if (!versions.length) return "";
   const parse = (v: string): [number, number] => {
     const [a, b] = v.split(".");
-    return [parseInt(a, 10) || 0, parseInt(b, 10) || 0];
+    return [Number.parseInt(a, 10) || 0, Number.parseInt(b, 10) || 0];
   };
   const cmp = (x: string, y: string) => {
     const [xa, xb] = parse(x);
@@ -20,7 +20,7 @@ export function formatTemplateVersionLabel(
   isOkd: boolean,
   latest?: string,
 ): string {
-  const major = parseInt(minor.split(".")[0], 10) || 0;
+  const major = Number.parseInt(minor.split(".")[0], 10) || 0;
   if (isOkd) return major >= 5 ? `${minor} (preview)` : minor;
   if (major >= 5) return `${minor} (dev preview)`;
   return latest ? `${minor} (latest: ${latest})` : minor;

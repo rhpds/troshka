@@ -254,7 +254,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
               >
                 {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
               </button>
-              <button
+              <button type="button"
                 className="vm-node-action redeploy"
                 title="Redeploy (rebuild content from repo)"
                 onClick={async (e) => {

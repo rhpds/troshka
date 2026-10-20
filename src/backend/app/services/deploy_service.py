@@ -10500,6 +10500,12 @@ def _deploy_after_special_host(s, host, project_id, project, topology, vni_map) 
         _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
 
 
+def _require_deploy_host(host):
+    if host is None:
+        raise RuntimeError("Deploy host resolution returned no host")
+    return host
+
+
 def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
@@ -10539,7 +10545,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         if host_err:
             _set_deploy_error_and_notify(s, project_id, project, host_err)
             return
-        assert host is not None
+        host = _require_deploy_host(host)
 
         topology, clock_offset, vni_map = _deploy_init_context(s, project, project_id)
 

@@ -217,7 +217,7 @@ export function getShowroomExternalPort(nodes: Node[], showroomIp: string): numb
     if (d.subtype !== "gateway") continue;
     for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intIp?: string }>) {
       if (showroomIp && pf.intIp === showroomIp && pf.extPort) {
-        const port = parseInt(String(pf.extPort), 10);
+        const port = Number.parseInt(String(pf.extPort), 10);
         if (port > 0) return port;
       }
     }
@@ -227,7 +227,7 @@ export function getShowroomExternalPort(nodes: Node[], showroomIp: string): numb
     if (d.subtype !== "gateway") continue;
     for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intPort?: string }>) {
       if (String(pf.intPort) === "80" && pf.extPort) {
-        const port = parseInt(String(pf.extPort), 10);
+        const port = Number.parseInt(String(pf.extPort), 10);
         if (port === 80 || port === 443) return port;
       }
     }
@@ -245,7 +245,7 @@ export function getShowroomGatewayTargetPort(nodes: Node[], showroomIp: string):
       intIp?: string;
       extPort?: string;
     }>) {
-      const intPort = parseInt(String(pf.intPort || ""), 10);
+      const intPort = Number.parseInt(String(pf.intPort || ""), 10);
       if (intPort <= 0) continue;
       if (showroomIp && pf.intIp === showroomIp) return intPort;
       if (
@@ -418,7 +418,7 @@ export function buildWettyContainers(
     const sshUser =
       tab?.sshUser ||
       (vmData.ciLoginUser as string) ||
-      (vmData.os === "rhel10" || vmData.os === "rhel" ? "cloud-user" : "cloud-user");
+      "cloud-user";
     const sshPass = tab?.sshPass || (vmData.ciCloudUserPassword as string) || "";
 
     const basePath = item.wettyPath?.replace(/^\//, "") || `wetty_${slugify(vmName)}`;

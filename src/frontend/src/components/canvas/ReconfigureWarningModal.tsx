@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useState } from "react";
 import type { TopologyDiffEntry } from "@/stores/canvasStore";
 
@@ -91,8 +93,8 @@ export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCa
   const hasWarnings = isoChanges.length > 0 || diskChanges.length > 0;
 
   return (
-    <div className="start-order-overlay" onClick={onCancel}>
-      <div className="start-order-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+    <ModalBackdrop label="Apply changes" className="start-order-overlay" onClose={() => { onCancel(); }}>
+      <div className="start-order-modal" style={{ maxWidth: 560 }} >
         <div className="start-order-header">
           <span>Apply Changes</span>
           <button onClick={onCancel}>&#x2715;</button>
@@ -156,6 +158,6 @@ export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCa
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

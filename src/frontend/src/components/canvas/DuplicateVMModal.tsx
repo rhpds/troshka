@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useState } from "react";
 
 interface Props {
@@ -13,11 +15,11 @@ export default function DuplicateVMModal({ vmName, hasUuid, onConfirm, onCancel 
   const [cloneUuid, setCloneUuid] = useState(false);
 
   return (
-    <div className="start-order-overlay" onClick={onCancel}>
-      <div className="start-order-modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+    <ModalBackdrop label="Duplicate VM" className="start-order-overlay" onClose={() => { onCancel(); }}>
+      <div className="start-order-modal" style={{ maxWidth: 460 }} >
         <div className="start-order-header">
           <span>Duplicate VM</span>
-          <button onClick={onCancel}>&#x2715;</button>
+          <button type="button" onClick={onCancel}>&#x2715;</button>
         </div>
         <div className="start-order-body" style={{ padding: 16 }}>
           <p style={{ fontSize: 13, marginBottom: 12 }}>
@@ -45,12 +47,12 @@ export default function DuplicateVMModal({ vmName, hasUuid, onConfirm, onCancel 
           </div>
         </div>
         <div className="start-order-footer">
-          <button className="start-order-btn cancel" onClick={onCancel}>Cancel</button>
-          <button className="start-order-btn save" onClick={() => onConfirm(cloneUuid)}>
+          <button type="button" className="start-order-btn cancel" onClick={onCancel}>Cancel</button>
+          <button type="button" className="start-order-btn save" onClick={() => onConfirm(cloneUuid)}>
             Duplicate
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

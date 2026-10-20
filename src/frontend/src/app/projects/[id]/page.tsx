@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ReactFlowProvider } from "@xyflow/react";
@@ -1409,8 +1411,8 @@ export default function ProjectCanvasPage() {
             </span>
           )}
           {liveSpend && (
-            <span
-              className="project-timer-badge"
+            <button type="button"
+              className="plain-button project-timer-badge"
               style={{
                 fontSize: 11, padding: "2px 8px", borderRadius: 10,
                 color: liveSpend.budget_stopped ? "#ef4444" : liveSpend.budget_warned ? "#fbbf24" : "#86efac",
@@ -1429,11 +1431,11 @@ export default function ProjectCanvasPage() {
                 ? `${spendLabel}: ${formatRunningElapsed(spendElapsedSec)} / $${liveSpend.total_usd.toFixed(2)}`
                 : `$${liveSpend.total_usd.toFixed(2)}`}
               {liveSpend.budget_usd != null ? ` / $${liveSpend.budget_usd.toFixed(2)}` : ""}
-            </span>
+            </button>
           )}
           {timerCountdown && (
-            <span
-              className={`project-timer-badge ${timerUrgency}`}
+            <button type="button"
+              className={"plain-button " + (`project-timer-badge ${timerUrgency}`)}
               style={{
                 fontSize: 11, padding: "2px 8px", borderRadius: 10,
                 color: timerUrgency === "critical" ? "#ef4444" : timerUrgency === "warning" ? "#fbbf24" : "#94a3b8",
@@ -1447,7 +1449,7 @@ export default function ProjectCanvasPage() {
               onClick={() => setShowPalette(true)}
             >
               ⏱ {timerCountdown === "Auto-Shutdown" || timerCountdown === "Auto-Deleted" ? `Project was ${timerCountdown}` : `${timerLabel} in ${timerCountdown}`}
-            </span>
+            </button>
           )}
         </div>
         </div>
@@ -1483,7 +1485,7 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {(projectState === "active" || projectState === "stopped") && (
-            <button
+            <button type="button"
               className="project-publish-btn"
               disabled={disruptiveActionsDisabled}
               title={disruptiveDisabledTitle}
@@ -1509,7 +1511,7 @@ export default function ProjectCanvasPage() {
             />
           )}
           {projectState === "active" && (
-            <button
+            <button type="button"
               className="project-publish-btn"
               disabled={disruptiveActionsDisabled}
               title={disruptiveDisabledTitle}
@@ -1523,7 +1525,7 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {projectState === "active" && (
-            <button
+            <button type="button"
               className="project-publish-btn"
               onClick={() => setShowWorkloadRuns(true)}
               style={{ opacity: 0.85 }}
@@ -1555,7 +1557,7 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {projectState !== "deleting" && (
-            <button
+            <button type="button"
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
               onClick={() => setShowDeleteModal(true)}
@@ -1594,7 +1596,7 @@ export default function ProjectCanvasPage() {
                   Needs a KubeVirt cluster host
                 </span>
               )}
-              <button
+              <button type="button"
                 className="project-publish-btn"
                 onClick={handlePublish}
                 disabled={isAdmin && requiresKubevirt && deployHosts.length === 0}
@@ -1616,7 +1618,7 @@ export default function ProjectCanvasPage() {
           {projectState === "active" && (
             <>
               {resumableVmNodes.length > 0 && (
-                <button
+                <button type="button"
                   className="project-publish-btn"
                   disabled={disruptiveActionsDisabled || resumingAll}
                   title={
@@ -1639,7 +1641,7 @@ export default function ProjectCanvasPage() {
                 </button>
               )}
               <div ref={offMenuRef} style={{ position: "relative", display: "flex", flexShrink: 0 }}>
-                <button
+                <button type="button"
                   className="project-stop-btn"
                   disabled={disruptiveActionsDisabled}
                   title={disruptiveDisabledTitle}
@@ -1652,7 +1654,7 @@ export default function ProjectCanvasPage() {
                 >
                   {OFF_ACTION_LABEL[offAction]}
                 </button>
-                <button
+                <button type="button"
                   className="project-stop-btn"
                   aria-label="Choose off mode"
                   disabled={disruptiveActionsDisabled}
@@ -1675,7 +1677,7 @@ export default function ProjectCanvasPage() {
                     style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20 }}
                   >
                     {(["stop", "pause", "hibernate"] as const).map((action) => (
-                      <button
+                      <button type="button"
                         key={action}
                         disabled={action === "hibernate" && !supportsHibernate}
                         title={action === "hibernate" && !supportsHibernate ? "Not supported on this host type" : undefined}
@@ -1694,7 +1696,7 @@ export default function ProjectCanvasPage() {
                 )}
               </div>
               {isAdmin && (
-                <button
+                <button type="button"
                   className="project-publish-btn"
                   disabled={disruptiveActionsDisabled}
                   title={disruptiveDisabledTitle}
@@ -1710,7 +1712,7 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
-              <button
+              <button type="button"
                 className="project-publish-btn"
                 disabled={disruptiveActionsDisabled}
                 title={disruptiveDisabledTitle}
@@ -1755,10 +1757,10 @@ export default function ProjectCanvasPage() {
               }}>
                 Apply Changes
               </button>
-              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
+              <button type="button" className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
                 ↻ Republish
               </button>
-              <button className="project-stop-btn" onClick={async () => {
+              <button type="button" className="project-stop-btn" onClick={async () => {
                 if (!(await appConfirm({
                   title: "Undeploy",
                   message: "Undeploy? This will destroy all VMs and return to design mode.",
@@ -1796,7 +1798,7 @@ export default function ProjectCanvasPage() {
                   ▶ Retry Start
                 </button>
               )}
-              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will destroy all VMs and redeploy with the current topology.")}>
+              <button type="button" className="project-publish-btn" onClick={() => handleRepublish("Republish? This will destroy all VMs and redeploy with the current topology.")}>
                 ↻ Republish
               </button>
             </>
@@ -1891,7 +1893,7 @@ export default function ProjectCanvasPage() {
               <div style={{ fontSize: 14, opacity: 0.5, marginBottom: 16 }}>
                 Drag components from the palette or import a template
               </div>
-              <button
+              <button type="button"
                 onClick={() => {
                   setImportYaml("");
                   setImportError("");
@@ -2089,9 +2091,9 @@ export default function ProjectCanvasPage() {
         />
       )}
       {showMigrate && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
           alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowMigrate(false); }}>
+          onClose={() => { setShowMigrate(false); }}>
           <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
@@ -2132,12 +2134,12 @@ export default function ProjectCanvasPage() {
               </div>
             )}
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {showImportModal && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
           alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowImportModal(false); }}>
+          onClose={() => { setShowImportModal(false); }}>
           <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: 600, maxWidth: "90vw",
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
@@ -2243,7 +2245,7 @@ export default function ProjectCanvasPage() {
                   e.target.value = "";
                 }} />
               </label>
-              <button
+              <button type="button"
                 disabled={!importYaml.trim() || importing}
                 onClick={async () => {
                   setImporting(true);
@@ -2316,12 +2318,12 @@ export default function ProjectCanvasPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {showExportModal && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
           alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowExportModal(false); }}>
+          onClose={() => { setShowExportModal(false); }}>
           <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
@@ -2422,7 +2424,7 @@ export default function ProjectCanvasPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {redeployOcpModal && (
         <RedeployOcpModal
@@ -2437,11 +2439,11 @@ export default function ProjectCanvasPage() {
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
       {showBudgetModal && (
-        <div className="start-order-overlay" onClick={() => setShowBudgetModal(false)}>
-          <div className="start-order-modal" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+        <ModalBackdrop label="Project settings" className="start-order-overlay" onClose={() => { setShowBudgetModal(false); }}>
+          <div className="start-order-modal" style={{ maxWidth: 400 }} >
             <div className="start-order-header">
               <span>Budget</span>
-              <button onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
+              <button type="button" onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
             </div>
             <div className="start-order-body" style={{ padding: 16 }}>
               <label style={{ fontSize: 13, display: "block", marginBottom: 6 }}>
@@ -2471,8 +2473,8 @@ export default function ProjectCanvasPage() {
               )}
             </div>
             <div className="start-order-footer" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button className="start-order-btn" onClick={() => setShowBudgetModal(false)}>Cancel</button>
-              <button
+              <button type="button" className="start-order-btn" onClick={() => setShowBudgetModal(false)}>Cancel</button>
+              <button type="button"
                 className="start-order-btn save"
                 onClick={() => {
                   const raw = budgetModalDraft.trim();
@@ -2493,7 +2495,7 @@ export default function ProjectCanvasPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {showDeleteModal && (
         <ConfirmModal

@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useState } from "react";
 import { Button } from "@patternfly/react-core";
 
@@ -119,7 +121,7 @@ export default function SharePatternModal({
   };
 
   return (
-    <div
+    <ModalBackdrop label="Share pattern"
       style={{
         position: "fixed",
         inset: 0,
@@ -129,7 +131,7 @@ export default function SharePatternModal({
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={onClose}
+      onClose={() => { onClose(); }}
     >
       <div
         style={{
@@ -141,7 +143,7 @@ export default function SharePatternModal({
           boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
           border: "1px solid var(--pf-t--global--border--color--default)",
         }}
-        onClick={(e) => e.stopPropagation()}
+
       >
         <h2 style={{ marginTop: 0, marginBottom: 4 }}>Share Pattern</h2>
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>{patternName}</p>
@@ -221,7 +223,7 @@ export default function SharePatternModal({
                     }}
                   >
                     <span>{s}</span>
-                    <button
+                    <button type="button"
                       onClick={() => removeShare(s)}
                       disabled={busyEmail}
                       title="Remove"
@@ -253,6 +255,6 @@ export default function SharePatternModal({
           </Button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

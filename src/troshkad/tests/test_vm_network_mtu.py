@@ -1,7 +1,40 @@
 # src/troshkad/tests/test_vm_network_mtu.py
 import xml.etree.ElementTree as ET
+import os
+import stat
 from unittest.mock import patch
+import pytest
 import troshkad
+
+
+@pytest.mark.parametrize("fail_define", [False, True])
+def test_nested_mac_xml_is_private_and_cleaned_up(fail_define):
+    xml = '<domain><devices><interface><source bridge="br-1001"/></interface></devices></domain>'
+    paths = []
+
+    def define(job, command, timeout):
+        assert command[:2] == ["virsh", "define"]
+        path = command[2]
+        paths.append(path)
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert ET.parse(path).find(".//driver").get("trustGuestRxFilters") == "yes"
+        if fail_define:
+            raise RuntimeError("define failed")
+
+    with patch("troshkad.subprocess.check_output", return_value=xml), patch(
+        "troshkad._run_cmd", side_effect=define
+    ), patch("troshkad._job_log"):
+        if fail_define:
+            with pytest.raises(RuntimeError, match="define failed"):
+                troshkad._apply_nested_mac_trust(
+                    {}, "test-domain", [{"bridge": "br-1001", "allow_nested_macs": True}]
+                )
+        else:
+            troshkad._apply_nested_mac_trust(
+                {}, "test-domain", [{"bridge": "br-1001", "allow_nested_macs": True}]
+            )
+    assert len(paths) == 1
+    assert not os.path.exists(paths[0])
 
 
 def test_network_arg_includes_mtu_size():

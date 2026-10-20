@@ -514,6 +514,30 @@ def open_kubevirt_exec_relay(provider, target: DialTarget):
     return _ExecRelaySocket(ws)
 
 
+def _open_pinned_agent_socket(host, port, context, fingerprint):
+    """Authenticate the peer before the caller can send agent credentials."""
+    import hashlib
+    import hmac
+
+    raw = socket.create_connection((host, port), timeout=30)
+    try:
+        wrapped = context.wrap_socket(raw, server_hostname=host)
+    except Exception:
+        raw.close()
+        raise
+    try:
+        certificate = wrapped.getpeercert(binary_form=True)
+        if not certificate:
+            raise RuntimeError("troshkad peer certificate missing")
+        digest = hashlib.sha256(certificate).hexdigest().upper()
+        if not hmac.compare_digest(digest, fingerprint):
+            raise RuntimeError("troshkad cert fingerprint mismatch")
+    except Exception:
+        wrapped.close()
+        raise
+    return wrapped
+
+
 def open_troshkad_tunnel_socket(
     host_row, project_id: str, api_host: str, api_port: int
 ):
@@ -532,6 +556,8 @@ def open_troshkad_tunnel_socket(
     _get_pool(host_row)
 
     fingerprint = (host_row.agent_cert_fingerprint or "").replace(":", "").upper()
+    # Agents use self-signed certificates. Authenticate by the enrolled SHA-256
+    # pin in _open_pinned_agent_socket before sending any bearer credentials.
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -545,18 +571,9 @@ def open_troshkad_tunnel_socket(
     except Exception:
         logger.debug("troshkad tunnel: no client cert available", exc_info=True)
 
-    raw = socket.create_connection((host_row.ip_address, TROSHKAD_PORT), timeout=30)
-    ssock = ctx.wrap_socket(raw, server_hostname=host_row.ip_address)
-    # Optional fingerprint pin (urllib3 pool already validates on other calls).
-    if fingerprint:
-        peercert = ssock.getpeercert(binary_form=True)
-        if peercert:
-            import hashlib
-
-            digest = hashlib.sha256(peercert).hexdigest().upper()
-            if digest != fingerprint:
-                ssock.close()
-                raise RuntimeError("troshkad cert fingerprint mismatch")
+    ssock = _open_pinned_agent_socket(
+        host_row.ip_address, TROSHKAD_PORT, ctx, fingerprint
+    )
 
     body = json.dumps(
         {

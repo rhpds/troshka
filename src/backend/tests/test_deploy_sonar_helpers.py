@@ -2,11 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.services.deploy_service import (
     _all_ops_clusters_error,
     _iso_or_none,
     _maybe_stamp_showroom_url_from_route,
     _ops_pod_resume_should_abort,
+    _require_deploy_host,
     _run_container_redeploy,
     _stamp_cluster_monitoring_fields,
     _stamp_fresh_install_clusters_monitoring,
@@ -17,6 +20,13 @@ from app.services.ocp.agent_template import (
     _maybe_bake_bastion_install,
 )
 from app.services.showroom_scaffold import SHOWROOM_URL_KEY
+
+
+def test_deploy_host_is_required_even_without_python_assertions():
+    with pytest.raises(RuntimeError, match="returned no host"):
+        _require_deploy_host(None)
+    host = MagicMock()
+    assert _require_deploy_host(host) is host
 
 
 def test_stamp_cluster_monitoring_fields():

@@ -73,6 +73,9 @@ def _object_size(core_api, source, namespace):
         **credentials,
     )
     try:
+        # CDI sources include external/public buckets and non-AWS S3 servers.
+        # There is no expected AWS account owner; this optional probe reads only
+        # the byte count from the source CDI is already importing.
         total = client.head_object(Bucket=bucket, Key=key).get("ContentLength")
         return total if isinstance(total, int) and total > 0 else None
     finally:

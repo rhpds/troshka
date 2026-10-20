@@ -10596,7 +10596,8 @@ class TestNetToken(unittest.TestCase):
 
     def test_deterministic(self):
         n = "troshka-da63de48-showroom"
-        self.assertEqual(troshkad._net_token(n), troshkad._net_token(n))
+        first = troshkad._net_token(n)
+        self.assertEqual(troshkad._net_token(n), first)
 
     def test_unique_across_projects_same_suffix(self):
         # Two different projects, both with a 'showroom' container.

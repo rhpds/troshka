@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 
@@ -179,7 +181,7 @@ export default function RunWorkloadModal({
   };
 
   return (
-    <div
+    <ModalBackdrop label="Workload"
       style={{
         position: "fixed",
         inset: 0,
@@ -189,8 +191,8 @@ export default function RunWorkloadModal({
         justifyContent: "center",
         background: "rgba(0,0,0,0.6)",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !launching) onClose();
+      onClose={() => {
+        if (!launching) onClose();
       }}
     >
       <div
@@ -247,10 +249,10 @@ export default function RunWorkloadModal({
               }
               style={{ flex: 1 }}
             />
-            <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>✕</button>
+            <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>✕</button>
           </div>
         ))}
-        <button
+        <button type="button"
           className="props-library-btn"
           onClick={() => setRows((rs) => [...rs, { name: "", type: "git", version: "main" }])}
           style={{ padding: "4px 8px", fontSize: 11, marginBottom: 12 }}
@@ -337,7 +339,7 @@ export default function RunWorkloadModal({
           </div>
         )}
 
-        <button
+        <button type="button"
           className="props-library-btn"
           onClick={() => setShowExtraVars((v) => !v)}
           style={{ padding: "4px 8px", fontSize: 11, marginBottom: 12 }}
@@ -363,14 +365,14 @@ export default function RunWorkloadModal({
         )}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button onClick={onClose} disabled={launching}>
+          <button type="button" onClick={onClose} disabled={launching}>
             Cancel
           </button>
-          <button className="project-publish-btn" onClick={launch} disabled={launchDisabled}>
+          <button type="button" className="project-publish-btn" onClick={launch} disabled={launchDisabled}>
             {launching ? "Launching…" : "Launch"}
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

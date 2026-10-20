@@ -2,21 +2,87 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from app.services.ocp.api_tunnel import (
     ClusterAccess,
     DialTarget,
     _ExecRelaySocket,
+    _open_pinned_agent_socket,
     get_cluster_access,
     list_cluster_access,
     localhost_kubeconfig,
     open_kubevirt_exec_relay,
+    open_troshkad_tunnel_socket,
     resolve_dial_targets,
 )
+
+
+@pytest.mark.parametrize("certificate", [None, b"", b"wrong certificate"])
+def test_agent_pin_rejects_missing_or_wrong_peer(certificate):
+    context = MagicMock()
+    peer = context.wrap_socket.return_value
+    peer.getpeercert.return_value = certificate
+    fingerprint = hashlib.sha256(b"enrolled certificate").hexdigest().upper()
+    with patch("app.services.ocp.api_tunnel.socket.create_connection"):
+        with pytest.raises(
+            RuntimeError, match="certificate missing|fingerprint mismatch"
+        ):
+            _open_pinned_agent_socket("agent", 9443, context, fingerprint)
+    peer.close.assert_called_once()
+    peer.sendall.assert_not_called()
+
+
+def test_agent_pin_accepts_enrolled_peer():
+    context = MagicMock()
+    peer = context.wrap_socket.return_value
+    peer.getpeercert.return_value = b"enrolled certificate"
+    fingerprint = hashlib.sha256(b"enrolled certificate").hexdigest().upper()
+    with patch("app.services.ocp.api_tunnel.socket.create_connection"):
+        result = _open_pinned_agent_socket("agent", 9443, context, fingerprint)
+    assert result is peer
+    peer.close.assert_not_called()
+
+
+def test_agent_pin_closes_socket_on_handshake_failure():
+    context = MagicMock()
+    context.wrap_socket.side_effect = OSError("handshake failed")
+    with patch("app.services.ocp.api_tunnel.socket.create_connection") as connect:
+        with pytest.raises(OSError, match="handshake failed"):
+            _open_pinned_agent_socket("agent", 9443, context, "A" * 64)
+    connect.return_value.close.assert_called_once()
+
+
+@pytest.mark.parametrize("certificate", [None, b"wrong certificate"])
+def test_tunnel_never_sends_bearer_token_to_unverified_peer(certificate):
+    host = SimpleNamespace(
+        ip_address="agent",
+        agent_token="private-token",
+        agent_cert_fingerprint=hashlib.sha256(b"enrolled certificate").hexdigest(),
+    )
+    context = MagicMock()
+    peer = context.wrap_socket.return_value
+    peer.getpeercert.return_value = certificate
+    with (
+        patch("app.services.troshkad_client._get_pool"),
+        patch("ssl.SSLContext", return_value=context),
+        patch(
+            "app.services.agent_ca_service.get_client_cert_paths",
+            return_value=(None, None),
+        ),
+        patch("app.services.ocp.api_tunnel.socket.create_connection"),
+    ):
+        with pytest.raises(
+            RuntimeError, match="certificate missing|fingerprint mismatch"
+        ):
+            open_troshkad_tunnel_socket(host, "project", "nested-api", 6443)
+    peer.sendall.assert_not_called()
+    peer.close.assert_called_once()
 
 
 def _project(topo: dict):

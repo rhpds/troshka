@@ -182,7 +182,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
             Cancel
           </button>
-          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined)} disabled={!name.trim() || deploying}
+          <button type="button" onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined)} disabled={!name.trim() || deploying}
             style={{
               ...inputStyle, width: "auto", cursor: deploying ? "wait" : "pointer",
               padding: "6px 16px", background: "rgba(74,222,128,0.15)",

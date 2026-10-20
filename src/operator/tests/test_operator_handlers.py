@@ -71,7 +71,8 @@ class TestGoldenPvcName:
     def test_same_path_same_name(self):
         from helpers.k8s import golden_pvc_name
 
-        assert golden_pvc_name("x/y") == golden_pvc_name("x/y")
+        first = golden_pvc_name("x/y")
+        assert golden_pvc_name("x/y") == first
 
     def test_name_starts_with_golden(self):
         from helpers.k8s import golden_pvc_name
@@ -11102,9 +11103,6 @@ def _load_configure():
 
     # Mock kubernetes hierarchy (configure imports it at call time)
     k8s_mock = MagicMock()
-    old_k8s = sys.modules.get("kubernetes")
-    old_k8s_client = sys.modules.get("kubernetes.client")
-    old_k8s_exc = sys.modules.get("kubernetes.client.exceptions")
     sys.modules["kubernetes"] = k8s_mock
     sys.modules["kubernetes.client"] = k8s_mock.client
     sys.modules["kubernetes.client.exceptions"] = k8s_mock.client.exceptions
@@ -11130,6 +11128,13 @@ import sys
 
 class TestConfigureStartup:
     """Tests for the @kopf.on.startup() handler in main.py."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_import_mocks(self):
+        # _load_configure replaces the Kubernetes module hierarchy. Keep those
+        # replacements scoped to this test, including the call to configure().
+        with patch.dict(sys.modules):
+            yield
 
     def _make_settings(self):
         """Create a mock settings object with the attributes configure() sets."""
@@ -11414,7 +11419,7 @@ class TestClusterVipLeases:
         from helpers.topology import _bogus_mac_for_ip
 
         assert _bogus_mac_for_ip("192.168.1.254") == "02:00:c0:a8:01:fe"
-        assert _bogus_mac_for_ip("10.0.0.10") == _bogus_mac_for_ip("10.0.0.10")
+        assert _bogus_mac_for_ip("10.0.0.10") == "02:00:0a:00:00:0a"
 
     def test_identical_api_ingress_vip_dedups(self):
         """api_vip == ingress_vip (SNO-style) yields ONE lease, not two — a

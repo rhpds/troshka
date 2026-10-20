@@ -106,11 +106,11 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
     >
       {isBmc && (
         <Tooltip content={BMC_INFO_TIP} position="right">
-          <span
-            role="button"
-            tabIndex={0}
+          <button type="button"
+
+
             aria-label="BMC network information"
-            className="nodrag nopan"
+            className="plain-button nodrag nopan"
             onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             style={{
@@ -126,7 +126,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             }}
           >
             <InfoCircleIcon style={{ width: 12, height: 12 }} />
-          </span>
+          </button>
         </Tooltip>
       )}
       <span className="network-node-icon">
@@ -475,8 +475,8 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                       ) : (
                                         <span>{addr}</span>
                                       )}
-                                      <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                                        onClick={() => navigator.clipboard.writeText(copyText)} title="Copy">Copy</span>
+                                      <button type="button" style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                                        onClick={() => navigator.clipboard.writeText(copyText)} title="Copy" className="plain-button">Copy</button>
                                     </>
                                   );
                                 }

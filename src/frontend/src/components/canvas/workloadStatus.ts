@@ -42,6 +42,7 @@ export function findInflightRun(
   if (!inflight.length) return null;
   return inflight.reduce((a, b) =>
     (a.created_at || "") >= (b.created_at || "") ? a : b,
+    inflight[0],
   );
 }
 
@@ -62,6 +63,7 @@ export function findFailedChainRun(
   if (!failed.length) return null;
   return failed.reduce((a, b) =>
     (a.created_at || "") >= (b.created_at || "") ? a : b,
+    failed[0],
   );
 }
 

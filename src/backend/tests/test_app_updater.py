@@ -404,7 +404,8 @@ def test_dev_up_to_date_false_when_source_changed(monkeypatch):
 
 def test_compute_source_hash_is_stable():
     # Content-based: deterministic for an unchanged tree, no mtime dependence.
-    assert app_updater._compute_source_hash() == app_updater._compute_source_hash()
+    first = app_updater._compute_source_hash()
+    assert app_updater._compute_source_hash() == first
 
 
 def test_selector_from_match_labels():

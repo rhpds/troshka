@@ -708,7 +708,7 @@ function ConsolePage() {
                   <line x1="12" y1="17" x2="12" y2="21" />
                 </svg>
                 <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
-                <button
+                <button type="button"
                   onClick={() => {
                     fetchConsoleUrl().then((result) => {
                       if (!result) return;

@@ -63,7 +63,7 @@ function slugify(name: string): string {
  *
  * The returned `node.id` and `cluster.nodeId` share the value
  * `cluster-<slug>-<short>`; `cluster.id` is `<slug>-<short>`. A short random
- * suffix guarantees uniqueness across multiple drops (multi-cluster is the
+ * suffix minimizes collisions across multiple drops (multi-cluster is the
  * core use case — two "ocp" drops must not collide).
  */
 export function makeCluster(
@@ -71,7 +71,8 @@ export function makeCluster(
   position: { x: number; y: number },
 ): { node: Node; cluster: ClusterConfig } {
   const slug = slugify(name);
-  const short = Math.random().toString(36).slice(2, 8);
+  const random = crypto.getRandomValues(new Uint32Array(1))[0];
+  const short = random.toString(36).padStart(7, "0").slice(-6);
   const clusterId = `${slug}-${short}`;
   const nodeId = `cluster-${clusterId}`;
 

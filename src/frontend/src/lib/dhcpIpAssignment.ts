@@ -14,7 +14,7 @@ export function ipToNum(ip: string): number | null {
   const parts = ip.split(".");
   if (parts.length !== 4) return null;
   const nums = parts.map(Number);
-  if (nums.some((n) => isNaN(n) || n < 0 || n > 255)) return null;
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
   return ((nums[0] << 24) + (nums[1] << 16) + (nums[2] << 8) + nums[3]) >>> 0;
 }
 
@@ -23,11 +23,11 @@ export function listCidrHosts(cidr: string): string[] {
   const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
   if (!match) return [];
   const ip =
-    (parseInt(match[1], 10) << 24) +
-    (parseInt(match[2], 10) << 16) +
-    (parseInt(match[3], 10) << 8) +
-    parseInt(match[4], 10);
-  const bits = parseInt(match[5], 10);
+    (Number.parseInt(match[1], 10) << 24) +
+    (Number.parseInt(match[2], 10) << 16) +
+    (Number.parseInt(match[3], 10) << 8) +
+    Number.parseInt(match[4], 10);
+  const bits = Number.parseInt(match[5], 10);
   if (bits < 0 || bits > 32) return [];
   const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
   const network = (ip & mask) >>> 0;

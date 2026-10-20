@@ -67,7 +67,7 @@ async def cluster_api_tunnel(websocket: WebSocket, project_id: str, cluster_id: 
         )
         await session.run()
     except Exception as exc:
-        logger.info("tunnel session error %s/%s: %s", project_id[:8], cluster_id, exc)
+        logger.info("tunnel session failed (%s)", type(exc).__name__)
         try:
             await websocket.send_json({"type": "error", "error": str(exc)[:200]})
         except Exception:
