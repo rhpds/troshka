@@ -84,6 +84,12 @@ def _route_hostname_for_vip(topology: dict, api_vip: str) -> str:
     return ""
 
 
+def _is_worker(data: dict) -> bool:
+    role = data.get("clusterRole") or ""
+    group = (data.get("tags") or {}).get("AnsibleGroup", "")
+    return role == "worker" or (not role and "workers" in group)
+
+
 def _cp_kubeconfig(topology: dict, cluster_id: str) -> str:
     for node in topology.get("nodes", []) or []:
         if node.get("type") != "vmNode":
@@ -91,9 +97,7 @@ def _cp_kubeconfig(topology: dict, cluster_id: str) -> str:
         data = node.get("data") or {}
         if data.get("clusterId") != cluster_id:
             continue
-        role = data.get("clusterRole") or ""
-        group = (data.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
+        if _is_worker(data):
             continue
         kc = data.get("ocpKubeconfig") or ""
         if isinstance(kc, str) and kc.strip():
@@ -218,6 +222,57 @@ def _gateway_pod_name(core_api, namespace: str, project_id: str) -> str:
     return ""
 
 
+def _gateway_pod_targets(core_api, namespace, project_id, cluster, listen_port):
+    pod_name = _gateway_pod_name(core_api, namespace, project_id)
+    if not pod_name:
+        return []
+    # Only forward a port that the topology actually published on the gateway.
+    candidates = [("kubevirt-exec", API_PORT)]
+    if listen_port is not None:
+        candidates.insert(0, ("kubevirt-pf", listen_port))
+    return [
+        DialTarget(
+            host=pod_name,
+            port=port,
+            via=via,
+            tls_server_name=cluster.tls_server_name,
+            force_insecure=False,
+            namespace=namespace,
+            pod_name=pod_name,
+            api_vip=cluster.api_vip,
+        )
+        for via, port in candidates
+    ]
+
+
+def _service_dial_target(core_api, namespace, cluster, topology, listen_port):
+    vm_name = _vm_name_for_api_vip(topology, cluster.api_vip)
+    if not vm_name:
+        return None
+    svc_name = f"rt-{vm_name}-{API_PORT}"[:63]
+    try:
+        svc = core_api.read_namespaced_service(svc_name, namespace)
+        spec = getattr(svc, "spec", None)
+        cluster_ip = getattr(spec, "cluster_ip", None) or ""
+        if not cluster_ip or cluster_ip in ("None", "none"):
+            return None
+        ports = list(getattr(spec, "ports", None) or [])
+        default_port = listen_port or API_PORT
+        port = int(getattr(ports[0], "port", default_port)) if ports else default_port
+        return DialTarget(
+            host=cluster_ip,
+            port=port,
+            via="direct",
+            tls_server_name=cluster.tls_server_name,
+            force_insecure=False,
+        )
+    except Exception:
+        logger.debug(
+            "ClusterIP lookup failed for %s/%s", namespace, svc_name, exc_info=True
+        )
+        return None
+
+
 def _kubevirt_dial_targets(
     provider, project_id: str, cluster: ClusterAccess, topology: dict
 ) -> list[DialTarget]:
@@ -239,66 +294,14 @@ def _kubevirt_dial_targets(
         core_api = None
 
     if core_api is not None and cluster.api_vip:
-        pod_name = _gateway_pod_name(core_api, namespace, project_id)
-        if pod_name:
-            # Only PF when topology published an API listen port on the gateway.
-            # Otherwise PF to :6443 hits a closed port (showroom-only gateways).
-            if listen_port is not None:
-                targets.append(
-                    DialTarget(
-                        host=pod_name,
-                        port=listen_port,
-                        via="kubevirt-pf",
-                        tls_server_name=cluster.tls_server_name,
-                        force_insecure=False,
-                        namespace=namespace,
-                        pod_name=pod_name,
-                        api_vip=cluster.api_vip,
-                    )
-                )
-            targets.append(
-                DialTarget(
-                    host=pod_name,
-                    port=API_PORT,
-                    via="kubevirt-exec",
-                    tls_server_name=cluster.tls_server_name,
-                    force_insecure=False,
-                    namespace=namespace,
-                    pod_name=pod_name,
-                    api_vip=cluster.api_vip,
-                )
-            )
-        vm_name = _vm_name_for_api_vip(topology, cluster.api_vip)
-        svc_name = f"rt-{vm_name}-{API_PORT}"[:63] if vm_name else ""
-        if svc_name:
-            try:
-                svc = core_api.read_namespaced_service(svc_name, namespace)
-                cluster_ip = (
-                    getattr(getattr(svc, "spec", None), "cluster_ip", None) or ""
-                )
-                ports = list(getattr(getattr(svc, "spec", None), "ports", None) or [])
-                port = (
-                    int(getattr(ports[0], "port", listen_port or API_PORT))
-                    if ports
-                    else (listen_port or API_PORT)
-                )
-                if cluster_ip and cluster_ip not in ("None", "none"):
-                    targets.append(
-                        DialTarget(
-                            host=cluster_ip,
-                            port=port,
-                            via="direct",
-                            tls_server_name=cluster.tls_server_name,
-                            force_insecure=False,
-                        )
-                    )
-            except Exception:
-                logger.debug(
-                    "ClusterIP lookup failed for %s/%s",
-                    namespace,
-                    svc_name,
-                    exc_info=True,
-                )
+        targets.extend(
+            _gateway_pod_targets(core_api, namespace, project_id, cluster, listen_port)
+        )
+        service_target = _service_dial_target(
+            core_api, namespace, cluster, topology, listen_port
+        )
+        if service_target is not None:
+            targets.append(service_target)
 
     if cluster.route_hostname:
         targets.append(
