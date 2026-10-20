@@ -127,7 +127,7 @@ test-frontend:
     - cd src/frontend
     - npm ci
     # Shared runners expose more CPUs than this job's memory budget can support.
-    - npm run test:coverage -- --maxWorkers=2 --minWorkers=1
+    - npm run test:coverage -- --maxWorkers=2
   artifacts:
     paths:
       - src/frontend/coverage/lcov.info
