@@ -30,7 +30,7 @@ import MoonIcon from "@patternfly/react-icons/dist/esm/icons/moon-icon";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import SignOutAltIcon from "@patternfly/react-icons/dist/esm/icons/sign-out-alt-icon";
 import { ConfirmHost, appConfirm } from "@/lib/confirm";
-import { updateHostAgents } from "@/lib/updateHostAgents";
+import { agentUpdateMessage, updateHostAgents } from "@/lib/updateHostAgents";
 
 interface UserInfo {
   id: string;
@@ -579,9 +579,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               alignItems: "center",
             }}>
               <span>
-                {agentUpdating ? "Host agent update in progress…" : agentUpdateError ? "Host agent update needs attention." : staleHostIds.length === 1
-                  ? "A host agent update is available."
-                  : `${staleHostIds.length} host agents need an update.`}
+                {agentUpdateMessage(agentUpdating, agentUpdateError, staleHostIds.length)}
               </span>
               <Button
                 variant="primary"

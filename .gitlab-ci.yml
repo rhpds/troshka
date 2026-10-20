@@ -117,11 +117,26 @@ test-troshkad:
   tags:
     - itup-alm-x86
 
+test-frontend:
+  stage: test
+  image: node:22
+  script:
+    - cd src/frontend
+    - npm ci
+    - npm run test:coverage
+  artifacts:
+    paths:
+      - src/frontend/coverage/lcov.info
+    expire_in: 1 hour
+  tags:
+    - itup-alm-x86
+
 sonarqube:
   variables:
     SONAR_PROJECT_KEY: "com.redhat.rhpds.troshka"
   needs:
     - job: test-backend
+    - job: test-frontend
     - job: test-operator
       optional: true
     - job: test-troshkad

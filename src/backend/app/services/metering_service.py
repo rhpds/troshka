@@ -27,6 +27,7 @@ from app.services.instance_rates import (
 from app.services.metering_math import (
     KIND_TO_RATE,
     RATE_KEYS,
+    Desired,
     covered_seconds,
     desired_resources,
     diff_intervals,
@@ -86,7 +87,7 @@ def load_type_rates(db: Session) -> dict[str, dict]:
 
 
 def empty_rate_map() -> dict[str, float]:
-    return {key: 0.0 for key in RATE_KEYS}
+    return dict.fromkeys(RATE_KEYS, 0.0)
 
 
 def _typed_rate_row(provider_type: str, type_rates: dict[str, dict]) -> dict:
@@ -237,20 +238,15 @@ def _ceph_nodes(topology: dict | None) -> list[dict]:
     return items
 
 
-def build_snapshot(db: Session, project: Project) -> dict | None:
-    if not project.host_id or project.state == "draft":
-        return None
-    host = db.get(Host, project.host_id)
-    provider_type = "unknown"
+def _host_provider_type(db: Session, host: Host | None) -> str:
     if host and host.provider_id:
         provider = db.get(Provider, host.provider_id)
         if provider:
-            provider_type = provider.type or "unknown"
-    topology = project.deployed_topology or project.topology or {}
-    from app.services.ws_pubsub import get_cached_vm_states
+            return provider.type or "unknown"
+    return "unknown"
 
-    cached = get_cached_vm_states(project.id) or {}
-    live_states = cached.get("states") or {}
+
+def _snapshot_disks(project: Project, topology: dict) -> list[dict]:
     disks = [
         {
             "id": disk.id,
@@ -264,6 +260,20 @@ def build_snapshot(db: Session, project: Project) -> dict | None:
         if item["id"] not in seen:
             disks.append(item)
             seen.add(item["id"])
+    return disks
+
+
+def build_snapshot(db: Session, project: Project) -> dict | None:
+    if not project.host_id or project.state == "draft":
+        return None
+    host = db.get(Host, project.host_id)
+    provider_type = _host_provider_type(db, host)
+    topology = project.deployed_topology or project.topology or {}
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(project.id) or {}
+    live_states = cached.get("states") or {}
+    disks = _snapshot_disks(project, topology)
     eips = [
         {"id": eip.id, "host_id": eip.host_id or project.host_id}
         for eip in db.query(ElasticIp).filter_by(project_id=project.id).all()
@@ -338,6 +348,33 @@ def _open_interval(
     )
 
 
+def _reopen_changed_rates(
+    open_list: list[MeteringInterval],
+    desired: set[Desired],
+    close_keys: set,
+    to_open: list[Desired],
+    host_rates: dict | None,
+    type_rates: dict,
+    fallback: dict,
+) -> None:
+    """Close and reopen current intervals whose stamped unit rate changed."""
+    open_keys = {(kind, rid) for kind, rid, _qty, _h, _p in to_open}
+    desired_map = {(k, r): (q, h, p) for k, r, q, h, p in desired}
+    for row in open_list:
+        key = (row.kind, row.resource_id)
+        if key in close_keys or key not in desired_map:
+            continue
+        qty, hid, ptype = desired_map[key]
+        rate = resolve_rate(row.kind, ptype, host_rates, type_rates, fallback)
+        # Numeric(18,6) stamps; tolerate sub-micro rounding so disk doesn't churn.
+        if abs(_as_float(row.unit_rate) - rate) <= 1e-6:
+            continue
+        close_keys.add(key)
+        if key not in open_keys:
+            to_open.append((row.kind, row.resource_id, qty, hid, ptype))
+            open_keys.add(key)
+
+
 def reconcile_project(
     db: Session,
     project: Project,
@@ -358,22 +395,9 @@ def reconcile_project(
     open_tuples = [(row.kind, row.resource_id, _as_float(row.qty)) for row in open_list]
     to_close, to_open = diff_intervals(open_tuples, desired)
     close_keys = {(kind, rid) for kind, rid, _qty in to_close}
-    open_keys = {(kind, rid) for kind, rid, _qty, _h, _p in to_open}
-    # Re-open when catalog/nested-factor rate drifted (rates are stamped at open).
-    desired_map = {(k, r): (q, h, p) for k, r, q, h, p in desired}
-    for row in open_list:
-        key = (row.kind, row.resource_id)
-        if key in close_keys or key not in desired_map:
-            continue
-        qty, hid, ptype = desired_map[key]
-        rate = resolve_rate(row.kind, ptype, host_rates, type_rates, fallback)
-        # Numeric(18,6) stamps; tolerate sub-micro rounding so disk doesn't churn.
-        if abs(_as_float(row.unit_rate) - rate) <= 1e-6:
-            continue
-        close_keys.add(key)
-        if key not in open_keys:
-            to_open.append((row.kind, row.resource_id, qty, hid, ptype))
-            open_keys.add(key)
+    _reopen_changed_rates(
+        open_list, desired, close_keys, to_open, host_rates, type_rates, fallback
+    )
     for row in open_list:
         if (row.kind, row.resource_id) in close_keys:
             _close_interval(row, now)
@@ -382,7 +406,7 @@ def reconcile_project(
         _open_interval(db, project, kind, rid, qty, hid, ptype, rate, now)
     db.flush()
     spend = live_spend_total(db, project, now)
-    apply_budget(db, project, spend)
+    apply_budget(project, spend)
     return spend
 
 
@@ -406,7 +430,7 @@ def live_spend_total(
 def live_spend(db: Session, project: Project, now: datetime | None = None) -> dict:
     now = now or _now()
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
-    by_kind_map: dict[str, float] = {kind: 0.0 for kind in KIND_TO_RATE}
+    by_kind_map: dict[str, float] = dict.fromkeys(KIND_TO_RATE, 0.0)
     by_kind_lines: dict[str, dict] = {}
     by_kind_spans: dict[str, list[dict]] = {}
     payload = []
@@ -491,7 +515,7 @@ def _running_window(
     return since, None
 
 
-def apply_budget(db: Session, project: Project, spend: float) -> None:
+def apply_budget(project: Project, spend: float) -> None:
     budget = project.budget_usd
     if budget is None:
         return
@@ -684,6 +708,27 @@ def _contribute_intervals_to_months(
         _set_project_month_lines(statement, project.id, project.name, subtotal, by_kind)
 
 
+def _finalize_owner_statement(
+    db: Session, owner_id: str | None, period_start: datetime, now: datetime
+) -> MonthlyStatement | None:
+    statement = (
+        db.query(MonthlyStatement)
+        .filter_by(owner_id=owner_id, period_start=period_start)
+        .first()
+    )
+    if not statement or statement.status == "final":
+        return statement
+    items = statement.line_items or {}
+    projects_lines = items.get("by_project") or []
+    if not projects_lines:
+        db.delete(statement)
+        return None
+    statement.total_usd = sum(float(p.get("subtotal") or 0) for p in projects_lines)
+    statement.status = "final"
+    statement.finalized_at = now
+    return statement
+
+
 def finalize_month(
     db: Session, year: int, month: int, now: datetime | None = None
 ) -> list[MonthlyStatement]:
@@ -726,25 +771,9 @@ def finalize_month(
         owners.add(statement.owner_id)
     finalized: list[MonthlyStatement] = []
     for owner_id in owners:
-        statement = (
-            db.query(MonthlyStatement)
-            .filter_by(owner_id=owner_id, period_start=period_start)
-            .first()
-        )
-        if not statement:
-            continue
-        if statement.status == "final":
+        statement = _finalize_owner_statement(db, owner_id, period_start, now)
+        if statement:
             finalized.append(statement)
-            continue
-        items = statement.line_items or {}
-        projects_lines = items.get("by_project") or []
-        if not projects_lines:
-            db.delete(statement)
-            continue
-        statement.total_usd = sum(float(p.get("subtotal") or 0) for p in projects_lines)
-        statement.status = "final"
-        statement.finalized_at = now
-        finalized.append(statement)
     db.flush()
     return finalized
 

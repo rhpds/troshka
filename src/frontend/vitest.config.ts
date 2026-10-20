@@ -9,6 +9,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text-summary", "lcov"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.d.ts", "src/**/*.{test,spec}.{ts,tsx}"],
+    },
   },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },

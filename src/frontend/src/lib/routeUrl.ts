@@ -44,7 +44,7 @@ export function findRouteForForward<T extends RouteEndpoint>(
   return (
     routes.find(
       (ep) => String(ep.port) === port && (ep.vmIp || "").trim() === intIp,
-    ) || routes.find((ep) => String(ep.port) === port)
+    ) ?? routes.find((ep) => String(ep.port) === port)
   );
 }
 

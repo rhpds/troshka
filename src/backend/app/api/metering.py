@@ -23,6 +23,9 @@ from app.services.metering_service import (
 
 router = APIRouter(prefix="/metering", tags=["metering"])
 
+ACCESS_DENIED = "Access denied"
+METERING_DISABLED = "Metering is disabled"
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 DbSession = Annotated[Session, Depends(get_db)]
@@ -30,7 +33,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 def _require_enabled() -> None:
     if not metering_enabled():
-        raise HTTPException(status_code=404, detail="Metering is disabled")
+        raise HTTPException(status_code=404, detail=METERING_DISABLED)
 
 
 class RatesBody(BaseModel):
@@ -45,13 +48,13 @@ def _clean_rate_block(block: dict) -> dict:
     return out
 
 
-@router.get("/rates")
+@router.get("/rates", responses={404: {"description": METERING_DISABLED}})
 def get_rates(user: CurrentUser, db: DbSession):
     _require_enabled()
     return merge_rate_maps(load_type_rates(db))
 
 
-@router.put("/rates")
+@router.put("/rates", responses={404: {"description": METERING_DISABLED}})
 def put_rates(body: RatesBody, user: AdminUser, db: DbSession):
     _require_enabled()
     for ptype, block in body.rates.items():
@@ -79,7 +82,7 @@ def _owner_emails(db: Session, owner_ids) -> dict[str, str]:
     return {u.id: u.email for u in rows}
 
 
-@router.get("/invoices")
+@router.get("/invoices", responses={404: {"description": METERING_DISABLED}})
 def list_invoices(
     user: CurrentUser,
     db: DbSession,
@@ -94,14 +97,20 @@ def list_invoices(
     ]
 
 
-@router.get("/invoices/{invoice_id}")
+@router.get(
+    "/invoices/{invoice_id}",
+    responses={
+        403: {"description": ACCESS_DENIED},
+        404: {"description": "Invoice not found or metering is disabled"},
+    },
+)
 def get_invoice(invoice_id: str, user: CurrentUser, db: DbSession):
     _require_enabled()
     row = db.get(ProjectInvoice, invoice_id)
     if not row:
         raise HTTPException(status_code=404, detail="Invoice not found")
     if row.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
     emails = _owner_emails(db, [row.owner_id])
     return _invoice_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
@@ -127,7 +136,7 @@ def _invoice_detail(row: ProjectInvoice, owner_email: str | None = None) -> dict
     return data
 
 
-@router.get("/statements")
+@router.get("/statements", responses={404: {"description": METERING_DISABLED}})
 def list_statements(
     user: CurrentUser,
     db: DbSession,
@@ -146,24 +155,32 @@ def list_statements(
     ]
 
 
-@router.get("/statements/{statement_id}")
+@router.get(
+    "/statements/{statement_id}",
+    responses={
+        403: {"description": ACCESS_DENIED},
+        404: {"description": "Statement not found or metering is disabled"},
+    },
+)
 def get_statement(statement_id: str, user: CurrentUser, db: DbSession):
     _require_enabled()
     row = db.get(MonthlyStatement, statement_id)
     if not row:
         raise HTTPException(status_code=404, detail="Statement not found")
     if row.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
     emails = _owner_emails(db, [row.owner_id])
     return _statement_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
 
-@router.post("/statements/finalize")
+@router.post(
+    "/statements/finalize", responses={404: {"description": METERING_DISABLED}}
+)
 def post_finalize_month(
     user: AdminUser,
     db: DbSession,
-    year: int = Query(...),
-    month: int = Query(..., ge=1, le=12),
+    year: Annotated[int, Query()],
+    month: Annotated[int, Query(ge=1, le=12)],
 ):
     """Admin helper to freeze a calendar month (UTC)."""
     _require_enabled()
@@ -193,7 +210,13 @@ def _statement_detail(row: MonthlyStatement, owner_email: str | None = None) -> 
     return data
 
 
-@router.get("/projects/{project_id}")
+@router.get(
+    "/projects/{project_id}",
+    responses={
+        403: {"description": ACCESS_DENIED},
+        404: {"description": "Project not found or metering is disabled"},
+    },
+)
 def get_project_metering(project_id: str, user: CurrentUser, db: DbSession):
     """Live spend for a project (also at /projects/{id}/metering)."""
     return _project_metering(project_id, user, db)
@@ -205,7 +228,7 @@ def _project_metering(project_id: str, user: User, db: Session) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
     reconcile_project(db, project)
     db.commit()
     db.refresh(project)

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { updateHostAgents } from "./updateHostAgents";
+import { agentUpdateMessage, updateHostAgents } from "./updateHostAgents";
 
 const response = (data: unknown, ok = true) => ({ ok, json: async () => data });
 const host = (id: string, version: string, status = "connected") => ({
@@ -47,5 +47,20 @@ describe("updateHostAgents", () => {
     const result = expect(updateHostAgents(["a"])).rejects.toThrow("timed out");
     await vi.advanceTimersByTimeAsync(180000);
     await result;
+  });
+});
+
+describe("agentUpdateMessage", () => {
+  it("keeps progress visible even when the stale-host poll becomes empty", () => {
+    expect(agentUpdateMessage(true, null, 0)).toBe("Host agent update in progress…");
+  });
+
+  it("keeps failures visible when no stale hosts are reported", () => {
+    expect(agentUpdateMessage(false, "Timed out", 0)).toBe("Host agent update needs attention.");
+  });
+
+  it("uses the host count when no operation or error is present", () => {
+    expect(agentUpdateMessage(false, null, 1)).toBe("A host agent update is available.");
+    expect(agentUpdateMessage(false, null, 2)).toBe("2 host agents need an update.");
   });
 });

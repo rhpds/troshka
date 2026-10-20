@@ -42,6 +42,7 @@ import { formatApiDetail } from "@/lib/apiError";
 import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import { openShowroom } from "@/lib/openShowroom";
+import { generateImportPassword } from "@/lib/importPassword";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 function formatRunningElapsed(totalSeconds: number): string {
@@ -87,10 +88,7 @@ export default function ProjectCanvasPage() {
   const [importYaml, setImportYaml] = useState("");
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
-  const [importPassword, setImportPassword] = useState(() => {
-    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  });
+  const [importPassword, setImportPassword] = useState(generateImportPassword);
   const [importSshKeyId, setImportSshKeyId] = useState("");
   const [importSshKeys, setImportSshKeys] = useState<Array<{ id: string; name: string }>>([]);
   const [importAutoDeploy, setImportAutoDeploy] = useState(true);
@@ -1465,6 +1463,7 @@ export default function ProjectCanvasPage() {
           )}
           {showroomUrl && (projectState === "active" || projectState === "stopped") && (
             <button
+              type="button"
               className="project-publish-btn"
               disabled={openingShowroom}
               onClick={async () => {
@@ -1897,8 +1896,7 @@ export default function ProjectCanvasPage() {
                   setImportYaml("");
                   setImportError("");
                   setImportSshKeyId("");
-                  const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-                  setImportPassword(Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""));
+                  setImportPassword(generateImportPassword());
                   fetch("/api/v1/auth/ssh-keys")
                     .then((r) => (r.ok ? r.json() : []))
                     .then((data) => setImportSshKeys(Array.isArray(data) ? data : []))

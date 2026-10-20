@@ -24,7 +24,7 @@ def load_catalog() -> dict:
 
 def kubevirt_unit_rates() -> dict[str, float]:
     raw = load_catalog().get("kubevirt_unit_rates") or {}
-    out = {key: 0.0 for key in RATE_KEYS}
+    out: dict[str, float] = dict.fromkeys(RATE_KEYS, 0.0)
     for key in RATE_KEYS:
         if raw.get(key) is not None:
             out[key] = float(raw[key])
