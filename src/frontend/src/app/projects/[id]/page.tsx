@@ -41,6 +41,7 @@ import {
 import { formatApiDetail } from "@/lib/apiError";
 import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
+import { openShowroom } from "@/lib/openShowroom";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 function formatRunningElapsed(totalSeconds: number): string {
@@ -97,6 +98,7 @@ export default function ProjectCanvasPage() {
   const [projectDesc, setProjectDesc] = useState("");
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("");
+  const [openingShowroom, setOpeningShowroom] = useState(false);
   const [projectHostId, setProjectHostId] = useState("");
   const [offAction, setOffAction] = useState<"stop" | "pause" | "hibernate">("stop");
   const [powerWarnDismissed, setPowerWarnDismissed] = useState(false);
@@ -1464,11 +1466,21 @@ export default function ProjectCanvasPage() {
           {showroomUrl && (projectState === "active" || projectState === "stopped") && (
             <button
               className="project-publish-btn"
-              onClick={() => window.open(showroomUrl, "_blank", "noopener,noreferrer")}
+              disabled={openingShowroom}
+              onClick={async () => {
+                setOpeningShowroom(true);
+                try {
+                  await openShowroom(projectId);
+                } catch (error) {
+                  setToast(error instanceof Error ? error.message : "Could not open Showroom.");
+                } finally {
+                  setOpeningShowroom(false);
+                }
+              }}
               style={{ opacity: 0.85 }}
-              title={showroomUrl}
+              title="Open Showroom using the latest access URL"
             >
-              Open Showroom
+              {openingShowroom ? "Opening Showroom…" : "Open Showroom"}
             </button>
           )}
           {(projectState === "active" || projectState === "stopped") && (

@@ -92,8 +92,7 @@ export function showroomPublicUrl(
 ): string | null {
   const stamped = (deployed?._showroom_url || "").trim();
   if (stamped) {
-    if (stamped.includes("token=") || !deployed?._showroom_access_token) return stamped;
-    return withShowroomAccessToken(stamped, deployed._showroom_access_token);
+    return withShowroomAccessToken(stamped, deployed?._showroom_access_token);
   }
   const base = (baseUrl || "").trim();
   if (!base) return null;

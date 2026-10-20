@@ -106,6 +106,13 @@ describe("withShowroomAccessToken", () => {
 });
 
 describe("showroomPublicUrl", () => {
+  it("replaces a stale stamped token with the current deployment token", () => {
+    expect(showroomPublicUrl(null, {
+      _showroom_url: "https://showroom.example.com/?token=old#lab",
+      _showroom_access_token: "new",
+    })).toBe("https://showroom.example.com/?token=new#lab");
+  });
+
   it("prefers stamped url and fills missing token from access token", () => {
     expect(
       showroomPublicUrl("https://ignored.example.com", {
