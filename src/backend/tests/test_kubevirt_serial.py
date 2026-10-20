@@ -55,9 +55,9 @@ def _mock_kubevirt_serial_session(return_value):
 def test_kubevirt_exec_serial_junos():
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
-        ),
+        ) as get_clients,
         _mock_kubevirt_serial_session(
             {
                 "output": "Hostname: rtr3",
@@ -79,12 +79,13 @@ def test_kubevirt_exec_serial_junos():
     assert result["method"] == "serial-junos"
     assert result["output"] == "Hostname: rtr3"
     assert result["exit_code"] == 0
+    get_clients.assert_called_once()
 
 
 def test_kubevirt_exec_serial_ios():
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         _mock_kubevirt_serial_session(
@@ -114,7 +115,7 @@ def test_kubevirt_exec_serial_ios():
 def test_kubevirt_exec_serial_junos_blank_console():
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         patch(
@@ -136,7 +137,7 @@ def test_kubevirt_exec_serial_junos_blank_console():
 def test_kubevirt_exec_serial_ios_blank_console():
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         patch(
@@ -158,7 +159,7 @@ def test_kubevirt_exec_serial_ios_blank_console():
 def test_kubevirt_exec_serial_eos():
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         _mock_kubevirt_serial_session(
@@ -191,7 +192,7 @@ def test_kubevirt_exec_serial_eos_multisession():
 
     with (
         patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
+            "app.services.providers.kubevirt_serial._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         patch(
