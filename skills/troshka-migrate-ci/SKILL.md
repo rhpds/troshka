@@ -75,6 +75,13 @@ flow when no supported Troshka binding is available.
   and dynamically included tasks. Missing source is `unresolved`.
 - Distinguish AgnosticD and AgnosticD-v2. Legacy execution requires evidence or
   explicit adaptations, not an unexplained switch to the v2 runner.
+- Required GPUs or other specialized instance-specific hardware capabilities
+  are unsupported migration targets right now. Mark migration blocked for Troshka
+  when workloads require them; do not imply passthrough exists or substitute
+  ordinary VMs. Instance types used only for CPU/RAM sizing can still be mapped.
+- When workloads require nested virtualization, set `nested_virt: true` on every
+  affected VM in the generated template. Verify host/backend support separately.
+  For shared tenants, assess the existing cluster rather than building one.
 - Remove GUID-format dependencies and external certificate issuance used only
   for hosting. Stable internal names are appropriate inside isolated boundaries.
   Shared tenants still require unique namespace/resource ownership and ingress

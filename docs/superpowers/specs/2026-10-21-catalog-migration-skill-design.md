@@ -53,6 +53,13 @@ capture/restore cycle. Live tenant creation and cleanup remain explicit actions.
 
 ## Existing foundations
 
+Required GPUs and other specialized instance-specific hardware capabilities
+currently block Troshka migration. Ordinary instance sizing may map to generic
+VM resources. Workloads needing nested virtualization require `nested_virt: true`
+on every affected template VM, including workers that run nested guests, plus
+separate host/backend/runtime verification. Shared tenants must obtain the
+capability from their existing cluster rather than a per-tenant cluster build.
+
 - `docs/dev/deploy-pipeline.md` documents the AgnosticD-v2 Troshka provider,
   template inclusion, and `template`, `pattern`, and `pattern_workloads` modes.
 - `src/backend/app/services/workloads/agnosticv.py` uses the canonical AgnosticV

@@ -37,6 +37,34 @@ by workloads. Supply services such as bastion tools, registry, object storage,
 git, and DNS only when required. Disconnected registries and egress proxies need
 their own readiness/trust checks.
 
+Required GPU/accelerator or other specialized instance-specific hardware is a
+current migration blocker. Do not invent passthrough fields, substitute CPU
+emulation, or remove the workload silently. Ordinary instance sizing can map to
+generic VM CPU/RAM/disk resources when no special capability is required.
+
+For virtualization inside guests, explicitly set the canonical exported flag on
+each affected VM:
+
+```yaml
+vms:
+  hypervisor:
+    vcpus: 4
+    ram_gb: 16
+    nested_virt: true
+```
+
+This fragment is not a complete template; derive names and sizing from the CI.
+The inspected importer maps `nested_virt` to `nestedVirt`. For OpenShift
+Virtualization, set it on each worker that must host nested guests. Verify
+host/backend and runtime support separately. Shared tenants require compatible
+existing cluster nodes and authorized privileges; never create a cluster as a
+workaround for absent tenant capability.
+Distinguish virtualization in the outer CNV infrastructure from virtualization
+inside the lab's guest VMs. Outer KubeVirt provisioning alone is not evidence
+that the guests require `nested_virt: true`. Likewise, remote GPU-backed inference
+does not imply the local lab needs GPU passthrough; record the external service
+dependency and inspect actual local scheduling/device requirements.
+
 Assign one executor per phase. When AAP runs `software_workloads`, do not also
 populate Troshka auto-run `workloads` with the same roles. When Troshka owns a
 phase, verify the provider adapter forwards its configuration and that its runner

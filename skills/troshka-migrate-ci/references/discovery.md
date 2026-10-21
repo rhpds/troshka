@@ -54,6 +54,25 @@ Include all workload phases actually used by that config. Names such as
 Legacy config-specific roles or relative file paths may require adaptation even
 when their role names resemble v2 roles.
 
+Trace required GPUs/accelerators, specialized devices, architecture, and
+hardware-dependent lesson behavior. Required GPUs and specialized instance-specific
+hardware currently block Troshka migration; distinguish these from ordinary
+instance labels used only for CPU/RAM sizing. Inspect workload code for KVM,
+libvirt, KubeVirt/OpenShift Virtualization, or other hypervisors inside guest
+VMs. Record exactly which VMs require nested virtualization and the source evidence.
+
+Follow GitOps bootstrap applications into child charts/manifests and referenced
+content repositories. Workload-role source alone may omit storage, hardware,
+external inference, and access requirements introduced by those applications.
+Record the selected stage; when dev uses mutable refs and event pins revisions,
+assess each distinctly rather than treating the event snapshot as current dev.
+
+Distinguish shared-platform preparation from an ordinary tenant: workload-only
+CIs may consume pooled clusters but change OAuth, operators, ingress, or worker
+capacity for all tenants. Record provider and platform-owner boundaries; do not
+run that preparation once per tenant. An owning platform build can be a future
+shared base, while consuming tenant orders still reuse its allocation.
+
 Search narrow source roots with `rg` for `guid`, `cloud_provider`, namespace,
 credential inputs, API calls, DNS/TLS settings, resource IDs, inventory groups,
 Showroom/Antora variables, and lifecycle hooks. Read the surrounding task before

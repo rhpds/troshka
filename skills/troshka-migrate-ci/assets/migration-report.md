@@ -15,6 +15,9 @@ inferred settings and inaccessible sources. Do not include secret values.
 State dedicated, shared tenant, or hybrid; overall candidate/partial/blocked;
 reasons and mandatory blockers. Identify cluster/pool ownership, tenant allocation
 and cleanup boundaries where relevant. Explain retained curriculum dependencies.
+Record required GPUs/specialized instance hardware as current migration blockers.
+List affected nested-virtualization VMs, generated `nested_virt: true` settings,
+and separate host/backend/runtime support evidence.
 
 ## Dependency decisions
 

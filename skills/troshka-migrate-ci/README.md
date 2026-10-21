@@ -59,6 +59,16 @@ certificate assumptions, ownership boundaries, Showroom changes, and blockers.
 Dependencies needed for the lesson itself, such as AWS IAM, are called out
 rather than silently removed.
 
+**Current hardware limits:** CIs requiring GPUs or other specialized
+instance-specific hardware cannot migrate to Troshka right now. The skill marks
+that requirement as a blocker. An instance type used only for CPU/RAM sizing can
+still map to ordinary VM resources.
+
+Workloads that need nested virtualization must have `nested_virt: true` on each
+affected VM in the generated template, including workers running nested guests.
+Host/backend support must also be verified; the flag alone is not readiness
+evidence. Tenant CIs require that capability in their existing cluster.
+
 ## Generate the migration candidate
 
 After reviewing the assessment:

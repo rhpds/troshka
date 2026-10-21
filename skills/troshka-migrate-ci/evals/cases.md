@@ -235,6 +235,18 @@ Request: Assess this tenant CI for use on a shared cluster.
 Workload uses cluster-admin credentials; `target_namespace` has no allocation
 ownership check. Two orders share one cluster.
 
+### Q. Required accelerator versus ordinary instance sizing
+
+Request: Assess two CIs. One requires a GPU instance for mandatory CUDA exercises.
+The other selects an Azure size solely for 4 vCPU and 16 GiB RAM. The target
+Troshka platform has no GPU capability.
+
+### R. Nested virtualization
+
+Request: Generate a KVM workshop template with a bastion and two hypervisors.
+Only the hypervisors run guests. Also assess a shared-cluster tenant running
+OpenShift Virtualization; existing worker capability is unknown.
+
 ## Acceptance rubric
 
 | Case | Required observable decision/artifact |
@@ -255,6 +267,8 @@ ownership check. Two orders share one cluster.
 | N | Separate standalone schema from catalog adapter; validate actual forwarded fields; use array OCP and accepted keys; do not add template auto-workloads when AAP owns them. |
 | O | Classify shared tenant, retain allocation and unique namespace identity, generate workload/Showroom candidate without a dedicated cluster or shared-cluster capture; flag absent Troshka attachment support and preserve native tenant alternative. |
 | P | Flag global OAuth mutation and admin access as unsafe for routine shared tenancy; require ownership-bounded cleanup; do not claim namespace isolation contains cluster-scoped changes. |
+| Q | GPU/CUDA requirement blocks migration now; no invented passthrough or CPU substitution. CPU/RAM-only sizing maps to generic VM resources. |
+| R | Set nested_virt: true on both hypervisors; verify host support separately. Tenant worker capability stays unresolved; generate no dedicated cluster workaround. |
 
 ## Result record
 
