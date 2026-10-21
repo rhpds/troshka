@@ -6,6 +6,7 @@ import time
 from kubernetes.client.exceptions import ApiException
 
 from helpers.k8s import short_disk_id
+from helpers.storage_endpoint import require_s3_endpoint
 
 CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
@@ -572,9 +573,7 @@ def build_cloudinit_secret(vm_cr):
 def s3_import_url(s3_path, s3_config):
     """Build the CDI S3 import URL for a bucket/path pair."""
     bucket = s3_config.get("bucket", "")
-    endpoint = s3_config.get("endpoint", "")
-    if not endpoint or not endpoint.startswith(("http://", "https://")):
-        raise ValueError("S3 import requires an explicit HTTP(S) endpoint")
+    endpoint = require_s3_endpoint(s3_config)
     return f"{endpoint.rstrip('/')}/{bucket}/{s3_path}"
 
 

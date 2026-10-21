@@ -89,7 +89,9 @@ def test_central_iso_requires_central_store():
         _cdrom_s3_creds({"central": True}, {"bucket": "aws"}, None)
 
 
-@pytest.mark.parametrize("endpoint", [None, "", "s4.example.com"])
+@pytest.mark.parametrize(
+    "endpoint", [None, "", "s4.example.com", "https://", "http://", "https:///bucket"]
+)
 def test_import_url_never_defaults_to_aws(endpoint):
     from helpers.kubevirt import s3_import_url
 
@@ -97,7 +99,9 @@ def test_import_url_never_defaults_to_aws(endpoint):
         s3_import_url("disk.qcow2", {"bucket": "images", "endpoint": endpoint})
 
 
-@pytest.mark.parametrize("endpoint", [None, "", "s4.example.com"])
+@pytest.mark.parametrize(
+    "endpoint", [None, "", "s4.example.com", "https://", "http://", "https:///bucket"]
+)
 def test_export_and_restore_never_default_to_aws(endpoint):
     from helpers.patterns import build_export_job, build_ceph_device_export_job
     from helpers.ceph_restore import build_mon_restore_job
@@ -111,6 +115,18 @@ def test_export_and_restore_never_default_to_aws(endpoint):
         )
     with pytest.raises(ValueError, match="endpoint"):
         build_mon_restore_job("ns", {"s3Path": "mon.tar.gz"}, config, "secret")
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["https://s4.example.com", "http://rgw.storage.svc:80"]
+)
+def test_explicit_endpoint_is_preserved(endpoint):
+    from helpers.kubevirt import s3_import_url
+
+    assert (
+        s3_import_url("disk.qcow2", {"bucket": "images", "endpoint": endpoint})
+        == endpoint + "/images/disk.qcow2"
+    )
 
 
 def test_snapshot_data_disk_clones_from_resolved_path():

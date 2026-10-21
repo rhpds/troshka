@@ -102,6 +102,18 @@ repos:
             package-lock\.json
           )
 
+  # VPN-aware Sonar gate. A reachable server must produce an exact-revision OK.
+  - repo: local
+    hooks:
+      - id: sonarqube-push
+        name: SonarQube gate (when API reachable)
+        entry: bash scripts/sonarqube-check.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-push]
+
   # Full backend suite on push (not commit) — matches CI pytest; ~1m locally.
   # Escape: SKIP=pytest-backend git push
   - repo: local

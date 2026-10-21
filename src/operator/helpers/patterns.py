@@ -1,4 +1,5 @@
 from helpers.k8s import TOOLS_IMAGE
+from helpers.storage_endpoint import require_s3_endpoint
 
 SNAPSHOT_CLASS = "ocs-storagecluster-rbdplugin-snapclass"
 _EXPORT_MULTIPART_CHUNK = "256M"
@@ -73,9 +74,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
     scratch_pvc_name = f"scratch-{name}"
 
     s3_bucket = s3_config.get("bucket", "")
-    s3_endpoint = s3_config.get("endpoint")
-    if not s3_endpoint or not s3_endpoint.startswith(("http://", "https://")):
-        raise ValueError("S3 export requires an explicit HTTP(S) endpoint")
+    s3_endpoint = require_s3_endpoint(s3_config)
 
     raw_size_bytes = size_gb * 1073741824
 
@@ -268,9 +267,7 @@ def build_ceph_device_export_job(
     scratch_pvc_name = f"scratch-{name}"
 
     s3_bucket = s3_config.get("bucket", "")
-    s3_endpoint = s3_config.get("endpoint")
-    if not s3_endpoint or not s3_endpoint.startswith(("http://", "https://")):
-        raise ValueError("S3 export requires an explicit HTTP(S) endpoint")
+    s3_endpoint = require_s3_endpoint(s3_config)
 
     convert_cmd, volume_kwargs = _ceph_device_export_cmd(block_device)
 

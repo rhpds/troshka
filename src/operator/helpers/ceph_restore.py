@@ -29,6 +29,7 @@ from kubernetes.client.exceptions import ApiException
 from helpers.k8s import TOOLS_IMAGE
 from helpers.kubevirt import s3_import_url
 from helpers.rook_ceph import CEPH_MON_PVC_NAME
+from helpers.storage_endpoint import require_s3_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +118,7 @@ def build_mon_restore_job(
     """
     s3_path = device["s3Path"]
     s3_bucket = s3_config.get("bucket", "")
-    s3_endpoint = s3_config.get("endpoint")
-    if not s3_endpoint or not s3_endpoint.startswith(("http://", "https://")):
-        raise ValueError("S3 restore requires an explicit HTTP(S) endpoint")
+    s3_endpoint = require_s3_endpoint(s3_config)
     restore_cmd = (
         "set -e; export HOME=/scratch; "
         "export RCLONE_CONFIG=/scratch/rclone.conf; "
