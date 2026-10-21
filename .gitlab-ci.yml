@@ -18,6 +18,9 @@ stages:
   variables:
     KUBERNETES_MEMORY_REQUEST: "2Gi"
     KUBERNETES_MEMORY_LIMIT: "4Gi"
+    # Disposable SQLite files retain real multi-connection/WAL behavior while
+    # avoiding checkout-storage stalls during commit/rollback/last-close.
+    TROSHKA_TEST_DB_DIR: "/dev/shm"
   parallel: 16
   script:
     - cd src/backend
@@ -53,7 +56,7 @@ stages:
         n=$(wc -l < "$f" | tr -d ' ')
         echo "  batch ${batch_num}: 1 file (~${n} lines) $f"
         if ! COVERAGE_CORE=ctrace coverage run --parallel-mode --source=app \
-            -m pytest "$f" -q --tb=line -p no:cov -p no:cacheprovider; then
+            -m pytest "$f" -q --tb=short --durations=10 -p no:cov -p no:cacheprovider; then
           fail=1
         fi
       done

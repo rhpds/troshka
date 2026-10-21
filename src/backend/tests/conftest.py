@@ -11,7 +11,10 @@ if _SRC_ROOT not in sys.path:
 # app used QueuePool — two engines → "database is locked" deadlocks that hung
 # until pytest-timeout (flaky on slow GitLab ALM shards).
 _TEST_DB_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), f"test-{os.getpid()}.db")
+    os.path.join(
+        os.environ.get("TROSHKA_TEST_DB_DIR") or os.path.dirname(__file__),
+        f"test-{os.getpid()}.db",
+    )
 )
 os.environ["TROSHKA_DATABASE__URL"] = f"sqlite:///{_TEST_DB_PATH}"
 
