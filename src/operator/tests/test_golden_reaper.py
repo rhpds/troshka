@@ -142,6 +142,18 @@ def test_resolve_golden_s3_config_central():
     assert secret == "s3-central-credentials"  # pragma: allowlist secret
 
 
+def test_resolve_golden_s3_config_gold_without_central_flag():
+    from handlers.project import _resolve_golden_s3_config
+
+    central = {"bucket": "gold-images"}
+    disk = {"patternImage": {"source": "gold", "central": False}}
+    cfg, secret = _resolve_golden_s3_config(
+        disk, {"bucket": "local"}, central, False
+    )
+    assert cfg == central
+    assert secret == "s3-central-credentials"  # pragma: allowlist secret
+
+
 def test_resolve_golden_s3_config_default():
     from handlers.project import _resolve_golden_s3_config
 

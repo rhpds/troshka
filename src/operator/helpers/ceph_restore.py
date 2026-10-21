@@ -70,12 +70,16 @@ def device_s3_config(device: dict, s3_config: dict, central_s3_config: dict | No
     """
     source = device.get("source", "central")
     obc_config = s3_config.get("obcConfig") if s3_config else None
-    if source == "obc" and obc_config:
+    if source == "obc":
+        if not obc_config:
+            raise ValueError("OBC image source requires OBC storage configuration")
         secret = obc_config.get(
             "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
         )
         return obc_config, secret
-    if source == "gold" and central_s3_config:
+    if source == "gold":
+        if not central_s3_config:
+            raise ValueError("Central image source requires central storage configuration")
         return central_s3_config, "s3-central-credentials"  # pragma: allowlist secret
     return s3_config or {}, "s3-credentials"  # pragma: allowlist secret
 
@@ -113,7 +117,9 @@ def build_mon_restore_job(
     """
     s3_path = device["s3Path"]
     s3_bucket = s3_config.get("bucket", "")
-    s3_endpoint = s3_config.get("endpoint") or "https://s3.amazonaws.com"
+    s3_endpoint = s3_config.get("endpoint")
+    if not s3_endpoint or not s3_endpoint.startswith(("http://", "https://")):
+        raise ValueError("S3 restore requires an explicit HTTP(S) endpoint")
     restore_cmd = (
         "set -e; export HOME=/scratch; "
         "export RCLONE_CONFIG=/scratch/rclone.conf; "

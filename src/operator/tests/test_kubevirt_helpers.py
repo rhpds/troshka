@@ -19,10 +19,10 @@ from helpers.kubevirt import (
 from kubernetes.client.exceptions import ApiException
 
 
-def test_s3_import_url_aws_style():
+def test_s3_import_url_explicit_aws_endpoint():
     url = s3_import_url(
         "library/rhel-9.6.qcow2",
-        {"bucket": "troshka-images", "region": "us-east-1"},
+        {"bucket": "troshka-images", "endpoint": "https://s3.us-east-1.amazonaws.com"},
     )
     assert (
         url
@@ -541,19 +541,19 @@ def test_build_datavolume_from_s3_uses_source_size_when_provided():
     # Golden must be sized from the actual image (11Gi), not the requesting
     # disk's sizeGb heuristic. max(11+2, ceil(11*1.15)=ceil(12.65)=13) = 13Gi.
     dv = build_datavolume_from_s3(
-        "g", "cache", "lib/x.qcow2", 100, {}, source_size_gb=11
+        "g", "cache", "lib/x.qcow2", 100, {"endpoint": "https://s4.example.com"}, source_size_gb=11
     )
     assert _s3_storage(dv) == "13Gi"
 
     # A tiny requesting disk must not shrink the golden below the image size.
-    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 5, {}, source_size_gb=11)
+    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 5, {"endpoint": "https://s4.example.com"}, source_size_gb=11)
     assert _s3_storage(dv) == "13Gi"
 
 
 def test_build_datavolume_from_s3_falls_back_to_size_gb():
     # No source size known -> keep the legacy disk-driven heuristic
     # max(20+10, int(20*1.2)=24) = 30Gi.
-    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 20, {})
+    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 20, {"endpoint": "https://s4.example.com"})
     assert _s3_storage(dv) == "30Gi"
 
 

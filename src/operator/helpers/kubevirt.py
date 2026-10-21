@@ -573,10 +573,9 @@ def s3_import_url(s3_path, s3_config):
     """Build the CDI S3 import URL for a bucket/path pair."""
     bucket = s3_config.get("bucket", "")
     endpoint = s3_config.get("endpoint", "")
-    region = s3_config.get("region", "us-east-1")
-    if endpoint and "://" in endpoint:
-        return f"{endpoint.rstrip('/')}/{bucket}/{s3_path}"
-    return f"https://s3.{region}.amazonaws.com/{bucket}/{s3_path}"
+    if not endpoint or not endpoint.startswith(("http://", "https://")):
+        raise ValueError("S3 import requires an explicit HTTP(S) endpoint")
+    return f"{endpoint.rstrip('/')}/{bucket}/{s3_path}"
 
 
 def golden_import_matches(dv, s3_path, s3_config, secret_name):

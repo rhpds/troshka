@@ -1688,7 +1688,7 @@ class TestVmResolveDiskS3:
         path, cfg, secret = _resolve_disk_s3(disk, {}, {})
         assert path is None
 
-    def test_central_without_central_config_uses_normal(self):
+    def test_central_without_central_config_fails(self):
         from handlers.vm import _resolve_disk_s3
 
         disk = {
@@ -1698,10 +1698,8 @@ class TestVmResolveDiskS3:
             }
         }
         s3_cfg = {"bucket": "normal"}
-        # Empty central config = fall back to normal
-        path, cfg, secret = _resolve_disk_s3(disk, s3_cfg, {})
-        assert cfg == s3_cfg
-        assert secret == "s3-credentials"  # pragma: allowlist secret
+        with pytest.raises(ValueError, match="central"):
+            _resolve_disk_s3(disk, s3_cfg, {})
 
 
 class TestVmCleanupLegacyPod:
@@ -4193,7 +4191,7 @@ class TestEnsureGoldenPvc:
             "spec": {
                 "source": {
                     "s3": {
-                        "url": s3_import_url("library/abc.qcow2", {"bucket": "b"}),
+                        "url": s3_import_url("library/abc.qcow2", {"bucket": "b", "endpoint": "https://s4.example.com"}),
                         "secretRef": "s3-credentials",  # pragma: allowlist secret
                     }
                 }
@@ -4206,7 +4204,7 @@ class TestEnsureGoldenPvc:
                 core_api,
                 "library/abc.qcow2",
                 20,
-                {"bucket": "b"},
+                {"bucket": "b", "endpoint": "https://s4.example.com"},
             )
         )
 
@@ -4230,7 +4228,7 @@ class TestEnsureGoldenPvc:
                 core_api,
                 "library/abc.qcow2",
                 20,
-                {"bucket": "b"},
+                {"bucket": "b", "endpoint": "https://s4.example.com"},
             )
         )
 
@@ -5557,7 +5555,7 @@ class TestCreateGoldenPvcForDisk:
         )
 
         disk = {"libraryImage": {"s3Path": "library/rhel.qcow2"}, "sizeGb": 40}
-        s3_config = {"bucket": "b", "endpoint": "s3.example.com"}
+        s3_config = {"bucket": "b", "endpoint": "https://s3.example.com"}
 
         _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
 
@@ -5570,7 +5568,7 @@ class TestCreateGoldenPvcForDisk:
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_config = {"bucket": "troshka-images", "endpoint": "https://s4.example.com"}
         s3_path = "library/rhel.qcow2"
         custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
@@ -5655,8 +5653,8 @@ class TestCreateGoldenPvcForDisk:
             "libraryImage": {"s3Path": "library/img.qcow2", "central": True},
             "sizeGb": 20,
         }
-        s3_config = {"bucket": "normal"}
-        central_config = {"bucket": "central"}
+        s3_config = {"bucket": "normal", "endpoint": "https://s4.example.com"}
+        central_config = {"bucket": "central", "endpoint": "https://s4.example.com"}
 
         _create_golden_pvc_for_disk(
             custom_api, core_api, disk, s3_config, central_config
@@ -5717,7 +5715,7 @@ class TestCreateGoldenPvcForDisk:
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_config = {"bucket": "troshka-images", "endpoint": "https://s4.example.com"}
         s3_path = "library/rhel/disk/rhel.qcow2"
         # DV matches the desired source but is stuck in a terminal clone failure.
         custom_api.get_namespaced_custom_object.return_value = {
@@ -5762,7 +5760,7 @@ class TestCreateGoldenPvcForDisk:
         custom_api = MagicMock()
         core_api = MagicMock()
         core_api.list_namespaced_pod.return_value = MagicMock(items=[])
-        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_config = {"bucket": "troshka-images", "endpoint": "https://s4.example.com"}
         s3_path = "patterns/p1/content.qcow2"
         custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
@@ -5802,7 +5800,7 @@ class TestCreateGoldenPvcForDisk:
         custom_api = MagicMock()
         core_api = MagicMock()
         core_api.list_namespaced_pod.return_value = MagicMock(items=[])
-        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_config = {"bucket": "troshka-images", "endpoint": "https://s4.example.com"}
         s3_path = "library/rhel/disk/rhel.qcow2"
         custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
@@ -6183,7 +6181,7 @@ class TestPollExportJobs:
         result = asyncio.run(
             _snapshot_and_export_disk(
                 disk_info,
-                {"bucket": "b"},
+                {"bucket": "b", "endpoint": "https://s4.example.com"},
                 custom_api,
                 core_api,
                 batch_api,
@@ -7123,7 +7121,7 @@ class TestBuildExportJobValidation:
         from helpers.patterns import build_export_job
 
         job = build_export_job(
-            "myvm-1234", "ns", "temp-pvc", "patterns/p/d.qcow2", {"bucket": "b"}, 20
+            "myvm-1234", "ns", "temp-pvc", "patterns/p/d.qcow2", {"bucket": "b", "endpoint": "https://s4.example.com"}, 20
         )
         return job["spec"]["template"]["spec"]["containers"][0]["command"][2]
 
@@ -7461,7 +7459,7 @@ class TestEnsureGoldenPvcExtended:
             "spec": {
                 "source": {
                     "s3": {
-                        "url": s3_import_url("lib/x.qcow2", {}),
+                        "url": s3_import_url("lib/x.qcow2", {"endpoint": "https://s4.example.com"}),
                         "secretRef": "s3-credentials",  # pragma: allowlist secret
                     }
                 }
@@ -7469,7 +7467,7 @@ class TestEnsureGoldenPvcExtended:
         }
 
         result = asyncio.run(
-            _ensure_golden_pvc(custom_api, core_api, "lib/x.qcow2", 20, {})
+            _ensure_golden_pvc(custom_api, core_api, "lib/x.qcow2", 20, {"endpoint": "https://s4.example.com"})
         )
         from helpers.k8s import golden_pvc_name
 
@@ -7491,7 +7489,7 @@ class TestEnsureGoldenPvcExtended:
         }
 
         result = asyncio.run(
-            _ensure_golden_pvc(custom_api, core_api, "lib/y.qcow2", 20, {})
+            _ensure_golden_pvc(custom_api, core_api, "lib/y.qcow2", 20, {"endpoint": "https://s4.example.com"})
         )
         # Namespace created
         core_api.create_namespace.assert_called_once()
@@ -7518,7 +7516,7 @@ class TestEnsureGoldenPvcExtended:
         }
 
         # Should not raise
-        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {}))
+        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {"endpoint": "https://s4.example.com"}))
 
     def test_namespace_non_409_raises(self):
         from handlers.vm import _ensure_golden_pvc
@@ -7531,7 +7529,7 @@ class TestEnsureGoldenPvcExtended:
         )
         core_api.create_namespace.side_effect = ApiException(status=500)
 
-        exception_operation = _ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {})
+        exception_operation = _ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {"endpoint": "https://s4.example.com"})
         with pytest.raises(ApiException):
             asyncio.run(exception_operation)
 
@@ -7553,7 +7551,7 @@ class TestEnsureGoldenPvcExtended:
             "status": {"phase": "Succeeded"}
         }
 
-        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/a.qcow2", 20, {}))
+        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/a.qcow2", 20, {"endpoint": "https://s4.example.com"}))
 
     def test_existing_dv_read_non_404_raises(self):
         from handlers.vm import _ensure_golden_pvc
@@ -7580,7 +7578,7 @@ class TestEnsureGoldenPvcExtended:
             "spec": {
                 "source": {
                     "s3": {
-                        "url": s3_import_url("lib/c.qcow2", {}),
+                        "url": s3_import_url("lib/c.qcow2", {"endpoint": "https://s4.example.com"}),
                         "secretRef": "s3-credentials",  # pragma: allowlist secret
                     }
                 }
@@ -7589,7 +7587,7 @@ class TestEnsureGoldenPvcExtended:
 
         asyncio.run(
             _ensure_golden_pvc(
-                custom_api, core_api, "lib/c.qcow2", 20, {}, secret_name=None
+                custom_api, core_api, "lib/c.qcow2", 20, {"endpoint": "https://s4.example.com"}, secret_name=None
             )
         )
         # Should not raise -- covers the `if not secret_name` branch
@@ -9086,7 +9084,7 @@ class TestCreateGoldenPvcForDiskNon404:
         disk = {"libraryImage": {"s3Path": "library/img.qcow2"}, "sizeGb": 20}
 
         # Should not raise on 409
-        _create_golden_pvc_for_disk(custom_api, core_api, disk, {"bucket": "b"}, {})
+        _create_golden_pvc_for_disk(custom_api, core_api, disk, {"bucket": "b", "endpoint": "https://s4.example.com"}, {})
 
     def test_dv_create_non_409_raises(self):
         from handlers.project import _create_golden_pvc_for_disk
@@ -9104,7 +9102,7 @@ class TestCreateGoldenPvcForDiskNon404:
         disk = {"libraryImage": {"s3Path": "library/img.qcow2"}, "sizeGb": 20}
 
         with pytest.raises(ApiException):
-            _create_golden_pvc_for_disk(custom_api, core_api, disk, {"bucket": "b"}, {})
+            _create_golden_pvc_for_disk(custom_api, core_api, disk, {"bucket": "b", "endpoint": "https://s4.example.com"}, {})
 
 
 class TestDeleteCustomResourcesEdgeCases:

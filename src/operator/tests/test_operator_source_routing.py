@@ -1,3 +1,5 @@
+import pytest
+
 from helpers.topology import _build_disk_from_storage
 from handlers.vm import _resolve_disk_s3, _cdrom_s3_creds
 
@@ -64,12 +66,51 @@ def test_resolve_gold_source_uses_central():
     assert secret == "s3-central-credentials"  # pragma: allowlist secret
 
 
-def test_resolve_obc_source_falls_back_when_no_obc_config():
+def test_resolve_obc_source_fails_when_no_obc_config():
     s3_config = {"bucket": "troshka-images", "endpoint": "https://s4"}
     disk = {"patternImage": {"s3Path": "patterns/p/d.qcow2", "source": "obc"}}
-    path, cfg, secret = _resolve_disk_s3(disk, s3_config, None)
-    assert cfg["bucket"] == "troshka-images"
-    assert secret == "s3-credentials"  # pragma: allowlist secret
+    with pytest.raises(ValueError, match="OBC"):
+        _resolve_disk_s3(disk, s3_config, None)
+
+
+@pytest.mark.parametrize("missing", [None, {}])
+def test_gold_import_paths_require_central_store(missing):
+    from handlers.project import _resolve_golden_s3_config
+
+    disk = {"patternImage": {"s3Path": "patterns/p/d.qcow2", "source": "gold"}}
+    with pytest.raises(ValueError, match="central"):
+        _resolve_disk_s3(disk, {"bucket": "aws"}, missing)
+    with pytest.raises(ValueError, match="central"):
+        _resolve_golden_s3_config(disk, {"bucket": "aws"}, missing, False)
+
+
+def test_central_iso_requires_central_store():
+    with pytest.raises(ValueError, match="central"):
+        _cdrom_s3_creds({"central": True}, {"bucket": "aws"}, None)
+
+
+@pytest.mark.parametrize("endpoint", [None, "", "s4.example.com"])
+def test_import_url_never_defaults_to_aws(endpoint):
+    from helpers.kubevirt import s3_import_url
+
+    with pytest.raises(ValueError, match="endpoint"):
+        s3_import_url("disk.qcow2", {"bucket": "images", "endpoint": endpoint})
+
+
+@pytest.mark.parametrize("endpoint", [None, "", "s4.example.com"])
+def test_export_and_restore_never_default_to_aws(endpoint):
+    from helpers.patterns import build_export_job, build_ceph_device_export_job
+    from helpers.ceph_restore import build_mon_restore_job
+
+    config = {"bucket": "images", "endpoint": endpoint}
+    with pytest.raises(ValueError, match="endpoint"):
+        build_export_job("export", "ns", "pvc", "disk.qcow2", config, 1)
+    with pytest.raises(ValueError, match="endpoint"):
+        build_ceph_device_export_job(
+            "export", "ns", "pvc", "disk.qcow2", config, 1, block_device=True
+        )
+    with pytest.raises(ValueError, match="endpoint"):
+        build_mon_restore_job("ns", {"s3Path": "mon.tar.gz"}, config, "secret")
 
 
 def test_snapshot_data_disk_clones_from_resolved_path():

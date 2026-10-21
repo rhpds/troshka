@@ -38,7 +38,7 @@ class TestBuildCephDeviceExportJob:
 
         job = build_ceph_device_export_job(
             "ceph-ceph-osd-0", "ns1", "temp-pvc", "patterns/p/osd0.qcow2",
-            {"bucket": "b"}, 20, block_device=True,
+            {"bucket": "b", "endpoint": "https://s4.example.com"}, 20, block_device=True,
         )
         container = job["spec"]["template"]["spec"]["containers"][0]
         assert container["volumeDevices"] == [
@@ -57,7 +57,7 @@ class TestBuildCephDeviceExportJob:
 
         job = build_ceph_device_export_job(
             "ceph-ceph-mon-0", "ns1", "temp-pvc", "patterns/p/mon.tar.gz",
-            {"bucket": "b"}, 10, block_device=False,
+            {"bucket": "b", "endpoint": "https://s4.example.com"}, 10, block_device=False,
         )
         container = job["spec"]["template"]["spec"]["containers"][0]
         assert container["volumeMounts"] == [
@@ -71,7 +71,7 @@ class TestBuildCephDeviceExportJob:
         from helpers.patterns import build_ceph_device_export_job
 
         job = build_ceph_device_export_job(
-            "ceph-ceph-osd-1", "ns1", "temp-pvc", "k", {"bucket": "b"}, 50,
+            "ceph-ceph-osd-1", "ns1", "temp-pvc", "k", {"bucket": "b", "endpoint": "https://s4.example.com"}, 50,
             block_device=True,
         )
         assert job["_deadline"] >= 3600
@@ -128,7 +128,7 @@ class TestSnapshotAndExportCephDevice:
 
         result = asyncio.run(
             _snapshot_and_export_ceph_device(
-                _osd_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
+                _osd_device(), {"bucket": "b", "endpoint": "https://s4.example.com"}, custom_api, core_api, batch_api,
                 "ns1", "proj1",
             )
         )
@@ -154,7 +154,7 @@ class TestSnapshotAndExportCephDevice:
 
         asyncio.run(
             _snapshot_and_export_ceph_device(
-                _osd_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
+                _osd_device(), {"bucket": "b", "endpoint": "https://s4.example.com"}, custom_api, core_api, batch_api,
                 "ns1", "proj1",
             )
         )
@@ -178,7 +178,7 @@ class TestSnapshotAndExportCephDevice:
 
         result = asyncio.run(
             _snapshot_and_export_ceph_device(
-                _mon_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
+                _mon_device(), {"bucket": "b", "endpoint": "https://s4.example.com"}, custom_api, core_api, batch_api,
                 "ns1", "proj1",
             )
         )
@@ -206,7 +206,7 @@ class TestSnapshotAndExportCephDevice:
 
         result = asyncio.run(
             _snapshot_and_export_ceph_device(
-                _osd_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
+                _osd_device(), {"bucket": "b", "endpoint": "https://s4.example.com"}, custom_api, core_api, batch_api,
                 "ns1", "proj1",
             )
         )
@@ -223,7 +223,7 @@ class TestSnapshotAndExportCephDevice:
         batch_api = MagicMock()
 
         exception_operation = _snapshot_and_export_ceph_device(
-                    _osd_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
+                    _osd_device(), {"bucket": "b", "endpoint": "https://s4.example.com"}, custom_api, core_api, batch_api,
                     "ns1", "proj1",
                 )
         with pytest.raises(ApiException):

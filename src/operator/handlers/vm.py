@@ -354,24 +354,21 @@ def _resolve_disk_s3(disk, s3_config, central_s3_config):
         return None, None, None
     if pattern_source == "obc":
         obc = (s3_config or {}).get("obcConfig")
-        if obc:
-            return (
-                s3_path,
-                obc,
-                obc.get(
-                    "credentialsSecret", "s3-obc-credentials"
-                ),  # pragma: allowlist secret  # NOSONAR
-            )
+        if not obc:
+            raise ValueError("OBC image source requires OBC storage configuration")
+        return (
+            s3_path,
+            obc,
+            obc.get(
+                "credentialsSecret", "s3-obc-credentials"
+            ),  # pragma: allowlist secret  # NOSONAR
+        )
     # gold: admin patterns in the read-only central store (not the shared
     # read/write bucket). "central" pattern disks fall through to the primary
     # config below — they live in the instance's own read/write bucket.
-    if pattern_source == "gold" and central_s3_config:
-        return (
-            s3_path,
-            central_s3_config,
-            "s3-central-credentials",
-        )  # pragma: allowlist secret  # NOSONAR
-    if use_central and central_s3_config:
+    if pattern_source == "gold" or use_central:
+        if not central_s3_config:
+            raise ValueError("Central image source requires central storage configuration")
         return (
             s3_path,
             central_s3_config,
@@ -554,7 +551,9 @@ def _cdrom_s3_creds(cdrom, s3_config, central_s3_config):
     Central-sourced ISOs live in central S4 and must import with the central
     credentials; otherwise the golden import 404s and the clone hangs forever.
     """
-    if cdrom.get("central") and central_s3_config:
+    if cdrom.get("central"):
+        if not central_s3_config:
+            raise ValueError("Central ISO source requires central storage configuration")
         return (
             central_s3_config,
             "s3-central-credentials",  # pragma: allowlist secret  # NOSONAR

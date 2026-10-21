@@ -2252,16 +2252,20 @@ async def _golden_reaper_loop():
 
 def _resolve_golden_s3_config(disk, s3_config, central_s3_config, use_central):
     """Pick S3 config + credentials secret for a golden import."""
-    # Pattern disks carry an explicit source: obc (local RGW) or central (S4).
+    # Pattern sources: obc (local RGW), central (instance bucket), gold (central store).
     pattern_source = None
     if disk.get("patternImage"):
         pattern_source = disk["patternImage"].get("source", "central")
     obc_config = s3_config.get("obcConfig")
-    if pattern_source == "obc" and obc_config:
+    if pattern_source == "obc":
+        if not obc_config:
+            raise ValueError("OBC image source requires OBC storage configuration")
         return obc_config, obc_config.get(
             "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
         )
-    if use_central and central_s3_config:
+    if pattern_source == "gold" or use_central:
+        if not central_s3_config:
+            raise ValueError("Central image source requires central storage configuration")
         return central_s3_config, "s3-central-credentials"  # pragma: allowlist secret
     return s3_config, "s3-credentials"  # pragma: allowlist secret
 

@@ -89,20 +89,18 @@ class TestDeviceS3Config:
         assert cfg == gold
         assert secret == _CENTRAL_SECRET
 
-    def test_gold_source_without_central_config_falls_back(self):
-        cfg, secret = device_s3_config({"source": "gold"}, _S3_CONFIG, None)
-        assert cfg == _S3_CONFIG
-        assert secret == _DEFAULT_SECRET
+    def test_gold_source_without_central_config_fails(self):
+        with pytest.raises(ValueError, match="central"):
+            device_s3_config({"source": "gold"}, _S3_CONFIG, None)
 
     def test_central_source_falls_back_when_no_project_config(self):
         cfg, secret = device_s3_config({"source": "central"}, _S3_CONFIG, None)
         assert cfg == _S3_CONFIG
         assert secret == _DEFAULT_SECRET
 
-    def test_obc_source_without_obc_config_falls_back(self):
-        cfg, secret = device_s3_config({"source": "obc"}, _S3_CONFIG, None)
-        assert cfg == _S3_CONFIG
-        assert secret == _DEFAULT_SECRET
+    def test_obc_source_without_obc_config_fails(self):
+        with pytest.raises(ValueError, match="OBC"):
+            device_s3_config({"source": "obc"}, _S3_CONFIG, None)
 
 
 class TestBuildMonRestorePvcAndJob:
@@ -182,7 +180,7 @@ class TestBuildCephRestoreResources:
         mon_pvc, mon_job, osd_dvs, mon_name, osd_names = build_ceph_restore_resources(
             "troshka-abc",
             restore_capture,
-            _S3_CONFIG,
+            {**_S3_CONFIG, "obcConfig": {**_S3_CONFIG, "credentialsSecret": _OBC_SECRET}},
             {"bucket": "central"},
             "ocs-storage",
         )
@@ -191,11 +189,11 @@ class TestBuildCephRestoreResources:
         assert mon_name == CEPH_MON_PVC_NAME
         assert osd_names == ["troshka-ceph-osd-0", "troshka-ceph-osd-1"]
         assert [dv["metadata"]["name"] for dv in osd_dvs] == osd_names
-        # osd-0 is source="obc" (no obcConfig → default) and osd-1 is
+        # osd-0 is source="obc" (explicit OBC config) and osd-1 is
         # source="central" (read/write central-S4 → the project s3-credentials
         # secret, NOT the gold s3-central-credentials). Gold→central_s3_config is
         # covered by TestDeviceS3Config.test_gold_source_uses_central_config.
-        assert osd_dvs[0]["spec"]["source"]["s3"]["secretRef"] == _DEFAULT_SECRET
+        assert osd_dvs[0]["spec"]["source"]["s3"]["secretRef"] == _OBC_SECRET
         assert osd_dvs[1]["spec"]["source"]["s3"]["secretRef"] == _DEFAULT_SECRET
 
     def test_compat_datavolumes_alias_returns_mon_job(self):
@@ -233,7 +231,7 @@ class TestMaterializeCephRestorePvcs:
             custom_api,
             "troshka-abc",
             restore_capture,
-            _S3_CONFIG,
+            {**_S3_CONFIG, "obcConfig": {**_S3_CONFIG, "credentialsSecret": _OBC_SECRET}},
             storage_class="ocs-storage",
             core_api=core_api,
             batch_api=batch_api,
