@@ -1,7 +1,7 @@
 # AgnosticV catalog migration skill
 
 Date: 2026-10-21
-Status: Agreed direction; written specification ready for review
+Status: Initial skill package implemented and checked offline on 2026-10-21; tenant requirements incorporated; live migration validation remains per CI
 
 ## Outcome
 
@@ -18,6 +18,38 @@ both AgnosticD and AgnosticD-v2 and source providers including CNV, AWS, Azure,
 GCP, and IBM Cloud. This is not a promise of automatic conversion for every CI.
 Legacy execution compatibility must be established from source and validation;
 the skill must not silently treat legacy workloads as AgnosticD-v2 workloads.
+
+## Tenant-only catalog items
+
+Classify ownership before proposing infrastructure: dedicated environment,
+tenant on an existing shared cluster, or hybrid. A tenant-only CI must reuse a
+provisioned/pool-supplied cluster rather than deploy a cluster for every order.
+Trace the actual cluster allocation, connection outputs, workload execution,
+namespace/RBAC/quota isolation, and release contract. Preserve that allocation
+mechanism where possible. The existing AgnosticD-v2 openshift-workloads and
+namespace configurations are evidence to inspect, not proof of Troshka support.
+
+Shared tenants need unique namespace/resource ownership even when GUID-format
+dependencies are removed. Use the allocator's tenant identity; stable internal
+names are safe only within tenant boundaries. Audit cluster-scoped resources,
+operators, CRDs, privileges, ingress hosts, and cleanup before asserting shared
+cluster compatibility. Some workloads require dedicated clusters and should be
+reported as such, rather than silently creating one.
+
+Tenant migration produces a workload/tenant configuration and converted or new
+Showroom. Do not fabricate an infrastructure template or capture the shared
+cluster as a tenant pattern. Dev/test/prod/event pin workload/content revisions
+and allocation settings. Template-to-pattern promotion applies only to owned
+infrastructure, such as an optional separate access environment in a hybrid CI.
+
+If a Troshka project cannot attach an existing shared-cluster tenant or host its
+access environment using supported interfaces, report a platform capability gap.
+Retain the native tenant flow as a viable outcome; do not invent an attachment
+API or claim that a dedicated-cluster workaround satisfies tenant migration.
+Tenant destroy removes owned resources and releases its allocation only; it
+must not destroy, stop, capture, or modify another tenant or the shared cluster.
+Validate two concurrent tenants and destruction isolation without a cluster
+capture/restore cycle. Live tenant creation and cleanup remain explicit actions.
 
 ## Existing foundations
 

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "example_only": true,
+  "mode": "assess",
+  "ownership": "unresolved",
+  "source_manifest": [],
+  "artifact_fingerprints": [],
+  "completed_stages": [],
+  "resource_references": {
+    "dev_project_id": null,
+    "build_job_id": null,
+    "pattern_id": null,
+    "pattern_content_evidence": null,
+    "validation_project_id": null,
+    "tenant_allocation_ids": [],
+    "owned_namespace_names": []
+  },
+  "validation_evidence_paths": [],
+  "blockers": []
+}
