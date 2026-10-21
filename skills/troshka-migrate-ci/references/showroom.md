@@ -21,6 +21,22 @@ a platform gap. Each tenant's access must remain scoped to that tenant.
 
 ## Convert existing content
 
+For Zero Touch, inspect `config/`, `setup-automation/`, `runtime-automation/`,
+module setup/solve/validate scripts, and the actual runner/UI deployment. Preserve
+their environment/inventory contract, readiness ordering and result reporting.
+Static Antora pages plus terminal tabs do not establish equivalent ZT behavior.
+Trace custom terminal commands (for example, waiting for and entering a bootc
+guest) and app origin/websocket/login requirements such as Cockpit.
+
+The native Showroom tab schema does not expose an arbitrary terminal-command
+field or prove the original ZT runner exists. Use only current supported
+composition: retaining the existing VM-hosted Showroom/runner stack on an owned
+VM is an option when its role/configuration is shown to work with mapped inputs
+and the supported `vms`/cloud-init/service mechanisms. Existing VM/container
+primitives alone do not prove the full composition works. If it cannot be
+substantiated, report that path unverified or blocked, not a future feature or
+silent removal of buttons. Do not add unsupported schema keys to fake support.
+
 Preserve lesson order and substantive instructions. Review content/configuration
 diffs for hardcoded project URLs, GUID-derived hostnames, cloud portals, SSH paths,
 API endpoints, credentials, DNS, TLS/browser trust, and obsolete infrastructure.

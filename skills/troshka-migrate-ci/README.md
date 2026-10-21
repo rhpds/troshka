@@ -9,11 +9,18 @@ The skill is a set of instructions for your coding agent, not a command-line
 converter. Its entry point is [SKILL.md](SKILL.md); keep the whole directory so
 its references and assets remain available.
 
+Assessments use current Troshka capabilities. Supported requirements must map to
+implemented template fields or verified workload/service composition; missing
+required capabilities block migration today. Proposed future features do not
+count. Missing source/runtime evidence is reported separately as unverified.
+
 ## What you need
 
 - This Troshka checkout, including `skills/troshka-migrate-ci/`.
 - Access to the source AgnosticV repository and the CI path/stage you want to
   migrate, such as `my-group/my-lab/dev.yaml`.
+- Include BU/partner/platform AgnosticV checkouts where relevant. A CI ID may
+  belong to a different repository, and wrapper CIs may delegate to child items.
 - Access to the referenced AgnosticD framework, workload collections, and any
   existing Showroom content. Local checkouts are useful; specify their revisions.
 - The canonical `agnosticv` executable for resolving includes and overlays.

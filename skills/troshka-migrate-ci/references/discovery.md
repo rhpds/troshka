@@ -2,6 +2,15 @@
 
 ## Resolve the actual catalog configuration
 
+Discover available catalog checkouts when the repository is not given. BU,
+partner, and platform catalogs may live outside the primary repository. Use a
+bounded location search supplied by the developer (for example `~/*agnosticv*`),
+inspect repository identity/default branch/dirty state, and resolve the ID in
+each relevant canonical index. Do not silently substitute an older similarly
+named item from another repository. Case and underscore/hyphen normalization
+can differ between IDs and paths. Refresh checkouts only within requested scope,
+preserving local changes/branches and using non-destructive fast-forward updates.
+
 Record the AgnosticV repository URL without credentials, checked revision, dirty
 state, CI path and stage. If the requested ref differs from the available source,
 use a separate source checkout/workspace when authorized; never reset the user's
@@ -33,6 +42,19 @@ Inspect `.agnosticv.yaml`, inherited common/account files, `#include`, stage
 overrides, and `.schemas`. A merged value alone does not establish which source
 defined it; trace provenance through those files.
 
+Recursively resolve `__meta__.components` in the owning repository, evaluating
+`when`, parameter routing (`all`, `current`, or named components), explicit
+`parameter_values`, and propagated outputs. A wrapper's apparent framework may
+not execute its child. Record the revision and stage for every component.
+Conditional AWS/CNV branches are alternatives, not two clusters to provision.
+
+Inspect dynamic URL lookups of `config/instances.yaml`, `config/networks.yaml`,
+and container definitions in Showroom source. Resolve repository/ref without
+executing source-provided lookup/plugin code and parse retrieved data safely.
+Lookup failures are unresolved even when an expression defaults to an empty
+list. Translate tags, units, firmware, images, disks, userdata, networks,
+services and custom terminals; an unevaluated expression does not mean no VMs.
+
 ## Follow framework and workload source
 
 Resolve `__meta__.deployer` configuration, including SCM URL/ref, execution
@@ -50,7 +72,9 @@ dynamic imports as unresolved; do not infer they are harmless.
 
 Include all workload phases actually used by that config. Names such as
 `pre_software_workloads`, `software_workloads`, `post_software_final_workloads`,
-`workloads`, and `remove_workloads` are discovery clues, not universal schemas.
+`infra_workloads`, `student_workloads`, `workloads`, and `remove_workloads` are
+discovery clues, not universal schemas. Legacy roles may be under
+`ansible/roles_ocp_workloads/`, not `ansible/roles/`.
 Legacy config-specific roles or relative file paths may require adaptation even
 when their role names resemble v2 roles.
 
@@ -70,8 +94,9 @@ assess each distinctly rather than treating the event snapshot as current dev.
 Distinguish shared-platform preparation from an ordinary tenant: workload-only
 CIs may consume pooled clusters but change OAuth, operators, ingress, or worker
 capacity for all tenants. Record provider and platform-owner boundaries; do not
-run that preparation once per tenant. An owning platform build can be a future
-shared base, while consuming tenant orders still reuse its allocation.
+run that preparation once per tenant. Establish the currently implemented
+platform build/capture/allocation path and its template inputs, or report a
+present blocker. Consuming tenant orders reuse the established allocation.
 
 Search narrow source roots with `rg` for `guid`, `cloud_provider`, namespace,
 credential inputs, API calls, DNS/TLS settings, resource IDs, inventory groups,

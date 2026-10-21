@@ -14,6 +14,8 @@ Ask only for inputs that cannot be inferred from the request or available source
 AgnosticV root/ref, CI path/stage, Troshka root/version, framework and collection
 roots/refs, and an output directory. Record supplied versus inferred values.
 Use repository-relative paths in deliverables, not developer-specific paths.
+Discover relevant AgnosticV repositories, not just the primary checkout. Resolve
+each catalog ID in the correct repository and record its path and revision.
 
 ## Select the requested mode
 
@@ -71,6 +73,13 @@ flow when no supported Troshka binding is available.
 
 ## Migration invariants
 
+- Assess current Troshka capabilities. Identify each required feature's
+  implemented schema/API/runtime path and bake supported settings into the
+  template. An absent required capability blocks migration today; a proposed
+  feature is not a migration path. Missing evidence remains explicitly unresolved.
+- Trace component conditions, parameter forwarding, and dynamic lab definitions.
+  Wrapper YAML may contain no VMs because a child loads them from Showroom source.
+
 - Inspect workload source, including pre-software, post-software, removal roles,
   and dynamically included tasks. Missing source is `unresolved`.
 - Distinguish AgnosticD and AgnosticD-v2. Legacy execution requires evidence or
@@ -115,6 +124,9 @@ Before delivery, inspect generated diffs, run available schema/canonical merge
 checks without printing secrets, and report what remains blocked. Dedicated
 migration acceptance requires a fresh pattern deployment. Tenant acceptance
 requires two independent allocations and cleanup isolation, not cluster capture.
+Exercise capability probes through the current topology importer as well as its
+schema to verify counts, NICs, disks, and nested-virt flags survive. A partial
+capability probe is not a deployable migration template.
 
 For skill maintenance, use the raw-source requests and rubric in
 [behavioral exercises](evals/cases.md). Evaluate observable decisions and generated

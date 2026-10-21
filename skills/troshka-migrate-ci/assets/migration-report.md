@@ -21,6 +21,12 @@ and separate host/backend/runtime support evidence.
 
 ## Dependency decisions
 
+For each mandatory capability give the current Troshka implementation path and
+the exact template field/composition. Separate implemented support, missing
+capability (blocked today), and missing evidence (unresolved). Record evaluated
+component conditions, forwarded parameters, source image bindings, sizing variant,
+and Zero Touch automation where present. Do not count future features as support.
+
 | Dependency / consumer | Source revision:path:line | Status | Replacement / adaptation | Owner / phase | Acceptance check |
 | --- | --- | --- | --- | --- | --- |
 

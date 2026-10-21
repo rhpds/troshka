@@ -2,6 +2,14 @@
 
 ## Verify target contracts before rendering
 
+For every mandatory capability record current implementation evidence, exact
+template configuration, and the runtime acceptance check. Read the schema,
+importer, and selected backend; exercise a sanitized template through the current
+importer where possible. Do not count a future API, new project type, or proposed
+expansion service as supported. If no current implementation or composition
+supplies the requirement, migration is blocked. Missing evidence is unresolved,
+not a promise of future support.
+
 Use the selected Troshka checkout's `schemas/troshka-template.schema.json`,
 example templates, import/export implementation, and provider collection. Inspect
 the selected AgnosticD config too. Documentation is a starting point; source and
@@ -24,6 +32,26 @@ generate fake resource IDs, unsupported schema properties, or deploy-ready
 claims for unfinished configuration.
 
 ## Map dedicated infrastructure
+
+Resolve catalog defaults and sizing expressions before rendering numeric fields.
+For example, materialize `max(ceil(num_users / 5), 3)` for the selected release's
+user count, and emit actual worker nodes/CPU/RAM in the template. Initial CNV/AWS
+scale-out roles should be replaced by that supported initial topology, not left
+running against the old provider or assigned to an unimplemented expansion API.
+Record the parameter selection; one fixed captured pattern cannot claim to
+preserve every size of a parameterized catalog. Use explicitly validated size
+variants when necessary, and report unsupported parameter behavior.
+
+Follow source setup scripts and exercise setup/solve/validate automation. Preserve
+intentional initial absence (for example, a tlog lesson that removes packages for
+the student to install). Do not pre-solve the exercise by inferring packages from
+its title. Separate reusable setup from runtime student actions and preserve
+package repository/registry access and entitlement requirements.
+
+Translate source image names to verified library imports/references; a CNV
+image alias is not automatically a Troshka library item. Preserve the actual
+guest OS, firmware and disk format; document missing image bindings rather than
+emitting a fake ID. Ordinary images can use existing library import/upload APIs.
 
 Map the original declared instances and observed workload requirements to VM
 names, CPU/RAM, supported OS/images, disks/controllers, NICs/IPs, networks, DNS,

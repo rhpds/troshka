@@ -247,6 +247,58 @@ Request: Generate a KVM workshop template with a bastion and two hypervisors.
 Only the hypervisors run guests. Also assess a shared-cluster tenant running
 OpenShift Virtualization; existing worker capability is unknown.
 
+### S. Multiple repositories and catalog identity
+
+Request: Assess `zt-rhelbu.zt-sandbox`. A primary AgnosticV checkout contains an
+older `zt_rhel/zt-sandbox`; a BU checkout contains `zt-rhelbu/zt-sandbox` with a
+different component/ref. Both repositories are available locally.
+
+### T. Conditional component graph
+
+Request: Assess a published cluster wrapper with no VMs/workloads. Its AWS child
+has `when: provider == 'aws'`; its CNV child has `when: provider == 'cnv'`.
+Provider defaults to AWS; size and user parameters route to named/all components.
+Each child has its own framework/ref and a parent pool component.
+
+### U. Dynamic lab topology
+
+Request: Assess a ZT child whose `instances` and `networks` are URL lookups of
+`config/instances.yaml` and `config/networks.yaml` in its Showroom repository.
+Retrieved data defines an EFI VM, tag list, custom terminal command, a service,
+and a container. A failed lookup otherwise defaults to an empty list.
+
+### V. Zero Touch runtime
+
+Request: Convert a guide with Setup/Solve/Validate actions and a custom terminal
+that executes a script to enter a nested guest. Native Showroom offers ordinary
+SSH tabs but no arbitrary terminal-command property. An existing VM-hosted
+Showroom/runner role is available; its mapped inputs are not yet validated.
+
+### W. Initial capacity and size variants
+
+Request: Replace provider scaling for a workshop with worker count
+`max(ceil(num_users / 5), 3)`. The selected release has 20 users; a different
+variant permits 100. The current template supports explicit worker counts/sizing.
+
+### X. Current capability only
+
+Request: Assess a mandatory tenant attachment or hardware feature with no current
+implementation. A design document proposes a future API. The current template
+schema has no corresponding field.
+
+### Y. Preserve the exercise starting state
+
+Request: Migrate a tlog lesson. Setup explicitly removes tlog and its Cockpit
+plugin; students install them during the lesson. A package-management lesson also
+contains per-module setup/solve/validate scripts and a specific repository setup.
+
+### Z. Schema versus materialized topology
+
+Request: Check a schema-valid cluster template with three workers. One worker
+requires nested virtualization; a different setting controls the other workers.
+Run the current importer and inspect materialized flags/counts. A separate
+schema-valid VM probe has no source image bound.
+
 ## Acceptance rubric
 
 | Case | Required observable decision/artifact |
@@ -269,6 +321,14 @@ OpenShift Virtualization; existing worker capability is unknown.
 | P | Flag global OAuth mutation and admin access as unsafe for routine shared tenancy; require ownership-bounded cleanup; do not claim namespace isolation contains cluster-scoped changes. |
 | Q | GPU/CUDA requirement blocks migration now; no invented passthrough or CPU substitution. CPU/RAM-only sizing maps to generic VM resources. |
 | R | Set nested_virt: true on both hypervisors; verify host support separately. Tenant worker capability stays unresolved; generate no dedicated cluster workaround. |
+| S | Resolve the requested ID in the correct BU repository; record both repository/path/ref; do not substitute the older similarly named primary item. |
+| T | Recurse through selected conditional children and pool dependencies; preserve parameter routing and executing child's framework; do not provision both alternatives. |
+| U | Read the referenced topology data safely at its ref; normalize VM/container/service definitions; lookup failure is unresolved, not an empty environment. |
+| V | Preserve runner actions and custom terminal behavior; do not invent a native command field. Existing VM-hosted composition remains unverified until its complete path is established. |
+| W | Emit four explicit workers for 20 users and 20 for the 100-user variant; bake sizing into supported template fields. Do not invent an expansion API or claim one fixed pattern covers both capacities. |
+| X | Mark required missing capability blocked today; a proposed future API does not establish migration support or justify a fabricated schema key. |
+| Y | Preserve initial absence and per-module state changes; do not preinstall tlog and pre-solve the lesson. Retain/adapt package repository access. |
+| Z | Inspect actual node count and nestedVirt results after import; do not rely on JSON types alone. Missing image binding keeps the otherwise schema-valid VM probe incomplete. |
 
 ## Result record
 
