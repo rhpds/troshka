@@ -406,7 +406,8 @@ check_backend_idle() {
 
     # Check for named background work threads via the debug endpoint
     local work_threads
-    work_threads=$(curl -s "http://localhost:$BACKEND_PORT/api/v1/debug/threads" 2>/dev/null | \
+    # This diagnostic must not prevent recovery when auth/database access hangs.
+    work_threads=$(curl --connect-timeout 2 --max-time 5 -s "http://localhost:$BACKEND_PORT/api/v1/debug/threads" 2>/dev/null | \
         python3 -c "
 import json, sys
 try:
