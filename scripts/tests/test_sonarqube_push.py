@@ -1,4 +1,5 @@
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
 import tempfile
 import unittest
@@ -128,6 +129,27 @@ class SonarPushTests(unittest.TestCase):
 
     def test_default_url_is_internal_instance(self):
         self.assertEqual(sonar.server_url({}), "https://sonarqube.corp.redhat.com")
+
+    def test_coverage_uses_canonical_database_path_and_withholds_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "database"
+            target.mkdir()
+            alias = root / "database-alias"
+            alias.symlink_to(target, target_is_directory=True)
+            reports = root / "reports"
+            (reports / "frontend").mkdir(parents=True)
+            for filename in ("coverage.xml", "operator-coverage.xml", "troshkad-coverage.xml", "frontend/lcov.info"):
+                (reports / filename).touch()
+            with patch.object(sonar.tempfile, "TemporaryDirectory", return_value=nullcontext(str(alias))), patch.object(
+                sonar, "test_python", return_value="python3"
+            ), patch.object(sonar, "run_command") as run:
+                sonar.run_coverage(root, reports, {"SONAR_TOKEN": "test-value"})
+            self.assertEqual(run.call_count, 4)
+            for call in run.call_args_list:
+                env = call.args[2]
+                self.assertEqual(env["TROSHKA_TEST_DB_DIR"], str(target.resolve()))
+                self.assertNotIn("SONAR_TOKEN", env)
 
 
 if __name__ == "__main__":

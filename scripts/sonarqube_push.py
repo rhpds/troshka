@@ -99,7 +99,7 @@ def run_coverage(root, reports, env):
     timeout = int(env.get("SONAR_TEST_TIMEOUT", "1800"))
     test_env = {key: value for key, value in env.items() if key != "SONAR_TOKEN"}
     with tempfile.TemporaryDirectory(prefix="troshka-sonar-db-") as database_dir:
-        test_env["TROSHKA_TEST_DB_DIR"] = database_dir
+        test_env["TROSHKA_TEST_DB_DIR"] = str(Path(database_dir).resolve())
         for suite, source, filename in (
             ("backend", "app", "coverage.xml"),
             ("operator", None, "operator-coverage.xml"),

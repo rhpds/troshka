@@ -1,6 +1,7 @@
 """Tests for Pattern Capture v2 — OBC-based local RGW capture."""
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 
@@ -108,21 +109,23 @@ class TestBuildExportJobS3Tuning:
             ),
         )
         mod = importlib.util.module_from_spec(spec)
-        # Mock the helpers.k8s import that patterns.py needs
+        # Load the real endpoint validator alongside the isolated operator module.
         import sys
         import types
 
+        endpoint_spec = importlib.util.spec_from_file_location(
+            "helpers.storage_endpoint",
+            os.path.join(os.path.dirname(spec.origin), "storage_endpoint.py"),
+        )
+        endpoint_module = importlib.util.module_from_spec(endpoint_spec)
+        endpoint_spec.loader.exec_module(endpoint_module)
         mock_k8s = types.ModuleType("helpers.k8s")
         mock_k8s.TOOLS_IMAGE = "test-image:latest"
-        old = sys.modules.get("helpers.k8s")
-        sys.modules["helpers.k8s"] = mock_k8s
-        try:
+        with patch.dict(
+            sys.modules,
+            {"helpers.k8s": mock_k8s, "helpers.storage_endpoint": endpoint_module},
+        ):
             spec.loader.exec_module(mod)
-        finally:
-            if old is not None:
-                sys.modules["helpers.k8s"] = old
-            else:
-                sys.modules.pop("helpers.k8s", None)
         self._build_export_job = mod.build_export_job
 
     def test_export_job_uses_256mb_chunks(self):
