@@ -93,6 +93,10 @@ Keep runtime state and logs outside Git.
 Remove GUID-format and external certificate-issuance dependencies used only
 for hosting. Preserve tenant uniqueness where resources are shared.
 Report missing image, secret, content, and runtime access bindings explicitly.
+Reuse the existing compatible RHEL base image and apply lab setup before
+capturing a pattern. A source image alias or preinstalled toolset alone is not
+a reason to build another base; any exception needs a concrete compatibility
+requirement. Preserve image-building exercises that are part of the curriculum.
 Do not publish catalog changes or provision resources yet.
 ```
 

@@ -330,6 +330,16 @@ schema-valid VM probe has no source image bound.
 | Y | Preserve initial absence and per-module state changes; do not preinstall tlog and pre-solve the lesson. Retain/adapt package repository access. |
 | Z | Inspect actual node count and nestedVirt results after import; do not rely on JSON types alone. Missing image binding keeps the otherwise schema-valid VM probe incomplete. |
 
+## Existing RHEL base regression
+
+Given an available compatible RHEL base and a CI referencing a CNV RHEL alias
+or a customized devtools image, select the existing library base, trace the
+required software, and apply lab setup before validation and pattern capture.
+Fail the assessment if it requires importing or building another base merely
+because the source alias differs. A required incompatible OS/architecture must
+be evidenced before recommending a separate base. Keep nested-guest images and
+instructional bootc image builds distinct from the outer base-image decision.
+
 ## Result record
 
 For each run record the package revision/fingerprint, source revisions, case,

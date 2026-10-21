@@ -48,10 +48,19 @@ the student to install). Do not pre-solve the exercise by inferring packages fro
 its title. Separate reusable setup from runtime student actions and preserve
 package repository/registry access and entitlement requirements.
 
-Translate source image names to verified library imports/references; a CNV
-image alias is not automatically a Troshka library item. Preserve the actual
-guest OS, firmware and disk format; document missing image bindings rather than
-emitting a fake ID. Ordinary images can use existing library import/upload APIs.
+Reuse an existing compatible Troshka library base image first, including the
+existing RHEL base. Apply the CI's packages, configuration, and workloads during
+the template build, validate the lab's starting state, then capture the configured
+environment as a pattern. A different CNV image alias does not require a new
+image. For a customized image such as devtools, trace its software requirements
+and reproduce them through setup on the existing base where supported.
+
+Verify the required OS version, architecture, firmware, and disk compatibility
+and bind the actual library reference; never emit a fake ID. Import or build a
+separate base only when a concrete requirement cannot be met using the existing
+base plus setup, and document that requirement. Distinguish the outer VM's base
+from images used by nested guests or instructional bootc builds; those may still
+be required by the workload or curriculum.
 
 Map the original declared instances and observed workload requirements to VM
 names, CPU/RAM, supported OS/images, disks/controllers, NICs/IPs, networks, DNS,
