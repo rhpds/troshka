@@ -183,7 +183,8 @@ export function reconcileManagedClusterDns(
     if (!Array.isArray(recs)) return n;
     let recChanged = false;
     const tagged = recs.map((r) => {
-      const cid = nameToCluster.get(String(r?.name ?? ""));
+      const name = typeof r?.name === "string" ? r.name : "";
+      const cid = nameToCluster.get(name);
       if (cid && (r.managed !== true || r.clusterId !== cid)) {
         recChanged = true;
         return { ...r, managed: true, clusterId: cid };

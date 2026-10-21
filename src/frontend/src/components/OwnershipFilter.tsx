@@ -49,7 +49,7 @@ export default function OwnershipFilter({
   onChange,
   isAdmin,
   showShared = true,
-}: Props) {
+}: Readonly<Props>) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
       <label style={labelStyle}>
@@ -58,7 +58,7 @@ export default function OwnershipFilter({
           checked={value.mine}
           onChange={(e) => onChange({ ...value, mine: e.target.checked })}
         />
-        Mine
+        {"Mine"}
       </label>
       {showShared && (
         <label style={labelStyle}>
@@ -67,7 +67,7 @@ export default function OwnershipFilter({
             checked={value.shared}
             onChange={(e) => onChange({ ...value, shared: e.target.checked })}
           />
-          Shared
+          {"Shared"}
         </label>
       )}
       {isAdmin && (
@@ -77,7 +77,7 @@ export default function OwnershipFilter({
             checked={value.others}
             onChange={(e) => onChange({ ...value, others: e.target.checked })}
           />
-          Other users
+          {"Other users"}
         </label>
       )}
     </div>

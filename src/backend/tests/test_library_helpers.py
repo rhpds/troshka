@@ -288,9 +288,11 @@ class TestLibraryItemCreate:
         assert item.tags == ["base", "rhel"]
 
     def test_missing_name_raises(self):
+        from pydantic import ValidationError
+
         from app.api.library import LibraryItemCreate
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             LibraryItemCreate()
 
 

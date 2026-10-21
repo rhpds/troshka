@@ -11,6 +11,11 @@ import {
 } from "@patternfly/react-core";
 import { appConfirm } from "@/lib/confirm";
 
+function workerStateColor(state: string): "green" | "orange" | "grey" {
+  if (state === "idle") return "green";
+  return state === "busy" ? "orange" : "grey";
+}
+
 interface QueueInfo {
   name: string;
   queued: number;
@@ -293,7 +298,7 @@ export default function QueuePage() {
                   <tr key={w.name} style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
                     <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>{w.name.slice(0, 12)}</td>
                     <td style={{ padding: "6px 8px" }}>
-                      <Label isCompact color={w.state === "idle" ? "green" : w.state === "busy" ? "orange" : "grey"}>
+                      <Label isCompact color={workerStateColor(w.state)}>
                         {w.state}
                       </Label>
                     </td>

@@ -946,8 +946,9 @@ class TestStartVmIfNeeded:
         mock_start.side_effect = TroshkadError("connection refused")
         vm_node = {"data": {"powerOnAtDeploy": True}}
         # Start failures must propagate so a redeploy fails visibly.
+        exception_mock = MagicMock()
         with pytest.raises(TroshkadError):
-            _start_vm_if_needed(MagicMock(), "dom-1", True, vm_node)
+            _start_vm_if_needed(exception_mock, "dom-1", True, vm_node)
 
 
 # ---------------------------------------------------------------------------

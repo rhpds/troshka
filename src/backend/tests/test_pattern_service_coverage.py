@@ -338,13 +338,14 @@ class TestCaptureVmViaNbd:
             {"status": "completed"},  # stop
         ]
 
+        exception_disk_params = self._make_disk_params()
         with pytest.raises(RuntimeError, match="NBD export failed"):
             _capture_vm_via_nbd(
                 host,
                 worker,
                 "vm-1",
                 "dom-1",
-                self._make_disk_params(),
+                exception_disk_params,
                 {},
                 "pat-1",
                 log_fn,
@@ -371,13 +372,14 @@ class TestCaptureVmViaNbd:
             "result": {"error": "disk I/O error"},
         }
 
+        exception_disk_params = self._make_disk_params()
         with pytest.raises(RuntimeError, match="Pull-flatten failed"):
             _capture_vm_via_nbd(
                 host,
                 worker,
                 "vm-1",
                 "dom-1",
-                self._make_disk_params(),
+                exception_disk_params,
                 {},
                 "pat-1",
                 log_fn,
@@ -414,13 +416,14 @@ class TestCaptureVmViaNbd:
             },  # upload fails
         ]
 
+        exception_disk_params = self._make_disk_params()
         with pytest.raises(RuntimeError, match="Upload failed"):
             _capture_vm_via_nbd(
                 host,
                 worker,
                 "vm-1",
                 "dom-1",
-                self._make_disk_params(),
+                exception_disk_params,
                 {},
                 "pat-1",
                 log_fn,
@@ -444,13 +447,14 @@ class TestCaptureVmViaNbd:
         ]
         mock_poll.side_effect = RuntimeError("unexpected failure")
 
+        exception_disk_params = self._make_disk_params()
         with pytest.raises(RuntimeError):
             _capture_vm_via_nbd(
                 host,
                 worker,
                 "vm-1",
                 "dom-1",
-                self._make_disk_params(),
+                exception_disk_params,
                 {},
                 "pat-1",
                 log_fn,
@@ -533,13 +537,14 @@ class TestCaptureVmViaNbd:
             {"status": "completed", "result": {"size_bytes": 5368709120}},  # flatten
         ]
 
+        exception_disk_params = self._make_disk_params()
         with pytest.raises(RuntimeError, match="[Vv]alidation"):
             _capture_vm_via_nbd(
                 host,
                 worker,
                 "vm-1",
                 "dom-1",
-                self._make_disk_params(),
+                exception_disk_params,
                 {},
                 "pat-1",
                 log_fn,

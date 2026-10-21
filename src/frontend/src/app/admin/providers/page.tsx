@@ -1,5 +1,8 @@
 "use client";
 
+import { providerFormError, providerCreateBody, providerEditBody, providerTestMessage } from "./providerForms";
+import { discoverProviderImages, filterProviderImages } from "./providerImages";
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
@@ -48,6 +51,30 @@ interface ProviderInfo {
   azure_subnet_id?: string | null;
   azure_nsg_id?: string | null;
   azure_location?: string | null;
+}
+
+const PROVIDER_APPEARANCE: Record<string, { background: string; color: string }> = {
+  ec2: { background: "rgba(251,146,60,0.15)", color: "#fb923c" },
+  s3: { background: "rgba(74,222,128,0.15)", color: "#4ade80" },
+  gcp: { background: "rgba(96,165,250,0.15)", color: "#60a5fa" },
+  azure: { background: "rgba(34,211,238,0.15)", color: "#22d3ee" },
+};
+function providerAppearance(type: string) {
+  return PROVIDER_APPEARANCE[type] || { background: "rgba(108,99,255,0.15)", color: "#a78bfa" };
+}
+function providerTypeLabel(type: string): string {
+  const labels: Record<string, string> = { ec2: "AWS EC2", s3: "S3 Storage", s3_readonly: "S3 Read-Only", gcp: "GCP", azure: "Azure", kubevirt: "KubeVirt Native" };
+  return labels[type] || "OCP Virt Nested";
+}
+function providerDiagnosticColor(message: string): string {
+  if (message.includes("FAILED") || message.includes("Failed")) return "#f87171";
+  if (message.includes("⚠") || message.includes("does not exist") || message.includes("no access")) return "#fbbf24";
+  return "#4ade80";
+}
+function buildStatusColor(status: string): string {
+  if (status === "error") return "var(--pf-t--global--color--status--danger--default)";
+  if (status === "success") return "var(--pf-t--global--color--status--success--default)";
+  return "var(--pf-t--global--color--status--info--default)";
 }
 
 export default function AdminProvidersPage() {
@@ -108,14 +135,7 @@ export default function AdminProvidersPage() {
   const [azureSubscriptionId, setAzureSubscriptionId] = useState("");
   const [azureLocation, setAzureLocation] = useState("");
 
-  const loadProviders = () => {
-    fetch("/api/v1/providers/")
-      .then((r) => r.ok ? r.json() : [])
-      .then((data) => {
-        setProviders(Array.isArray(data) ? data : []);
-        setLoading(false);
-        // Load operator status for kubevirt providers
-        for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
+  const loadProviderOperatorStatus = (p: ProviderInfo) => {
           fetch(`/api/v1/providers/${p.id}/operator-status`)
             .then((r) => r.ok ? r.json() : null)
             .then((s) => { if (s) setOperatorStatus((prev) => {
@@ -123,12 +143,8 @@ export default function AdminProvidersPage() {
               return { ...prev, [p.id]: s };
             }); })
             .catch(() => {});
-        }
-        // Load build status for GCP/Azure providers
-        const gcpAzureProviders = (Array.isArray(data) ? data : []).filter(
-          (pr: { type: string }) => pr.type === "gcp" || pr.type === "azure"
-        );
-        for (const p of gcpAzureProviders) {
+  };
+  const loadProviderBuildStatus = (p: ProviderInfo) => {
           fetch(`/api/v1/providers/${p.id}/build-image/status`)
             .then((r) => r.json())
             .then((s) => {
@@ -140,6 +156,24 @@ export default function AdminProvidersPage() {
               }
             })
             .catch(() => {});
+  };
+
+  const loadProviders = () => {
+    fetch("/api/v1/providers/")
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => {
+        setProviders(Array.isArray(data) ? data : []);
+        setLoading(false);
+        // Load operator status for kubevirt providers
+        for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
+          loadProviderOperatorStatus(p);
+        }
+        // Load build status for GCP/Azure providers
+        const gcpAzureProviders = (Array.isArray(data) ? data : []).filter(
+          (pr: { type: string }) => pr.type === "gcp" || pr.type === "azure"
+        );
+        for (const p of gcpAzureProviders) {
+          loadProviderBuildStatus(p);
         }
       })
       .catch(() => setLoading(false));
@@ -179,48 +213,14 @@ export default function AdminProvidersPage() {
   }, [buildStatus]);
 
   const createProvider = async () => {
-    if (type === "gcp") {
-      if (!name.trim() || !gcpProjectId.trim() || !serviceAccountJson.trim()) {
-        setError("Name, GCP Project ID, and Service Account JSON are required");
-        return;
-      }
-    } else if (type === "azure") {
-      if (!name.trim() || !azureTenantId.trim() || !azureClientId.trim() || !azureClientSecret.trim() || !azureSubscriptionId.trim()) {
-        setError("Name, Tenant ID, Client ID, Client Secret, and Subscription ID are required");
-        return;
-      }
-    } else if (type === "ocpvirt" || type === "kubevirt") {
-      if (!name.trim() || !apiUrl.trim() || !token.trim()) {
-        setError("Name, API URL, and Token are required");
-        return;
-      }
-    } else {
-      if (!name.trim() || !accessKey.trim() || !secretKey.trim()) {
-        setError("All fields are required");
-        return;
-      }
-    }
+    const form = { name, type, region, gcpProjectId, serviceAccountJson, azureTenantId,
+      azureClientId, azureClientSecret, azureSubscriptionId, azureLocation, apiUrl, token,
+      namespace, verifySsl, cacheNamespace, projectPrefix, pkgRepoUrl, pkgRepoUsername,
+      pkgRepoPassword, accessKey, secretKey, s3Bucket, useCustomEndpoint, endpointUrl };
+    const validationError = providerFormError(form);
+    if (validationError) { setError(validationError); return; }
     setError("");
-    const body = type === "gcp"
-      ? { name, type, default_region: region, gcp_project_id: gcpProjectId, service_account_json: serviceAccountJson }
-      : type === "azure"
-      ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
-      : (type === "ocpvirt" || type === "kubevirt")
-      ? {
-          name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl,
-          ...(type === "kubevirt" ? { ...(cacheNamespace ? { cache_namespace: cacheNamespace } : {}), ...(projectPrefix ? { project_prefix: projectPrefix } : {}) } : {}),
-          ...(type === "ocpvirt" && pkgRepoUrl ? {
-            pkg_repo_url: pkgRepoUrl,
-            ...(pkgRepoUsername ? { pkg_repo_username: pkgRepoUsername } : {}),
-            ...(pkgRepoPassword ? { pkg_repo_password: pkgRepoPassword } : {}),
-          } : {}),
-        }
-      : {
-          name, type, default_region: region,
-          access_key_id: accessKey, secret_access_key: secretKey,
-          ...((type === "s3" || type === "s3_readonly") ? { bucket: s3Bucket } : {}),
-          ...(useCustomEndpoint && endpointUrl ? { endpoint_url: endpointUrl } : {}),
-        };
+    const body = providerCreateBody(form);
     const resp = await fetch("/api/v1/providers/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -248,26 +248,7 @@ export default function AdminProvidersPage() {
     const resp = await fetch(`/api/v1/providers/${id}/test`, { method: "POST" });
     if (resp.ok) {
       const data = await resp.json();
-      if (data.message) {
-        setTestResult((prev) => ({ ...prev, [id]: data.message }));
-      } else if (data.bucket) {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
-      } else if (data.operator !== undefined) {
-        const nsInfo = data.namespaces ? `, ${Object.entries(data.namespaces).map(([k, v]) => `${k} namespace: ${v}`).join(", ")}` : "";
-        const needsInstall = data.operator === "not installed" || !data.crds_installed;
-        const noPermission = data.crds && data.crds.includes("no permission");
-        const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds || (data.crds_installed ? "installed" : "missing")}${nsInfo}`;
-        const warning = noPermission
-          ? `\n⚠ Service account lacks permissions to manage CRDs — update the ClusterRole`
-          : needsInstall
-          ? `\n⚠ Operator not installed — click Install Operator below`
-          : "";
-        setTestResult((prev) => ({ ...prev, [id]: msg + warning }));
-      } else if (data.nodes !== undefined) {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
-      } else {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
-      }
+      setTestResult((prev) => ({ ...prev, [id]: providerTestMessage(data) }));
     } else {
       setTestResult((prev) => ({ ...prev, [id]: "FAILED" }));
     }
@@ -288,25 +269,10 @@ export default function AdminProvidersPage() {
   const saveEdit = async () => {
     if (!editId) return;
     const editProvider = providers.find((p) => p.id === editId);
-    const body: Record<string, string> = {};
-    if (editName) body.name = editName;
-    if (editProvider?.type === "ocpvirt" || editProvider?.type === "kubevirt") {
-      if (editAccessKey) body.api_url = editAccessKey;
-      if (editSecretKey) body.token = editSecretKey;
-      if (editRegion) body.namespace = editRegion;
-      if (editCacheNamespace) body.cache_namespace = editCacheNamespace;
-      if (editProjectPrefix) body.project_prefix = editProjectPrefix;
-      if (editProvider.type === "ocpvirt") {
-        body.pkg_repo_url = editPkgRepoUrl;
-        body.pkg_repo_username = editPkgRepoUsername;
-        if (editPkgRepoPassword) body.pkg_repo_password = editPkgRepoPassword;
-      }
-    } else {
-      if (editRegion) body.default_region = editRegion;
-      if (editAccessKey) body.access_key_id = editAccessKey;
-      if (editSecretKey) body.secret_access_key = editSecretKey;
-      if (editEndpointUrl !== undefined) body.endpoint_url = editEndpointUrl;
-    }
+    const body = providerEditBody({ type: editProvider?.type, name: editName, region: editRegion,
+      accessKey: editAccessKey, secretKey: editSecretKey, endpointUrl: editEndpointUrl,
+      cacheNamespace: editCacheNamespace, projectPrefix: editProjectPrefix,
+      pkgRepoUrl: editPkgRepoUrl, pkgRepoUsername: editPkgRepoUsername, pkgRepoPassword: editPkgRepoPassword });
 
     const resp = await fetch(`/api/v1/providers/${editId}`, {
       method: "PATCH",
@@ -319,23 +285,6 @@ export default function AdminProvidersPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to update");
-    }
-  };
-
-  const discoverImage = async (id: string) => {
-    setImageResult((prev) => ({ ...prev, [id]: "discovering..." }));
-    setImageOptions((prev) => ({ ...prev, [id]: [] }));
-    const resp = await fetch(`/api/v1/providers/${id}/discover-images`);
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.images && data.images.length > 0) {
-        setImageOptions((prev) => ({ ...prev, [id]: data.images }));
-        setImageResult((prev) => ({ ...prev, [id]: `Found ${data.images.length} image(s) in ${data.region}` }));
-      } else {
-        setImageResult((prev) => ({ ...prev, [id]: "No images found in this region" }));
-      }
-    } else {
-      setImageResult((prev) => ({ ...prev, [id]: "FAILED — check credentials and region" }));
     }
   };
 
@@ -484,232 +433,51 @@ export default function AdminProvidersPage() {
 
   const inputStyle = { width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 };
 
-  if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
-
-  return (
-    <>
-      <PageSection>
-        <Toolbar>
-          <ToolbarContent>
-            <ToolbarItem><Title headingLevel="h1">Providers</Title></ToolbarItem>
-            <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="primary" onClick={() => setShowAdd(!showAdd)}>
-                {showAdd ? "Cancel" : "+ Add Provider"}
-              </Button>
-            </ToolbarItem>
-          </ToolbarContent>
-        </Toolbar>
-      </PageSection>
-
-      {error && <PageSection><Alert variant="danger" title={error} /></PageSection>}
-
-      {showAdd && (
-        <PageSection>
-          <Card>
-            <CardBody>
-              <Title headingLevel="h3" size="md" style={{ marginBottom: 12 }}>New Provider</Title>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                  <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. AWS Production" />
-                </div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Type</label>
-                    <select style={inputStyle} value={type} onChange={(e) => {
-                      setType(e.target.value);
-                      if (e.target.value === "s3" || e.target.value === "s3_readonly") setRegion("us-east-1");
-                    }}>
-                      <option value="ec2">AWS EC2</option>
-                      <option value="ocpvirt">OCP Virtualization</option>
-                      <option value="kubevirt">KubeVirt Native</option>
-                      <option value="s3">S3 Storage</option>
-                      <option value="s3_readonly">S3 Read-Only</option>
-                      <option value="gcp">GCP</option>
-                      <option value="azure">Azure</option>
-                    </select>
-                  </div>
-                  {type !== "ocpvirt" && type !== "kubevirt" && !useCustomEndpoint && (
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
-                      <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
-                        {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                      </select>
-                    </div>
-                  )}
-                </div>
-                {(type === "s3" || type === "s3_readonly") && (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>S3 Bucket</label>
-                      <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                        <input type="checkbox" checked={useCustomEndpoint} onChange={(e) => setUseCustomEndpoint(e.target.checked)} />
-                        S4 / Custom S3 Endpoint
-                      </label>
-                    </div>
-                    {useCustomEndpoint && (
-                      <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Endpoint URL</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://s4-troshka-images.apps.example.com" />
-                      </div>
-                    )}
-                  </>
-                )}
-                {(type === "ocpvirt" || type === "kubevirt") ? (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} placeholder="https://api.cluster.example.com:6443" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sha256~..." />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder={type === "kubevirt" ? "troshka-operator" : "troshka"} />
-                    </div>
-                    {type === "kubevirt" && (
-                      <>
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={cacheNamespace} onChange={(e) => setCacheNamespace(e.target.value)} placeholder="troshka-cache" />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Namespace Prefix</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={projectPrefix} onChange={(e) => setProjectPrefix(e.target.value)} placeholder="troshka-" />
-                        </div>
-                      </>
-                    )}
-                    {type === "ocpvirt" && (
-                      <>
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo URL</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUrl} onChange={(e) => setPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Username</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUsername} onChange={(e) => setPkgRepoUsername(e.target.value)} placeholder="troshka-repo" />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Password</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={pkgRepoPassword} onChange={(e) => setPkgRepoPassword(e.target.value)} />
-                        </div>
-                      </>
-                    )}
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
-                      <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
-                    </div>
-                  </>
-                ) : type === "gcp" ? (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GCP Project ID</label>
-                      <input style={inputStyle} value={gcpProjectId} onChange={(e) => setGcpProjectId(e.target.value)} placeholder="my-project-id" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Service Account JSON</label>
-                      <textarea style={{ ...inputStyle, fontFamily: "monospace", minHeight: 120 }} value={serviceAccountJson} onChange={(e) => setServiceAccountJson(e.target.value)} placeholder='{"type": "service_account", "project_id": "...", ...}' />
-                    </div>
-                  </>
-                ) : type === "azure" ? (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Tenant ID</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Client ID</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureClientId} onChange={(e) => setAzureClientId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Client Secret</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={azureClientSecret} onChange={(e) => setAzureClientSecret(e.target.value)} placeholder="Secret value" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Subscription ID</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureSubscriptionId} onChange={(e) => setAzureSubscriptionId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Location (optional)</label>
-                      <input style={inputStyle} value={azureLocation} onChange={(e) => setAzureLocation(e.target.value)} placeholder="e.g. eastus" />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="AKIA..." />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} placeholder="Secret key" />
-                    </div>
-                  </>
-                )}
-                <Button variant="primary" onClick={createProvider} style={{ alignSelf: "flex-start" }}>Create Provider</Button>
-              </div>
-            </CardBody>
-          </Card>
-        </PageSection>
-      )}
-
-      <PageSection>
-        {providers.length === 0 && !showAdd && (
-          <p style={{ opacity: 0.6 }}>No providers configured. Add one to start provisioning hosts.</p>
-        )}
-        {providers.map((p) => (
-          <Card key={p.id} style={{ marginBottom: 8 }}>
-            <CardBody>
-              {editId === p.id ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
+  const renderProviderEdit = (p: ProviderInfo) => (
+<div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                    <input style={inputStyle} value={editName} onChange={(e) => setEditName(e.target.value)} />
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                    <input style={inputStyle} value={editName} onChange={(e) => setEditName(e.target.value)} /></LabeledField>
                   </div>
                   {(p.type === "ocpvirt" || p.type === "kubevirt") ? (
                     <>
                       <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>API URL</>}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" /></LabeledField>
                       </div>
                       <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Token <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></>}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" /></LabeledField>
                       </div>
                       <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{p.type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder={p.type === "kubevirt" ? "troshka-operator" : "troshka"} />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={p.type === "kubevirt" ? "Operator Namespace" : "Namespace"}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder={p.type === "kubevirt" ? "troshka-operator" : "troshka"} /></LabeledField>
                       </div>
                       {p.type === "kubevirt" && (
                         <>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
-                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editCacheNamespace} onChange={(e) => setEditCacheNamespace(e.target.value)} placeholder="troshka-cache" />
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Cache Namespace</>}>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editCacheNamespace} onChange={(e) => setEditCacheNamespace(e.target.value)} placeholder="troshka-cache" /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Namespace Prefix</label>
-                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editProjectPrefix} onChange={(e) => setEditProjectPrefix(e.target.value)} placeholder="troshka-" />
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Project Namespace Prefix</>}>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editProjectPrefix} onChange={(e) => setEditProjectPrefix(e.target.value)} placeholder="troshka-" /></LabeledField>
                           </div>
                         </>
                       )}
                       {p.type === "ocpvirt" && (
                         <>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo URL</label>
-                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUrl} onChange={(e) => setEditPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" />
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo URL</>}>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUrl} onChange={(e) => setEditPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Username</label>
-                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUsername} onChange={(e) => setEditPkgRepoUsername(e.target.value)} placeholder="troshka-repo" />
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo Username</>}>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUsername} onChange={(e) => setEditPkgRepoUsername(e.target.value)} placeholder="troshka-repo" /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Password <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                            <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editPkgRepoPassword} onChange={(e) => setEditPkgRepoPassword(e.target.value)} placeholder="Leave blank to keep current" />
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo Password <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></>}>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editPkgRepoPassword} onChange={(e) => setEditPkgRepoPassword(e.target.value)} placeholder="Leave blank to keep current" /></LabeledField>
                           </div>
                         </>
                       )}
@@ -718,30 +486,30 @@ export default function AdminProvidersPage() {
                     <>
                       {!editEndpointUrl && (
                         <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Default Region</>}>
                           <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
                             {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                          </select>
+                          </select></LabeledField>
                         </div>
                       )}
                       <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></>}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" /></LabeledField>
                       </div>
                       <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></>}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" /></LabeledField>
                       </div>
                       <div>
                         <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                           <input type="checkbox" checked={!!editEndpointUrl} onChange={(e) => setEditEndpointUrl(e.target.checked ? (editEndpointUrl || "https://") : "")} />
-                          S4 / Custom S3 Endpoint
+                          {"S4 / Custom S3 Endpoint"}
                         </label>
                       </div>
                       {!!editEndpointUrl && (
                         <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Endpoint URL</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editEndpointUrl} onChange={(e) => setEditEndpointUrl(e.target.value)} placeholder="https://s4-example.apps.cluster.com" />
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Endpoint URL</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editEndpointUrl} onChange={(e) => setEditEndpointUrl(e.target.value)} placeholder="https://s4-example.apps.cluster.com" /></LabeledField>
                         </div>
                       )}
                     </>
@@ -751,20 +519,23 @@ export default function AdminProvidersPage() {
                     <Button variant="secondary" onClick={() => setEditId(null)}>Cancel</Button>
                   </div>
                 </div>
-              ) : (
-                <div>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+  );
+
+  const renderProviderHeading = (p: ProviderInfo) => (
+<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
-                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : p.type === "gcp" ? "rgba(96,165,250,0.15)" : p.type === "azure" ? "rgba(34,211,238,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : p.type === "gcp" ? "#60a5fa" : p.type === "azure" ? "#22d3ee" : "#a78bfa" }}>
-                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "s3_readonly" ? "S3 Read-Only" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : p.type === "kubevirt" ? "KubeVirt Native" : "OCP Virt Nested"}
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: providerAppearance(p.type).background, color: providerAppearance(p.type).color }}>
+                        {providerTypeLabel(p.type)}
                       </span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
                         {p.state}
                       </span>
                       {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
                     </div>
-                    <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+  );
+
+  const renderProviderMetadata = (p: ProviderInfo) => (
+<div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                       {p.type !== "ocpvirt" && p.type !== "kubevirt" && p.default_region}
                       {p.type !== "s3" && p.type !== "s3_readonly" && <span>{p.type !== "ocpvirt" && p.type !== "kubevirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
                       {(p.type === "s3" || p.type === "s3_readonly") && <span>{p.endpoint_url || "AWS S3"}</span>}
@@ -799,81 +570,30 @@ export default function AdminProvidersPage() {
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VNet</span>
                       )}
                     </div>
-                    {testResult[p.id] && (
-                      <div style={{ fontSize: 11, marginTop: 4, whiteSpace: "pre-line", color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("⚠") ? "#fbbf24" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
+  );
+
+  const renderProviderTestResult = (p: ProviderInfo) => (
+testResult[p.id] && (
+                      <div style={{ fontSize: 11, marginTop: 4, whiteSpace: "pre-line", color: providerDiagnosticColor(testResult[p.id]) }}>
                         {testResult[p.id]}
                       </div>
-                    )}
-                    {["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
-                      <details style={{ marginTop: 12 }} onToggle={async (e) => {
-                        if (!(e.target as HTMLDetailsElement).open) return;
-                        if (imageOptions[p.id]?.length) return;
-                        setImageResult((prev) => ({ ...prev, [p.id]: "Loading..." }));
-                        setImageOptions((prev) => ({ ...prev, [p.id]: [] }));
-                        if (p.type === "ec2") {
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            setImageOptions((prev) => ({ ...prev, [p.id]: data.images || [] }));
-                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${(data.images || []).length} image(s)` }));
-                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
-                        } else if (p.type === "gcp") {
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-gcp`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source})`, image_id: img.self_link, name: img.family, created: img.creation_timestamp }));
-                            setImageOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
-                        } else if (p.type === "azure") {
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-azure`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source}) — ${img.version}`, image_id: img.urn, name: img.urn, created: "" }));
-                            setImageOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
-                        } else if (p.type === "ocpvirt") {
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            const ready = data.datasources.filter((ds: any) => ds.ready);
-                            setImageOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ image_id: ds.name, label: ds.name, name: ds.name, created: "", type: "" })) }));
-                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} image(s)` }));
-                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
-                        }
-                      }}>
-                        <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
-                          Select Image {p.default_image ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.default_image.length > 40 ? "..." + p.default_image.slice(-35) : p.default_image}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
-                        </summary>
-                        <div style={{ marginTop: 8 }}>
-                          {imageResult[p.id] && (
-                            <div style={{ fontSize: 11, marginBottom: 6, color: imageResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
-                              {imageResult[p.id]}
-                            </div>
-                          )}
-                          {(p.type === "gcp" || p.type === "azure") && (
-                            <div style={{ fontSize: 11, marginBottom: 8, padding: "6px 10px", borderRadius: 4, background: "var(--pf-t--global--background--color--secondary--default)", opacity: 0.8 }}>
-                              Showing PAYG images only. For BYOS, use <strong>Build Host Image</strong> above to create a custom image with packages pre-installed.
-                            </div>
-                          )}
-                          {imageOptions[p.id] && imageOptions[p.id].length > 0 && (() => {
+                    )
+  );
+
+  const loadProviderImages = async (p: ProviderInfo) => {
+    if (imageOptions[p.id]?.length) return;
+    setImageResult(prev => ({ ...prev, [p.id]: "Loading..." }));
+    setImageOptions(prev => ({ ...prev, [p.id]: [] }));
+    const images = await discoverProviderImages(p.id, p.type);
+    if (!images) { setImageResult(prev => ({ ...prev, [p.id]: "FAILED" })); return; }
+    setImageOptions(prev => ({ ...prev, [p.id]: images }));
+    setImageResult(prev => ({ ...prev, [p.id]: `Found ${images.length} image(s)` }));
+  };
+  const renderImageOptions = (p: ProviderInfo) => {
                             const filter = imageFilter[p.id] || "all";
                             const versionFilter = imageVersionFilter[p.id] || "all";
                             const search = (imageSearch[p.id] || "").toLowerCase();
-                            const detectVersion = (image: {label: string; name: string; image_id: string; family?: string}) => {
-                              const hay = `${image.label} ${image.name} ${image.image_id}`.toLowerCase();
-                              if (/fedora/.test(hay) || image.family === "fedora") return "fedora";
-                              if (/rhel.?10[\.\-_ ]|(?:^|[\s\-_])10[-_.]lvm|lvm10[^0-9]/.test(hay)) return "10";
-                              if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
-                              return "";
-                            };
-                            const filtered = imageOptions[p.id].filter((image) => {
-                              if (filter !== "all" && image.type !== filter) return false;
-                              if (versionFilter !== "all" && detectVersion(image) !== versionFilter) return false;
-                              if (search && !image.label.toLowerCase().includes(search) && !image.image_id.toLowerCase().includes(search) && !(image.name || "").toLowerCase().includes(search)) return false;
-                              return true;
-                            });
+                            const filtered = filterProviderImages(imageOptions[p.id], filter, versionFilter, search);
                             return (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -908,11 +628,33 @@ export default function AdminProvidersPage() {
                               ))}
                             </div>
                             );
-                          })()}
+                          };
+
+  const renderProviderImages = (p: ProviderInfo) => (
+["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
+                      <details style={{ marginTop: 12 }} onToggle={(e) => { if (e.currentTarget.open) void loadProviderImages(p); }}>
+                        <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
+                          Select Image {p.default_image ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.default_image.length > 40 ? "..." + p.default_image.slice(-35) : p.default_image}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
+                        </summary>
+                        <div style={{ marginTop: 8 }}>
+                          {imageResult[p.id] && (
+                            <div style={{ fontSize: 11, marginBottom: 6, color: imageResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
+                              {imageResult[p.id]}
+                            </div>
+                          )}
+                          {(p.type === "gcp" || p.type === "azure") && (
+                            <div style={{ fontSize: 11, marginBottom: 8, padding: "6px 10px", borderRadius: 4, background: "var(--pf-t--global--background--color--secondary--default)", opacity: 0.8 }}>
+                              Showing PAYG images only. For BYOS, use <strong>Build Host Image</strong> above to create a custom image with packages pre-installed.
+                            </div>
+                          )}
+                          {imageOptions[p.id] && imageOptions[p.id].length > 0 && renderImageOptions(p)}
                         </div>
                       </details>
-                    )}
-                    {vpcOptions[p.id] && vpcOptions[p.id].length > 0 && (
+                    )
+  );
+
+  const renderProviderVpcOptions = (p: ProviderInfo) => (
+vpcOptions[p.id] && vpcOptions[p.id].length > 0 && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <div style={{ fontSize: 12, fontWeight: 600 }}>Select VPC and Subnet</div>
@@ -925,22 +667,16 @@ export default function AdminProvidersPage() {
                             </div>
                             <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{vpc.vpc_id} · {vpc.cidr}</div>
                             <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                              {vpc.subnets.map((s) => (
-                                <div key={s.subnet_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px", background: "rgba(0,0,0,0.15)", borderRadius: 4 }}>
-                                  <div style={{ fontSize: 11 }}>
-                                    <code>{s.subnet_id}</code> · {s.az} · {s.cidr} {s.public && <span style={{ color: "#4ade80" }}>public</span>}
-                                  </div>
-                                  <Button variant="secondary" onClick={() => setupInfra(p.id, vpc.vpc_id, s.subnet_id)} style={{ padding: "2px 8px", fontSize: 11 }}>
-                                    Use
-                                  </Button>
-                                </div>
-                              ))}
+                              {vpc.subnets.map(s => renderSubnet(p.id, vpc.vpc_id, s))}
                             </div>
                           </div>
                         ))}
                       </div>
-                    )}
-                    {consoleDomain[p.id] !== undefined && !p.console_configured && (
+                    )
+  );
+
+  const renderConsoleSetup = (p: ProviderInfo) => (
+consoleDomain[p.id] !== undefined && !p.console_configured && (
                       <Card style={{ marginTop: 12 }}>
                         <CardBody>
                           <div style={{ fontWeight: 600, marginBottom: 8 }}>Setup Console DNS</div>
@@ -984,21 +720,30 @@ export default function AdminProvidersPage() {
                           )}
                         </CardBody>
                       </Card>
-                    )}
-                    {p.console_configured && p.console_base_domain && (p.type === "ocpvirt" || p.type === "kubevirt") && (
+                    )
+  );
+
+  const renderClusterConsole = (p: ProviderInfo) => (
+p.console_configured && p.console_base_domain && (p.type === "ocpvirt" || p.type === "kubevirt") && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)" }}>
                         Console Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
                       </div>
-                    )}
-                    {p.console_configured && p.console_base_domain === "sslip.io" && p.type === "ec2" && (
+                    )
+  );
+
+  const renderSslipConsole = (p: ProviderInfo) => (
+p.console_configured && p.console_base_domain === "sslip.io" && p.type === "ec2" && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", alignItems: "center", gap: 8 }}>
                         <span>Console: <code style={{ fontSize: 11 }}>{"{instance}.{ip}.sslip.io"}</code> (Let&apos;s Encrypt HTTP-01)</span>
                         <Button variant="danger" onClick={() => removeConsole(p.id)} style={{ padding: "2px 8px", fontSize: 11 }}>
                           Remove
                         </Button>
                       </div>
-                    )}
-                    {p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && p.type !== "kubevirt" && (
+                    )
+  );
+
+  const renderConsoleNameservers = (p: ProviderInfo) => (
+p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && p.type !== "kubevirt" && (
                       <details style={{ marginTop: 12 }}>
                         <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
                           Console DNS Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
@@ -1015,12 +760,11 @@ export default function AdminProvidersPage() {
                           </CardBody>
                         </Card>
                       </details>
-                    )}
-                  </div>
-                </div>
-              )}
-            </CardBody>
-            {editId !== p.id && (
+                    )
+  );
+
+  const renderProviderActions = (p: ProviderInfo) => (
+editId !== p.id && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
                     {p.type === "s3" && (
@@ -1158,8 +902,11 @@ export default function AdminProvidersPage() {
                       {p.type !== "kubevirt" && p.host_count > 0 ? "Has Hosts" : "Delete"}
                     </Button>
               </CardBody>
-            )}
-            {editId !== p.id && (p.type === "gcp" || p.type === "azure") && (
+            )
+  );
+
+  const renderProviderBuild = (p: ProviderInfo) => (
+editId !== p.id && (p.type === "gcp" || p.type === "azure") && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, paddingBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>Build Host Image</span>
@@ -1189,9 +936,7 @@ export default function AdminProvidersPage() {
                 {buildStatus[p.id] && buildStatus[p.id].status !== "idle" && (
                   <div style={{
                     marginTop: 8, fontSize: 12, padding: "6px 10px", borderRadius: 4,
-                    background: buildStatus[p.id].status === "error" ? "var(--pf-t--global--color--status--danger--default)" :
-                                buildStatus[p.id].status === "success" ? "var(--pf-t--global--color--status--success--default)" :
-                                "var(--pf-t--global--color--status--info--default)",
+                    background: buildStatusColor(buildStatus[p.id].status),
                     color: "#fff",
                   }}>
                     {buildStatus[p.id].message}
@@ -1199,7 +944,226 @@ export default function AdminProvidersPage() {
                   </div>
                 )}
               </CardBody>
-            )}
+            )
+  );
+
+  const renderSubnet = (providerId: string, vpcId: string, s: {subnet_id: string; az: string; cidr: string; public: boolean}) => (
+                                <div key={s.subnet_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px", background: "rgba(0,0,0,0.15)", borderRadius: 4 }}>
+                                  <div style={{ fontSize: 11 }}>
+                                    <code>{s.subnet_id}</code> · {s.az} · {s.cidr} {s.public && <span style={{ color: "#4ade80" }}>public</span>}
+                                  </div>
+                                  <Button variant="secondary" onClick={() => setupInfra(providerId, vpcId, s.subnet_id)} style={{ padding: "2px 8px", fontSize: 11 }}>
+                                    Use
+                                  </Button>
+                                </div>
+                              );
+
+  const renderCreationCredentials = () => {
+    if ((type === "ocpvirt" || type === "kubevirt")) return (
+                  <>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>API URL</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} placeholder="https://api.cluster.example.com:6443" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Token</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sha256~..." /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={type === "kubevirt" ? "Operator Namespace" : "Namespace"}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder={type === "kubevirt" ? "troshka-operator" : "troshka"} /></LabeledField>
+                    </div>
+                    {type === "kubevirt" && (
+                      <>
+                        <div>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Cache Namespace</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={cacheNamespace} onChange={(e) => setCacheNamespace(e.target.value)} placeholder="troshka-cache" /></LabeledField>
+                        </div>
+                        <div>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Project Namespace Prefix</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={projectPrefix} onChange={(e) => setProjectPrefix(e.target.value)} placeholder="troshka-" /></LabeledField>
+                        </div>
+                      </>
+                    )}
+                    {type === "ocpvirt" && (
+                      <>
+                        <div>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo URL</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUrl} onChange={(e) => setPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" /></LabeledField>
+                        </div>
+                        <div>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo Username</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUsername} onChange={(e) => setPkgRepoUsername(e.target.value)} placeholder="troshka-repo" /></LabeledField>
+                        </div>
+                        <div>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Package Repo Password</>}>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={pkgRepoPassword} onChange={(e) => setPkgRepoPassword(e.target.value)} /></LabeledField>
+                        </div>
+                      </>
+                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
+                      <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
+                    </div>
+                  </>
+                );
+    if (type === "gcp") return (
+                  <>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>GCP Project ID</>}>
+                      <input style={inputStyle} value={gcpProjectId} onChange={(e) => setGcpProjectId(e.target.value)} placeholder="my-project-id" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Service Account JSON</>}>
+                      <textarea style={{ ...inputStyle, fontFamily: "monospace", minHeight: 120 }} value={serviceAccountJson} onChange={(e) => setServiceAccountJson(e.target.value)} placeholder='{"type": "service_account", "project_id": "...", ...}' /></LabeledField>
+                    </div>
+                  </>
+                );
+    if (type === "azure") return (
+                  <>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Tenant ID</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Client ID</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureClientId} onChange={(e) => setAzureClientId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Client Secret</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={azureClientSecret} onChange={(e) => setAzureClientSecret(e.target.value)} placeholder="Secret value" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Subscription ID</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureSubscriptionId} onChange={(e) => setAzureSubscriptionId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Location (optional)</>}>
+                      <input style={inputStyle} value={azureLocation} onChange={(e) => setAzureLocation(e.target.value)} placeholder="e.g. eastus" /></LabeledField>
+                    </div>
+                  </>
+                );
+    return <>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Access Key ID</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="AKIA..." /></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Secret Access Key</>}>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} placeholder="Secret key" /></LabeledField>
+                    </div>
+                  </>;
+  };
+
+  if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
+
+  return (
+    <>
+      <PageSection>
+        <Toolbar>
+          <ToolbarContent>
+            <ToolbarItem><Title headingLevel="h1">Providers</Title></ToolbarItem>
+            <ToolbarItem align={{ default: "alignEnd" }}>
+              <Button variant="primary" onClick={() => setShowAdd(!showAdd)}>
+                {showAdd ? "Cancel" : "+ Add Provider"}
+              </Button>
+            </ToolbarItem>
+          </ToolbarContent>
+        </Toolbar>
+      </PageSection>
+
+      {error && <PageSection><Alert variant="danger" title={error} /></PageSection>}
+
+      {showAdd && (
+        <PageSection>
+          <Card>
+            <CardBody>
+              <Title headingLevel="h3" size="md" style={{ marginBottom: 12 }}>New Provider</Title>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                  <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. AWS Production" /></LabeledField>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Type</>}>
+                    <select style={inputStyle} value={type} onChange={(e) => {
+                      setType(e.target.value);
+                      if (e.target.value === "s3" || e.target.value === "s3_readonly") setRegion("us-east-1");
+                    }}>
+                      <option value="ec2">AWS EC2</option>
+                      <option value="ocpvirt">OCP Virtualization</option>
+                      <option value="kubevirt">KubeVirt Native</option>
+                      <option value="s3">S3 Storage</option>
+                      <option value="s3_readonly">S3 Read-Only</option>
+                      <option value="gcp">GCP</option>
+                      <option value="azure">Azure</option>
+                    </select></LabeledField>
+                  </div>
+                  {type !== "ocpvirt" && type !== "kubevirt" && !useCustomEndpoint && (
+                    <div style={{ flex: 1 }}>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Default Region</>}>
+                      <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
+                        {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                      </select></LabeledField>
+                    </div>
+                  )}
+                </div>
+                {(type === "s3" || type === "s3_readonly") && (
+                  <>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>S3 Bucket</>}>
+                      <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" /></LabeledField>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input type="checkbox" checked={useCustomEndpoint} onChange={(e) => setUseCustomEndpoint(e.target.checked)} />
+                        {"S4 / Custom S3 Endpoint"}
+                      </label>
+                    </div>
+                    {useCustomEndpoint && (
+                      <div>
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Endpoint URL</>}>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://s4-troshka-images.apps.example.com" /></LabeledField>
+                      </div>
+                    )}
+                  </>
+                )}
+                {renderCreationCredentials()}
+                <Button variant="primary" onClick={createProvider} style={{ alignSelf: "flex-start" }}>Create Provider</Button>
+              </div>
+            </CardBody>
+          </Card>
+        </PageSection>
+      )}
+
+      <PageSection>
+        {providers.length === 0 && !showAdd && (
+          <p style={{ opacity: 0.6 }}>No providers configured. Add one to start provisioning hosts.</p>
+        )}
+        {providers.map((p) => (
+          <Card key={p.id} style={{ marginBottom: 8 }}>
+            <CardBody>
+              {editId === p.id ? (
+                renderProviderEdit(p)
+              ) : (
+                <div>
+                  <div>
+                    {renderProviderHeading(p)}
+                    {renderProviderMetadata(p)}
+                    {renderProviderTestResult(p)}
+                    {renderProviderImages(p)}
+                    {renderProviderVpcOptions(p)}
+                    {renderConsoleSetup(p)}
+                    {renderClusterConsole(p)}
+                    {renderSslipConsole(p)}
+                    {renderConsoleNameservers(p)}
+                  </div>
+                </div>
+              )}
+            </CardBody>
+            {renderProviderActions(p)}
+            {renderProviderBuild(p)}
           </Card>
         ))}
       </PageSection>

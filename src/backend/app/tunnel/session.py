@@ -121,19 +121,22 @@ class MultiplexSession:
             data = message.get("bytes")
             if not data:
                 continue
-            try:
-                stream_id, payload = unpack_frame(data)
-            except ValueError:
-                continue
-            sock = self._stream_socks.get(stream_id)
-            if sock is None:
-                continue
-            try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, sock.sendall, payload
-                )
-            except Exception:
-                await self._close_stream(stream_id)
+            await self._forward_frame(data)
+
+    async def _forward_frame(self, data: bytes) -> None:
+        try:
+            stream_id, payload = unpack_frame(data)
+        except ValueError:
+            return
+        sock = self._stream_socks.get(stream_id)
+        if sock is None:
+            return
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, sock.sendall, payload
+            )
+        except Exception:
+            await self._close_stream(stream_id)
 
     async def _handle_control(self, text: str) -> None:
         import json

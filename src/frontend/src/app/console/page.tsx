@@ -14,24 +14,343 @@ export default function ConsolePageWrapper() {
   );
 }
 
-let _activeRfb: Record<string, unknown> | null = null;
-let _activeToken: string | null = null;
-
 function ConsolePage() {
   const searchParams = useSearchParams();
   const vmId = searchParams.get("vm") || "";
   const projectId = searchParams.get("project");
   const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
+  return <ConsoleSession key={`${projectId}/${vmId}`} projectId={projectId} vmId={vmId} vmName={vmName} />;
+}
+
+type ConsoleKeyboard = {
+  sendKey?: (keysym: number, code: string | null, down?: boolean) => void;
+  focus?: () => void;
+};
+
+function sendConsoleText(rfb: ConsoleKeyboard, text: string, controlCharacters: boolean) {
+  const sendKey = rfb.sendKey;
+  if (!sendKey) return;
+  const controlKeys: Record<string, number> = { "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09 };
+  const shifted = new Set('_~!@#$%^&*()+{}|:"<>?');
+  for (const ch of text) {
+    if (controlCharacters && ch in controlKeys) {
+      sendKey.call(rfb, controlKeys[ch], "", true);
+      sendKey.call(rfb, controlKeys[ch], "", false);
+      continue;
+    }
+    let keysym = ch.codePointAt(0)!;
+    if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
+    const needsShift = shifted.has(ch) || (ch >= "A" && ch <= "Z");
+    if (needsShift) sendKey.call(rfb, 0xffe1, "", true);
+    sendKey.call(rfb, keysym, "", true);
+    sendKey.call(rfb, keysym, "", false);
+    if (needsShift) sendKey.call(rfb, 0xffe1, "", false);
+  }
+}
+
+async function captureConsoleScreenshot(canvas: HTMLCanvasElement, vmName: string, setToast: (message: string | null) => void) {
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
+  if (!blob) return;
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    setToast("Screenshot copied");
+  } catch {
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `${vmName}-${new Date().toISOString().slice(0, 19)}.png`;
+    link.click();
+    setToast("Screenshot saved");
+  }
+  setTimeout(() => setToast(null), 2000);
+}
+
+function consoleStatus(headless: boolean, starting: boolean, poweredOff: boolean, status: string): string {
+  if (headless) return "Headless Mode";
+  if (starting) return "Starting...";
+  return poweredOff && status !== "Connected" ? "Powered Off" : status;
+}
+
+function consoleStatusColor(headless: boolean, status: string): string {
+  if (headless || status.startsWith("Waiting")) return "#94a3b8";
+  if (status === "Connected" || status === "Starting...") return "#4ade80";
+  return status === "Powered Off" ? "#ef4444" : "#fbbf24";
+}
+
+type ConsoleMenu = "linux" | "windows" | "power" | null;
+
+function ConsoleToolbar({ scaled, setScaled, rfbRef, btnStyle, vmName, setToast, lastPasteRef, vmPasswords, openKeyboard, linuxMacros, windowsMacros, openMenu, setOpenMenu, sendCombo, vmState, vmPowerAction }: Readonly<{
+  scaled: boolean;
+  setScaled: React.Dispatch<React.SetStateAction<boolean>>;
+  rfbRef: React.RefObject<unknown>;
+  btnStyle: React.CSSProperties;
+  vmName: string;
+  setToast: React.Dispatch<React.SetStateAction<string | null>>;
+  lastPasteRef: React.RefObject<number>;
+  vmPasswords: { label: string; value: string; }[];
+  openKeyboard: () => void;
+  linuxMacros: { label: string; keys: number[]; }[];
+  windowsMacros: { label: string; keys: number[]; }[];
+  openMenu: ConsoleMenu;
+  setOpenMenu: React.Dispatch<React.SetStateAction<ConsoleMenu>>;
+  sendCombo: (keysyms: number[]) => void;
+  vmState: string | null;
+  vmPowerAction: (action: string, label: string, confirm?: string) => Promise<void>;
+}>) {
+  return (<div style={{ display: "flex", gap: 8 }}>
+    <button type="button"
+      onClick={() => {
+        const next = !scaled;
+        setScaled(next);
+        const r = rfbRef.current as Record<string, any> | null;
+        if (r) r.scaleViewport = next;
+      }}
+      style={{ ...btnStyle, background: scaled ? "rgba(74,222,128,0.15)" : "none", borderColor: scaled ? "#4ade80" : "#555" }}
+    >
+      {scaled ? "Scaled" : "1:1"}
+    </button>
+    <button type="button"
+      onClick={() => {
+        const r = rfbRef.current as Record<string, any> | null;
+        if (!r?._canvas) return;
+        const canvas = r._canvas as HTMLCanvasElement;
+        void captureConsoleScreenshot(canvas, vmName, setToast);
+      }}
+      style={btnStyle}
+      title="Copy screenshot to clipboard"
+    >
+      Screenshot
+    </button>
+    <button type="button"
+      onClick={async (e) => {
+        (e.target as HTMLElement).blur();
+        if (Date.now() - lastPasteRef.current < 2000) return;
+        lastPasteRef.current = Date.now();
+        let text = "";
+        try {
+          text = await navigator.clipboard.readText();
+        } catch {
+          text = window.prompt("Paste text to send to VM:") || "";
+        }
+        if (!text) return;
+        const r = rfbRef.current as Record<string, any> | null;
+        if (!r) return;
+        const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
+        if (!sendKey) return;
+
+        sendConsoleText(r, text, true);
+        r.focus?.();
+      }}
+      style={btnStyle}
+    >
+      Paste
+    </button>
+    {vmPasswords.map((pw) => (
+      <button type="button"
+        key={pw.label}
+        onClick={async (e) => {
+          (e.target as HTMLElement).blur();
+          if (Date.now() - lastPasteRef.current < 2000) return;
+          lastPasteRef.current = Date.now();
+          const r = rfbRef.current as Record<string, any> | null;
+          if (!r) return;
+          const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
+          if (!sendKey) return;
+          sendConsoleText(r, pw.value, false);
+          sendKey.call(r, 0xff0d, "", true);
+          sendKey.call(r, 0xff0d, "", false);
+          setToast(`${pw.label} password sent`);
+          setTimeout(() => setToast(null), 2000);
+          r.focus?.();
+        }}
+        style={{ ...btnStyle, fontSize: 11 }}
+        title={`Type ${pw.label} password + Enter`}
+      >
+        🔑 {pw.label}
+      </button>
+    ))}
+    <button type="button"
+      onClick={openKeyboard}
+      style={{ ...btnStyle, display: "flex", alignItems: "center", gap: 4 }}
+      title="Virtual Keyboard"
+    >
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="none" stroke="currentColor" strokeWidth="0.8">
+        <rect x="0.5" y="0.5" width="17" height="11" rx="1.5" />
+        <rect x="2" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="5" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="8" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="11" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="14" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="2" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="5" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="8" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="11" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="14" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+        <rect x="5" y="8.5" width="8" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+      </svg>
+    </button>
+    {(["linux", "windows"] as const).map((os) => {
+      const macros = os === "linux" ? linuxMacros : windowsMacros;
+      const isOpen = openMenu === os;
+      return (
+        <div key={os} style={{ position: "relative" }}>
+          <button type="button"
+            onClick={(e) => { e.stopPropagation(); setOpenMenu(isOpen ? null : os); }}
+            style={{ ...btnStyle, background: isOpen ? "rgba(74,222,128,0.15)" : "none", borderColor: isOpen ? "#4ade80" : "#555" }}
+          >
+            {os === "linux" ? "Linux" : "Windows"} ▾
+          </button>
+          {isOpen && (
+            <div
+              style={{
+                position: "absolute", top: "100%", right: 0, marginTop: 4,
+                background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
+                padding: "4px 0", minWidth: 220, zIndex: 100,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+              }}
+            >
+              {macros.map((m) => (
+                <button type="button"
+                  key={m.label}
+                  onClick={() => { sendCombo(m.keys); setOpenMenu(null); }}
+                  style={{
+                    display: "block", width: "100%", textAlign: "left",
+                    background: "none", border: "none", color: "#fff",
+                    padding: "5px 12px", fontSize: 11, cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+                  onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    })}
+    <div style={{ position: "relative" }}>
+      <button type="button"
+        onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === "power" ? null : "power"); }}
+        style={{ ...btnStyle, background: openMenu === "power" ? "rgba(251,191,36,0.15)" : "none", borderColor: openMenu === "power" ? "#fbbf24" : "#555", color: openMenu === "power" ? "#fbbf24" : "#fff" }}
+      >
+        Power ▾
+      </button>
+      {openMenu === "power" && (
+        <div
+          style={{
+            position: "absolute", top: "100%", right: 0, marginTop: 4,
+            background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
+            padding: "4px 0", minWidth: 180, zIndex: 100,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+          }}
+        >
+          {([
+            ...(vmState !== "running" ? [{ action: "start", label: "Start" }] : []),
+            ...(vmState === "running" ? [{ action: "restart", label: "Restart", confirm: `Restart "${vmName}"?` }] : []),
+            ...(vmState === "running" ? [{ action: "stop", label: "Shutdown", confirm: `Shut down "${vmName}"?` }] : []),
+            ...(vmState === "running" ? [{ action: "forcestop", label: "Force Off", confirm: `Force off "${vmName}"? This may cause data loss.` }] : []),
+          ] as { action: string; label: string; confirm?: string }[]).map((item) => (
+            <button type="button"
+              key={item.action}
+              onClick={() => { setOpenMenu(null); vmPowerAction(item.action, item.label, "confirm" in item ? item.confirm : undefined); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                background: "none", border: "none",
+                color: item.action === "forcestop" ? "#f87171" : "#fff",
+                padding: "5px 12px", fontSize: 11, cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+              onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>);
+}
+
+function ConsoleOverlay({ displayStatus, headless, fetchConsoleUrl, setWsUrl, startingRef }: Readonly<{
+  displayStatus: string;
+  headless: boolean;
+  fetchConsoleUrl: (force?: boolean) => Promise<{ url: string; hostType: string; headless?: boolean; } | null>;
+  setWsUrl: React.Dispatch<React.SetStateAction<string | null>>;
+  startingRef: React.RefObject<boolean>;
+}>) {
+  return (<div style={{
+    position: "absolute", inset: 0,
+    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+    background: "#000", color: "#555", gap: 12,
+    pointerEvents: displayStatus === "Console in use by another session" ? "auto" : "none",
+  }}>
+    {headless ? (
+      <>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" />
+          <line x1="8" y1="21" x2="16" y2="21" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+          <path d="M6 7h12M6 11h8" />
+        </svg>
+        <span style={{ fontSize: 15, color: "#94a3b8", fontWeight: 500 }}>Headless Mode</span>
+        <span style={{ fontSize: 12, color: "#666", maxWidth: 360, textAlign: "center", lineHeight: 1.5 }}>
+          VNC is disabled so the guest uses the serial port (ttyS0).
+          Use VM exec with <code style={{ color: "#888" }}>method: serial</code> or the bootstrap playbook.
+        </span>
+      </>
+    ) : null}
+    {!headless && displayStatus === "Console in use by another session" && (
+      <>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" />
+          <line x1="8" y1="21" x2="16" y2="21" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+        </svg>
+        <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
+        <button type="button"
+          onClick={() => {
+            fetchConsoleUrl().then((result) => {
+              if (!result) return;
+              const forceUrl = result.url.replace(/\/([^/]+)$/, "/force/$1");
+              setWsUrl(forceUrl);
+            });
+          }}
+          style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #ef4444", background: "rgba(239,68,68,0.15)", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
+        >
+          Force Connect
+        </button>
+      </>
+    )}
+    {!headless && displayStatus !== "Console in use by another session" && startingRef.current && (
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" style={{ animation: "vkb-spin 1s linear infinite" }}>
+        <path d="M12 2a10 10 0 0 1 10 10" />
+      </svg>
+    )}
+    {!headless && displayStatus !== "Console in use by another session" && !startingRef.current && (
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+        <line x1="2" y1="3" x2="22" y2="17" stroke="#ef4444" strokeWidth="2" />
+      </svg>
+    )}
+    <span style={{ fontSize: 13, color: startingRef.current ? "#4ade80" : undefined }}>{displayStatus}</span>
+  </div>);
+}
+
+function ConsoleSession({ projectId, vmId, vmName }: Readonly<{ projectId: string | null; vmId: string; vmName: string }>) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
   const [headless, setHeadless] = useState(false);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [scaled, setScaled] = useState(true);
   const [focused, setFocused] = useState(false);
-  const [openMenu, setOpenMenu] = useState<"linux" | "windows" | "power" | null>(null);
+  const [openMenu, setOpenMenu] = useState<ConsoleMenu>(null);
   const [vmState, setVmState] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
-  const [projectDeleted, setProjectDeleted] = useState(false);
+  const projectDeleted = useRef(false);
   const [toast, setToast] = useState<string | null>(null);
   const [vmPasswords, setVmPasswords] = useState<{label: string; value: string}[]>([]);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
@@ -42,6 +361,7 @@ function ConsolePage() {
   const lastPasteRef = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
+  const [rfbReady, setRfbReady] = useState(false);
   const mountedRef = useRef(true);
 
   // Suppress noVNC async errors that Next.js dev mode catches
@@ -97,11 +417,12 @@ function ConsolePage() {
 
   // Fetch console WebSocket URL from API
   const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<{url: string; hostType: string; headless?: boolean} | null> => {
-    if (!projectId || !vmId || projectDeleted) return null;
+    if (!projectId || !vmId || projectDeleted.current) return null;
     try {
       const q = force ? "?force=true" : "";
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
-      if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
+      if (!mountedRef.current) return null;
+      if (resp.status === 404) { projectDeleted.current = true; setStatus("Project deleted"); return null; }
       const data = await resp.json();
       if (data.headless) {
         setHeadless(true);
@@ -112,7 +433,7 @@ function ConsolePage() {
       if (data.ws_url) return { url: data.ws_url, hostType: data.host_type || "" };
     } catch { /* ignore */ }
     return null;
-  }, [projectId, vmId, projectDeleted]);
+  }, [projectId, vmId]);
 
   // Pre-flight: open a plain WebSocket to check if session is available
   // If proxy rejects with 4010, the session is in use — no noVNC needed
@@ -141,10 +462,10 @@ function ConsolePage() {
   }, []);
 
   const pollForPort = useCallback(() => {
-    if (!mountedRef.current || projectDeleted) return;
+    if (!projectId || !vmId || !mountedRef.current || projectDeleted.current) return;
     setStatus("Waiting for VM...");
     fetchConsoleUrl().then((result) => {
-      if (!mountedRef.current || projectDeleted) return;
+      if (!mountedRef.current || projectDeleted.current) return;
       if (!result) {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
@@ -154,7 +475,7 @@ function ConsolePage() {
       if (hostType === "kubevirt-cluster") {
         // KubeVirt: pre-flight check for session-in-use detection
         preflightCheck(url.replace("/ws/", "/check/")).then((check) => {
-          if (!mountedRef.current) return;
+          if (!mountedRef.current || projectDeleted.current) return;
           if (check === "in_use") {
             setStatus("Console in use by another session");
             return;
@@ -170,13 +491,14 @@ function ConsolePage() {
         setWsUrl(url);
       }
     });
-  }, [fetchConsoleUrl, preflightCheck, projectDeleted]);
+  }, [fetchConsoleUrl, preflightCheck, projectId, vmId]);
 
   const createRfb = useCallback(() => {
     if (!wsUrl || !canvasRef.current || !RFBClass.current || !mountedRef.current) return;
 
     try {
       const old = rfbRef.current as { disconnect?: () => void; _rfbConnectionState?: string } | null;
+      rfbRef.current = null;
       if (old?.disconnect && old._rfbConnectionState !== "disconnected") old.disconnect();
     } catch { /* ignore */ }
     rfbRef.current = null;
@@ -192,14 +514,11 @@ function ConsolePage() {
 
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
       r.addEventListener("connect", () => {
-        _activeRfb = rfb;
-        _activeToken = wsUrl;
+        if (rfbRef.current !== rfb) return;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
       r.addEventListener("disconnect", () => {
-        _activeRfb = null;
-        _activeToken = null;
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || rfbRef.current !== rfb) return;
         if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
         setStatus("Reconnecting...");
         setWsUrl(null);
@@ -221,6 +540,7 @@ function ConsolePage() {
     const init = async () => {
       try {
         RFBClass.current = (await import("@novnc/novnc")).default;
+        if (mountedRef.current) setRfbReady(true);
       } catch (err) {
         setStatus(`Failed to load noVNC: ${err}`);
       }
@@ -230,31 +550,26 @@ function ConsolePage() {
     return () => {
       mountedRef.current = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      const rfb = rfbRef.current as { disconnect?: () => void } | null;
+      rfbRef.current = null;
+      rfb?.disconnect?.();
     };
   }, []);
 
-  // When we have a URL, connect. When we don't, poll for one.
-  // Module-level _activeRfb survives hot-reloads — skip reconnect if already connected.
+  // Module loading and URL discovery are independent; connect once both finish.
   useEffect(() => {
-    if (_activeRfb && _activeToken) {
-      rfbRef.current = _activeRfb;
-      setWsUrl(_activeToken);
-      setStatus("Connected");
-      return;
-    }
-    if (wsUrl && RFBClass.current) {
-      createRfb();
-    } else if (!wsUrl) {
-      pollForPort();
-    }
-  }, [wsUrl, createRfb, pollForPort]);
+    if (wsUrl && rfbReady) createRfb();
+  }, [wsUrl, rfbReady, createRfb]);
+
+  useEffect(() => { pollForPort(); }, [pollForPort]);
 
   useEffect(() => {
     if (ws.deleted) {
-      setProjectDeleted(true);
+      projectDeleted.current = true;
       if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
-      _activeRfb = null;
-      _activeToken = null;
+      const rfb = rfbRef.current as { disconnect?: () => void } | null;
+      rfbRef.current = null;
+      rfb?.disconnect?.();
       window.close();
     }
   }, [ws.deleted]);
@@ -331,7 +646,7 @@ function ConsolePage() {
       "troshka-vkb",
       "width=900,height=290,menubar=no,toolbar=no,location=no,status=no",
     );
-  }, []);
+  }, [vmName]);
 
   const vmPowerAction = useCallback(async (action: string, label: string, confirm?: string) => {
     if (confirm && !(await appConfirm({ message: confirm, confirmLabel: label }))) return;
@@ -353,7 +668,7 @@ function ConsolePage() {
     F1: 0xffbe, F2: 0xffbf, F3: 0xffc0, F4: 0xffc1, F5: 0xffc2, F6: 0xffc3,
     F7: 0xffc4, F8: 0xffc5, F9: 0xffc6, F10: 0xffc7, F11: 0xffc8, F12: 0xffc9,
   } as const;
-  const k = (ch: string) => ch.charCodeAt(0); // ASCII letter keysym
+  const k = (ch: string) => ch.codePointAt(0)!; // ASCII letter keysym
 
   type Macro = { label: string; keys: number[] };
   const linuxMacros: Macro[] = [
@@ -390,8 +705,8 @@ function ConsolePage() {
   }
 
   const poweredOff = vmState !== null && vmState !== "running";
-  const displayStatus = headless ? "Headless Mode" : startingRef.current ? "Starting..." : poweredOff && status !== "Connected" ? "Powered Off" : status;
-  const statusColor = headless ? "#94a3b8" : displayStatus === "Connected" ? "#4ade80" : displayStatus === "Starting..." ? "#4ade80" : displayStatus === "Powered Off" ? "#ef4444" : displayStatus.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
+  const displayStatus = consoleStatus(headless, startingRef.current, poweredOff, status);
+  const statusColor = consoleStatusColor(headless, displayStatus);
 
   return (
     <div style={{ background: "#000", height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -437,240 +752,7 @@ function ConsolePage() {
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => {
-              const next = !scaled;
-              setScaled(next);
-              const r = rfbRef.current as Record<string, any> | null;
-              if (r) r.scaleViewport = next;
-            }}
-            style={{ ...btnStyle, background: scaled ? "rgba(74,222,128,0.15)" : "none", borderColor: scaled ? "#4ade80" : "#555" }}
-          >
-            {scaled ? "Scaled" : "1:1"}
-          </button>
-          <button
-            onClick={() => {
-              const r = rfbRef.current as Record<string, any> | null;
-              if (!r?._canvas) return;
-              const canvas = r._canvas as HTMLCanvasElement;
-              canvas.toBlob((blob) => {
-                if (!blob) return;
-                navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(() => {
-                  setToast("Screenshot copied");
-                  setTimeout(() => setToast(null), 2000);
-                }).catch(() => {
-                  const url = canvas.toDataURL("image/png");
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `${vmName}-${new Date().toISOString().slice(0, 19)}.png`;
-                  a.click();
-                  setToast("Screenshot saved");
-                  setTimeout(() => setToast(null), 2000);
-                });
-              });
-            }}
-            style={btnStyle}
-            title="Copy screenshot to clipboard"
-          >
-            Screenshot
-          </button>
-          <button
-            onClick={async (e) => {
-              (e.target as HTMLElement).blur();
-              if (Date.now() - lastPasteRef.current < 2000) return;
-              lastPasteRef.current = Date.now();
-              let text = "";
-              try {
-                text = await navigator.clipboard.readText();
-              } catch {
-                text = window.prompt("Paste text to send to VM:") || "";
-              }
-              if (!text) return;
-              const r = rfbRef.current as Record<string, any> | null;
-              if (!r) return;
-              const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
-              if (!sendKey) return;
-
-              const shiftChars: Record<string, number> = {
-                "_": 0x005f, "~": 0x007e, "!": 0x0021, "@": 0x0040,
-                "#": 0x0023, "$": 0x0024, "%": 0x0025, "^": 0x005e,
-                "&": 0x0026, "*": 0x002a, "(": 0x0028, ")": 0x0029,
-                "+": 0x002b, "{": 0x007b, "}": 0x007d, "|": 0x007c,
-                ":": 0x003a, '"': 0x0022, "<": 0x003c, ">": 0x003e,
-                "?": 0x003f,
-              };
-              const shiftKeysym = 0xffe1;
-              const controlKeys: Record<string, number> = {
-                "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09,
-              };
-
-              for (const ch of text) {
-                if (ch in controlKeys) {
-                  sendKey.call(r, controlKeys[ch], "", true);
-                  sendKey.call(r, controlKeys[ch], "", false);
-                  continue;
-                }
-                let keysym = ch.charCodeAt(0);
-                if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
-                const needsShift = ch in shiftChars || (ch >= "A" && ch <= "Z");
-                if (needsShift) sendKey.call(r, shiftKeysym, "", true);
-                sendKey.call(r, keysym, "", true);
-                sendKey.call(r, keysym, "", false);
-                if (needsShift) sendKey.call(r, shiftKeysym, "", false);
-              }
-              r.focus?.();
-            }}
-            style={btnStyle}
-          >
-            Paste
-          </button>
-          {vmPasswords.map((pw) => (
-            <button
-              key={pw.label}
-              onClick={async (e) => {
-                (e.target as HTMLElement).blur();
-                if (Date.now() - lastPasteRef.current < 2000) return;
-                lastPasteRef.current = Date.now();
-                const r = rfbRef.current as Record<string, any> | null;
-                if (!r) return;
-                const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
-                if (!sendKey) return;
-                const shiftChars: Record<string, number> = {
-                  "_": 0x005f, "~": 0x007e, "!": 0x0021, "@": 0x0040,
-                  "#": 0x0023, "$": 0x0024, "%": 0x0025, "^": 0x005e,
-                  "&": 0x0026, "*": 0x002a, "(": 0x0028, ")": 0x0029,
-                  "+": 0x002b, "{": 0x007b, "}": 0x007d, "|": 0x007c,
-                  ":": 0x003a, '"': 0x0022, "<": 0x003c, ">": 0x003e,
-                  "?": 0x003f,
-                };
-                const shiftKeysym = 0xffe1;
-                for (const ch of pw.value) {
-                  let keysym = ch.charCodeAt(0);
-                  if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
-                  const needsShift = ch in shiftChars || (ch >= "A" && ch <= "Z");
-                  if (needsShift) sendKey.call(r, shiftKeysym, "", true);
-                  sendKey.call(r, keysym, "", true);
-                  sendKey.call(r, keysym, "", false);
-                  if (needsShift) sendKey.call(r, shiftKeysym, "", false);
-                }
-                sendKey.call(r, 0xff0d, "", true);
-                sendKey.call(r, 0xff0d, "", false);
-                setToast(`${pw.label} password sent`);
-                setTimeout(() => setToast(null), 2000);
-                r.focus?.();
-              }}
-              style={{ ...btnStyle, fontSize: 11 }}
-              title={`Type ${pw.label} password + Enter`}
-            >
-              🔑 {pw.label}
-            </button>
-          ))}
-          <button
-            onClick={openKeyboard}
-            style={{ ...btnStyle, display: "flex", alignItems: "center", gap: 4 }}
-            title="Virtual Keyboard"
-          >
-            <svg width="18" height="12" viewBox="0 0 18 12" fill="none" stroke="currentColor" strokeWidth="0.8">
-              <rect x="0.5" y="0.5" width="17" height="11" rx="1.5" />
-              <rect x="2" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="5" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="8" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="11" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="14" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="2" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="5" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="8" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="11" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="14" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-              <rect x="5" y="8.5" width="8" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
-            </svg>
-          </button>
-          {(["linux", "windows"] as const).map((os) => {
-            const macros = os === "linux" ? linuxMacros : windowsMacros;
-            const isOpen = openMenu === os;
-            return (
-              <div key={os} style={{ position: "relative" }}>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setOpenMenu(isOpen ? null : os); }}
-                  style={{ ...btnStyle, background: isOpen ? "rgba(74,222,128,0.15)" : "none", borderColor: isOpen ? "#4ade80" : "#555" }}
-                >
-                  {os === "linux" ? "Linux" : "Windows"} ▾
-                </button>
-                {isOpen && (
-                  <div
-                    onClick={(e) => e.stopPropagation()}
-                    style={{
-                      position: "absolute", top: "100%", right: 0, marginTop: 4,
-                      background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
-                      padding: "4px 0", minWidth: 220, zIndex: 100,
-                      boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-                    }}
-                  >
-                    {macros.map((m, i) => (
-                      <button
-                        key={i}
-                        onClick={() => { sendCombo(m.keys); setOpenMenu(null); }}
-                        style={{
-                          display: "block", width: "100%", textAlign: "left",
-                          background: "none", border: "none", color: "#fff",
-                          padding: "5px 12px", fontSize: 11, cursor: "pointer",
-                          whiteSpace: "nowrap",
-                        }}
-                        onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
-                        onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <div style={{ position: "relative" }}>
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === "power" ? null : "power"); }}
-              style={{ ...btnStyle, background: openMenu === "power" ? "rgba(251,191,36,0.15)" : "none", borderColor: openMenu === "power" ? "#fbbf24" : "#555", color: openMenu === "power" ? "#fbbf24" : "#fff" }}
-            >
-              Power ▾
-            </button>
-            {openMenu === "power" && (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: "absolute", top: "100%", right: 0, marginTop: 4,
-                  background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
-                  padding: "4px 0", minWidth: 180, zIndex: 100,
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
-                }}
-              >
-                {([
-                  ...(vmState !== "running" ? [{ action: "start", label: "Start" }] : []),
-                  ...(vmState === "running" ? [{ action: "restart", label: "Restart", confirm: `Restart "${vmName}"?` }] : []),
-                  ...(vmState === "running" ? [{ action: "stop", label: "Shutdown", confirm: `Shut down "${vmName}"?` }] : []),
-                  ...(vmState === "running" ? [{ action: "forcestop", label: "Force Off", confirm: `Force off "${vmName}"? This may cause data loss.` }] : []),
-                ] as { action: string; label: string; confirm?: string }[]).map((item) => (
-                  <button
-                    key={item.action}
-                    onClick={() => { setOpenMenu(null); vmPowerAction(item.action, item.label, "confirm" in item ? item.confirm : undefined); }}
-                    style={{
-                      display: "block", width: "100%", textAlign: "left",
-                      background: "none", border: "none",
-                      color: item.action === "forcestop" ? "#f87171" : "#fff",
-                      padding: "5px 12px", fontSize: 11, cursor: "pointer",
-                      whiteSpace: "nowrap",
-                    }}
-                    onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
-                    onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <ConsoleToolbar scaled={scaled} setScaled={setScaled} rfbRef={rfbRef} btnStyle={btnStyle} vmName={vmName} setToast={setToast} lastPasteRef={lastPasteRef} vmPasswords={vmPasswords} openKeyboard={openKeyboard} linuxMacros={linuxMacros} windowsMacros={windowsMacros} openMenu={openMenu} setOpenMenu={setOpenMenu} sendCombo={sendCombo} vmState={vmState} vmPowerAction={vmPowerAction} />
       </div>
       <div style={{
         height: 2,
@@ -680,61 +762,7 @@ function ConsolePage() {
       <div style={{ flex: 1, position: "relative", background: "#000" }}>
         <div ref={canvasRef} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
         {displayStatus !== "Connected" && (
-          <div style={{
-            position: "absolute", inset: 0,
-            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-            background: "#000", color: "#555", gap: 12,
-            pointerEvents: displayStatus === "Console in use by another session" ? "auto" : "none",
-          }}>
-            {headless ? (
-              <>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="20" height="14" rx="2" />
-                  <line x1="8" y1="21" x2="16" y2="21" />
-                  <line x1="12" y1="17" x2="12" y2="21" />
-                  <path d="M6 7h12M6 11h8" />
-                </svg>
-                <span style={{ fontSize: 15, color: "#94a3b8", fontWeight: 500 }}>Headless Mode</span>
-                <span style={{ fontSize: 12, color: "#666", maxWidth: 360, textAlign: "center", lineHeight: 1.5 }}>
-                  VNC is disabled so the guest uses the serial port (ttyS0).
-                  Use VM exec with <code style={{ color: "#888" }}>method: serial</code> or the bootstrap playbook.
-                </span>
-              </>
-            ) : displayStatus === "Console in use by another session" ? (
-              <>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="20" height="14" rx="2" />
-                  <line x1="8" y1="21" x2="16" y2="21" />
-                  <line x1="12" y1="17" x2="12" y2="21" />
-                </svg>
-                <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
-                <button type="button"
-                  onClick={() => {
-                    fetchConsoleUrl().then((result) => {
-                      if (!result) return;
-                      const forceUrl = result.url.replace(/\/([^/]+)$/, "/force/$1");
-                      setWsUrl(forceUrl);
-                    });
-                  }}
-                  style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #ef4444", background: "rgba(239,68,68,0.15)", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
-                >
-                  Force Connect
-                </button>
-              </>
-            ) : startingRef.current ? (
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" style={{ animation: "vkb-spin 1s linear infinite" }}>
-                <path d="M12 2a10 10 0 0 1 10 10" />
-              </svg>
-            ) : (
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <line x1="8" y1="21" x2="16" y2="21" />
-                <line x1="12" y1="17" x2="12" y2="21" />
-                <line x1="2" y1="3" x2="22" y2="17" stroke="#ef4444" strokeWidth="2" />
-              </svg>
-            )}
-            <span style={{ fontSize: 13, color: startingRef.current ? "#4ade80" : undefined }}>{displayStatus}</span>
-          </div>
+          <ConsoleOverlay displayStatus={displayStatus} headless={headless} fetchConsoleUrl={fetchConsoleUrl} setWsUrl={setWsUrl} startingRef={startingRef} />
         )}
         <style>{`@keyframes vkb-spin { to { transform: rotate(360deg); } }`}</style>
       </div>

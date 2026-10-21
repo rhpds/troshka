@@ -647,8 +647,9 @@ def test_appliance_osd_index_from_label_and_name():
     named = _mock_pvc("troshka-ceph-osd-3", "50Gi")
     assert _appliance_osd_index(named) == 3
 
+    exception_pvc = _mock_pvc("bad-name", "50Gi")
     with pytest.raises(ValueError, match="missing troshka-ceph-osd-index"):
-        _appliance_osd_index(_mock_pvc("bad-name", "50Gi"))
+        _appliance_osd_index(exception_pvc)
 
 
 def test_collect_osd_device_entries_validates():

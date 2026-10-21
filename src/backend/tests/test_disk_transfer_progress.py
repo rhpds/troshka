@@ -93,6 +93,30 @@ def test_first_sample_uses_object_size_and_only_stats_scratch(transfer):
     assert "private" not in repr(t.cache)
 
 
+@pytest.mark.parametrize("region", ["eu-west-1", "ap-southeast-2"])
+def test_probe_respects_sdk_region_configuration(transfer, monkeypatch, region):
+    from boto3.session import Session
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", region)
+    session = Session()
+    created = []
+
+    def create_client(*args, **kwargs):
+        client = session.client(*args, **kwargs)
+        created.append(client)
+        monkeypatch.setattr(client, "head_object", lambda **kw: {"ContentLength": 42})
+        return client
+
+    transfer.create_client.side_effect = create_client
+    assert (
+        transfer.module._object_size(
+            transfer.core, transfer.dv["spec"]["source"]["s3"], "project-ns"
+        )
+        == 42
+    )
+    assert created[0].meta.region_name == region
+
+
 def test_second_sample_reports_smoothed_actual_speed_and_reuses_head(transfer):
     t = transfer
     t.module.get_s3_download_progress(t.core, t.dv, "provider")

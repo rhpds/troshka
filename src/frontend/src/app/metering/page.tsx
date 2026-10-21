@@ -113,7 +113,7 @@ function effectiveRate(row: LineItem): number | null {
   return null;
 }
 
-function BreakdownTable({ items }: { items: LineItem[] }) {
+function BreakdownTable({ items }: Readonly<{ items: LineItem[] }>) {
   if (!items.length) {
     return <div style={{ opacity: 0.65, fontSize: 13 }}>No usage yet.</div>;
   }
@@ -148,7 +148,7 @@ function BreakdownTable({ items }: { items: LineItem[] }) {
   );
 }
 
-function StatementBreakdown({ projects }: { projects: ProjectMonthLine[] }) {
+function StatementBreakdown({ projects }: Readonly<{ projects: ProjectMonthLine[] }>) {
   if (!projects.length) {
     return <div style={{ opacity: 0.65, fontSize: 13 }}>No usage in this month.</div>;
   }
@@ -173,17 +173,19 @@ function monthLabel(iso: string | null): string {
   return d.toLocaleString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
-function csvCell(value: string | number | null | undefined): string {
+type CsvValue = string | number | null | undefined;
+
+function csvCell(value: CsvValue): string {
   if (value == null || value === "") return "";
   const s = String(value);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
   return s;
 }
 
 function downloadCsv(
   filename: string,
   header: string[],
-  rows: Array<Array<string | number | null | undefined>>
+  rows: CsvValue[][]
 ) {
   const body = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
   const blob = new Blob(["\uFEFF" + body + "\r\n"], {
@@ -222,12 +224,12 @@ function invoiceExportRows(
   stmt: StatementRow,
   projects: ProjectMonthLine[],
   nameQ: string
-): Array<Array<string | number | null | undefined>> {
+): CsvValue[][] {
   const month = monthLabel(stmt.period_start);
   const visible = nameQ
     ? projects.filter((p) => p.project_name.toLowerCase().includes(nameQ))
     : projects;
-  const rows: Array<Array<string | number | null | undefined>> = [];
+  const rows: CsvValue[][] = [];
   const push = (projectName: string, item: LineItem | null, lineTotal: number) => {
     const rate = item ? effectiveRate(item) : null;
     rows.push([
@@ -236,7 +238,7 @@ function invoiceExportRows(
       stmt.period_start || "",
       projectName,
       item ? kindLabel(item.kind) : "",
-      rate != null ? rate : "",
+      rate ?? "",
       item ? (item.hours ?? item.qty_hours) : "",
       lineTotal,
       stmt.total_usd,
@@ -354,22 +356,26 @@ function SortableTh({
   sort,
   onSort,
   style,
-}: {
+}: Readonly<{
   label: string;
   col: string;
   sort: TabSort;
   onSort: (col: string) => void;
   style?: React.CSSProperties;
-}) {
+}>) {
   const active = sort.key === col;
+  const direction = sort.dir === "asc" ? "ascending" : "descending";
+  const arrow = sort.dir === "asc" ? " ↑" : " ↓";
   return (
     <th
-      style={{ ...style, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
-      onClick={() => onSort(col)}
-      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      style={{ ...style, userSelect: "none", whiteSpace: "nowrap" }}
+      aria-sort={active ? direction : "none"}
     >
-      {label}
-      {active ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}
+      <button type="button" onClick={() => onSort(col)}
+        style={{ cursor: "pointer", border: 0, padding: 0, background: "none", color: "inherit", font: "inherit", textAlign: "inherit" }}>
+        {label}
+        {active ? arrow : ""}
+      </button>
     </th>
   );
 }
@@ -397,12 +403,12 @@ function MeteringFilterBar({
   onChange,
   onClear,
   showUser,
-}: {
+}: Readonly<{
   filters: MeteringFilters;
   onChange: (next: MeteringFilters) => void;
   onClear: () => void;
   showUser?: boolean;
-}) {
+}>) {
   const set = (key: keyof MeteringFilters, value: string) =>
     onChange({ ...filters, [key]: value });
   return (
@@ -416,7 +422,7 @@ function MeteringFilterBar({
       }}
     >
       <label style={{ ...filterLabelStyle, flex: "1 1 160px" }}>
-        Project name
+        {"Project name"}
         <input
           style={filterInputStyle}
           value={filters.name}
@@ -426,7 +432,7 @@ function MeteringFilterBar({
       </label>
       {showUser && (
         <label style={{ ...filterLabelStyle, flex: "1 1 180px" }}>
-          User
+          {"User"}
           <input
             style={filterInputStyle}
             value={filters.user}
@@ -436,7 +442,7 @@ function MeteringFilterBar({
         </label>
       )}
       <label style={filterLabelStyle}>
-        Started from
+        {"Started from"}
         <input
           type="date"
           style={filterInputStyle}
@@ -445,7 +451,7 @@ function MeteringFilterBar({
         />
       </label>
       <label style={filterLabelStyle}>
-        Started to
+        {"Started to"}
         <input
           type="date"
           style={filterInputStyle}
@@ -454,7 +460,7 @@ function MeteringFilterBar({
         />
       </label>
       <label style={filterLabelStyle}>
-        Finalized from
+        {"Finalized from"}
         <input
           type="date"
           style={filterInputStyle}
@@ -463,7 +469,7 @@ function MeteringFilterBar({
         />
       </label>
       <label style={filterLabelStyle}>
-        Finalized to
+        {"Finalized to"}
         <input
           type="date"
           style={filterInputStyle}
@@ -472,7 +478,7 @@ function MeteringFilterBar({
         />
       </label>
       <label style={filterLabelStyle}>
-        Total min
+        {"Total min"}
         <input
           type="number"
           step="0.01"
@@ -484,7 +490,7 @@ function MeteringFilterBar({
         />
       </label>
       <label style={filterLabelStyle}>
-        Total max
+        {"Total max"}
         <input
           type="number"
           step="0.01"
@@ -515,6 +521,12 @@ export default function MeteringPage() {
       <MeteringPageInner />
     </Suspense>
   );
+}
+
+function emptyRowsMessage(total: number, filtered: number, emptyMessage: string, pending = false): string {
+  if (total === 0) return emptyMessage;
+  if (filtered > 0) return "";
+  return pending ? "Loading project names…" : "No rows match the current filters.";
 }
 
 function MeteringPageInner() {
@@ -817,16 +829,18 @@ function MeteringPageInner() {
       return compareSortValues(a.period_start, b.period_start, sortByTab.invoices.dir);
     });
 
-  const noFilterMatches = "No rows match the current filters.";
   const statementsNamePending =
     !!nameQ &&
     statements.some((s) => !statementDetails[s.id] || statementDetails[s.id]?.loading);
+  const statementEmptyMessage = emptyRowsMessage(statements.length, filteredStatements.length, "No monthly invoices yet.", statementsNamePending);
+  const activeEmptyMessage = emptyRowsMessage(active.length, filteredActive.length, "No active or stopped projects.");
+  const invoiceEmptyMessage = emptyRowsMessage(invoices.length, filteredInvoices.length, "No past projects billed yet.");
 
   const exportInvoicesCsv = async () => {
     if (!filteredStatements.length || exporting) return;
     setExporting(true);
     try {
-      const rows: Array<Array<string | number | null | undefined>> = [];
+      const rows: CsvValue[][] = [];
       for (const stmt of filteredStatements) {
         const cached = statementDetails[stmt.id];
         let projects: ProjectMonthLine[];
@@ -893,14 +907,8 @@ function MeteringPageInner() {
                 {exporting ? "Exporting…" : "Export CSV"}
               </Button>
             </div>
-            {statements.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>
-                No monthly invoices yet.
-              </div>
-            ) : statementsNamePending && filteredStatements.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>Loading project names…</div>
-            ) : filteredStatements.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>{noFilterMatches}</div>
+            {statementEmptyMessage ? (
+              <div style={{ opacity: 0.7 }}>{statementEmptyMessage}</div>
             ) : (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead>
@@ -978,10 +986,8 @@ function MeteringPageInner() {
       {tab === "active" && (
         <Card>
           <CardBody>
-            {active.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>No active or stopped projects.</div>
-            ) : filteredActive.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>{noFilterMatches}</div>
+            {activeEmptyMessage ? (
+              <div style={{ opacity: 0.7 }}>{activeEmptyMessage}</div>
             ) : (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead>
@@ -1064,10 +1070,8 @@ function MeteringPageInner() {
       {tab === "past" && (
         <Card>
           <CardBody>
-            {invoices.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>No past projects billed yet.</div>
-            ) : filteredInvoices.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>{noFilterMatches}</div>
+            {invoiceEmptyMessage ? (
+              <div style={{ opacity: 0.7 }}>{invoiceEmptyMessage}</div>
             ) : (
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead>

@@ -13,6 +13,11 @@ function formatOcpVersionLabel(version?: string): string | null {
   return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
 }
 
+function memberConnection(edge: Edge, memberIds: Set<string>): string | null {
+  if (memberIds.has(edge.source)) return edge.target;
+  return memberIds.has(edge.target) ? edge.source : null;
+}
+
 /** True when this cluster will (or is) re-cert rather than fresh-install — mirrors backend. */
 export function clusterIsRecertPath(
   clusterId: string,
@@ -22,15 +27,14 @@ export function clusterIsRecertPath(
   const members = nodes.filter(
     (n) =>
       n.type === "vmNode" &&
-      String((n.data as Record<string, unknown>)?.clusterId || "") === clusterId,
+      (n.data.clusterId || "") === clusterId,
   );
   for (const m of members) {
     if ((m.data as Record<string, unknown>)?.ocpKubeconfig) return true;
   }
   const memberIds = new Set(members.map((m) => m.id));
   for (const e of edges) {
-    const other =
-      memberIds.has(e.source) ? e.target : memberIds.has(e.target) ? e.source : null;
+    const other = memberConnection(e, memberIds);
     if (!other) continue;
     const sn = nodes.find((n) => n.id === other);
     if (sn?.type !== "storageNode") continue;
@@ -136,6 +140,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const issueColor = hasError
     ? "var(--troshka-red, #ef4444)"
     : "var(--troshka-yellow, #f59e0b)";
+  const unselectedBorder = hasError ? "var(--troshka-red, #ef4444)" : "var(--troshka-border, #4b5563)";
 
   return (
     <div
@@ -149,9 +154,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         border: `2px ${selected ? "solid" : "dashed"} ${
           selected
             ? "var(--troshka-accent)"
-            : hasError
-              ? "var(--troshka-red, #ef4444)"
-              : "var(--troshka-border, #4b5563)"
+            : unselectedBorder
         }`,
         boxShadow: selected
           ? "0 0 0 3px var(--troshka-accent-glow)"

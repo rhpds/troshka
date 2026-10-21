@@ -39,7 +39,7 @@ _CNI_STATUS_ANN_KEYS = frozenset(
     }
 )
 _OVN_POD_ANN_PREFIX = "k8s.ovn.org/"
-_CIDR_RE = re.compile(r"\d+\.\d+\.\d+\.\d+/\d+")
+_CIDR_RE = re.compile(r"(?<!\d)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}(?!\d)")
 
 
 def _is_ops_pod_stuck_creating(
@@ -100,13 +100,17 @@ def _pod_primary_ip(pod) -> str | None:
     return str(ip) if ip else None
 
 
-def _parse_node_ovn_subnets(node) -> list[ipaddress.IPv4Network]:
-    """Parse ``k8s.ovn.org/node-subnets`` into IPv4 networks (empty if unknown)."""
+def _node_ovn_annotation(node):
     meta = getattr(node, "metadata", None)
     anns = getattr(meta, "annotations", None) or {}
     if isinstance(node, dict):
         anns = (node.get("metadata") or {}).get("annotations") or {}
-    raw = anns.get("k8s.ovn.org/node-subnets") or ""
+    return anns.get("k8s.ovn.org/node-subnets") or ""
+
+
+def _parse_node_ovn_subnets(node) -> list[ipaddress.IPv4Network]:
+    """Parse ``k8s.ovn.org/node-subnets`` into IPv4 networks (empty if unknown)."""
+    raw = _node_ovn_annotation(node)
     if not raw:
         return []
     networks: list[ipaddress.IPv4Network] = []

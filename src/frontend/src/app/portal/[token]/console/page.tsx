@@ -19,7 +19,6 @@ function PortalConsolePage() {
   const portalToken = params.token as string;
   const searchParams = useSearchParams();
   const vmId = searchParams.get("vm") || "";
-  const projectId = searchParams.get("project") || "";
   const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
@@ -166,7 +165,8 @@ function PortalConsolePage() {
     return () => { el.removeEventListener("focusin", onIn); el.removeEventListener("focusout", onOut); };
   }, []);
 
-  const statusColor = status === "Connected" ? "#4ade80" : status.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
+  const pendingStatusColor = status.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
+  const statusColor = status === "Connected" ? "#4ade80" : pendingStatusColor;
   const btnStyle = { background: "none", border: "1px solid #555", color: "#fff", padding: "2px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer" } as const;
 
   return (
@@ -185,7 +185,7 @@ function PortalConsolePage() {
           <span>{vmName}</span>
         </div>
         <span style={{ color: statusColor }}>{status}</span>
-        <button
+        <button type="button"
           onClick={() => {
             const next = !scaled;
             setScaled(next);

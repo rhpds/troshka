@@ -20,6 +20,7 @@ import {
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
+import ModalBackdrop from "@/components/ModalBackdrop";
 
 const BMC_INFO_TIP = (
   <div style={{ maxWidth: 280, fontSize: 12, lineHeight: 1.45 }}>
@@ -48,7 +49,7 @@ function RJ45Icon() {
   );
 }
 
-function BmcWarning({ nodeId }: { nodeId: string }) {
+function BmcWarning({ nodeId }: Readonly<{ nodeId: string }>) {
   const hasConnection = useCanvasStore((s) => s.edges.some((e) => e.source === nodeId || e.target === nodeId));
   // An OCP cluster provisions the BMC network via the in-cluster ops pod
   // (bastionless) — no data-plane VM needs to be on the BMC network — so only
@@ -62,120 +63,8 @@ function BmcWarning({ nodeId }: { nodeId: string }) {
   );
 }
 
-function NetworkNodeComponent({ data, selected, id }: NodeProps) {
-  const d = data as unknown as NetworkNodeData;
-  const [fwdExpanded, setFwdExpanded] = useState(false);
-  const [routesOpen, setRoutesOpen] = useState(false);
-  const projectState = useCanvasStore((s) => s.projectState);
-  const { isPreview } = useCanvasDisplay();
-  const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
-  const hasShowroom = useCanvasStore((s) => s.nodes.some((n) => isShowroomContainer(n)));
-  const isDirty = React.useMemo(() => {
-    const deployed = deployedNodeData[id];
-    if (!deployed) return false;
-    // Use the same normalization the deployed baseline was built with, so
-    // deploy-transient/machine-managed fields don't show a false 💾.
-    return stableStringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
-  }, [id, d, deployedNodeData]);
-
-  const networkType = (data as Record<string, any>).networkType;
-  const isBmc = networkType === "bmc";
-
-  return (
-    <div
-      className="network-node-card"
-      style={(() => {
-        const colors = {
-          router:  { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",  glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
-          gateway: { bg: "var(--troshka-gateway-bg)", border: "var(--troshka-gateway-border)", glow: "var(--troshka-accent-glow)", selected: "var(--troshka-text)" },
-          network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
-          bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
-          loadbalancer: { bg: "rgba(120,53,15,0.12)", border: "rgba(180,83,9,0.6)", glow: "rgba(180,83,9,0.25)", selected: "#d97706" },
-        };
-        const isLb = (d as any).networkType === "loadbalancer";
-        const c = isBmc ? colors.bmc : isLb ? colors.loadbalancer : (colors[d.subtype as keyof typeof colors] || colors.network);
-        return {
-          background: "var(--troshka-surface)",
-          borderColor: selected ? c.selected : c.border,
-          boxShadow: selected ? `0 0 0 3px ${c.glow}` : `inset 0 0 0 1px ${c.bg}`,
-          opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
-          transition: "opacity 0.3s",
-          position: "relative" as const,
-        };
-      })()}
-    >
-      {isBmc && (
-        <Tooltip content={BMC_INFO_TIP} position="right">
-          <button type="button"
-
-
-            aria-label="BMC network information"
-            className="plain-button nodrag nopan"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            style={{
-              position: "absolute",
-              top: 4,
-              right: 4,
-              display: "inline-flex",
-              alignItems: "center",
-              color: "#fff",
-              cursor: "help",
-              zIndex: 1,
-              lineHeight: 0,
-            }}
-          >
-            <InfoCircleIcon style={{ width: 12, height: 12 }} />
-          </button>
-        </Tooltip>
-      )}
-      <span className="network-node-icon">
-        {d.subtype === "router" ? "🔀" : d.subtype === "gateway" ? "🌐" : isBmc ? (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="4" width="20" height="16" rx="2" />
-            <circle cx="6" cy="12" r="1.5" fill="currentColor" />
-            <line x1="10" y1="9" x2="20" y2="9" />
-            <line x1="10" y1="12" x2="20" y2="12" />
-            <line x1="10" y1="15" x2="20" y2="15" />
-          </svg>
-        ) : (d as any).networkType === "loadbalancer" ? (
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="4" cy="12" r="2" />
-            <circle cx="20" cy="6" r="2" />
-            <circle cx="20" cy="12" r="2" />
-            <circle cx="20" cy="18" r="2" />
-            <line x1="6" y1="12" x2="11" y2="12" />
-            <line x1="11" y1="12" x2="18" y2="6" />
-            <line x1="11" y1="12" x2="18" y2="12" />
-            <line x1="11" y1="12" x2="18" y2="18" />
-          </svg>
-        ) : <RJ45Icon />}
-      </span>
-      <div className="network-node-info">
-        <div className="network-node-name">{d.name}{isDirty && <span title="Unsaved changes" style={{ fontSize: 9, marginLeft: 4 }}>💾</span>}</div>
-        {d.subtype === "network" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <span className="network-node-cidr">{d.cidr}</span>
-            {isBmc ? (
-              <span style={{ background: "rgba(168,85,247,0.2)", color: "rgba(168,85,247,1)", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>
-                BMC
-              </span>
-            ) : (
-              <>
-                {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
-                {d.dns && <span className="network-node-badge dns">DNS</span>}
-              </>
-            )}
-          </div>
-        )}
-        {isBmc && <BmcWarning nodeId={id} />}
-        {d.subtype === "router" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span className="network-node-cidr" style={{ fontSize: 10 }}>L3 Router</span>
-          </div>
-        )}
-        {d.subtype === "gateway" && (() => {
-          const gw = d as unknown as Record<string, any>;
+function GatewayDetails({ data: d, setRoutesOpen }: Readonly<{ data: NetworkNodeData; setRoutesOpen: (open: boolean) => void }>) {
+          const gw = d as unknown as Record<string, unknown>;
           const isPortFwd = gw.gatewayMode === "nat-portforward";
           const portForwards = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string}>) || [];
           return (
@@ -204,12 +93,12 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                     .map((pf) => pf.extIpId),
                 ).size;
                 return (ipCount > 0 || routeCount > 0) ? (
-                  <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3, cursor: "pointer", textDecoration: "underline", opacity: 0.8 }}
+                  <button type="button" className="plain-button" style={{ textAlign: "left", fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3, cursor: "pointer", textDecoration: "underline", opacity: 0.8 }}
                     onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
                     {ipCount > 0 && <span>{ipCount} IP{ipCount !== 1 ? "s" : ""}</span>}
                     {ipCount > 0 && routeCount > 0 && " + "}
                     {routeCount > 0 && <span>{routeCount} route{routeCount !== 1 ? "s" : ""}</span>}
-                  </div>
+                  </button>
                 ) : null;
               })()}
               {isPortFwd && (() => {
@@ -250,10 +139,10 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                       const eps = (gw.externalEndpoints as Array<{type?: string}>) || [];
                       const hasAccess = externalIps.some((e) => e.ip) || eps.some((e) => e.type === "route");
                       return !hasAccess ? (
-                        <div style={{ fontSize: 9, color: "var(--troshka-green)", fontFamily: "monospace", cursor: "pointer", userSelect: "none", textDecoration: "underline", opacity: 0.8 }}
+                        <button type="button" className="plain-button" style={{ textAlign: "left", fontSize: 9, color: "var(--troshka-green)", fontFamily: "monospace", cursor: "pointer", userSelect: "none", textDecoration: "underline", opacity: 0.8 }}
                           onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
                           {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
-                        </div>
+                        </button>
                       ) : null;
                     })()}
                     {portForwards.length === 0 && (
@@ -270,86 +159,11 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
               })()}
             </div>
           );
-        })()}
-        {(d as any).networkType === "loadbalancer" && (() => {
-          const frontends = ((d as any).frontends as Array<{name: string; bindPort: number}>) || [];
-          return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
-                {((d as any).external ?? true) && (
-                  <span style={{ background: "rgba(180,83,9,0.2)", color: "#d97706", padding: "0px 5px", borderRadius: 3, fontSize: 8, fontWeight: 600 }}>
-                    EXT
-                  </span>
-                )}
-              </div>
-              {(d as any).lbIp && (
-                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
-                  {(d as any).lbIp}
-                </div>
-              )}
-              {frontends.length > 0 && (
-                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
-                  {frontends.map((fe, i) => (
-                    <span key={i}>{i > 0 ? ", " : ""}{fe.bindPort}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-      </div>
 
-      {/* Networks: top/bottom (blue) for VMs, left/right (green) for routers */}
-      {d.subtype === "network" && (
-        <>
-          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
-          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
-          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
-        </>
-      )}
-      {/* Routers: orange handles on all 4 sides */}
-      {d.subtype === "router" && (
-        <>
-          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
-        </>
-      )}
-      {/* Gateways: showroom target left; lab networks attach on the bottom only */}
-      {d.subtype === "gateway" && (
-        <>
-          {hasShowroom && (
-            <Handle
-              type="target"
-              position={Position.Left}
-              id={SHOWROOM_GATEWAY_TARGET_HANDLE}
-              className="canvas-handle canvas-handle-showroom"
-              style={{ top: "50%" }}
-            />
-          )}
-          <Handle
-            type="source"
-            position={Position.Bottom}
-            id={GATEWAY_NETWORK_SOURCE_HANDLE}
-            className="canvas-handle canvas-handle-network"
-          />
-        </>
-      )}
-      {/* Load Balancers: top only — backends connect from workload NIC bottoms above */}
-      {(d as any).networkType === "loadbalancer" && (
-        <Handle
-          type="target"
-          position={Position.Top}
-          id="top"
-          className="canvas-handle canvas-handle-network"
-        />
-      )}
+}
 
-      {routesOpen && (() => {
-        const gw = d as Record<string, any>;
+function GatewayRoutes({ data: d, projectState, setRoutesOpen }: Readonly<{ data: NetworkNodeData; projectState: string; setRoutesOpen: (open: boolean) => void }>) {
+        const gw = d as Record<string, unknown>;
         const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; vmIp?: string; port?: number; type?: string}>) || [];
         const routes = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
         const pfs = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string; extIpId?: string}>) || [];
@@ -368,13 +182,13 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         });
         const allEips = useCanvasStore.getState().externalIps;
         return createPortal(
-          <div className="nodrag nopan" onClick={(e) => { e.stopPropagation(); setRoutesOpen(false); }}
+          <ModalBackdrop label="External Access" className="nodrag nopan" onClose={() => setRoutesOpen(false)}
             style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
-            <div onClick={(e) => e.stopPropagation()}
+            <div
               style={{ background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderRadius: 12, padding: 20, width: 720, maxWidth: "90vw", maxHeight: "70vh", overflow: "auto" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <span style={{ fontWeight: 600, fontSize: 15 }}>External Access</span>
-                <button onClick={() => setRoutesOpen(false)} style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", fontSize: 18 }}>✕</button>
+                <button type="button" onClick={() => setRoutesOpen(false)} style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", fontSize: 18 }}>✕</button>
               </div>
               {eips.length > 0 && (
                 <>
@@ -392,8 +206,8 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                           <td style={{ padding: "6px 8px" }}>{eip.name}</td>
                           <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
                             {eip.ip}
-                            <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                              onClick={() => navigator.clipboard.writeText(eip.ip)} title="Copy">Copy</span>
+                            <button type="button" className="plain-button" style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                              onClick={() => navigator.clipboard.writeText(eip.ip)} title="Copy">Copy</button>
                           </td>
                         </tr>
                       ))}
@@ -442,8 +256,8 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                   return (
                                     <>
                                       <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{url}</a>
-                                      <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                                        onClick={() => navigator.clipboard.writeText(url)} title="Copy">Copy</span>
+                                      <button type="button" className="plain-button" style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                                        onClick={() => navigator.clipboard.writeText(url)} title="Copy">Copy</button>
                                     </>
                                   );
                                 }
@@ -506,10 +320,208 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                 </>
               )}
             </div>
-          </div>,
+          </ModalBackdrop>,
           document.body,
         );
+
+}
+
+function NetworkIcon({ data: d, isBmc }: Readonly<{data: NetworkNodeData; isBmc: boolean}>) {
+  if (d.subtype === "router") return "🔀";
+  if (d.subtype === "gateway") return "🌐";
+  if (isBmc) return (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <circle cx="6" cy="12" r="1.5" fill="currentColor" />
+            <line x1="10" y1="9" x2="20" y2="9" />
+            <line x1="10" y1="12" x2="20" y2="12" />
+            <line x1="10" y1="15" x2="20" y2="15" />
+          </svg>);
+  if (d.networkType === "loadbalancer") return (<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="4" cy="12" r="2" />
+            <circle cx="20" cy="6" r="2" />
+            <circle cx="20" cy="12" r="2" />
+            <circle cx="20" cy="18" r="2" />
+            <line x1="6" y1="12" x2="11" y2="12" />
+            <line x1="11" y1="12" x2="18" y2="6" />
+            <line x1="11" y1="12" x2="18" y2="12" />
+            <line x1="11" y1="12" x2="18" y2="18" />
+          </svg>);
+  return <RJ45Icon />;
+}
+
+function NetworkNodeComponent({ data, selected, id }: NodeProps) {
+  const d = data as unknown as NetworkNodeData;
+  const [routesOpen, setRoutesOpen] = useState(false);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
+  const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
+  const hasShowroom = useCanvasStore((s) => s.nodes.some((n) => isShowroomContainer(n)));
+  const isDirty = React.useMemo(() => {
+    const deployed = deployedNodeData[id];
+    if (!deployed) return false;
+    // Use the same normalization the deployed baseline was built with, so
+    // deploy-transient/machine-managed fields don't show a false 💾.
+    return stableStringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
+  }, [id, d, deployedNodeData]);
+
+  const networkType = (data as Record<string, unknown>).networkType;
+  const isBmc = networkType === "bmc";
+
+  return (
+    <div
+      className="network-node-card"
+      style={(() => {
+        const colors = {
+          router:  { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",  glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
+          gateway: { bg: "var(--troshka-gateway-bg)", border: "var(--troshka-gateway-border)", glow: "var(--troshka-accent-glow)", selected: "var(--troshka-text)" },
+          network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
+          bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
+          loadbalancer: { bg: "rgba(120,53,15,0.12)", border: "rgba(180,83,9,0.6)", glow: "rgba(180,83,9,0.25)", selected: "#d97706" },
+        };
+        const isLb = d.networkType === "loadbalancer";
+        const networkColor = colors[d.subtype as keyof typeof colors] || colors.network;
+        const specialColor = isBmc ? colors.bmc : colors.loadbalancer;
+        const c = isBmc || isLb ? specialColor : networkColor;
+        return {
+          background: "var(--troshka-surface)",
+          borderColor: selected ? c.selected : c.border,
+          boxShadow: selected ? `0 0 0 3px ${c.glow}` : `inset 0 0 0 1px ${c.bg}`,
+          opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
+          transition: "opacity 0.3s",
+          position: "relative" as const,
+        };
       })()}
+    >
+      {isBmc && (
+        <Tooltip content={BMC_INFO_TIP} position="right">
+          <button type="button"
+
+
+            aria-label="BMC network information"
+            className="plain-button nodrag nopan"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute",
+              top: 4,
+              right: 4,
+              display: "inline-flex",
+              alignItems: "center",
+              color: "#fff",
+              cursor: "help",
+              zIndex: 1,
+              lineHeight: 0,
+            }}
+          >
+            <InfoCircleIcon style={{ width: 12, height: 12 }} />
+          </button>
+        </Tooltip>
+      )}
+      <span className="network-node-icon">
+        <NetworkIcon data={d} isBmc={isBmc} />
+      </span>
+      <div className="network-node-info">
+        <div className="network-node-name">{d.name}{isDirty && <span title="Unsaved changes" style={{ fontSize: 9, marginLeft: 4 }}>💾</span>}</div>
+        {d.subtype === "network" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span className="network-node-cidr">{d.cidr}</span>
+            {isBmc ? (
+              <span style={{ background: "rgba(168,85,247,0.2)", color: "rgba(168,85,247,1)", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>
+                BMC
+              </span>
+            ) : (
+              <>
+                {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
+                {d.dns && <span className="network-node-badge dns">DNS</span>}
+              </>
+            )}
+          </div>
+        )}
+        {isBmc && <BmcWarning nodeId={id} />}
+        {d.subtype === "router" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="network-node-cidr" style={{ fontSize: 10 }}>L3 Router</span>
+          </div>
+        )}
+        {d.subtype === "gateway" && <GatewayDetails data={d} setRoutesOpen={setRoutesOpen} />}
+
+        {d.networkType === "loadbalancer" && (() => {
+          const frontends = (d.frontends as Array<{name: string; bindPort: number}>) || [];
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
+                {(d.external ?? true) && (
+                  <span style={{ background: "rgba(180,83,9,0.2)", color: "#d97706", padding: "0px 5px", borderRadius: 3, fontSize: 8, fontWeight: 600 }}>
+                    EXT
+                  </span>
+                )}
+              </div>
+              {d.lbIp && (
+                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
+                  {d.lbIp}
+                </div>
+              )}
+              {frontends.length > 0 && (
+                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
+                  {frontends.map((fe) => fe.bindPort).join(", ")}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Networks: top/bottom (blue) for VMs, left/right (green) for routers */}
+      {d.subtype === "network" && (
+        <>
+          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
+          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
+          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+      {/* Routers: orange handles on all 4 sides */}
+      {d.subtype === "router" && (
+        <>
+          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+      {/* Gateways: showroom target left; lab networks attach on the bottom only */}
+      {d.subtype === "gateway" && (
+        <>
+          {hasShowroom && (
+            <Handle
+              type="target"
+              position={Position.Left}
+              id={SHOWROOM_GATEWAY_TARGET_HANDLE}
+              className="canvas-handle canvas-handle-showroom"
+              style={{ top: "50%" }}
+            />
+          )}
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id={GATEWAY_NETWORK_SOURCE_HANDLE}
+            className="canvas-handle canvas-handle-network"
+          />
+        </>
+      )}
+      {/* Load Balancers: top only — backends connect from workload NIC bottoms above */}
+      {d.networkType === "loadbalancer" && (
+        <Handle
+          type="target"
+          position={Position.Top}
+          id="top"
+          className="canvas-handle canvas-handle-network"
+        />
+      )}
+
+      {routesOpen && <GatewayRoutes data={d} projectState={projectState} setRoutesOpen={setRoutesOpen} />}
+
     </div>
   );
 }

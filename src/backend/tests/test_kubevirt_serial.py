@@ -123,9 +123,10 @@ def test_kubevirt_exec_serial_junos_blank_console():
             side_effect=RuntimeError(_SERIAL_BLANK_MESSAGE),
         ),
     ):
+        exception_mock = MagicMock()
         with pytest.raises(RuntimeError, match="VGA only"):
             kubevirt_exec_serial(
-                provider=MagicMock(),
+                provider=exception_mock,
                 project_id="proj-1",
                 vm_id="281550eb-d04b-40ef-be8f-5bf8debe9fa4",
                 command="show version",
@@ -145,9 +146,10 @@ def test_kubevirt_exec_serial_ios_blank_console():
             side_effect=RuntimeError(_SERIAL_BLANK_MESSAGE),
         ),
     ):
+        exception_mock = MagicMock()
         with pytest.raises(RuntimeError, match="VGA only"):
             kubevirt_exec_serial(
-                provider=MagicMock(),
+                provider=exception_mock,
                 project_id="proj-1",
                 vm_id="10f3160c-d04b-40ef-be8f-5bf8debe9fa4",
                 command="show version",

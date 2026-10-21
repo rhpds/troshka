@@ -1,5 +1,6 @@
 import type { Node } from "@xyflow/react";
 import type { ClusterConfig } from "@/stores/canvasStore";
+import { trimEdgeCharacter } from "@/lib/textBoundaries";
 
 /**
  * Default cluster sizing + config values.
@@ -50,11 +51,7 @@ const CLUSTER_NODE_SIZE = { width: 520, height: 320 } as const;
 
 /** Convert a human name into a URL/id-safe slug. */
 function slugify(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const slug = trimEdgeCharacter(name.toLowerCase().trim().replaceAll(/[^a-z0-9]+/g, "-"), "-");
   return slug || "cluster";
 }
 

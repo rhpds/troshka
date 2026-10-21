@@ -23,6 +23,17 @@ interface VMInfo {
   icon?: string;
 }
 
+function powerConfirmation(action: string, name: string): string {
+  if (action === "forcestop") return `Force power off "${name}"? This is equivalent to pulling the power cord and may cause data loss.`;
+  if (action === "restart") return `Restart "${name}"?`;
+  return `Stop "${name}"? The VM will be gracefully shut down.`;
+}
+
+function PowerIcon({ pending, status }: Readonly<{ pending?: string; status?: string }>) {
+  if (pending === "start" || pending === "stop") return <Spinner size="sm" />;
+  return status === "running" ? <StopIcon /> : <PlayIcon />;
+}
+
 interface PortalData {
   project_id: string;
   project_name: string;
@@ -123,11 +134,7 @@ export default function PortalPage() {
     if (action === "stop" || action === "forcestop" || action === "restart") {
       const vm = (data?.topology.nodes || []).find((n: any) => n.id === vmId);
       const name = vm?.data?.name || "this VM";
-      const msg = action === "forcestop"
-        ? `Force power off "${name}"? This is equivalent to pulling the power cord and may cause data loss.`
-        : action === "restart"
-          ? `Restart "${name}"?`
-          : `Stop "${name}"? The VM will be gracefully shut down.`;
+      const msg = powerConfirmation(action, name);
       if (!(await appConfirm({ message: msg, confirmLabel: action === "forcestop" ? "Force off" : action }))) return;
     }
     setVmPending((prev) => ({ ...prev, [vmId]: action }));
@@ -203,7 +210,7 @@ export default function PortalPage() {
           <span style={{ color: "#73bcf7", fontSize: 13 }}>
             {data.project_state}
           </span>
-          <button
+          <button type="button"
             onClick={toggleTheme}
             aria-label="Toggle theme"
             style={{ background: "none", border: "none", color: "white", cursor: "pointer", fontSize: 16, padding: 4 }}
@@ -240,7 +247,7 @@ export default function PortalPage() {
 
               <div style={{ display: "flex", gap: 6 }}>
                 {canConsole && (
-                  <button
+                  <button type="button"
                     onClick={() => openConsole(vm.id, vm.name)}
                     title="Console"
                     style={{
@@ -254,7 +261,7 @@ export default function PortalPage() {
                 )}
                 {canPower && (
                   <>
-                    <button
+                    <button type="button"
                       onClick={() => handleVmAction(vm.id, vm.status === "running" ? "stop" : "start")}
                       title={vm.status === "running" ? "Stop" : "Start"}
                       disabled={!!vmPending[vm.id]}
@@ -266,13 +273,11 @@ export default function PortalPage() {
                         opacity: vmPending[vm.id] ? 0.5 : 1,
                       }}
                     >
-                      {vmPending[vm.id] === "start" || vmPending[vm.id] === "stop"
-                        ? <Spinner size="sm" />
-                        : vm.status === "running" ? <StopIcon /> : <PlayIcon />}
+                      <PowerIcon pending={vmPending[vm.id]} status={vm.status} />
                     </button>
                     {vm.status === "running" && (
                       <>
-                        <button
+                        <button type="button"
                           onClick={() => handleVmAction(vm.id, "restart")}
                           title="Restart"
                           disabled={!!vmPending[vm.id]}
@@ -286,7 +291,7 @@ export default function PortalPage() {
                         >
                           {vmPending[vm.id] === "restart" ? <Spinner size="sm" /> : <RedoIcon />}
                         </button>
-                        <button
+                        <button type="button"
                           onClick={() => handleVmAction(vm.id, "forcestop")}
                           title="Force Power Off"
                           disabled={!!vmPending[vm.id]}

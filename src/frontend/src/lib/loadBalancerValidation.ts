@@ -15,7 +15,7 @@ export const LB_EDGE_HANDLE = "top";
 export const LB_EDGE_HANDLES = new Set([LB_EDGE_HANDLE]);
 
 export function isLoadBalancerNode(node: Node | undefined): boolean {
-  if (!node || node.type !== "networkNode") return false;
+  if (node?.type !== "networkNode") return false;
   const d = node.data as Record<string, unknown>;
   return d.subtype === "loadbalancer" || d.networkType === "loadbalancer";
 }
@@ -46,7 +46,6 @@ export function isValidLbBackendConnection(
   const tIsLb = isLoadBalancerNode(targetNode);
   if (!sIsLb && !tIsLb) return false;
 
-  const lbNode = sIsLb ? sourceNode : targetNode;
   const other = sIsLb ? targetNode : sourceNode;
   if (!isLbBackendNode(other) || isShowroomContainer(other)) return false;
 
@@ -58,6 +57,11 @@ export function isValidLbBackendConnection(
 /** @deprecated Use isValidLbBackendConnection */
 export const isValidLbVmConnection = isValidLbBackendConnection;
 
+function loadBalancerEndpoint(source: Node, target: Node): Node | undefined {
+  if (isLoadBalancerNode(source)) return source;
+  return isLoadBalancerNode(target) ? target : undefined;
+}
+
 /** Drop invalid LB edges; normalize handles for LB top ↔ workload NIC bottom. */
 export function sanitizeLbEdges(nodes: Node[], edges: Edge[]): Edge[] {
   return edges
@@ -66,11 +70,7 @@ export function sanitizeLbEdges(nodes: Node[], edges: Edge[]): Edge[] {
       const target = nodes.find((n) => n.id === edge.target);
       if (!source || !target) return edge;
 
-      const lb = isLoadBalancerNode(source)
-        ? source
-        : isLoadBalancerNode(target)
-          ? target
-          : undefined;
+      const lb = loadBalancerEndpoint(source, target);
       if (!lb) return edge;
 
       const other = source.id === lb.id ? target : source;
@@ -96,11 +96,7 @@ export function sanitizeLbEdges(nodes: Node[], edges: Edge[]): Edge[] {
       const target = nodes.find((n) => n.id === edge.target);
       if (!source || !target) return true;
 
-      const lb = isLoadBalancerNode(source)
-        ? source
-        : isLoadBalancerNode(target)
-          ? target
-          : undefined;
+      const lb = loadBalancerEndpoint(source, target);
       if (!lb) return true;
 
       const other = source.id === lb.id ? target : source;

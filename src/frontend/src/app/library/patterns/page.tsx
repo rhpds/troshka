@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AlertModal from "@/components/AlertModal";
@@ -48,7 +50,7 @@ interface Pattern {
   total_size_gb: number;
   total_size_bytes: number;
   capture_progress?: { step?: string; detail?: string; vms?: string[]; disks?: { name: string; status: string }[] };
-  tags: Record<string, any> | null;
+  tags: { user_tags?: string[] } | null;
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;
@@ -65,11 +67,20 @@ interface Pattern {
   readonly?: boolean;
 }
 
-function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
+function canDeployOnHost(host: { state: string; agent_status: string; host_type: string; accepting_work?: boolean }) {
+  return host.state === "active" && host.agent_status === "connected" && host.host_type !== "pattern_buffer" && host.accepting_work !== false;
+}
+
+function emptyPatternsMessage(search: string, count: number) {
+  if (search) return "No patterns match your search.";
+  return count > 0 ? "No patterns match the selected ownership filters." : "No patterns yet. Save a project as a pattern to create reusable templates.";
+}
+
+function DeployNameModal({ patternName, deploying, onDeploy, onClose }: Readonly<{
   patternName: string; deploying: boolean;
   onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => void;
   onClose: () => void;
-}) {
+}>) {
   const [name, setName] = useState(patternName);
   const [guid, setGuid] = useState("");
   const [domain, setDomain] = useState("");
@@ -90,7 +101,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
       setUserRole(d.role || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
-          setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false));
+          setAvailableHosts(hosts.filter(canDeployOnHost));
         });
       }
     });
@@ -116,7 +127,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
       }}>
         <h2 style={{ marginTop: 0, marginBottom: 16 }}>Create Project from Pattern</h2>
         <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Name</label>
+          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Project Name</>}>
           <input
             style={inputStyle}
             value={name}
@@ -124,46 +135,46 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             placeholder="Project name"
             autoFocus
             onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined); }}
-          />
+          /></LabeledField>
         </div>
         {dnsProviders.length > 0 && (
           <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
             <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GUID</label>
-                <input style={inputStyle} value={guid} onChange={(e) => setGuid(e.target.value)} placeholder="abc123" />
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>GUID</>}>
+                <input style={inputStyle} value={guid} onChange={(e) => setGuid(e.target.value)} placeholder="abc123" /></LabeledField>
               </div>
               <div style={{ flex: 2 }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
-                <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Domain</>}>
+                <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" /></LabeledField>
               </div>
             </div>
             <div>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
+              <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>DNS Provider</>}>
               <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
                 <option value="">None</option>
                 {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              </select></LabeledField>
             </div>
           </div>
         )}
         <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
           <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={autoDeploy} onChange={(e) => { setAutoDeploy(e.target.checked); if (!e.target.checked) setAutoStart(false); }} />
-            Deploy immediately
+            {"Deploy immediately"}
           </label>
           {autoDeploy && (
             <>
               <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
                 <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-                Start VMs after deploy
+                {"Start VMs after deploy"}
               </label>
               {/* Recert is automatic for OCP pattern deploys now (mandatory to
                   redeploy a captured cluster), so it is no longer a toggle. */}
               {userRole === "admin" && availableHosts.length > 0 && (
                 <div style={{ marginTop: 4 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 2 }} label={<>Host</>}>
                   <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
                     <option value="">Auto (best host)</option>
                     {availableHosts.map((h) => (
@@ -171,14 +182,14 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
                         {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                       </option>
                     ))}
-                  </select>
+                  </select></LabeledField>
                 </div>
               )}
             </>
           )}
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-          <button onClick={onClose} disabled={deploying}
+          <button type="button" onClick={onClose} disabled={deploying}
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
             Cancel
           </button>
@@ -200,6 +211,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
 export default function PatternsPage() {
   const router = useRouter();
   const [patterns, setPatterns] = useState<Pattern[]>([]);
+  const [refreshedAt, setRefreshedAt] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [bulkPatternId, setBulkPatternId] = useState<string | null>(null);
@@ -219,7 +231,7 @@ export default function PatternsPage() {
   const loadPatterns = () => {
     fetch("/api/v1/patterns/")
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => { setPatterns(Array.isArray(data) ? data : []); setLoading(false); })
+      .then((data) => { setPatterns(Array.isArray(data) ? data : []); setRefreshedAt(Date.now()); setLoading(false); })
       .catch(() => setLoading(false));
   };
 
@@ -264,10 +276,11 @@ export default function PatternsPage() {
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
 
-  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => {
+  const handleDeploy = async (patternId: string, options: { projectName: string; guid?: string; domain?: string; dnsProviderId?: string; autoDeploy?: boolean; autoStart?: boolean; hostId?: string }) => {
+    const { projectName, guid, domain, dnsProviderId, autoDeploy, autoStart, hostId } = options;
     setDeploying(patternId);
     try {
-      const body: Record<string, any> = { name: projectName, auto_deploy: autoDeploy ?? true, auto_start: autoStart ?? true };
+      const body: Record<string, unknown> = { name: projectName, auto_deploy: autoDeploy ?? true, auto_start: autoStart ?? true };
       if (guid) body.guid = guid;
       if (domain) body.domain = domain;
       if (dnsProviderId) body.dns_provider_id = dnsProviderId;
@@ -330,6 +343,216 @@ export default function PatternsPage() {
     return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
   };
 
+  function removePattern(id: string) {
+    setPatterns(previous => previous.filter(pattern => pattern.id !== id));
+  }
+
+  function renderPatternActions(pattern: Pattern, saving: boolean) {
+    return (                <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
+                  <TagEditor
+                    tags={(pattern.tags?.user_tags as string[]) || []}
+                    onAdd={async (tag) => {
+                      const cur = (pattern.tags?.user_tags as string[]) || [];
+                      await fetch(`/api/v1/patterns/${pattern.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tags: { ...(pattern.tags), user_tags: [...cur, tag] } }),
+                      });
+                      loadPatterns();
+                    }}
+                    onRemove={async (tag) => {
+                      const cur = (pattern.tags?.user_tags as string[]) || [];
+                      await fetch(`/api/v1/patterns/${pattern.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tags: { ...(pattern.tags), user_tags: cur.filter((t: string) => t !== tag) } }),
+                      });
+                      loadPatterns();
+                    }}
+                  />
+                  <Button variant="primary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name, is_sno: pattern.is_sno })}>
+                    Create Project
+                  </Button>
+                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setBulkPatternId(pattern.id)}>
+                    Bulk Deploy
+                  </Button>
+                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setExportPattern(pattern)}>
+                    Export
+                  </Button>
+                  {!saving && pattern.state !== "error" && (pattern.owner_id === me.id || me.role === "admin") && (
+                    <Button variant="secondary" size="sm" onClick={() => setSharePattern(pattern)}>
+                      Share
+                    </Button>
+                  )}
+                  {saving && (
+                    <Button variant="warning" size="sm" onClick={async () => {
+                      if (!(await appConfirm({ message: "Cancel pattern capture? This will stop the capture and clean up.", confirmLabel: "Cancel capture", variant: "danger" }))) return;
+                      fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
+                        if (r.ok) removePattern(pattern.id);
+                      });
+                    }}>Cancel</Button>
+                  )}
+                  {!saving && !pattern.readonly && (pattern.visibility !== "public" || me.role === "admin") && (
+                    <Button variant="danger" size="sm" onClick={async () => {
+                      if (!(await appConfirm({
+                        message: `Delete pattern "${pattern.name}"? This cannot be undone.`,
+                        confirmLabel: "Delete",
+                        variant: "danger",
+                      }))) return;
+                      fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
+                        if (r.ok) removePattern(pattern.id);
+                      });
+                    }}>Delete</Button>
+                  )}
+                </CardBody>
+    );
+  }
+
+  function renderPatternState(pattern: Pattern, saving: boolean) {
+    if (saving) return <Label color="orange">{pattern.state === "importing" ? "importing…" : "saving…"}</Label>;
+    if (pattern.state === "error") return <Label color="red">error</Label>;
+    if (pattern.state === "available") return <PatternAvailability sync={pattern.central_sync} />;
+    return <Label color="grey">{pattern.state}</Label>;
+  }
+
+  function renderPattern(pattern: Pattern) {
+              const saving = pattern.state === "creating" || pattern.state === "capturing" || pattern.state === "importing";
+              const ageMonths = (refreshedAt - new Date(pattern.created_at).getTime()) / (1000 * 60 * 60 * 24 * 30);
+              const certWarning = pattern.is_ocp && ageMonths >= 6;
+              return (
+              <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, marginBottom: 8 }}>
+                <CardTitle>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                      <input type="checkbox" checked={selectedPatterns.has(pattern.id)} onChange={(e) => {
+                        e.stopPropagation();
+                        setSelectedPatterns((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(pattern.id)) next.delete(pattern.id); else next.add(pattern.id);
+                          return next;
+                        });
+                      }} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
+                      {editingName === pattern.id ? (
+                        <input
+                          autoFocus
+                          value={editNameValue}
+                          onChange={(e) => setEditNameValue(e.target.value)}
+                          onBlur={() => {
+                            const trimmed = editNameValue.trim();
+                            if (trimmed && trimmed !== pattern.name) {
+                              fetch(`/api/v1/patterns/${pattern.id}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name: trimmed }),
+                              }).then((r) => { if (r.ok) loadPatterns(); });
+                            }
+                            setEditingName(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            if (e.key === "Escape") setEditingName(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
+                            background: "var(--pf-t--global--background--color--primary--default)",
+                            color: "var(--pf-t--global--text--color--regular)",
+                            border: "1px solid var(--pf-t--global--border--color--default)",
+                            borderRadius: 4, padding: "2px 6px", width: "100%",
+                          }}
+                        />
+                      ) : (
+                        <button type="button" disabled={saving}
+                          onClick={(e) => {
+                            if (!saving) {
+                              e.stopPropagation();
+                              setEditingName(pattern.id);
+                              setEditNameValue(pattern.name);
+                            }
+                          }}
+                          title="Click to rename"
+                          style={{ cursor: saving ? "default" : "text", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: "bold", padding: 0 }}
+                        >{pattern.name}</button>
+                      )}
+                      <span
+                        title={pattern.owner_email ? `Owned by ${pattern.owner_email}` : "System"}
+                        style={{
+                          fontSize: 11,
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          background: "rgba(96,165,250,0.18)",
+                          color: "#60a5fa",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontWeight: 600,
+                          marginTop: 2,
+                        }}
+                      >
+                        <UserIcon style={{ width: 11, height: 11 }} />
+                        {pattern.owner_email ? pattern.owner_email.split("@")[0] : "system"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {certWarning && (
+                        <Tooltip content={`This OCP pattern is ${Math.floor(ageMonths)} months old. OpenShift certificates expire after ~1 year. CSRs will be auto-approved at deploy time.`}>
+                          <Label color="orange">cert age: {Math.floor(ageMonths)}mo</Label>
+                        </Tooltip>
+                      )}
+                      {(pattern.sources || []).map((src) => {
+                        const meta = sourceLabel(src);
+                        if (!meta) return null;
+                        return (
+                          <Tooltip key={src} content={meta.tip}>
+                            <Label color={meta.color}>{meta.text}</Label>
+                          </Tooltip>
+                        );
+                      })}
+                      {renderPatternState(pattern, saving)}
+                      {!saving && pattern.state !== "error" && (
+                        <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
+                      )}
+                    </div>
+                  </div>
+                </CardTitle>
+                <CardBody>
+                  <Button variant="link" isInline isDisabled={saving} onClick={() => setPreviewPattern({ id: pattern.id, name: pattern.name })}>Preview</Button>
+                  <PatternSyncNotice sync={pattern.central_sync} />
+                  {pattern.description && (
+                    <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
+                  )}
+                  {saving && pattern.capture_progress ? (
+                    <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.6, maxHeight: 240, overflowY: "auto" }}>
+                      <div style={{ marginBottom: 4 }}>{pattern.capture_progress.detail || "Capturing..."}</div>
+                      {pattern.capture_progress.disks?.map((d: { name: string; status: string }) => (
+                        <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ color: d.status === "done" ? "#4ade80" : "var(--pf-t--global--text--color--subtle)" }}>
+                            {d.status === "done" ? "✓" : "○"}
+                          </span>
+                          <span>{d.name}</span>
+                          <span style={{ opacity: 0.5 }}>{d.status}</span>
+                        </div>
+                      ))}
+                      {pattern.capture_progress.vms?.map((v: string) => (
+                        <div key={v}>{v}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, opacity: 0.6 }}>
+                      {pattern.vm_count || 0} VM{(pattern.vm_count || 0) !== 1 ? "s" : ""}
+                      {" · "}{pattern.total_vcpus || 0} vCPU
+                      {" · "}{pattern.total_ram_gb || 0} GB RAM
+                      {" · "}{pattern.total_disk_gb || 0} GB disk
+                      {" · "}{formatSize(pattern.total_size_bytes)} compressed
+                      {" · "}{new Date(pattern.created_at).toLocaleDateString()}
+                    </div>
+                  )}
+                </CardBody>
+                {renderPatternActions(pattern, saving)}
+              </Card>
+              );
+  }
+
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
 
   return (
@@ -377,11 +600,7 @@ export default function PatternsPage() {
         {filtered.length === 0 ? (
           <EmptyState>
             <EmptyStateBody>
-              {search
-                ? "No patterns match your search."
-                : patterns.length > 0
-                  ? "No patterns match the selected ownership filters."
-                  : "No patterns yet. Save a project as a pattern to create reusable templates."}
+{emptyPatternsMessage(search, patterns.length)}
             </EmptyStateBody>
           </EmptyState>
         ) : (
@@ -415,206 +634,7 @@ export default function PatternsPage() {
             );
           })()}
           <div>
-            {filtered.map((pattern) => {
-              const saving = pattern.state === "creating" || pattern.state === "capturing" || pattern.state === "importing";
-              const ageMonths = (Date.now() - new Date(pattern.created_at).getTime()) / (1000 * 60 * 60 * 24 * 30);
-              const certWarning = pattern.is_ocp && ageMonths >= 6;
-              return (
-              <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, marginBottom: 8 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
-                <CardTitle>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                      <input type="checkbox" checked={selectedPatterns.has(pattern.id)} onChange={(e) => {
-                        e.stopPropagation();
-                        setSelectedPatterns((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(pattern.id)) next.delete(pattern.id); else next.add(pattern.id);
-                          return next;
-                        });
-                      }} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
-                      {editingName === pattern.id ? (
-                        <input
-                          autoFocus
-                          value={editNameValue}
-                          onChange={(e) => setEditNameValue(e.target.value)}
-                          onBlur={() => {
-                            const trimmed = editNameValue.trim();
-                            if (trimmed && trimmed !== pattern.name) {
-                              fetch(`/api/v1/patterns/${pattern.id}`, {
-                                method: "PATCH",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ name: trimmed }),
-                              }).then((r) => { if (r.ok) loadPatterns(); });
-                            }
-                            setEditingName(null);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                            if (e.key === "Escape") setEditingName(null);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          style={{
-                            fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
-                            background: "var(--pf-t--global--background--color--primary--default)",
-                            color: "var(--pf-t--global--text--color--regular)",
-                            border: "1px solid var(--pf-t--global--border--color--default)",
-                            borderRadius: 4, padding: "2px 6px", width: "100%",
-                          }}
-                        />
-                      ) : (
-                        <strong
-                          onClick={(e) => {
-                            if (!saving) {
-                              e.stopPropagation();
-                              setEditingName(pattern.id);
-                              setEditNameValue(pattern.name);
-                            }
-                          }}
-                          title="Click to rename"
-                          style={{ cursor: saving ? "default" : "text" }}
-                        >{pattern.name}</strong>
-                      )}
-                      <span
-                        title={pattern.owner_email ? `Owned by ${pattern.owner_email}` : "System"}
-                        style={{
-                          fontSize: 11,
-                          padding: "1px 6px",
-                          borderRadius: 4,
-                          background: "rgba(96,165,250,0.18)",
-                          color: "#60a5fa",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontWeight: 600,
-                          marginTop: 2,
-                        }}
-                      >
-                        <UserIcon style={{ width: 11, height: 11 }} />
-                        {pattern.owner_email ? pattern.owner_email.split("@")[0] : "system"}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      {certWarning && (
-                        <Tooltip content={`This OCP pattern is ${Math.floor(ageMonths)} months old. OpenShift certificates expire after ~1 year. CSRs will be auto-approved at deploy time.`}>
-                          <Label color="orange">cert age: {Math.floor(ageMonths)}mo</Label>
-                        </Tooltip>
-                      )}
-                      {(pattern.sources || []).map((src) => {
-                        const meta = sourceLabel(src);
-                        if (!meta) return null;
-                        return (
-                          <Tooltip key={src} content={meta.tip}>
-                            <Label color={meta.color}>{meta.text}</Label>
-                          </Tooltip>
-                        );
-                      })}
-                      {saving ? (
-                        <Label color="orange">{pattern.state === "importing" ? "importing…" : "saving…"}</Label>
-                      ) : pattern.state === "error" ? (
-                        <Label color="red">error</Label>
-                      ) : pattern.state === "available" ? (
-                        <PatternAvailability sync={pattern.central_sync} />
-                      ) : (
-                        <Label color="grey">{pattern.state}</Label>
-                      )}
-                      {!saving && pattern.state !== "error" && (
-                        <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
-                      )}
-                    </div>
-                  </div>
-                </CardTitle>
-                <CardBody>
-                  <PatternSyncNotice sync={pattern.central_sync} />
-                  {pattern.description && (
-                    <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
-                  )}
-                  {saving && pattern.capture_progress ? (
-                    <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.6, maxHeight: 240, overflowY: "auto" }}>
-                      <div style={{ marginBottom: 4 }}>{pattern.capture_progress.detail || "Capturing..."}</div>
-                      {pattern.capture_progress.disks?.map((d: { name: string; status: string }) => (
-                        <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ color: d.status === "done" ? "#4ade80" : "var(--pf-t--global--text--color--subtle)" }}>
-                            {d.status === "done" ? "✓" : "○"}
-                          </span>
-                          <span>{d.name}</span>
-                          <span style={{ opacity: 0.5 }}>{d.status}</span>
-                        </div>
-                      ))}
-                      {pattern.capture_progress.vms?.map((v: string) => (
-                        <div key={v}>{v}</div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, opacity: 0.6 }}>
-                      {pattern.vm_count || 0} VM{(pattern.vm_count || 0) !== 1 ? "s" : ""}
-                      {" · "}{pattern.total_vcpus || 0} vCPU
-                      {" · "}{pattern.total_ram_gb || 0} GB RAM
-                      {" · "}{pattern.total_disk_gb || 0} GB disk
-                      {" · "}{formatSize(pattern.total_size_bytes)} compressed
-                      {" · "}{new Date(pattern.created_at).toLocaleDateString()}
-                    </div>
-                  )}
-                </CardBody>
-                <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
-                  <TagEditor
-                    tags={(pattern.tags?.user_tags as string[]) || []}
-                    onAdd={async (tag) => {
-                      const cur = (pattern.tags?.user_tags as string[]) || [];
-                      await fetch(`/api/v1/patterns/${pattern.id}`, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tags: { ...(pattern.tags || {}), user_tags: [...cur, tag] } }),
-                      });
-                      loadPatterns();
-                    }}
-                    onRemove={async (tag) => {
-                      const cur = (pattern.tags?.user_tags as string[]) || [];
-                      await fetch(`/api/v1/patterns/${pattern.id}`, {
-                        method: "PATCH",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ tags: { ...(pattern.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
-                      });
-                      loadPatterns();
-                    }}
-                  />
-                  <Button variant="primary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name, is_sno: pattern.is_sno })}>
-                    Create Project
-                  </Button>
-                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setBulkPatternId(pattern.id)}>
-                    Bulk Deploy
-                  </Button>
-                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setExportPattern(pattern)}>
-                    Export
-                  </Button>
-                  {!saving && pattern.state !== "error" && (pattern.owner_id === me.id || me.role === "admin") && (
-                    <Button variant="secondary" size="sm" onClick={() => setSharePattern(pattern)}>
-                      Share
-                    </Button>
-                  )}
-                  {saving && (
-                    <Button variant="warning" size="sm" onClick={async () => {
-                      if (!(await appConfirm({ message: "Cancel pattern capture? This will stop the capture and clean up.", confirmLabel: "Cancel capture", variant: "danger" }))) return;
-                      fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
-                        if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
-                      });
-                    }}>Cancel</Button>
-                  )}
-                  {!saving && !pattern.readonly && (pattern.visibility !== "public" || me.role === "admin") && (
-                    <Button variant="danger" size="sm" onClick={async () => {
-                      if (!(await appConfirm({
-                        message: `Delete pattern "${pattern.name}"? This cannot be undone.`,
-                        confirmLabel: "Delete",
-                        variant: "danger",
-                      }))) return;
-                      fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
-                        if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
-                      });
-                    }}>Delete</Button>
-                  )}
-                </CardBody>
-              </Card>
-              );
-            })}
+            {filtered.map(renderPattern)}
           </div>
           </>
         )}
@@ -656,7 +676,7 @@ export default function PatternsPage() {
             <div style={{ fontSize: 15, marginBottom: 16 }}>
               Successfully created {bulkCreatedCount} project{bulkCreatedCount !== 1 ? "s" : ""}.
             </div>
-            <button
+            <button type="button"
               onClick={() => { setBulkCreatedCount(null); router.push("/projects"); }}
               style={{
                 padding: "8px 24px", borderRadius: 6, cursor: "pointer", fontSize: 13,
@@ -673,7 +693,7 @@ export default function PatternsPage() {
       {deployPattern && <DeployNameModal
         patternName={deployPattern.name}
         deploying={deploying === deployPattern.id}
-        onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId)}
+        onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId) => handleDeploy(deployPattern.id, { projectName: name, guid, domain, dnsProviderId, autoDeploy: ad, autoStart: as_, hostId })}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
 
@@ -691,10 +711,10 @@ export default function PatternsPage() {
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
 
       {exportPattern && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClick={() => setExportPattern(null)}>
+        <ModalBackdrop label="Export Pattern" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClose={() => setExportPattern(null)}>
           <div style={{ background: "var(--pf-t--global--background--color--primary--default)", borderRadius: 12, padding: 24, minWidth: 360, maxWidth: 460, boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
-            onClick={(e) => e.stopPropagation()}>
+            >
             <h2 style={{ marginTop: 0, marginBottom: 16 }}>Export Pattern</h2>
             <p style={{ fontSize: 14, opacity: 0.8, marginBottom: 8 }}>
               <strong>{exportPattern.name}</strong>
@@ -710,7 +730,7 @@ export default function PatternsPage() {
               }}>Download</Button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
     </>
   );

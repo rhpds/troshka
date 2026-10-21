@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import TagEditor from "@/components/TagEditor";
 import { appConfirm } from "@/lib/confirm";
@@ -69,14 +71,12 @@ export default function ImagesPage() {
   const [importUrl, setImportUrl] = useState("");
   const [newName, setNewName] = useState("");
   const [editItem, setEditItem] = useState<LibraryItem | null>(null);
-  const [editName, setEditName] = useState("");
   const [editUrl, setEditUrl] = useState("");
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState("");
-  const [editOcpDefault, setEditOcpDefault] = useState(false);
   const [newType, setNewType] = useState("iso");
   const [newFormat, setNewFormat] = useState("iso");
-  const [newOs, setNewOs] = useState("");
+  const [newOs] = useState("");
   const [newDesc, setNewDesc] = useState("");
 
   const loadItems = () => {
@@ -120,10 +120,65 @@ export default function ImagesPage() {
     matchesOwnershipFilter(imageCategory(i), ownershipFilters, isAdmin)
   );
 
+  async function uploadParts(id: string, upload_id: string, file: File) {
+      // Step 3: Upload parts (500 MB chunks)
+      const CHUNK_SIZE = 500 * 1024 * 1024;
+      const totalParts = Math.ceil(file.size / CHUNK_SIZE);
+      const parts: Array<{ part_number: number; etag: string }> = [];
+      let uploaded = 0;
+
+      for (let i = 0; i < totalParts; i++) {
+        const partNumber = i + 1;
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+
+        // Get presigned URL for this part
+        if (partNumber === 1) setUploadProgress(`Reading file (${formatSize(file.size)})...`);
+        const partResp = await fetch(`/api/v1/library/${id}/upload-part-url?upload_id=${upload_id}&part_number=${partNumber}`, { method: "POST" });
+        if (!partResp.ok) throw new Error("Failed to get part URL");
+        const { url } = await partResp.json();
+
+        // Upload the chunk
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", url);
+
+        const etag = await new Promise<string>((resolve, reject) => {
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const totalUploaded = uploaded + e.loaded;
+              const pct = Math.round((totalUploaded / file.size) * 100);
+              setUploadProgress(`Uploading... ${pct}% (${formatSize(totalUploaded)} / ${formatSize(file.size)})`);
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve(xhr.getResponseHeader("ETag") || "");
+            } else {
+              reject(new Error(`Part ${partNumber} failed (HTTP ${xhr.status})`));
+            }
+          };
+          xhr.onerror = () => reject(new Error(`Part ${partNumber} network error`));
+          xhr.send(chunk);
+        });
+
+        parts.push({ part_number: partNumber, etag });
+        uploaded = end;
+      }
+
+    return parts;
+  }
+
+  function uploadValidationError() {
+    if (!newName.trim()) return "Name is required";
+    if (sourceMode === "file" && !selectedFile) return "Select a file";
+    if (sourceMode === "url" && !importUrl.trim()) return "Enter a URL";
+    return "";
+  }
+
   const handleUpload = async () => {
-    if (!newName.trim()) { setError("Name is required"); return; }
-    if (sourceMode === "file" && !selectedFile) { setError("Select a file"); return; }
-    if (sourceMode === "url" && !importUrl.trim()) { setError("Enter a URL"); return; }
+    const validationError = uploadValidationError();
+    if (validationError) { setError(validationError); return; }
     const file = selectedFile;
 
     setUploading(true);
@@ -177,50 +232,7 @@ export default function ImagesPage() {
       if (!startResp.ok) { setError("Failed to start upload"); setUploading(false); return; }
       const { upload_id } = await startResp.json();
 
-      // Step 3: Upload parts (500 MB chunks)
-      const CHUNK_SIZE = 500 * 1024 * 1024;
-      const totalParts = Math.ceil(file!.size / CHUNK_SIZE);
-      const parts: Array<{ part_number: number; etag: string }> = [];
-      let uploaded = 0;
-
-      for (let i = 0; i < totalParts; i++) {
-        const partNumber = i + 1;
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file!.size);
-        const chunk = file!.slice(start, end);
-
-        // Get presigned URL for this part
-        if (partNumber === 1) setUploadProgress(`Reading file (${formatSize(file!.size)})...`);
-        const partResp = await fetch(`/api/v1/library/${id}/upload-part-url?upload_id=${upload_id}&part_number=${partNumber}`, { method: "POST" });
-        if (!partResp.ok) throw new Error("Failed to get part URL");
-        const { url } = await partResp.json();
-
-        // Upload the chunk
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", url);
-
-        const etag = await new Promise<string>((resolve, reject) => {
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const totalUploaded = uploaded + e.loaded;
-              const pct = Math.round((totalUploaded / file!.size) * 100);
-              setUploadProgress(`Uploading... ${pct}% (${formatSize(totalUploaded)} / ${formatSize(file!.size)})`);
-            }
-          };
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve(xhr.getResponseHeader("ETag") || "");
-            } else {
-              reject(new Error(`Part ${partNumber} failed (HTTP ${xhr.status})`));
-            }
-          };
-          xhr.onerror = () => reject(new Error(`Part ${partNumber} network error`));
-          xhr.send(chunk);
-        });
-
-        parts.push({ part_number: partNumber, etag });
-        uploaded = end;
-      }
+      const parts = await uploadParts(id, upload_id, file!);
 
       // Step 4: Complete multipart upload
       setUploadProgress("Finalizing...");
@@ -300,6 +312,167 @@ export default function ImagesPage() {
     return { text: item.state, color: "grey" };
   };
 
+  function renderImageActions(item: LibraryItem) {
+    return (            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
+              {item.state === "ready" && !item.readonly && (
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginRight: 8, opacity: 0.7 }}>
+                  <input type="checkbox" checked={item.format === "iso" ? (item.tags?.ocp_default_iso || false) : (item.tags?.ocp_default_image || false)} onChange={async (e) => {
+                    const tagKey = item.format === "iso" ? "ocp_default_iso" : "ocp_default_image";
+                    await fetch(`/api/v1/library/${item.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tags: { ...(item.tags), [tagKey]: e.target.checked || undefined } }),
+                    });
+                    loadItems();
+                  }} />
+                  {"OCP Default"}
+                </label>
+              )}
+              <TagEditor
+                tags={(item.tags?.user_tags as string[]) || []}
+                onAdd={async (tag) => {
+                  const cur = (item.tags?.user_tags as string[]) || [];
+                  await fetch(`/api/v1/library/${item.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tags: { ...(item.tags), user_tags: [...cur, tag] } }),
+                  });
+                  loadItems();
+                }}
+                onRemove={async (tag) => {
+                  const cur = (item.tags?.user_tags as string[]) || [];
+                  await fetch(`/api/v1/library/${item.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tags: { ...(item.tags), user_tags: cur.filter((t: string) => t !== tag) } }),
+                  });
+                  loadItems();
+                }}
+              />
+              {["error", "pending"].includes(item.state) && (
+                <Button variant="secondary" onClick={() => {
+                  setEditItem(item);
+                  setEditUrl(item.source_url || "");
+                }}>
+                  Edit URL
+                </Button>
+              )}
+              {["importing", "uploading", "downloading", "uploading_s3"].includes(item.state) && (
+                <Button variant="secondary" onClick={async () => {
+                  if (!(await appConfirm({ message: "Cancel this transfer?", confirmLabel: "Cancel transfer", variant: "danger" }))) return;
+                  await fetch(`/api/v1/library/${item.id}/cancel`, { method: "POST" });
+                  loadItems();
+                }}>
+                  Cancel
+                </Button>
+              )}
+              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.readonly || ["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
+                Delete
+              </Button>
+            </CardBody>
+    );
+  }
+
+  function renderImageName(item: LibraryItem) {
+    return (editingName === item.id ? (
+                    <input
+                      autoFocus
+                      value={editNameValue}
+                      onChange={(e) => setEditNameValue(e.target.value)}
+                      onBlur={() => {
+                        const trimmed = editNameValue.trim();
+                        if (trimmed && trimmed !== item.name) {
+                          fetch(`/api/v1/library/${item.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name: trimmed }),
+                          }).then((r) => { if (r.ok) loadItems(); });
+                        }
+                        setEditingName(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") setEditingName(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        borderRadius: 4, padding: "2px 6px", width: "100%",
+                      }}
+                    />
+                  ) : (
+                    <button type="button"
+                      disabled={item.readonly}
+                      onClick={item.readonly ? undefined : () => { setEditingName(item.id); setEditNameValue(item.name); }}
+                      title={item.readonly ? undefined : "Click to rename"}
+                      style={{ cursor: item.readonly ? "default" : "text", border: 0, background: "transparent", color: "inherit", font: "inherit", fontWeight: "bold", padding: 0 }}
+                    >{item.name}</button>
+                  )
+    );
+  }
+
+  function renderImage(item: LibraryItem) {
+          const stateMeta = imageStateLabel(item);
+          return (
+          <Card key={item.id} isCompact style={{ marginBottom: 8 }}>
+            <CardTitle>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <input type="checkbox" checked={selectedItems.has(item.id)} onChange={() => setSelectedItems((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                    return next;
+                  })} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
+                  {renderImageName(item)}
+                  <span
+                    title={item.owner_email ? `Owned by ${item.owner_email}` : "System"}
+                    style={{
+                      fontSize: 11,
+                      padding: "1px 6px",
+                      borderRadius: 4,
+                      background: "rgba(96,165,250,0.18)",
+                      color: "#60a5fa",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontWeight: 600,
+                      marginTop: 2,
+                    }}
+                  >
+                    <UserIcon style={{ width: 11, height: 11 }} />
+                    {item.owner_email ? item.owner_email.split("@")[0] : "system"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Label color="grey">{item.format === "iso" ? "ISO" : item.format}</Label>
+                  {item.source === "central" || item.readonly ? (
+                    <Tooltip content="Read-only curated store (troshka-gold-images)">
+                      <Label color="yellow">Gold</Label>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip content="Personal library (writable)">
+                      <Label color="grey">Local</Label>
+                    </Tooltip>
+                  )}
+                  <Label color={stateMeta.color}>{stateMeta.text}</Label>
+                </div>
+              </div>
+            </CardTitle>
+            <CardBody>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>
+                  {item.state !== "importing" && formatSize(item.size_bytes)}
+                  {item.description && `${item.state !== "importing" ? " · " : ""}${item.description}`}
+                  {" · "}{new Date(item.created_at).toLocaleDateString()}
+                </div>
+            </CardBody>
+            {renderImageActions(item)}
+          </Card>
+          );
+  }
+
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
 
   return (
@@ -343,41 +516,41 @@ export default function ImagesPage() {
               <Title headingLevel="h3" size="md" style={{ marginBottom: 12 }}>Upload to Library</Title>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                  <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. RHEL 10.2 Install DVD" />
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                  <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. RHEL 10.2 Install DVD" /></LabeledField>
                 </div>
                 <div style={{ display: "flex", gap: 10 }}>
                   <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Type</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Type</>}>
                     <select style={inputStyle} value={newType} onChange={(e) => {
                       setNewType(e.target.value);
                       setNewFormat(e.target.value === "iso" ? "iso" : "qcow2");
                     }}>
                       <option value="iso">ISO</option>
                       <option value="image">Disk Image</option>
-                    </select>
+                    </select></LabeledField>
                   </div>
                   {newType !== "iso" && (
                     <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Format</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Format</>}>
                       <select style={inputStyle} value={newFormat} onChange={(e) => setNewFormat(e.target.value)}>
                         <option value="qcow2">QCOW2</option>
                         <option value="raw">Raw</option>
-                      </select>
+                      </select></LabeledField>
                     </div>
                   )}
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description (optional)</label>
-                  <input style={inputStyle} value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Notes about this image" />
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Description (optional)</>}>
+                  <input style={inputStyle} value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Notes about this image" /></LabeledField>
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Source</label>
+                  <span style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Source</span>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    <button onClick={() => setSourceMode("file")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "file" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "file" ? "#4ade80" : undefined }}>
+                    <button type="button" onClick={() => setSourceMode("file")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "file" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "file" ? "#4ade80" : undefined }}>
                       Upload File
                     </button>
-                    <button onClick={() => setSourceMode("url")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "url" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "url" ? "#4ade80" : undefined }}>
+                    <button type="button" onClick={() => setSourceMode("url")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "url" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "url" ? "#4ade80" : undefined }}>
                       Import from URL
                     </button>
                   </div>
@@ -452,172 +625,23 @@ export default function ImagesPage() {
               : "No items in library. Click \"+ Upload\" to add ISOs or disk images."}
           </p>
         )}
-        {visibleItems.map((item) => {
-          const stateMeta = imageStateLabel(item);
-          return (
-          <Card key={item.id} isCompact style={{ marginBottom: 8 }}>
-            <CardTitle>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                  <input type="checkbox" checked={selectedItems.has(item.id)} onChange={() => setSelectedItems((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
-                    return next;
-                  })} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
-                  {editingName === item.id ? (
-                    <input
-                      autoFocus
-                      value={editNameValue}
-                      onChange={(e) => setEditNameValue(e.target.value)}
-                      onBlur={() => {
-                        const trimmed = editNameValue.trim();
-                        if (trimmed && trimmed !== item.name) {
-                          fetch(`/api/v1/library/${item.id}`, {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ name: trimmed }),
-                          }).then((r) => { if (r.ok) loadItems(); });
-                        }
-                        setEditingName(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        if (e.key === "Escape") setEditingName(null);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      style={{
-                        fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
-                        background: "var(--pf-t--global--background--color--primary--default)",
-                        color: "var(--pf-t--global--text--color--regular)",
-                        border: "1px solid var(--pf-t--global--border--color--default)",
-                        borderRadius: 4, padding: "2px 6px", width: "100%",
-                      }}
-                    />
-                  ) : (
-                    <strong
-                      onClick={item.readonly ? undefined : () => { setEditingName(item.id); setEditNameValue(item.name); }}
-                      title={item.readonly ? undefined : "Click to rename"}
-                      style={{ cursor: item.readonly ? "default" : "text" }}
-                    >{item.name}</strong>
-                  )}
-                  <span
-                    title={item.owner_email ? `Owned by ${item.owner_email}` : "System"}
-                    style={{
-                      fontSize: 11,
-                      padding: "1px 6px",
-                      borderRadius: 4,
-                      background: "rgba(96,165,250,0.18)",
-                      color: "#60a5fa",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 4,
-                      fontWeight: 600,
-                      marginTop: 2,
-                    }}
-                  >
-                    <UserIcon style={{ width: 11, height: 11 }} />
-                    {item.owner_email ? item.owner_email.split("@")[0] : "system"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <Label color="grey">{item.format === "iso" ? "ISO" : item.format}</Label>
-                  {item.source === "central" || item.readonly ? (
-                    <Tooltip content="Read-only curated store (troshka-gold-images)">
-                      <Label color="yellow">Gold</Label>
-                    </Tooltip>
-                  ) : (
-                    <Tooltip content="Personal library (writable)">
-                      <Label color="grey">Local</Label>
-                    </Tooltip>
-                  )}
-                  <Label color={stateMeta.color}>{stateMeta.text}</Label>
-                </div>
-              </div>
-            </CardTitle>
-            <CardBody>
-                <div style={{ fontSize: 12, opacity: 0.6 }}>
-                  {item.state !== "importing" && formatSize(item.size_bytes)}
-                  {item.description && `${item.state !== "importing" ? " · " : ""}${item.description}`}
-                  {" · "}{new Date(item.created_at).toLocaleDateString()}
-                </div>
-            </CardBody>
-            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
-              {item.state === "ready" && !item.readonly && (
-                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginRight: 8, opacity: 0.7 }}>
-                  <input type="checkbox" checked={item.format === "iso" ? (item.tags?.ocp_default_iso || false) : (item.tags?.ocp_default_image || false)} onChange={async (e) => {
-                    const tagKey = item.format === "iso" ? "ocp_default_iso" : "ocp_default_image";
-                    await fetch(`/api/v1/library/${item.id}`, {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ tags: { ...(item.tags || {}), [tagKey]: e.target.checked || undefined } }),
-                    });
-                    loadItems();
-                  }} />
-                  OCP Default
-                </label>
-              )}
-              <TagEditor
-                tags={(item.tags?.user_tags as string[]) || []}
-                onAdd={async (tag) => {
-                  const cur = (item.tags?.user_tags as string[]) || [];
-                  await fetch(`/api/v1/library/${item.id}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tags: { ...(item.tags || {}), user_tags: [...cur, tag] } }),
-                  });
-                  loadItems();
-                }}
-                onRemove={async (tag) => {
-                  const cur = (item.tags?.user_tags as string[]) || [];
-                  await fetch(`/api/v1/library/${item.id}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ tags: { ...(item.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
-                  });
-                  loadItems();
-                }}
-              />
-              {["error", "pending"].includes(item.state) && (
-                <Button variant="secondary" onClick={() => {
-                  setEditItem(item);
-                  setEditName(item.name);
-                  setEditUrl(item.source_url || "");
-                }}>
-                  Edit URL
-                </Button>
-              )}
-              {["importing", "uploading", "downloading", "uploading_s3"].includes(item.state) && (
-                <Button variant="secondary" onClick={async () => {
-                  if (!(await appConfirm({ message: "Cancel this transfer?", confirmLabel: "Cancel transfer", variant: "danger" }))) return;
-                  await fetch(`/api/v1/library/${item.id}/cancel`, { method: "POST" });
-                  loadItems();
-                }}>
-                  Cancel
-                </Button>
-              )}
-              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.readonly || ["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
-                Delete
-              </Button>
-            </CardBody>
-          </Card>
-          );
-        })}
+        {visibleItems.map(renderImage)}
       </PageSection>
       {editItem && (
-        <div style={{
+        <ModalBackdrop label="Edit Source URL" style={{
           position: "fixed", inset: 0, zIndex: 10000,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(0,0,0,0.6)",
-        }} onClick={() => setEditItem(null)}>
+        }} onClose={() => setEditItem(null)}>
           <div style={{
             background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: 450,
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
             border: "1px solid var(--pf-t--global--border--color--default)",
-          }} onClick={(e) => e.stopPropagation()}>
+          }}>
             <h3 style={{ margin: "0 0 16px" }}>Edit Source URL</h3>
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Source URL</label>
+              <LabeledField style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }} label={<>Source URL</>}>
               <input
                 autoFocus
                 value={editUrl}
@@ -630,7 +654,7 @@ export default function ImagesPage() {
                   color: "var(--pf-t--global--text--color--regular)",
                   fontFamily: "monospace",
                 }}
-              />
+              /></LabeledField>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <Button variant="secondary" onClick={() => setEditItem(null)}>Cancel</Button>
@@ -665,7 +689,7 @@ export default function ImagesPage() {
               )}
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
       {toast && (
         <div style={{

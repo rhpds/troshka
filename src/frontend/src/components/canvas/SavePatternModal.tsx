@@ -1,5 +1,8 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+import { CaptureError, checkCaptureName, stopForCapture } from "./captureLifecycle";
+import LabeledField from "@/components/LabeledField";
 import React, { useState } from "react";
 
 interface SavePatternModalProps {
@@ -11,7 +14,11 @@ interface SavePatternModalProps {
   onClose: () => void;
 }
 
-export default function SavePatternModal({ projectId, projectName, hasRunningVMs, isSno, onSaved, onClose }: SavePatternModalProps) {
+function captureOptionStyle(disabled: boolean): React.CSSProperties {
+  return { cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1 };
+}
+
+export default function SavePatternModal({ projectId, projectName, hasRunningVMs, isSno, onSaved, onClose }: Readonly<SavePatternModalProps>) {
   const [name, setName] = useState(`${projectName}-pattern`);
   const [description, setDescription] = useState("");
   const [stopVMs, setStopVMs] = useState(false);
@@ -37,44 +44,16 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
     if (!name.trim()) { setError("Name is required"); return; }
     setSaving(true);
     setError("");
+    let stopRequested = false;
     try {
-      // Check for duplicate name before shutting anything down
-      const checkResp = await fetch(`/api/v1/patterns/?q=${encodeURIComponent(name.trim())}`);
-      if (checkResp.ok) {
-        const items = await checkResp.json();
-        if (Array.isArray(items) && items.some((item: { name: string }) => item.name === name.trim())) {
-          setError(`You already have a pattern named "${name.trim()}"`);
-          setSaving(false);
-          return;
-        }
-      }
-
+      await checkCaptureName(`/api/v1/patterns/?q=${encodeURIComponent(name.trim())}`, name.trim(), "pattern");
       if (hasRunningVMs && stopVMs) {
-        setSavingStatus("Graceful shutdown...");
-        await fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" });
-        let stopped = false;
-        for (let i = 0; i < 10; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const stateResp = await fetch(`/api/v1/projects/${projectId}`);
-          if (stateResp.ok) {
-            const proj = await stateResp.json();
-            if (proj.state === "stopped") { stopped = true; break; }
-          }
-        }
-        if (!stopped) {
-          setSavingStatus("Force powering off...");
-          await fetch(`/api/v1/projects/${projectId}/force-stop`, { method: "POST" });
-          // Wait briefly for state to propagate
-          await new Promise((r) => setTimeout(r, 2000));
-          for (let i = 0; i < 10; i++) {
-            await new Promise((r) => setTimeout(r, 2000));
-            const stateResp = await fetch(`/api/v1/projects/${projectId}`);
-            if (stateResp.ok) {
-              const proj = await stateResp.json();
-              if (proj.state === "stopped") break;
-            }
-          }
-        }
+        stopRequested = true;
+        await stopForCapture({
+          baseUrl: `/api/v1/projects/${projectId}`, statusUrl: `/api/v1/projects/${projectId}`,
+          forceAction: "force-stop", stoppedStates: ["stopped"], forceDelay: 2000,
+          subject: "project", onStatus: setSavingStatus,
+        });
       }
 
       setSavingStatus("Creating pattern...");
@@ -102,9 +81,9 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
         }
       }
-    } catch {
-      setError("Failed to connect to server");
-      if (hasRunningVMs && stopVMs) {
+    } catch (error) {
+      setError(error instanceof CaptureError ? error.message : "Failed to connect to server");
+      if (stopRequested) {
         await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" }).catch(() => {});
       }
     }
@@ -112,11 +91,11 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
   };
 
   return (
-    <div style={{
+    <ModalBackdrop label="Save pattern" style={{
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+    }} onClose={() => { if (!saving) onClose(); }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
@@ -132,17 +111,17 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             color: "#fbbf24", fontSize: 13,
           }}>
             <div>Running VMs will be frozen during capture for a consistent snapshot.</div>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, ...captureOptionStyle(saving) }}>
               <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} disabled={saving} />
-              Stop VMs before capture instead
+              {"Stop VMs before capture instead"}
             </label>
             {stopVMs && (
-              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, ...captureOptionStyle(saving) }}>
                 <input type="checkbox" checked={restartAfter} onChange={(e) => setRestartAfter(e.target.checked)} disabled={saving} />
-                Restart project after capture
+                {"Restart project after capture"}
               </label>
             )}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: (saving || recert) ? "not-allowed" : "pointer", opacity: (saving || recert) ? 0.5 : 1 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, ...captureOptionStyle(saving || recert) }}>
               <input type="checkbox" checked={recert ? false : quiesceCluster} onChange={(e) => setQuiesceCluster(e.target.checked)} disabled={saving || recert} />
               Quiesce OCP cluster before capture{recert ? " (skipped — recert replaces certs)" : ""}
             </label>
@@ -151,40 +130,40 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Pattern name" disabled={saving} />
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Pattern name" disabled={saving} /></LabeledField>
           </div>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description</label>
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Description</>}>
             <textarea
               style={{ ...inputStyle, minHeight: 60, resize: "vertical" }}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional description"
               disabled={saving}
-            />
+            /></LabeledField>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1, fontSize: 13 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, ...captureOptionStyle(saving), fontSize: 13 }}>
             <input type="checkbox" checked={captureClockTarget} onChange={(e) => setCaptureClockTarget(e.target.checked)} disabled={saving} />
-            Capture clock target for backdating
+            {"Capture clock target for backdating"}
           </label>
           {isSno && (
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1, fontSize: 13 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, ...captureOptionStyle(saving), fontSize: 13 }}>
               <input type="checkbox" checked={recert} onChange={(e) => setRecert(e.target.checked)} disabled={saving} />
-              Prepare for recert (expire certificates for fast deploy)
+              {"Prepare for recert (expire certificates for fast deploy)"}
             </label>
           )}
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button
+            <button type="button"
               onClick={onClose}
               disabled={saving}
               style={{ ...inputStyle, width: "auto", cursor: saving ? "not-allowed" : "pointer", padding: "6px 16px", opacity: saving ? 0.4 : 1 }}
             >
               Cancel
             </button>
-            <button
+            <button type="button"
               onClick={handleSave}
               disabled={saving}
               style={{
@@ -203,6 +182,6 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           )}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

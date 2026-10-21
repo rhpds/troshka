@@ -1281,8 +1281,9 @@ def test_customize_bastion_multi_cluster_raises():
 
     topo = _two_cluster_topo()
     topo["clusters"] = _two_clusters_def()
+    exception_config = _install_via_config("bastion")
     with pytest.raises(ValueError):
-        customize_topology(topo, "ocp-multi", _install_via_config("bastion"))
+        customize_topology(topo, "ocp-multi", exception_config)
 
 
 def test_pick_unused_ips_top_down_excludes_used():

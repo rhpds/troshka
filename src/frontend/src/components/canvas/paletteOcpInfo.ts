@@ -68,7 +68,7 @@ function showroomHasConsoleTab(
     const t = tab as Record<string, unknown>;
     if (t.clusterId === clusterId) return true;
     const hosts = Array.isArray(t.proxyHosts)
-      ? (t.proxyHosts as unknown[]).map(String)
+      ? t.proxyHosts.filter((host): host is string => typeof host === "string")
       : [];
     if (hosts.includes(consoleHost)) return true;
     return typeof t.proxyHost === "string" && t.proxyHost === consoleHost;
@@ -146,24 +146,9 @@ export function buildPaletteOcpInfo(
     const internalConsole = `https://${consoleHost}`;
 
     const clusterMembers = members.filter(
-      (m) => String(m.data?.clusterId || "") === cid,
+      (m) => m.data?.clusterId === cid,
     );
-    let kubeadminPassword = "";
-    let kubeconfig = "";
-    let kubeconfigVmName = "";
-    for (const m of clusterMembers) {
-      const md = m.data || {};
-      if (!kubeadminPassword && typeof md.ocpKubeadminPassword === "string") {
-        kubeadminPassword = md.ocpKubeadminPassword;
-      }
-      if (!kubeconfig && typeof md.ocpKubeconfig === "string" && md.ocpKubeconfig) {
-        kubeconfig = md.ocpKubeconfig;
-        kubeconfigVmName =
-          (typeof md.name === "string" && md.name) ||
-          (typeof md.label === "string" && md.label) ||
-          m.id.slice(0, 8);
-      }
-    }
+    const credentials = clusterCredentials(clusterMembers);
 
     let consoleViaShowroom = false;
     let consoleUrl = internalConsole;
@@ -191,12 +176,30 @@ export function buildPaletteOcpInfo(
       apiUrl: `https://api.${fqdn}:6443`,
       consoleUrl,
       consoleViaShowroom,
-      kubeadminPassword,
-      kubeconfig,
-      kubeconfigVmName,
+      ...credentials,
     });
   }
 
   rows.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   return { ocpPresent: true, showroomUrl, clusters: rows };
+}
+
+function clusterCredentials(members: NodeLike[]) {
+  let kubeadminPassword = "";
+  let kubeconfig = "";
+  let kubeconfigVmName = "";
+  for (const member of members) {
+    const data = member.data || {};
+    if (!kubeadminPassword && typeof data.ocpKubeadminPassword === "string") {
+      kubeadminPassword = data.ocpKubeadminPassword;
+    }
+    if (!kubeconfig && typeof data.ocpKubeconfig === "string" && data.ocpKubeconfig) {
+      kubeconfig = data.ocpKubeconfig;
+      kubeconfigVmName =
+        (typeof data.name === "string" && data.name) ||
+        (typeof data.label === "string" && data.label) ||
+        member.id.slice(0, 8);
+    }
+  }
+  return { kubeadminPassword, kubeconfig, kubeconfigVmName };
 }

@@ -16,8 +16,8 @@ from app.models.user import User
 logger = logging.getLogger("troshka.ocp.ptr")
 
 _PROBE_TIMEOUT_S = 10
-# Bounded token classes avoid catastrophic backtracking on malformed auth headers.
-_BEARER_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
+# Only start a parameter at a delimiter, avoiding retries within malformed tokens.
+_BEARER_PARAM_RE = re.compile(r'(?:^|,)\s*(\w+)="([^"]*)"')
 
 
 class PullThroughRegistryError(Exception):
@@ -48,7 +48,7 @@ def _basic_auth_header(username: str, password: str) -> str:
 def _parse_bearer_challenge(www_authenticate: str | None) -> dict[str, str]:
     if not www_authenticate or not www_authenticate.lower().startswith("bearer"):
         return {}
-    return dict(_BEARER_PARAM_RE.findall(www_authenticate))
+    return dict(_BEARER_PARAM_RE.findall(www_authenticate[6:]))
 
 
 def _urlopen(req: urllib.request.Request, timeout: float):

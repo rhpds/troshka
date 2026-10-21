@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
 import React, { useEffect, useState } from "react";
@@ -24,7 +25,6 @@ import {
   Button,
   Card,
   CardBody,
-  CardTitle,
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
@@ -130,7 +130,107 @@ type DeployHostOption = {
   total_ram_mb: number;
 };
 
-export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: DeployHostOption[]; setAlertMsg: (msg: string | null) => void }) {
+interface CreationRequirements {
+  mode: string; yamlContent: string; selectedPattern: string | null; selectedTemplate: string | null;
+  template?: TemplateSummary; requiresHost: boolean; hasHost: boolean;
+  commonPassword: string; hasPullSecret: boolean; loadingVersions: boolean;
+  installVia: string; bastionImageId: string; bastionIsoId: string; bmcIpError: string;
+}
+
+function isOcpCreationBlocked(options: CreationRequirements): boolean {
+  const { template, commonPassword, hasPullSecret, loadingVersions, installVia, bastionImageId, bastionIsoId, bmcIpError } = options;
+  if (template?.category !== "openshift") return false;
+  if (!commonPassword || (template.requires_pull_secret !== false && !hasPullSecret)) return true;
+  if (loadingVersions && !template.versions?.length) return true;
+  return installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError);
+}
+
+function isProjectCreationBlocked(options: CreationRequirements): boolean {
+  if (options.mode === "yaml") return !options.yamlContent;
+  if (options.mode === "pattern") return !options.selectedPattern;
+  if (options.mode !== "template") return false;
+  if (!options.selectedTemplate) return true;
+  if (options.requiresHost && options.template?.requires_kubevirt && !options.hasHost) return true;
+  return isOcpCreationBlocked(options);
+}
+
+function runningLabel(state: string, paused: boolean): string {
+  if (state === "error") return "Paused";
+  return paused ? "Stopped" : "Running";
+}
+
+function ocpBadgeStyle(status: string): React.CSSProperties {
+  if (status === "ready") return { background: "rgba(74,222,128,0.15)", color: "#4ade80" };
+  if (status === "error") return { background: "rgba(248,113,113,0.15)", color: "#f87171" };
+  return { background: "rgba(251,191,36,0.15)", color: "#fbbf24" };
+}
+
+function isDefaultRhelImage(name: string): boolean {
+  const match = /rhel\s+\d/i.exec(name);
+  if (!match) return false;
+  return name.slice(match.index + match[0].length).toLowerCase().includes("image");
+}
+
+function patternAvailability(count: number): string {
+  if (count === 0) return "No patterns yet";
+  return count + " pattern" + (count > 1 ? "s" : "") + " available";
+}
+
+function projectCreateLabel(mode: string): string {
+  const labels: Record<string, string> = { yaml: "Import & Create", pattern: "Create from Pattern", template: "Create" };
+  return labels[mode] || "Create Project";
+}
+
+function sortedProjects(data: unknown): Project[] {
+  if (!Array.isArray(data)) return [];
+  return [...data].sort((left: Project, right: Project) => left.name.localeCompare(right.name));
+}
+
+function projectsSettled(projects: Project[]): boolean {
+  const settled = new Set(["draft", "active", "stopped", "error"]);
+  return projects.every((project) => settled.has(project.state));
+}
+
+function canAcceptProject(host: { state: string; agent_status: string; host_type?: string; accepting_work?: boolean }): boolean {
+  return host.state === "active" && host.agent_status === "connected" && host.host_type !== "pattern_buffer" && host.accepting_work !== false;
+}
+
+class ProjectRequestError extends Error {}
+
+async function readProjectResponse(response: Response, fallback: string) {
+  if (response.ok) return response.json();
+  const error = await response.json().catch(() => ({}));
+  throw new ProjectRequestError(formatApiDetail(error.detail, fallback));
+}
+
+async function postProjectJson(url: string, body: Record<string, unknown>, fallback: string) {
+  const response = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  return readProjectResponse(response, fallback);
+}
+
+function addProvidedValues(body: Record<string, unknown>, values: Record<string, unknown>) {
+  for (const [key, value] of Object.entries(values)) {
+    if (value) body[key] = value;
+  }
+}
+
+async function parseProjectYaml(content: string): Promise<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    const yaml = await import("js-yaml");
+    parsed = yaml.load(content);
+  } catch {
+    throw new ProjectRequestError("Invalid YAML syntax in template file");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ProjectRequestError("Template must be a YAML mapping");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: Readonly<{ onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: DeployHostOption[]; setAlertMsg: (msg: string | null) => void }>) {
   const [mode, setMode] = useState<"choose" | "blank" | "yaml" | "pattern" | "template" | "template-picker">("choose");
   const [yamlContent, setYamlContent] = useState("");
   const [yamlFileName, setYamlFileName] = useState("");
@@ -220,14 +320,14 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         setLibraryImages(images);
         setLibraryIsos(isos);
         const defaultImg = images.find((i: any) => i.tags?.ocp_default_image)
-          || images.find((i: any) => /rhel\s+\d+(\.\d+)?.*image/i.test(i.name));
+          || images.find((i: any) => isDefaultRhelImage(i.name));
         if (defaultImg) {
           setBastionImageId(defaultImg.id);
           const defaultIso = isos.find((i: any) => i.tags?.ocp_default_iso);
           if (defaultIso) {
             setBastionIsoId(defaultIso.id);
           } else {
-            const verMatch = defaultImg.name.match(/(\d+\.\d+)/);
+            const verMatch = /(?<!\d)(\d+\.\d+)/.exec(defaultImg.name);
             if (verMatch) {
               const matchingIso = isos.find((i: any) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
               if (matchingIso) setBastionIsoId(matchingIso.id);
@@ -256,165 +356,91 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
     fontSize: 13,
   };
 
+  const deployCreatedProject = async (id: string) => {
+    if (!autoDeploy) return;
+    const params = new URLSearchParams();
+    if (deployHostId) params.set("host_id", deployHostId);
+    const query = params.size ? `?${params}` : "";
+    const response = await fetch(`/api/v1/projects/${id}/deploy${query}`, { method: "POST" });
+    if (!response.ok) await readProjectResponse(response, "Deploy failed — project was created as draft");
+  };
+
+  const getTemplateBody = () => {
+    const body: Record<string, unknown> = {
+      template_id: selectedTemplate, name,
+      auto_install_ocp: autoInstallOcp, block_outbound: blockOutbound,
+    };
+    addProvidedValues(body, {
+      bastion_image_id: bastionImageId, bastion_iso_id: bastionIsoId,
+      bastion_ssh_key_id: bastionSshKeyId, common_password: commonPassword,
+      bastion_bmc_ip: bastionBmcIp, cluster_name: clusterName,
+      base_domain: baseDomain, ocp_version: ocpVersion,
+    });
+    if (templates.find((t) => t.id === selectedTemplate)?.category === "openshift") {
+      body.install_via = installVia;
+      body.external_access = true;
+    }
+    return body;
+  };
+
+  const createFromTemplate = async () => {
+    const data = await postProjectJson("/api/v1/projects/from-template", getTemplateBody(), "Failed to create project");
+    if (data?.warnings?.length) setAlertMsg("Created with warnings: " + data.warnings.join("; "));
+    // Load the server-generated topology without a client-side rewrite.
+    const { useCanvasStore } = await import("@/stores/canvasStore");
+    await useCanvasStore.getState().loadProject(data.id);
+    await deployCreatedProject(data.id);
+    onCreated(data.id);
+  };
+
+  const createFromYaml = async () => {
+    const body: Record<string, unknown> = { name, template_yaml: await parseProjectYaml(yamlContent) };
+    addProvidedValues(body, {
+      common_password: commonPassword, bastion_ssh_key_id: bastionSshKeyId,
+      bastion_image_id: bastionImageId, bastion_iso_id: bastionIsoId,
+    });
+    const data = await postProjectJson("/api/v1/projects/from-template", body, "Template import failed");
+    if (data?.warnings?.length) setAlertMsg("Imported with warnings: " + data.warnings.join("; "));
+    await deployCreatedProject(data.id);
+    onCreated(data.id);
+  };
+
+  const createBasicProject = async () => {
+        const pattern = mode === "pattern" && selectedPattern;
+        const url = pattern ? `/api/v1/patterns/${selectedPattern}/deploy` : "/api/v1/projects/";
+        const body = pattern ? { name, auto_deploy: autoDeploy, auto_start: autoStart } : { name };
+        const data = await postProjectJson(url, body, "Failed to create project");
+        onCreated(data.id);
+  };
+
   const handleCreate = async () => {
     if (!name.trim()) return;
-    // Host list is only fetched for admins; non-admins rely on backend placement.
-    if (
-      userRole === "admin" &&
-      mode === "template" &&
-      requiresKubevirt &&
-      deployHosts.length === 0
-    ) {
-      setCreateError(
-        "This template requires a KubeVirt cluster host — none are currently available.",
-      );
+    if (userRole === "admin" && mode === "template" && requiresKubevirt && deployHosts.length === 0) {
+      setCreateError("This template requires a KubeVirt cluster host — none are currently available.");
       return;
     }
     setCreating(true);
     setCreateError(null);
     try {
-      if (mode === "pattern" && selectedPattern) {
-        const resp = await fetch(`${API_BASE}/api/v1/patterns/${selectedPattern}/deploy`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, auto_deploy: autoDeploy, auto_start: autoStart }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          onCreated(data.id);
-        } else {
-          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setCreateError(err.detail || "Failed to create project");
-        }
-      } else if (mode === "template" && selectedTemplate) {
-        const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
-        if (bastionImageId) templateBody.bastion_image_id = bastionImageId;
-        if (bastionIsoId) templateBody.bastion_iso_id = bastionIsoId;
-        if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
-        if (commonPassword) templateBody.common_password = commonPassword;
-        if (bastionBmcIp) templateBody.bastion_bmc_ip = bastionBmcIp;
-        if (clusterName) templateBody.cluster_name = clusterName;
-        if (baseDomain) templateBody.base_domain = baseDomain;
-        if (ocpVersion) templateBody.ocp_version = ocpVersion;
-        templateBody.auto_install_ocp = autoInstallOcp;
-        templateBody.block_outbound = blockOutbound;
-        if (templates.find((t) => t.id === selectedTemplate)?.category === "openshift") {
-          templateBody.install_via = installVia;
-          // OpenShift quickstarts always need a gateway EIP (API/ingress/showroom).
-          templateBody.external_access = true;
-        }
-        const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(templateBody),
-        });
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setCreateError(formatApiDetail(err.detail, "Failed to create project"));
-        } else {
-          const data = await resp.json();
-          if (data?.warnings?.length) {
-            // Non-blocking: template IPs overlapping reserved infra IPs
-            // (gateway .1 / dnsmasq .2) will conflict at deploy time.
-            setAlertMsg("Created with warnings: " + data.warnings.join("; "));
-          }
-          // Load the new project into the canvas via the same path as a normal
-          // template import (loadProject), so showroom and every other template
-          // entry are preserved. The backend already generated and stored a
-          // laid-out topology, so no client-side setState/PATCH round-trip is
-          // needed — that bespoke path dropped the showroom node and blanked
-          // content_repo.
-          const { useCanvasStore } = await import("@/stores/canvasStore");
-          await useCanvasStore.getState().loadProject(data.id);
-          if (autoDeploy) {
-            const deployParams = new URLSearchParams();
-            if (deployHostId) deployParams.set("host_id", deployHostId);
-            const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
-            const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
-            if (!deployResp.ok) {
-              const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-              // Keep modal open so the placement error is visible; project already exists.
-              setCreateError(
-                (typeof err.detail === "string" ? err.detail : null) ||
-                  "Deploy failed — project was created as draft"
-              );
-              setCreating(false);
-              return;
-            }
-          }
-          onCreated(data.id);
-        }
-      } else if (mode === "yaml" && yamlContent) {
-        // Atomic create: schema/library validation runs in from-template before
-        // any project row is written (unlike create + import-template).
-        let parsed: Record<string, unknown>;
-        try {
-          const jsYaml = await import("js-yaml");
-          parsed = jsYaml.load(yamlContent) as Record<string, unknown>;
-        } catch {
-          setCreateError("Invalid YAML syntax in template file");
-          setCreating(false);
-          return;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          setCreateError("Template must be a YAML mapping");
-          setCreating(false);
-          return;
-        }
-        const yamlBody: Record<string, unknown> = { name, template_yaml: parsed };
-        if (commonPassword) yamlBody.common_password = commonPassword;
-        if (bastionSshKeyId) yamlBody.bastion_ssh_key_id = bastionSshKeyId;
-        if (bastionImageId) yamlBody.bastion_image_id = bastionImageId;
-        if (bastionIsoId) yamlBody.bastion_iso_id = bastionIsoId;
-        const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(yamlBody),
-        });
-        if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ detail: "Template import failed" }));
-          setCreateError(formatApiDetail(err.detail, "Template import failed"));
-          setCreating(false);
-          return;
-        }
-        const data = await resp.json();
-        if (data?.warnings?.length) {
-          setAlertMsg("Imported with warnings: " + data.warnings.join("; "));
-        }
-        if (autoDeploy) {
-          const deployParams = new URLSearchParams();
-          if (deployHostId) deployParams.set("host_id", deployHostId);
-          const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
-          const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
-          if (!deployResp.ok) {
-            const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-            setCreateError(
-              formatApiDetail(err.detail, "Deploy failed — project was created as draft")
-            );
-            setCreating(false);
-            return;
-          }
-        }
-        onCreated(data.id);
-      } else {
-        const resp = await fetch(`${API_BASE}/api/v1/projects/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          onCreated(data.id);
-        } else {
-          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setCreateError(formatApiDetail(err.detail, "Failed to create project"));
-        }
+      if (mode === "template" && selectedTemplate) await createFromTemplate();
+      else if (mode === "yaml" && yamlContent) await createFromYaml();
+      else {
+        await createBasicProject();
       }
-    } catch {
-      setCreateError("Request failed");
+    } catch (error) {
+      setCreateError(error instanceof ProjectRequestError ? error.message : "Request failed");
+    } finally {
+      setCreating(false);
     }
-    setCreating(false);
   };
+
+  const selectedTemplateInfo = templates.find((template) => template.id === selectedTemplate);
+  const createDisabled = creating || !name.trim() || isProjectCreationBlocked({
+    mode, yamlContent, selectedPattern, selectedTemplate,
+    template: selectedTemplateInfo, requiresHost: userRole === "admin",
+    hasHost: deployHosts.length > 0, commonPassword, hasPullSecret,
+    loadingVersions, installVia, bastionImageId, bastionIsoId, bmcIpError,
+  });
 
   const optionStyle = (active: boolean) => ({
     flex: 1,
@@ -425,6 +451,149 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
     cursor: "pointer" as const,
     textAlign: "center" as const,
   });
+
+  const renderYamlFields = () => mode === "yaml" ? (
+
+              <div>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Template YAML</>}>
+                <textarea
+                  value={yamlContent}
+                  onChange={(e) => { setYamlContent(e.target.value); setYamlFileName(""); }}
+                  placeholder={TEMPLATE_YAML_EXAMPLE}
+                  style={{
+                    width: "100%", height: 200, fontFamily: "monospace", fontSize: 12,
+                    padding: 12, borderRadius: 8, resize: "vertical",
+                    background: "var(--pf-t--global--background--color--secondary--default)",
+                    color: "var(--pf-t--global--text--color--regular)",
+                    border: "1px solid var(--pf-t--global--border--color--default)",
+                  }}
+                /></LabeledField>
+                {yamlFileName && (
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4 }}>
+                    Loaded from {yamlFileName}
+                  </div>
+                )}
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                    Cloud-init credentials (applied when the template enables cloud-init and omits them)
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>SSH Key</>}>
+                      <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
+                        <option value="">None</option>
+                        {sshKeys.map((k) => (
+                          <option key={k.id} value={k.id}>{k.name}</option>
+                        ))}
+                      </select></LabeledField>
+                    </div>
+                    <div>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>
+                        Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
+                      </>} controlWrapper={<div style={{ display: "flex", gap: 4 }} />} afterControl={
+                        <button
+                          type="button"
+                          style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
+                          onClick={() => { navigator.clipboard.writeText(commonPassword); }}
+                          title="Copy password"
+                        >Copy</button>
+                      }>
+                        <input
+                          style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }}
+                          value={commonPassword}
+                          onChange={(e) => setCommonPassword(e.target.value)}
+                          placeholder="Used for console login"
+                          onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+                        />
+                      </LabeledField>
+                      {!commonPassword.trim() && (
+                        <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
+                          No password set — cloud images may have no console login until you set one on the VM.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+                  {userRole === "admin" && deployHosts.length > 0 && autoDeploy && (
+                    <div style={{ marginBottom: 8 }}>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Host</>}>
+                      <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                        <option value="">Auto (best host)</option>
+                        {deployHosts.map((h) => (
+                          <option key={h.id} value={h.id}>
+                            {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
+                          </option>
+                        ))}
+                      </select></LabeledField>
+                    </div>
+                  )}
+                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
+                    {"Deploy immediately after import"}
+                  </label>
+                </div>
+              </div>
+  ) : null;
+
+  const renderPatternFields = () => mode === "pattern" ? (
+
+              <div style={{ position: "relative" }}>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Pattern</>}>
+                <input
+                  style={{
+                    ...inputStyle,
+                    borderColor: selectedPattern ? "#4ade80" : undefined,
+                    border: selectedPattern ? "1px solid #4ade80" : inputStyle.border,
+                  }}
+                  value={patternSearch}
+                  onChange={(e) => {
+                    setPatternSearch(e.target.value);
+                    setSelectedPattern(null);
+                    setPatternDropdownOpen(true);
+                  }}
+                  onFocus={() => setPatternDropdownOpen(true)}
+                  placeholder="Search patterns..."
+                  autoFocus
+                /></LabeledField>
+                {patternDropdownOpen && (
+                  <div style={{
+                    position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
+                    maxHeight: 180, overflowY: "auto",
+                    background: "var(--pf-t--global--background--color--primary--default)",
+                    border: "1px solid var(--pf-t--global--border--color--default)",
+                    borderTop: "none", borderRadius: "0 0 6px 6px",
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                  }}>
+                    {patterns
+                      .filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase()))
+                      .map((p) => (
+                        <button type="button" className="plain-button"
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedPattern(p.id);
+                            setPatternSearch(p.name);
+                            setPatternDropdownOpen(false);
+                            if (!name) setName(p.name);
+                          }}
+                          style={{
+                            padding: "8px 12px", cursor: "pointer", width: "100%", textAlign: "left",
+                            background: selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent",
+                          }}
+                          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.05)"; }}
+                          onMouseLeave={(e) => { (e.target as HTMLElement).style.background = selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent"; }}
+                        >
+                          <div style={{ fontWeight: 500, fontSize: 13 }}>{p.name}</div>
+                          {p.description && <div style={{ fontSize: 11, opacity: 0.6 }}>{p.description}</div>}
+                        </button>
+                      ))}
+                    {patterns.filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase())).length === 0 && (
+                      <div style={{ padding: "8px 12px", fontSize: 13, opacity: 0.5 }}>No patterns found</div>
+                    )}
+                  </div>
+                )}
+              </div>
+  ) : null;
 
   return (
     <ModalBackdrop label="Project settings" style={{
@@ -444,49 +613,50 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         {mode === "choose" ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", gap: 12 }}>
-              <div style={optionStyle(false)} onClick={() => setMode("blank")}>
+              <button type="button" className="plain-button" style={optionStyle(false)} onClick={() => setMode("blank")}>
                 <div style={{ fontSize: 28, marginBottom: 4 }}>📄</div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>Blank Project</div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Start from scratch</div>
-              </div>
-              <div style={optionStyle(false)} onClick={() => setMode("yaml")}>
+              </button>
+              <button type="button" className="plain-button" style={optionStyle(false)} onClick={() => setMode("yaml")}>
                 <div style={{ fontSize: 28, marginBottom: 4 }}>📋</div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>From Template</div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Import YAML</div>
-              </div>
+              </button>
             </div>
             <div style={{ display: "flex", gap: 12 }}>
-              <div
+              <button type="button" className="plain-button" disabled={patterns.length === 0}
                 style={{ ...optionStyle(false), opacity: patterns.length === 0 ? 0.4 : 1, pointerEvents: patterns.length === 0 ? "none" : "auto" }}
                 onClick={() => setMode("pattern")}
               >
                 <div style={{ fontSize: 28, marginBottom: 4 }}>🧩</div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>From Pattern</div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {patterns.length > 0 ? `${patterns.length} pattern${patterns.length > 1 ? "s" : ""} available` : "No patterns yet"}
+                  {patternAvailability(patterns.length)}
                 </div>
-              </div>
+              </button>
               {templates.length > 0 && (
-                <div
+                <button type="button" className="plain-button"
                   style={{ ...optionStyle(false), flex: 1 }}
                   onClick={() => setMode("template-picker" as any)}
                 >
                   <div style={{ fontSize: 28, marginBottom: 4 }}>🚀</div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>Quick Starts</div>
                   <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Guided deploy</div>
-                </div>
+                </button>
               )}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button type="button" onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Cancel
               </button>
             </div>
           </div>
-        ) : mode === "template-picker" ? (
+        ) : null}
+        {mode === "template-picker" ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <button onClick={() => setMode("choose")} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 16, padding: 0 }}>
+              <button type="button" onClick={() => setMode("choose")} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 16, padding: 0 }}>
                 ←
               </button>
               <span style={{ fontWeight: 600, fontSize: 14 }}>Choose a Template</span>
@@ -521,7 +691,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       const match = libraryImages.find((i) => i.name === t.bastion_image_name);
                       if (match) {
                         setBastionImageId(match.id);
-                        const verMatch = match.name.match(/(\d+\.\d+)/);
+                        const verMatch = /(?<!\d)(\d+\.\d+)/.exec(match.name);
                         if (verMatch) {
                           const iso = libraryIsos.find((i) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
                           if (iso) setBastionIsoId(iso.id);
@@ -536,11 +706,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       <svg width="32" height="32" viewBox="47 35 79 80" xmlns="http://www.w3.org/2000/svg" aria-label="OKD">
                         <path fill="#F22B29" d="M86.4,35.3c10.8,0,20.1,3.8,27.7,11.3c7.7,7.5,11.5,16.7,11.5,27.5c0,10.8-3.9,20.2-11.6,28.1 c-7.7,7.9-17,11.8-27.7,11.8c-10.5,0-19.6-3.9-27.3-11.8c-7.7-7.8-11.5-17.1-11.5-27.8c0-10.8,3.8-20,11.3-27.7 C66.4,39.1,75.6,35.3,86.4,35.3z M61.4,74.7c0,7,2.5,13.1,7.5,18.3c5,5.2,10.9,7.9,17.6,7.9c6.9,0,12.8-2.6,17.8-7.7 c5-5.1,7.5-11.4,7.5-18.6c0-7.2-2.5-13.4-7.5-18.7c-5-5.3-10.9-8-17.8-8c-6.5,0-12.4,2.6-17.5,8C64,61.2,61.4,67.4,61.4,74.7z"/>
                       </svg>
-                    ) : t.category === "openshift" ? (
+                    ) : null}
+                    {t.distribution !== "okd-scos" && t.category === "openshift" && (
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg" aria-label="OpenShift">
                         <path d="M21.665,11.812c-0.11-1.377-0.476-2.724-1.08-3.966L24,6.599c-0.268-0.556-0.585-1.092-0.943-1.595 l-1.601,0.583c-3.534-4.95-10.412-6.098-15.363-2.565c-3.144,2.244-4.883,5.972-4.582,9.823l1.604-0.584 c0.051,0.615,0.153,1.224,0.305,1.822L0,15.335c0.338,1.339,0.922,2.604,1.721,3.731l1.812-0.659 c3.526,4.95,10.398,6.106,15.349,2.58c1.555-1.107,2.796-2.6,3.599-4.332c0.802-1.715,1.144-3.61,0.991-5.497L21.665,11.812z M16.925,9.177c0.687,1.227,0.998,2.629,0.895,4.032l1.809-0.657c-0.063,0.856-0.282,1.694-0.646,2.471 c-1.67,3.584-5.928,5.138-9.514,3.472c-0.782-0.365-1.491-0.87-2.092-1.49l-1.813,0.66c-0.979-1.01-1.64-2.285-1.903-3.667 l3.426-1.242c-0.121-0.624-0.159-1.262-0.111-1.896H6.97l-1.604,0.583c0.294-3.932,3.72-6.881,7.652-6.587 c0.868,0.065,1.716,0.288,2.504,0.658V5.508c0.778,0.364,1.483,0.867,2.082,1.483l1.599-0.582c0.002,0.002,0.004,0.003,0.006,0.005 c0.441,0.454,0.82,0.965,1.128,1.518L16.925,9.177z"/>
                       </svg>
-                    ) : (
+                    )}
+                    {t.distribution !== "okd-scos" && t.category !== "openshift" && (
                       <img src="/images/troshka-logo-32.png" alt="" width={32} height={32} />
                     )}
                   </div>
@@ -551,15 +723,16 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               ))}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => setMode("choose")} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button type="button" onClick={() => setMode("choose")} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
               </button>
             </div>
           </div>
-        ) : (
+        ) : null}
+        {mode !== "choose" && mode !== "template-picker" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Name</label>
+              <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Project Name</>}>
               <input
                 style={inputStyle}
                 value={name}
@@ -567,90 +740,9 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                 placeholder="My Project"
                 autoFocus={mode === "blank"}
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
-              />
+              /></LabeledField>
             </div>
-            {mode === "yaml" && (
-              <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Template YAML</label>
-                <textarea
-                  value={yamlContent}
-                  onChange={(e) => { setYamlContent(e.target.value); setYamlFileName(""); }}
-                  placeholder={TEMPLATE_YAML_EXAMPLE}
-                  style={{
-                    width: "100%", height: 200, fontFamily: "monospace", fontSize: 12,
-                    padding: 12, borderRadius: 8, resize: "vertical",
-                    background: "var(--pf-t--global--background--color--secondary--default)",
-                    color: "var(--pf-t--global--text--color--regular)",
-                    border: "1px solid var(--pf-t--global--border--color--default)",
-                  }}
-                />
-                {yamlFileName && (
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4 }}>
-                    Loaded from {yamlFileName}
-                  </div>
-                )}
-                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
-                    Cloud-init credentials (applied when the template enables cloud-init and omits them)
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
-                      <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
-                        <option value="">None</option>
-                        {sshKeys.map((k) => (
-                          <option key={k.id} value={k.id}>{k.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                        Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
-                      </label>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <input
-                          style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }}
-                          value={commonPassword}
-                          onChange={(e) => setCommonPassword(e.target.value)}
-                          placeholder="Used for console login"
-                          onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
-                        />
-                        <button
-                          type="button"
-                          style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => { navigator.clipboard.writeText(commonPassword); }}
-                          title="Copy password"
-                        >Copy</button>
-                      </div>
-                      {!commonPassword.trim() && (
-                        <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
-                          No password set — cloud images may have no console login until you set one on the VM.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
-                  {userRole === "admin" && deployHosts.length > 0 && autoDeploy && (
-                    <div style={{ marginBottom: 8 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Host</label>
-                      <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
-                        <option value="">Auto (best host)</option>
-                        {deployHosts.map((h) => (
-                          <option key={h.id} value={h.id}>
-                            {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                    <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
-                    Deploy immediately after import
-                  </label>
-                </div>
-              </div>
-            )}
+            {renderYamlFields()}
             {mode === "template" && selectedTemplate && (() => {
               const _selTmpl = templates.find((t) => t.id === selectedTemplate);
               const _isOcp = _selTmpl?.category === "openshift";
@@ -677,12 +769,14 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       <div style={{ ...inputStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <span className="project-btn-spinner" style={{ width: 14, height: 14, aspectRatio: "1 / 1" }} />
                       </div>
-                    ) : customVersion ? (
+                    ) : null}
+                    {(!loadingVersions || !!_selTmpl?.versions?.length) && customVersion && (
                       <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
-                        const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
+                        const v = e.target.value.replaceAll(/[^\d.]/g, ""); setCustomVersionText(v);
                         if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
                       }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(pickDefaultOcpVersion(_versionChoices.map((v) => v.minor)) || "4.20"); } }} />
-                    ) : (
+                    )}
+                    {(!loadingVersions || !!_selTmpl?.versions?.length) && !customVersion && (
                       <select style={inputStyle} value={ocpVersion} onChange={(e) => {
                         if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
                         else {
@@ -702,11 +796,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   </div>
                 </div>}
                 {_isOcp && <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Install method</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Install method</>}>
                   <select aria-label="Install method" style={inputStyle} value={installVia} onChange={(e) => setInstallVia(e.target.value as "pod" | "bastion")}>
                     <option value="pod">Pod (default)</option>
                     <option value="bastion">Bastion</option>
-                  </select>
+                  </select></LabeledField>
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginTop: 6 }}>
                     {installVia === "bastion" ? "Installs from a dedicated bastion VM." : "Installs from an ephemeral ops pod (no bastion VM)."}
                   </div>
@@ -715,13 +809,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>{_isOcp && installVia === "bastion" ? "Bastion Configuration" : "Configuration"}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {_isOcp && installVia === "bastion" && <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
+                      <label htmlFor="bastion-kvm-image" style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
                       {libraryImages.length > 0 ? (
-                        <select style={inputStyle} value={bastionImageId} onChange={(e) => {
+                        <select id="bastion-kvm-image" style={inputStyle} value={bastionImageId} onChange={(e) => {
                           setBastionImageId(e.target.value);
                           const img = libraryImages.find((i) => i.id === e.target.value);
                           if (img) {
-                            const ver = img.name.match(/(\d+\.\d+)/);
+                            const ver = /(?<!\d)(\d+\.\d+)/.exec(img.name);
                             if (ver) {
                               const match = libraryIsos.find((i) => i.name.includes(ver[1]) && /dvd|binary/i.test(i.name));
                               if (match) setBastionIsoId(match.id);
@@ -741,13 +835,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       )}
                     </div>}
                     {_isOcp && installVia === "bastion" && <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux Binary DVD ISO (For local package repos) <span style={{ color: "#f87171" }}>*</span></label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Red Hat Enterprise Linux Binary DVD ISO (For local package repos) <span style={{ color: "#f87171" }}>*</span></>}>
                       <select style={inputStyle} value={bastionIsoId} onChange={(e) => setBastionIsoId(e.target.value)}>
                         <option value="">Select an ISO...</option>
                         {libraryIsos.map((img) => (
                           <option key={img.id} value={img.id}>{img.name}</option>
                         ))}
-                      </select>
+                      </select></LabeledField>
                     </div>}
                     {_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
@@ -761,35 +855,35 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       No Red Hat pull secret required (OKD/SCOS).
                     </div>}
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>SSH Key</>}>
                       <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
                         <option value="">None</option>
                         {sshKeys.map((k) => (
                           <option key={k.id} value={k.id}>{k.name}</option>
                         ))}
-                      </select>
+                      </select></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "#f87171" }}>*</span> <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <input style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }} value={commonPassword} onChange={(e) => setCommonPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Password <span style={{ color: "#f87171" }}>*</span> <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></>} controlWrapper={<div style={{ display: "flex", gap: 4 }} />} afterControl={
                         <button
                           type="button"
                           style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
                           onClick={() => { navigator.clipboard.writeText(commonPassword); }}
                           title="Copy password"
                         >Copy</button>
-                      </div>
+                      }>
+                        <input style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }} value={commonPassword} onChange={(e) => setCommonPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                      </LabeledField>
                     </div>
                     {_isOcp && installVia === "bastion" && <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                        <label style={{ fontSize: 12 }}>Bastion BMC IP</label>
+                        <label htmlFor="bastion-bmc-ip" style={{ fontSize: 12 }}>Bastion BMC IP</label>
                         <div style={{ position: "relative", display: "inline-block" }}>
-                          <span
+                          <button type="button" className="plain-button" aria-label="BMC network information"
                             style={{ cursor: "help", fontSize: 12, width: 16, height: 16, borderRadius: "50%", background: "rgba(59,130,246,0.2)", color: "#3b82f6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}
                             title="BMC Network Info"
                             onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; el.style.display = el.style.display === "none" ? "block" : "none"; }}
-                          >i</span>
+                          >i</button>
                           <div style={{
                             display: "none", position: "absolute", left: 24, top: -8, zIndex: 100,
                             background: "var(--pf-t--global--background--color--primary--default)",
@@ -814,15 +908,15 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       </div>
                       <input
                         style={{ ...inputStyle, borderColor: bmcIpError ? "#f87171" : undefined }}
-                        value={bastionBmcIp}
+                        id="bastion-bmc-ip" value={bastionBmcIp}
                         onChange={(e) => {
                           setBastionBmcIp(e.target.value);
                           const ip = e.target.value.trim();
                           if (!ip) { setBmcIpError("Required"); return; }
-                          const match = ip.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+                          const match = /^(\d+\.\d+\.\d+)\.(\d+)$/.exec(ip);
                           if (!match) { setBmcIpError("Invalid IP"); return; }
                           if (match[1] !== "192.168.100") { setBmcIpError("Must be in 192.168.100.0/24"); return; }
-                          const octet = parseInt(match[2]);
+                          const octet = Number.parseInt(match[2]);
                           if (octet < 2 || octet > 254 || octet <= 13) { setBmcIpError("Must be > .13 (reserved for BMC endpoints)"); return; }
                           setBmcIpError("");
                         }}
@@ -834,9 +928,9 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
                     {userRole === "admin" && deployHosts.length > 0 && (
                       <div style={{ marginBottom: 6 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 2 }} label={<>
                           Host{requiresKubevirt ? " (KubeVirt only)" : ""}
-                        </label>
+                        </>}>
                         <select style={{
                           padding: "4px 8px", borderRadius: 6, fontSize: 12, width: "100%",
                           border: "1px solid var(--pf-t--global--border--color--default)",
@@ -849,7 +943,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                               {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                             </option>
                           ))}
-                        </select>
+                        </select></LabeledField>
                       </div>
                     )}
                     {userRole === "admin" && requiresKubevirt && deployHosts.length === 0 && (
@@ -859,22 +953,22 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     )}
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
-                      Deploy immediately after creation
+                      {"Deploy immediately after creation"}
                     </label>
                     {_isOcp && <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={blockOutbound} onChange={(e) => setBlockOutbound(e.target.checked)} />
-                      Restrict outbound ports to install OCP only
+                      {"Restrict outbound ports to install OCP only"}
                     </label>}
                     {_isOcp && <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                         <input type="checkbox" checked={autoInstallOcp} onChange={(e) => setAutoInstallOcp(e.target.checked)} />
-                        Install OpenShift on deploy
+                        {"Install OpenShift on deploy"}
                       </label>
                       <div style={{ position: "relative", display: "inline-block" }}>
-                        <span
+                        <button type="button" className="plain-button" aria-label="OCP installer information"
                           style={{ cursor: "help", fontSize: 12, width: 16, height: 16, borderRadius: "50%", background: "rgba(59,130,246,0.2)", color: "#3b82f6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}
                           onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; el.style.display = el.style.display === "none" ? "block" : "none"; }}
-                        >i</span>
+                        >i</button>
                         <div style={{
                           display: "none", position: "absolute", left: 24, top: -8, zIndex: 100,
                           background: "var(--pf-t--global--background--color--primary--default)",
@@ -901,78 +995,22 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               </>
               );
             })()}
-            {mode === "pattern" && (
-              <div style={{ position: "relative" }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
-                <input
-                  style={{
-                    ...inputStyle,
-                    borderColor: selectedPattern ? "#4ade80" : inputStyle.border ? undefined : undefined,
-                    border: selectedPattern ? "1px solid #4ade80" : inputStyle.border,
-                  }}
-                  value={patternSearch}
-                  onChange={(e) => {
-                    setPatternSearch(e.target.value);
-                    setSelectedPattern(null);
-                    setPatternDropdownOpen(true);
-                  }}
-                  onFocus={() => setPatternDropdownOpen(true)}
-                  placeholder="Search patterns..."
-                  autoFocus
-                />
-                {patternDropdownOpen && (
-                  <div style={{
-                    position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
-                    maxHeight: 180, overflowY: "auto",
-                    background: "var(--pf-t--global--background--color--primary--default)",
-                    border: "1px solid var(--pf-t--global--border--color--default)",
-                    borderTop: "none", borderRadius: "0 0 6px 6px",
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-                  }}>
-                    {patterns
-                      .filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase()))
-                      .map((p) => (
-                        <div
-                          key={p.id}
-                          onClick={() => {
-                            setSelectedPattern(p.id);
-                            setPatternSearch(p.name);
-                            setPatternDropdownOpen(false);
-                            if (!name) setName(p.name);
-                          }}
-                          style={{
-                            padding: "8px 12px", cursor: "pointer",
-                            background: selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent",
-                          }}
-                          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.05)"; }}
-                          onMouseLeave={(e) => { (e.target as HTMLElement).style.background = selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent"; }}
-                        >
-                          <div style={{ fontWeight: 500, fontSize: 13 }}>{p.name}</div>
-                          {p.description && <div style={{ fontSize: 11, opacity: 0.6 }}>{p.description}</div>}
-                        </div>
-                      ))}
-                    {patterns.filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase())).length === 0 && (
-                      <div style={{ padding: "8px 12px", fontSize: 13, opacity: 0.5 }}>No patterns found</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+            {renderPatternFields()}
             {mode === "pattern" && selectedPattern && (
               <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
                 <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
                   <input type="checkbox" checked={autoDeploy} onChange={(e) => { setAutoDeploy(e.target.checked); if (!e.target.checked) setAutoStart(false); }} />
-                  Deploy immediately
+                  {"Deploy immediately"}
                 </label>
                 {autoDeploy && (
                   <>
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
                       <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-                      Start VMs after deploy
+                      {"Start VMs after deploy"}
                     </label>
                     {userRole === "admin" && deployHosts.length > 0 && (
                       <div style={{ marginTop: 4 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 2 }} label={<>Host</>}>
                         <select style={{
                           padding: "4px 8px", borderRadius: 6, fontSize: 12, width: "100%",
                           border: "1px solid var(--pf-t--global--border--color--default)",
@@ -985,7 +1023,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                               {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                             </option>
                           ))}
-                        </select>
+                        </select></LabeledField>
                       </div>
                     )}
                   </>
@@ -1003,7 +1041,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               </button>
               {mode === "yaml" && (
                 <label style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px", display: "inline-block", textAlign: "center" }}>
-                  Upload File
+                  {"Upload File"}
                   <input type="file" accept=".yaml,.yml" style={{ display: "none" }} onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
@@ -1025,27 +1063,15 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               )}
               <button type="button"
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
-                  const t = templates.find((x) => x.id === selectedTemplate);
-                  if (userRole === "admin" && t?.requires_kubevirt && deployHosts.length === 0) return true;
-                  if (t?.category !== "openshift") return false;
-                  const needsPull = t.requires_pull_secret !== false;
-                  return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
-                })()))}
+                disabled={createDisabled}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
-                  const t = templates.find((x) => x.id === selectedTemplate);
-                  if (userRole === "admin" && t?.requires_kubevirt && deployHosts.length === 0) return true;
-                  if (t?.category !== "openshift") return false;
-                  const needsPull = t.requires_pull_secret !== false;
-                  return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
-                })())) ? 0.4 : 1,
+                  opacity: createDisabled ? 0.4 : 1,
                 }}
               >
-                {creating ? "Creating..." : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create" : "Create Project"}
+                {creating ? "Creating..." : projectCreateLabel(mode)}
               </button>
             </div>
           </div>
@@ -1053,6 +1079,10 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
       </div>
     </ModalBackdrop>
   );
+}
+
+function NoProjectsIcon() {
+  return <EmptyStateIcon icon={CubesIcon} />;
 }
 
 export default function ProjectsPage() {
@@ -1085,18 +1115,25 @@ export default function ProjectsPage() {
   const meterProjectKey = projects
     .filter((p) => p.state !== "draft" && p.state !== "deleting")
     .map((p) => p.id)
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
     .join("|");
 
   const pollUntilSettled = () => {
-    const settled = ["draft", "active", "stopped", "error"];
     const poll = setInterval(() => {
       fetch(`${API_BASE}/api/v1/projects/`).then((r) => r.ok ? r.json() : []).then((data) => {
-        const list = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
+        const list = sortedProjects(data);
         setProjects(list);
-        if (list.every((p: Project) => settled.includes(p.state))) clearInterval(poll);
+        if (projectsSettled(list)) clearInterval(poll);
       }).catch(() => {});
     }, 2000);
+  };
+
+  const removeProject = (id: string) => {
+    setProjects((projects) => projects.filter((project) => project.id !== id));
+  };
+
+  const updateProjectState = (id: string, state: string) => {
+    setProjects((projects) => projects.map((project) => project.id === id ? { ...project, state } : project));
   };
 
   const fetchProjects = () => {
@@ -1106,7 +1143,7 @@ export default function ProjectsPage() {
         return r.json();
       })
       .then((data) => {
-        const sorted = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
+        const sorted = Array.isArray(data) ? data.toSorted((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
         setProjects(sorted);
         setLoading(false);
         // Clean up deleting IDs only when project disappears from the list
@@ -1131,7 +1168,7 @@ export default function ProjectsPage() {
       setUserId(d.id || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
-          setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false));
+          setAvailableHosts(hosts.filter(canAcceptProject));
         });
       }
     });
@@ -1185,13 +1222,22 @@ export default function ProjectsPage() {
     return () => clearInterval(id);
   }, [spendById]);
 
+          const q = search.toLowerCase();
+          const isAdmin = userRole === "admin";
+          const filteredProjects = projects.filter((p) => {
+            if (userId) {
+              const cat: OwnershipCategory = p.owner_id === userId ? "mine" : "others";
+              if (!matchesOwnershipFilter(cat, ownershipFilters, isAdmin)) return false;
+            }
+            if (!q) return true;
+            return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
+          });
+
   if (loading) {
     return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
   }
 
   if (projects.length === 0) {
-    const NoProjectsIcon = () => <EmptyStateIcon icon={CubesIcon} />;
-
     return (
       <PageSection>
         <EmptyState variant={EmptyStateVariant.full}>
@@ -1250,24 +1296,12 @@ export default function ProjectsPage() {
         </Toolbar>
       </PageSection>
       <PageSection>
-        {(() => {
-          const q = search.toLowerCase();
-          const isAdmin = userRole === "admin";
-          const filteredProjects = projects.filter((p) => {
-            if (userId) {
-              const cat: OwnershipCategory = p.owner_id === userId ? "mine" : "others";
-              if (!matchesOwnershipFilter(cat, ownershipFilters, isAdmin)) return false;
-            }
-            if (!q) return true;
-            return p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q);
-          });
-          return (<>
+
         {filteredProjects.length > 0 && (() => {
           const selected = filteredProjects.filter((p) => selectedProjects.has(p.id));
           const allSelected = selected.length === filteredProjects.length;
           const someSelected = selected.length > 0;
           const allActive = someSelected && selected.every((p) => p.state === "active");
-          const allStopped = someSelected && selected.every((p) => p.state === "stopped");
           const allStoppedOrError = someSelected && selected.every((p) => p.state === "stopped" || p.state === "error");
           const allDeployed = someSelected && selected.every((p) => ["active", "stopped", "error"].includes(p.state));
           const allDraft = someSelected && selected.every((p) => p.state === "draft");
@@ -1349,9 +1383,7 @@ export default function ProjectsPage() {
             <p style={{ opacity: 0.6 }}>
               {search
                 ? `No projects match "${search}"`
-                : projects.length > 0
-                  ? "No projects match the selected ownership filters."
-                  : "No projects."}
+                : "No projects match the selected ownership filters."}
             </p>
           )}
           {filteredProjects.map((p) => (
@@ -1415,7 +1447,7 @@ export default function ProjectsPage() {
                     </span>
                     {(() => {
                       const spend = spendById[p.id];
-                      if (!spend || spend.running_since == null) return null;
+                      if (spend?.running_since == null) return null;
                       const paused =
                         p.state === "stopped" ||
                         p.state === "stopping" ||
@@ -1427,10 +1459,10 @@ export default function ProjectsPage() {
                           ? 0
                           : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
                       const label =
-                        p.state === "error" ? "Paused" : paused ? "Stopped" : "Running";
+                        runningLabel(p.state, paused);
                       return (
                         <span
-                          title={`$${spend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"}`}
+                          title={`$${String(Number(spend.total_usd.toFixed(8)))}`}
                           style={{
                             fontSize: 11,
                             padding: "1px 6px",
@@ -1469,8 +1501,7 @@ export default function ProjectsPage() {
                     {p.state !== "deleting" && p.ocp_status && p.ocp_status !== "none" && (
                       <span style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
-                        background: p.ocp_status === "ready" ? "rgba(74,222,128,0.15)" : p.ocp_status === "error" ? "rgba(248,113,113,0.15)" : "rgba(251,191,36,0.15)",
-                        color: p.ocp_status === "ready" ? "#4ade80" : p.ocp_status === "error" ? "#f87171" : "#fbbf24",
+                        ...ocpBadgeStyle(p.ocp_status),
                       }}>
                         {p.ocp_status_detail || `OCP ${p.ocp_status}`}
                       </span>
@@ -1497,7 +1528,7 @@ export default function ProjectsPage() {
                     await fetch(`/api/v1/projects/${p.id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ tags: { ...(p.tags || {}), user_tags: [...cur, tag] } }),
+                      body: JSON.stringify({ tags: { ...(p.tags), user_tags: [...cur, tag] } }),
                     });
                     fetchProjects();
                   }}
@@ -1506,7 +1537,7 @@ export default function ProjectsPage() {
                     await fetch(`/api/v1/projects/${p.id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ tags: { ...(p.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
+                      body: JSON.stringify({ tags: { ...(p.tags), user_tags: cur.filter((t: string) => t !== tag) } }),
                     });
                     fetchProjects();
                   }}
@@ -1544,14 +1575,14 @@ export default function ProjectsPage() {
                         message: `Deploy project "${p.name}"? This will provision networking and start all VMs.`,
                         confirmLabel: "Deploy",
                       }))) return;
-                      setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                      updateProjectState(p.id, "deploying");
                       const params = new URLSearchParams();
                       if (deployPoolId) params.set("storage_pool_id", deployPoolId);
                       if (deployHostId) params.set("host_id", deployHostId);
                       const qs = params.toString() ? `?${params.toString()}` : "";
                       fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy${qs}`, { method: "POST" }).then(r => r.json()).then(d => {
                         if (d.status === "deploying") { pollUntilSettled(); }
-                        else { setAlertMsg(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
+                        else { setAlertMsg(d.detail || "Deploy failed"); updateProjectState(p.id, "draft"); }
                       });
                     }}>Deploy</Button>
                   </>
@@ -1559,14 +1590,14 @@ export default function ProjectsPage() {
                 {p.state === "active" && (
                   <Button variant="secondary" onClick={async () => {
                     if (!(await appConfirm({ message: `Stop project "${p.name}"? All VMs will be shut down.`, confirmLabel: "Stop" }))) return;
-                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
+                    updateProjectState(p.id, "stopping");
                     fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }).then(() => pollUntilSettled());
                   }}>Stop</Button>
                 )}
                 {(p.state === "stopped" || p.state === "error") && (
                   <Button variant="secondary" onClick={async () => {
                     if (!(await appConfirm({ message: `Start project "${p.name}"? All VMs will be started.`, confirmLabel: "Start" }))) return;
-                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
+                    updateProjectState(p.id, "starting");
                     fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }).then(() => pollUntilSettled());
                   }}>Start</Button>
                 )}
@@ -1582,8 +1613,6 @@ export default function ProjectsPage() {
             </Card>
           ))}
         </div>
-          </>);
-        })()}
       </PageSection>
       {showNewModal && (
         <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} setAlertMsg={setAlertMsg} />
@@ -1607,7 +1636,7 @@ export default function ProjectsPage() {
           onConfirm={() => {
             const p = republishTarget;
             setRepublishTarget(null);
-            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+            updateProjectState(p.id, "deploying");
             const hasOcp = !!(p.ocp_status && p.ocp_status !== "none");
             fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, {
               method: "POST",
@@ -1615,7 +1644,7 @@ export default function ProjectsPage() {
               body: hasOcp ? JSON.stringify({ ocp_mode: "rebuild" }) : undefined,
             }).then(r => r.json()).then(d => {
               if (d.status === "deploying") { pollUntilSettled(); }
-              else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
+              else { setAlertMsg(d.detail || "Republish failed"); updateProjectState(p.id, "error"); }
             });
           }}
         />
@@ -1635,13 +1664,13 @@ export default function ProjectsPage() {
               if (r.ok) {
                 r.json().then((data) => {
                   if (data.status === "deleting") {
-                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deleting" } : pr));
+                    updateProjectState(p.id, "deleting");
                   } else {
-                    setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                    removeProject(p.id);
                     localStorage.removeItem(`troshka-canvas-${p.id}`);
                   }
                 }).catch(() => {
-                  setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                  removeProject(p.id);
                 });
               }
               setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });

@@ -9,7 +9,7 @@ const RETRYABLE = new Set(["error", "timeout", "cancelled"]);
 const CANCELLABLE = new Set(["pending", "queued", "running"]);
 
 export function openWorkloadRunLogWindow(runId: string, titleHint?: string): void {
-  const winName = `workloadlog_${runId.replace(/-/g, "")}`;
+  const winName = `workloadlog_${runId.replaceAll("-", "")}`;
   const q = new URLSearchParams({ run: runId });
   if (titleHint) q.set("name", titleHint);
   window.open(
@@ -23,7 +23,7 @@ function shortWorkloadName(roleFqcn: string | null, catalogItem: string | null):
   const raw = (roleFqcn || catalogItem || "").trim();
   if (!raw) return "Workload Run";
   const parts = raw.split(".");
-  return parts[parts.length - 1] || raw;
+  return parts.at(-1) || raw;
 }
 
 function formatWhen(iso: string | null | undefined): string {
@@ -72,6 +72,28 @@ export type WorkloadRunLogPanelProps = {
   wsNudge?: unknown;
 };
 
+function emptyLogMessage(loading: boolean, status: string): string {
+  if (loading) return "Loading run log…";
+  return TERMINAL.has(status) ? "No saved log is available for this completed run." : "No log yet.";
+}
+
+function logPanelStyle(standalone: boolean): React.CSSProperties {
+  return {
+    background: "var(--pf-t--global--background--color--primary--default)",
+    borderRadius: standalone ? 0 : 12,
+    padding: 24,
+    width: standalone ? "100%" : "80vw",
+    maxWidth: standalone ? "none" : 900,
+    height: standalone ? "100vh" : undefined,
+    maxHeight: standalone ? "none" : "80vh",
+    boxShadow: standalone ? "none" : "0 8px 32px rgba(0,0,0,0.5)",
+    border: standalone ? "none" : "1px solid var(--pf-t--global--border--color--default)",
+    display: "flex",
+    flexDirection: "column",
+    boxSizing: "border-box",
+  };
+}
+
 export function WorkloadRunLogPanel({
   runId: initialRunId,
   standalone = false,
@@ -79,7 +101,7 @@ export function WorkloadRunLogPanel({
   onPopOut,
   onRunIdChange,
   wsNudge,
-}: WorkloadRunLogPanelProps) {
+}: Readonly<WorkloadRunLogPanelProps>) {
   const [runId, setRunId] = useState(initialRunId);
   const [log, setLog] = useState("");
   const [status, setStatus] = useState("");
@@ -233,20 +255,7 @@ export function WorkloadRunLogPanel({
 
   return (
     <div
-      style={{
-        background: "var(--pf-t--global--background--color--primary--default)",
-        borderRadius: standalone ? 0 : 12,
-        padding: 24,
-        width: standalone ? "100%" : "80vw",
-        maxWidth: standalone ? "none" : 900,
-        height: standalone ? "100vh" : undefined,
-        maxHeight: standalone ? "none" : "80vh",
-        boxShadow: standalone ? "none" : "0 8px 32px rgba(0,0,0,0.5)",
-        border: standalone ? "none" : "1px solid var(--pf-t--global--border--color--default)",
-        display: "flex",
-        flexDirection: "column",
-        boxSizing: "border-box",
-      }}
+      style={logPanelStyle(standalone)}
     >
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, gap: 12 }}>
         <div style={{ minWidth: 0 }}>
@@ -379,7 +388,7 @@ export function WorkloadRunLogPanel({
           minHeight: 0,
         }}
       >
-        {log || <span style={{ opacity: 0.5 }}>{loading ? "Loading run log…" : TERMINAL.has(status) ? "No saved log is available for this completed run." : "No log yet."}</span>}
+        {log || <span style={{ opacity: 0.5 }}>{emptyLogMessage(loading, status)}</span>}
       </pre>
     </div>
   );
@@ -397,7 +406,7 @@ export default function WorkloadRunDetailModal({
   onClose,
   onRunIdChange,
   wsNudge,
-}: ModalProps) {
+}: Readonly<ModalProps>) {
   const [activeRunId, setActiveRunId] = useState(runId);
   useEffect(() => setActiveRunId(runId), [runId]);
 

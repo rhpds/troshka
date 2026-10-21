@@ -15,7 +15,15 @@ import { useCanvasStore, type ClusterConfig } from "@/stores/canvasStore";
 // install log. Derived from the log (not the bastion health monitor, which does
 // not run for pod/bastionless installs), so the checklist progresses live from
 // "building ISO" all the way to "install complete".
-const INSTALL_STAGES: { label: string; re: RegExp }[] = [
+type InstallStage = { label: string; re: Pick<RegExp, "test"> };
+
+function operatorStagePresent(log: string): boolean {
+  return log.split("\n").some(line =>
+    !/waiting for the cluster to initialize/i.test(line) &&
+    /Working towards|Could not update|Cluster operators/i.test(line));
+}
+
+const INSTALL_STAGES: InstallStage[] = [
   { label: "Fetching release image", re: /Fetching image from OCP release|Extracting base ISO|internal constant for release image/i },
   { label: "Building agent ISO", re: /Fetching Agent Installer ISO|Generating.*ISO/i },
   { label: "Agent ISO ready", re: /Generated ISO|Agent ISO created/i },
@@ -26,7 +34,7 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
   { label: "Waiting for the cluster to initialize", re: /waiting for the cluster to initialize/i },
   // Initialization messages also contain CVO progress/operator details. Only
   // separate operator messages should advance past cluster initialization.
-  { label: "Cluster operators", re: /^(?![^\n]*waiting for the cluster to initialize)[^\n]*(?:Working towards|Could not update|Cluster operators)/im },
+  { label: "Cluster operators", re: { test: operatorStagePresent } },
   { label: "Install complete", re: /install complete|Cluster is installed|Install is complete|installation completed/i },
 ];
 
@@ -73,10 +81,10 @@ function deferredWorkersInLog(log: string): boolean {
 export function stagesFor(
   log: string,
   cluster?: ClusterConfig,
-): { label: string; re: RegExp }[] {
+): InstallStage[] {
   if (/\(recert\)/i.test(log)) return RECERT_STAGES;
   if (clusterHasDeferredWorkers(cluster) || deferredWorkersInLog(log)) {
-    const snoComplete = INSTALL_STAGES[INSTALL_STAGES.length - 1];
+    const snoComplete = INSTALL_STAGES.at(-1)!;
     return [...INSTALL_STAGES.slice(0, -1), snoComplete, ...WORKER_JOIN_STAGES];
   }
   return INSTALL_STAGES;
@@ -84,19 +92,29 @@ export function stagesFor(
 
 type StageState = "done" | "active" | "pending" | "failed";
 
+function hasTaggedMessage(log: string, message: string, strictTag = false): boolean {
+  return log.toLowerCase().split("\n").some(line => {
+    const end = line.indexOf(`] ${message}`);
+    if (end < 0) return false;
+    const start = line.lastIndexOf("[", end);
+    if (!strictTag) return start >= 0;
+    return start >= 0 && end > start + 1 && line.indexOf("]", start) === end;
+  });
+}
+
 /** True when the install log (or backend status) indicates a terminal failure. */
 export function installLogIndicatesFailure(
   log: string,
   clusterStatus?: string | null,
 ): boolean {
   if (clusterStatus === "error") return true;
-  if (/level=fatal|\[.*\] install failed|worker join timed out/i.test(log)) {
+  if (/level=fatal|worker join timed out/i.test(log) || hasTaggedMessage(log, "install failed")) {
     return true;
   }
   if (/error: cannot create pod/i.test(log)) return true;
-  if (/\[.*\] restart failed:/i.test(log)) return true;
+  if (hasTaggedMessage(log, "restart failed:")) return true;
   // Terminal worker-join failure (not a retry breadcrumb).
-  return /\[[^\]]+\] node-image create failed for /i.test(log) && !/retrying in \d+s/i.test(log);
+  return hasTaggedMessage(log, "node-image create failed for ", true) && !/retrying in \d+s/i.test(log);
 }
 
 /** True when openshift-install wait-for is looping without making install progress. */
@@ -120,7 +138,7 @@ function fmtElapsed(total: number): string {
 function parseOperators(log: string): { pending: string[] } {
   let pending: string[] = [];
   for (const line of log.split("\n")) {
-    const op = line.match(/Cluster operators? (.+?) (?:is|are) not available/i);
+    const op = /Cluster operators? (.+?) (?:is|are) not available/i.exec(line);
     if (op) {
       pending = op[1]
         .split(",")
@@ -130,9 +148,11 @@ function parseOperators(log: string): { pending: string[] } {
     // recert block breadcrumb: "waiting on operators: monitoring console" (or
     // "none"). Stop at "(" so a trailing "(console http=200)" from older logs
     // isn't wrongly split into fake operator names.
-    const rec = line.match(/waiting on operators:\s*(.+?)\s*(?:\(|$)/i);
-    if (rec) {
-      const v = rec[1].trim();
+    const marker = "waiting on operators:";
+    const markerIndex = line.toLowerCase().indexOf(marker);
+    if (markerIndex >= 0) {
+      const v = line.slice(markerIndex + marker.length).split("(", 1)[0].trim();
+      if (!v) continue;
       pending = v === "none" ? [] : v.split(/\s+/).filter(Boolean);
     }
   }
@@ -144,9 +164,9 @@ export function parseWorkerReady(log: string): { ready: number; expected: number
   let last: { ready: number; expected: number } | null = null;
   for (const line of log.split("\n")) {
     const m =
-      line.match(/deferred workers Ready:\s*(\d+)\/(\d+)/i) ||
-      line.match(/workers stabilizing:\s*(\d+)\/(\d+)/i) ||
-      line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
+      /deferred workers Ready:\s*(\d+)\/(\d+)/i.exec(line) ||
+      /workers stabilizing:\s*(\d+)\/(\d+)/i.exec(line) ||
+      /worker nodes Ready:\s*(\d+)\/(\d+)/i.exec(line);
     if (m) last = { ready: Number.parseInt(m[1], 10), expected: Number.parseInt(m[2], 10) };
   }
   return last;
@@ -223,7 +243,7 @@ export function openClusterInstallLogWindow(
   clusterKey: string,
   name: string,
 ): void {
-  const winName = `installlog_${projectId.replace(/-/g, "")}_${clusterKey.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const winName = `installlog_${projectId.replaceAll("-", "")}_${clusterKey.replaceAll(/[^a-zA-Z0-9]/g, "")}`;
   window.open(
     `/console/install-log?project=${encodeURIComponent(projectId)}&cluster=${encodeURIComponent(clusterKey)}&name=${encodeURIComponent(name)}`,
     winName,
@@ -242,6 +262,50 @@ export type ClusterInstallLogPanelProps = {
   onPopOut?: () => void;
 };
 
+type InstallLogResponse = {
+  output?: string;
+  cluster_status?: string;
+  deploy_started_at?: number;
+  install_started_at?: number;
+  ocp_install_elapsed?: number;
+  ocp_control_plane_usable_elapsed?: number;
+  kubeadmin_password?: string;
+  kubeconfig_available?: boolean;
+  vm_name?: string;
+};
+
+function installStatusBadge(flags: { cancelling: boolean; failed: boolean; stuck: boolean; installed: boolean; isRecert: boolean }) {
+  if (flags.cancelling) return { label: "Cancelling", fg: "#fbbf24", bg: "rgba(251,191,36,0.14)", bd: "rgba(251,191,36,0.45)" };
+  if (flags.failed) return { label: "Error", fg: "#f87171", bg: "rgba(248,113,113,0.14)", bd: "rgba(248,113,113,0.45)" };
+  if (flags.stuck) return { label: "Stuck", fg: "#fb923c", bg: "rgba(251,146,60,0.14)", bd: "rgba(251,146,60,0.45)" };
+  if (flags.installed) return { label: flags.isRecert ? "Re-Certified" : "Complete", fg: "#4ade80", bg: "rgba(74,222,128,0.14)", bd: "rgba(74,222,128,0.45)" };
+  if (flags.isRecert) return { label: "Re-Certing", fg: "#c084fc", bg: "rgba(192,132,252,0.14)", bd: "rgba(192,132,252,0.45)" };
+  return { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
+}
+
+function elapsedSince(base: number | null, now: number): number | null {
+  return base == null ? null : Math.max(0, Math.floor(now / 1000 - base));
+}
+
+const STAGE_COLORS: Record<StageState, string> = {
+  done: "var(--pf-t--global--text--color--regular)",
+  failed: "#f87171",
+  active: "#22d3ee",
+  pending: "var(--pf-t--global--text--color--subtle)",
+};
+
+function StageIcon({ state }: Readonly<{ state: StageState }>) {
+  if (state === "done") return <span style={{ color: "#4ade80" }}>✓</span>;
+  if (state === "failed") return <span style={{ color: "#f87171" }}>✗</span>;
+  if (state === "active") return <span className="project-btn-spinner" style={{ width: 10, height: 10, display: "inline-block", verticalAlign: "middle" }} />;
+  return <span style={{ color: "var(--troshka-text-dim, #64748b)" }}>○</span>;
+}
+
+function installLoadingText(restarting: boolean, loading: boolean): string {
+  if (restarting) return "Restarting install…";
+  return loading ? "Loading install log…" : "No install log yet.";
+}
+
 export function ClusterInstallLogPanel({
   projectId,
   clusterKey,
@@ -251,7 +315,7 @@ export function ClusterInstallLogPanel({
   standalone = false,
   onClose,
   onPopOut,
-}: ClusterInstallLogPanelProps) {
+}: Readonly<ClusterInstallLogPanelProps>) {
   const [resolvedCluster, setResolvedCluster] = useState<ClusterConfig | undefined>(clusterProp);
   const [resolvedNodes, setResolvedNodes] = useState(nodesProp);
   const [resolvedProjectName, setResolvedProjectName] = useState("");
@@ -281,7 +345,7 @@ export function ClusterInstallLogPanel({
   } | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [, setTick] = useState(0);
+  const [now, setNow] = useState(Date.now);
   const preRef = useRef<HTMLPreElement>(null);
   const restartGuardRef = useRef<number | null>(null);
   const cancellingRef = useRef(false);
@@ -339,70 +403,74 @@ export function ClusterInstallLogPanel({
     setControlPlaneUsableElapsed(null);
     setClusterStatus(null);
     setLoading(true);
+    const shouldApplyLog = (data: InstallLogResponse): boolean => {
+    // Freeze the log while cancel is in flight — the ops pod may still append
+    // for up to ~20s until the worker tears it down.
+    if (cancellingRef.current) {
+      if (data.cluster_status === "error") {
+        cancellingRef.current = false;
+        setCancelling(false);
+        setClusterStatus("error");
+      }
+      return false;
+    }
+    // Ignore stale logs briefly after restart — the dying ops pod can still
+    // serve the old install.log until the worker recycles it.
+    if (restartGuardRef.current) {
+      const out = data.output || "";
+      const freshAttempt = /starting agent-based install|=== install restart/i.test(
+        out,
+      );
+      if (
+        out &&
+        !freshAttempt &&
+        Date.now() - restartGuardRef.current < 120000
+      ) {
+        return false;
+      }
+      if (freshAttempt) restartGuardRef.current = null;
+    }
+      return true;
+    };
+    const applyLog = (data: InstallLogResponse) => {
+    setLog(data.output || "");
+    setDeployStartedAt(
+      typeof data.deploy_started_at === "number" ? data.deploy_started_at : null,
+    );
+    setInstallStartedAt(
+      typeof data.install_started_at === "number" ? data.install_started_at : null,
+    );
+    setInstallElapsed(
+      typeof data.ocp_install_elapsed === "number" ? data.ocp_install_elapsed : null,
+    );
+    setControlPlaneUsableElapsed(
+      typeof data.ocp_control_plane_usable_elapsed === "number"
+        ? data.ocp_control_plane_usable_elapsed
+        : null,
+    );
+    if (typeof data.cluster_status === "string") {
+      setClusterStatus(data.cluster_status);
+      if (data.cluster_status === "error") {
+        cancellingRef.current = false;
+        setCancelling(false);
+      }
+    }
+    if (data.kubeadmin_password || data.kubeconfig_available) {
+      setAccess({
+        kubeadmin_password: data.kubeadmin_password || "",
+        kubeconfig_available: !!data.kubeconfig_available,
+        vm_name: data.vm_name || "",
+      });
+    }
+    };
     const fetchLog = async () => {
       try {
-        const r = await fetch(
+        const response = await fetch(
           `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(clusterKey)}`,
         );
-        if (!r.ok || cancelled) return;
-        const data = await r.json();
-        if (!cancelled) {
-          // Freeze the log while cancel is in flight — the ops pod may still append
-          // for up to ~20s until the worker tears it down.
-          if (cancellingRef.current) {
-            if (data.cluster_status === "error") {
-              cancellingRef.current = false;
-              setCancelling(false);
-              setClusterStatus("error");
-            }
-            return;
-          }
-          // Ignore stale logs briefly after restart — the dying ops pod can still
-          // serve the old install.log until the worker recycles it.
-          if (restartGuardRef.current) {
-            const out = data.output || "";
-            const freshAttempt = /starting agent-based install|=== install restart/i.test(
-              out,
-            );
-            if (
-              out &&
-              !freshAttempt &&
-              Date.now() - restartGuardRef.current < 120000
-            ) {
-              return;
-            }
-            if (freshAttempt) restartGuardRef.current = null;
-          }
-          setLog(data.output || "");
-          setDeployStartedAt(
-            typeof data.deploy_started_at === "number" ? data.deploy_started_at : null,
-          );
-          setInstallStartedAt(
-            typeof data.install_started_at === "number" ? data.install_started_at : null,
-          );
-          setInstallElapsed(
-            typeof data.ocp_install_elapsed === "number" ? data.ocp_install_elapsed : null,
-          );
-          setControlPlaneUsableElapsed(
-            typeof data.ocp_control_plane_usable_elapsed === "number"
-              ? data.ocp_control_plane_usable_elapsed
-              : null,
-          );
-          if (typeof data.cluster_status === "string") {
-            setClusterStatus(data.cluster_status);
-            if (data.cluster_status === "error") {
-              cancellingRef.current = false;
-              setCancelling(false);
-            }
-          }
-          if (data.kubeadmin_password || data.kubeconfig_available) {
-            setAccess({
-              kubeadmin_password: data.kubeadmin_password || "",
-              kubeconfig_available: !!data.kubeconfig_available,
-              vm_name: data.vm_name || "",
-            });
-          }
-        }
+        if (!response.ok || cancelled) return;
+        const data: InstallLogResponse = await response.json();
+        if (!cancelled && shouldApplyLog(data)) applyLog(data);
       } catch {
         /* transient — keep the last log */
       } finally {
@@ -419,7 +487,7 @@ export function ClusterInstallLogPanel({
 
   // Tick every second so the elapsed timer advances live between log polls.
   useEffect(() => {
-    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -437,7 +505,7 @@ export function ClusterInstallLogPanel({
   const stages = deriveStages(log, cluster, failed || cancelling, clusterStatus);
   const ops = parseOperators(log);
   const workerReady = parseWorkerReady(log);
-  const installed = stages[stages.length - 1]?.state === "done";
+  const installed = stages.at(-1)?.state === "done";
   // Terminal = complete, failed, or cancelling: stop advancing the timer.
   const terminal = installed || failed || cancelling;
 
@@ -446,26 +514,11 @@ export function ClusterInstallLogPanel({
   // Pattern deploys recert (never reinstall) — surface that distinctly (violet)
   // so it's not mistaken for a fresh install.
   const isRecert = /\(recert\)/i.test(log);
-  const statusBadge = cancelling
-    ? { label: "Cancelling", fg: "#fbbf24", bg: "rgba(251,191,36,0.14)", bd: "rgba(251,191,36,0.45)" }
-    : failed
-    ? { label: "Error", fg: "#f87171", bg: "rgba(248,113,113,0.14)", bd: "rgba(248,113,113,0.45)" }
-    : stuck
-      ? { label: "Stuck", fg: "#fb923c", bg: "rgba(251,146,60,0.14)", bd: "rgba(251,146,60,0.45)" }
-    : installed
-      ? { label: isRecert ? "Re-Certified" : "Complete", fg: "#4ade80", bg: "rgba(74,222,128,0.14)", bd: "rgba(74,222,128,0.45)" }
-      : isRecert
-        ? { label: "Re-Certing", fg: "#c084fc", bg: "rgba(192,132,252,0.14)", bd: "rgba(192,132,252,0.45)" }
-        : { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
+  const statusBadge = installStatusBadge({ cancelling, failed, stuck, installed, isRecert });
 
   // Prefer per-attempt install_started_at (reset on restart) over project deploy start.
   const timerBase = installStartedAt ?? deployStartedAt;
-  const elapsedSecs =
-    installElapsed != null
-      ? installElapsed
-      : timerBase != null
-        ? Math.max(0, Math.floor(Date.now() / 1000 - timerBase))
-        : null;
+  const elapsedSecs = installElapsed ?? elapsedSince(timerBase, now);
   const elapsed = elapsedSecs == null ? null : fmtElapsed(elapsedSecs);
 
   // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
@@ -734,10 +787,7 @@ export function ClusterInstallLogPanel({
           </div>
         </div>
         {controlPlaneUsableElapsed != null &&
-          new RegExp(
-            `\\[${clusterKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] control-plane-usable`,
-            "i",
-          ).test(log) && (
+          log.toLowerCase().includes(`[${clusterKey}] control-plane-usable`.toLowerCase()) && (
           <div
             style={{
               fontSize: 11,
@@ -773,29 +823,11 @@ export function ClusterInstallLogPanel({
                 <React.Fragment key={s.label}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ width: 14, flexShrink: 0, textAlign: "center" }}>
-                    {s.state === "done" ? (
-                      <span style={{ color: "#4ade80" }}>✓</span>
-                    ) : s.state === "failed" ? (
-                      <span style={{ color: "#f87171" }}>✗</span>
-                    ) : s.state === "active" ? (
-                      <span
-                        className="project-btn-spinner"
-                        style={{ width: 10, height: 10, display: "inline-block", verticalAlign: "middle" }}
-                      />
-                    ) : (
-                      <span style={{ color: "var(--troshka-text-dim, #64748b)" }}>○</span>
-                    )}
+                    <StageIcon state={s.state} />
                   </span>
                   <span
                     style={{
-                      color:
-                        s.state === "done"
-                          ? "var(--pf-t--global--text--color--regular)"
-                          : s.state === "failed"
-                            ? "#f87171"
-                          : s.state === "active"
-                            ? "#22d3ee"
-                            : "var(--pf-t--global--text--color--subtle)",
+                      color: STAGE_COLORS[s.state],
                     }}
                   >
                     {workerStageLabel(s.label, s.state)}
@@ -908,11 +940,7 @@ export function ClusterInstallLogPanel({
                   className="project-btn-spinner"
                   style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }}
                 />
-                {restarting
-                  ? "Restarting install…"
-                  : loading
-                    ? "Loading install log…"
-                    : "No install log yet."}
+                {installLoadingText(restarting, loading)}
               </span>
             )}
           </pre>

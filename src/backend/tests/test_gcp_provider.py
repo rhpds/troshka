@@ -267,8 +267,9 @@ class TestPollOperation:
             err = MagicMock(message="quota exceeded")
             result = MagicMock(status=done)
             result.error.errors = [err]
+            exception_mock = MagicMock(return_value=result)
             with pytest.raises(RuntimeError, match="quota exceeded"):
-                gcp_mod._poll_operation_until_done(MagicMock(return_value=result))
+                gcp_mod._poll_operation_until_done(exception_mock)
 
     def test_polls_until_done(self):
         modules, mock_cv1 = _mock_compute_modules()
@@ -426,8 +427,9 @@ class TestGCPDriverProvision:
 
         from app.services.providers.gcp import GCPDriver
 
+        exception_driver = GCPDriver()
         with pytest.raises(ValueError, match="No boot image"):
-            GCPDriver().provision_host(provider, "hid", "n2-highmem-8", 200)
+            exception_driver.provision_host(provider, "hid", "n2-highmem-8", 200)
 
     @patch("app.services.providers.gcp._generate_ssh_keypair")
     @patch("app.services.providers.gcp._wait_for_operation")
@@ -462,8 +464,11 @@ class TestGCPDriverProvision:
         modules, _ = _mock_compute_modules()
         with patch("app.services.providers.gcp.time.sleep"):
             with patch.dict("sys.modules", modules):
+                exception_driver = GCPDriver()
                 with pytest.raises(RuntimeError, match="did not reach RUNNING"):
-                    GCPDriver().provision_host(provider, "hid", "n2-highmem-8", 200)
+                    exception_driver.provision_host(
+                        provider, "hid", "n2-highmem-8", 200
+                    )
 
     @patch("app.services.providers.gcp._generate_ssh_keypair")
     @patch("app.services.providers.gcp._wait_for_operation")
@@ -573,8 +578,10 @@ class TestGCPDriverTerminate:
 
         from app.services.providers.gcp import GCPDriver
 
+        exception_driver = GCPDriver()
+        exception_provider = _make_provider()
         with pytest.raises(Exception, match="Permission denied"):
-            GCPDriver().terminate_host(_make_provider(), "troshka-abc")
+            exception_driver.terminate_host(exception_provider, "troshka-abc")
 
 
 class TestGCPDriverHostStatus:
@@ -656,8 +663,10 @@ class TestGCPDriverHostStatus:
 
         from app.services.providers.gcp import GCPDriver
 
+        exception_driver = GCPDriver()
+        exception_provider = _make_provider()
         with pytest.raises(Exception, match="Permission denied"):
-            GCPDriver().get_host_status(_make_provider(), "abc")
+            exception_driver.get_host_status(exception_provider, "abc")
 
 
 class TestGCPDriverPowerstate:
@@ -759,9 +768,11 @@ class TestGCPDriverResize:
         from app.services.providers.gcp import GCPDriver
 
         with patch("app.services.providers.gcp.time.sleep"):
+            exception_driver = GCPDriver()
+            exception_provider = _make_provider()
             with pytest.raises(RuntimeError, match="did not stop"):
-                GCPDriver().resize_host(
-                    _make_provider(), "troshka-abc", "n2-highmem-64"
+                exception_driver.resize_host(
+                    exception_provider, "troshka-abc", "n2-highmem-64"
                 )
 
 
@@ -815,8 +826,13 @@ class TestGCPDriverExtendStorage:
 
         from app.services.providers.gcp import GCPDriver
 
+        exception_driver = GCPDriver()
+        exception_provider = _make_provider()
+        exception_mock = MagicMock()
         with pytest.raises(ValueError, match="Cannot extend"):
-            GCPDriver().extend_host_storage(_make_provider(), host, MagicMock())
+            exception_driver.extend_host_storage(
+                exception_provider, host, exception_mock
+            )
 
     @patch("app.services.providers.gcp._wait_for_operation")
     @patch("app.services.providers.gcp._get_disks_client")
@@ -983,8 +999,10 @@ class TestGCPDriverEIP:
 
         from app.services.providers.gcp import GCPDriver
 
+        exception_driver = GCPDriver()
+        exception_provider = _make_provider()
         with pytest.raises(Exception, match="Permission denied"):
-            GCPDriver().release_eip(_make_provider(), "troshka-eip-abc")
+            exception_driver.release_eip(exception_provider, "troshka-eip-abc")
 
 
 class TestGCPDriverConsole:

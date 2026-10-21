@@ -5,6 +5,11 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { useCanvasStore, stableNodeData, stableStringify, type StorageNodeData } from "@/stores/canvasStore";
 import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 
+function storageSourceLabel(source: unknown, isIso: boolean): string {
+  if (source === "library" || source === "pattern" || source === "snapshot") return ` · ${source}`;
+  return isIso ? "" : " · blank";
+}
+
 function StorageNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as StorageNodeData;
   const projectState = useCanvasStore((s) => s.projectState);
@@ -17,8 +22,10 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
     return stableStringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
   }, [id, d, deployedNodeData]);
 
-  const formatLabel =
-    d.format === "iso" ? "iso" : d.format === "raw" ? "raw" : "qcow2";
+  const isIso = d.format === "iso";
+  const formatLabel = ["iso", "raw"].includes(d.format) ? d.format : "qcow2";
+  const libraryItemName = typeof d.libraryItemName === "string" ? d.libraryItemName : "";
+  const showLibraryName = d.source === "library" && libraryItemName && !isIso;
 
   return (
     <div
@@ -38,24 +45,18 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
       <div>
         <div className="storage-node-name">{d.name}</div>
         <div className="storage-node-size">
-          {d.format === "iso"
-            ? (d as unknown as Record<string, any>).libraryItemName as string || ""
-            : `${d.size} GB`
-          }
+          {isIso ? libraryItemName : `${d.size} GB`}
         </div>
-        {(() => {
-          const extra = d as unknown as Record<string, any>;
-          return extra.source === "library" && extra.libraryItemName && d.format !== "iso" ? (
+        {showLibraryName && (
             <div style={{ fontSize: 10, color: "var(--troshka-green)", marginTop: 1 }}>
-              {String(extra.libraryItemName)}
+              {libraryItemName}
             </div>
-          ) : null;
-        })()}
+          )}
         <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 1 }}>
           {d.format === "iso" ? "ISO" : formatLabel.toUpperCase()}
-          {(d as unknown as Record<string, any>).source === "library" ? " · library" : (d as unknown as Record<string, any>).source === "pattern" ? " · pattern" : (d as unknown as Record<string, any>).source === "snapshot" ? " · snapshot" : d.format !== "iso" ? " · blank" : ""}
+          {storageSourceLabel(d.source, isIso)}
         </div>
-        {d.format === "iso" && !(d as unknown as Record<string, any>).libraryItemName && (
+        {isIso && !libraryItemName && (
           <div style={{ fontSize: 10, color: "var(--troshka-yellow)", marginTop: 2 }}>
             ⚠ Select ISO from library
           </div>

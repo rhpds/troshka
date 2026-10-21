@@ -1,3 +1,5 @@
+import { trimEdgeCharacter } from "./textBoundaries";
+
 export const WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5";
 
 export interface WettyAttrs {
@@ -26,10 +28,10 @@ export function parseWettyCommand(
     sshUser: "",
     sshPass: "",
   };
-  const args = Array.isArray(command) ? command : command ? [command] : [];
+  const args = typeof command === "string" ? [command] : command ?? [];
   for (const arg of args) {
     if (arg.startsWith("--base=")) {
-      attrs.basePath = arg.slice(7).replace(/^\/+|\/+$/g, "");
+      attrs.basePath = trimEdgeCharacter(arg.slice(7), "/");
     } else if (arg.startsWith("--port=")) {
       attrs.port = Number.parseInt(arg.slice(6), 10) || attrs.port;
     } else if (arg.startsWith("--ssh-host=")) {
@@ -46,7 +48,7 @@ export function parseWettyCommand(
 }
 
 export function buildWettyCommand(attrs: WettyAttrs): string[] {
-  const base = (attrs.basePath || "wetty").replace(/^\/+|\/+$/g, "");
+  const base = trimEdgeCharacter(attrs.basePath || "wetty", "/");
   return [
     `--base=/${base}/`,
     `--port=${attrs.port}`,

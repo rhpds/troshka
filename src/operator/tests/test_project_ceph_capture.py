@@ -222,12 +222,13 @@ class TestSnapshotAndExportCephDevice:
         core_api = MagicMock()
         batch_api = MagicMock()
 
-        with pytest.raises(ApiException):
-            asyncio.run(
-                _snapshot_and_export_ceph_device(
+        exception_operation = _snapshot_and_export_ceph_device(
                     _osd_device(), {"bucket": "b"}, custom_api, core_api, batch_api,
                     "ns1", "proj1",
                 )
+        with pytest.raises(ApiException):
+            asyncio.run(
+                exception_operation
             )
 
 
@@ -436,12 +437,13 @@ class TestCaptureCephDevicesConcurrency:
             patch("handlers.project._cleanup_capture_resources", cleanup_mock),
             patch("handlers.project._read_export_sizes"),
         ):
-            with pytest.raises(RuntimeError):
-                asyncio.run(
-                    _capture_ceph_devices(
+            exception_operation = _capture_ceph_devices(
                         devices, {}, MagicMock(), MagicMock(), MagicMock(),
                         "ns1", "proj1",
                     )
+            with pytest.raises(RuntimeError):
+                asyncio.run(
+                    exception_operation
                 )
 
         # Cleanup must have run over all 3 created job descriptors (the two

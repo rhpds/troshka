@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import { useEffect, useState } from "react";
 import {
   PageSection,
@@ -118,7 +119,6 @@ export default function DnsProvidersPage() {
   };
 
   return (
-    <>
       <PageSection>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <Title headingLevel="h1">DNS Providers</Title>
@@ -134,47 +134,47 @@ export default function DnsProvidersPage() {
             <CardBody>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 500 }}>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                  <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Production BIND" />
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                  <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Production BIND" /></LabeledField>
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Type</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Type</>}>
                   <select style={inputStyle} value={newType} onChange={(e) => setNewType(e.target.value)}>
                     <option value="nsupdate">BIND (nsupdate)</option>
                     <option value="route53">AWS Route53</option>
-                  </select>
+                  </select></LabeledField>
                 </div>
 
                 {newType === "nsupdate" && (
                   <>
                     <div style={{ display: "flex", gap: 8 }}>
                       <div style={{ flex: 3 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Server</label>
-                        <input style={inputStyle} value={nsServer} onChange={(e) => setNsServer(e.target.value)} placeholder="10.0.0.53" />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Server</>}>
+                        <input style={inputStyle} value={nsServer} onChange={(e) => setNsServer(e.target.value)} placeholder="10.0.0.53" /></LabeledField>
                       </div>
                       <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Port</label>
-                        <input style={inputStyle} type="number" value={nsPort} onChange={(e) => setNsPort(parseInt(e.target.value) || 53)} />
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Port</>}>
+                        <input style={inputStyle} type="number" value={nsPort} onChange={(e) => setNsPort(Number.parseInt(e.target.value) || 53)} /></LabeledField>
                       </div>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>TSIG Key Name</label>
-                      <input style={inputStyle} value={nsKeyName} onChange={(e) => setNsKeyName(e.target.value)} placeholder="update-key" />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>TSIG Key Name</>}>
+                      <input style={inputStyle} value={nsKeyName} onChange={(e) => setNsKeyName(e.target.value)} placeholder="update-key" /></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>TSIG Key Secret</label>
-                      <input style={inputStyle} type="password" value={nsKeySecret} onChange={(e) => setNsKeySecret(e.target.value)} />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>TSIG Key Secret</>}>
+                      <input style={inputStyle} type="password" value={nsKeySecret} onChange={(e) => setNsKeySecret(e.target.value)} /></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Algorithm</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Algorithm</>}>
                       <select style={inputStyle} value={nsAlgorithm} onChange={(e) => setNsAlgorithm(e.target.value)}>
                         <option value="hmac-sha256">HMAC-SHA256</option>
                         <option value="hmac-md5">HMAC-MD5</option>
-                      </select>
+                      </select></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Zone</label>
-                      <input style={inputStyle} value={nsZone} onChange={(e) => setNsZone(e.target.value)} placeholder="dynamic.example.com" />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Default Zone</>}>
+                      <input style={inputStyle} value={nsZone} onChange={(e) => setNsZone(e.target.value)} placeholder="dynamic.example.com" /></LabeledField>
                     </div>
                   </>
                 )}
@@ -182,16 +182,16 @@ export default function DnsProvidersPage() {
                 {newType === "route53" && (
                   <>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID</label>
-                      <input style={inputStyle} value={r53AccessKey} onChange={(e) => setR53AccessKey(e.target.value)} />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Access Key ID</>}>
+                      <input style={inputStyle} value={r53AccessKey} onChange={(e) => setR53AccessKey(e.target.value)} /></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key</label>
-                      <input style={inputStyle} type="password" value={r53SecretKey} onChange={(e) => setR53SecretKey(e.target.value)} />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Secret Access Key</>}>
+                      <input style={inputStyle} type="password" value={r53SecretKey} onChange={(e) => setR53SecretKey(e.target.value)} /></LabeledField>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Hosted Zone ID</label>
-                      <input style={inputStyle} value={r53ZoneId} onChange={(e) => setR53ZoneId(e.target.value)} placeholder="Z1234567890" />
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Hosted Zone ID</>}>
+                      <input style={inputStyle} value={r53ZoneId} onChange={(e) => setR53ZoneId(e.target.value)} placeholder="Z1234567890" /></LabeledField>
                     </div>
                   </>
                 )}
@@ -229,6 +229,5 @@ export default function DnsProvidersPage() {
           ))}
         </div>
       </PageSection>
-    </>
   );
 }

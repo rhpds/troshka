@@ -8,6 +8,15 @@ import {
 } from "@/lib/showroomAppProxy";
 
 describe("showroomAppProxy", () => {
+  it.each([
+    ["unknown.example.com", "unknown-77cffb"],
+    ["a".repeat(100) + ".example.com", "aaaaaaaa-d9d2a4"],
+    ["😀.example.com", "81a77e"],
+    ["naïve.example.com", "na-ve-291396"],
+  ])("preserves existing route hash for %s", (host, expected) => {
+    expect(appProxyRouteCode(host)).toBe(expected);
+  });
+
   it("matches backend route codes for console/oauth hosts", () => {
     expect(appProxyRouteCode("console-openshift-console.apps.ocp.local")).toBe("con-ocp");
     expect(appProxyRouteCode("oauth-openshift.apps.ocp.local")).toBe("oauth-ocp");

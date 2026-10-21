@@ -8,7 +8,7 @@ interface TagEditorProps {
   onRemove: (tag: string) => void;
 }
 
-export default function TagEditor({ tags, onAdd, onRemove }: TagEditorProps) {
+export default function TagEditor({ tags, onAdd, onRemove }: Readonly<TagEditorProps>) {
   const [adding, setAdding] = useState(false);
   const [value, setValue] = useState("");
 
@@ -33,11 +33,12 @@ export default function TagEditor({ tags, onAdd, onRemove }: TagEditorProps) {
           }}
         >
           {tag}
-          <span
+          <button type="button"
             onClick={(e) => { e.stopPropagation(); onRemove(tag); }}
-            style={{ cursor: "pointer", opacity: 0.6, fontSize: 10, lineHeight: 1 }}
+            style={{ cursor: "pointer", opacity: 0.6, fontSize: 10, lineHeight: 1, border: 0, padding: 0, background: "transparent", color: "inherit" }}
             title="Remove tag"
-          >x</span>
+            aria-label={`Remove tag ${tag}`}
+          >x</button>
         </span>
       ))}
       {adding ? (
@@ -60,15 +61,15 @@ export default function TagEditor({ tags, onAdd, onRemove }: TagEditorProps) {
           }}
         />
       ) : (
-        <span
+        <button type="button"
           onClick={(e) => { e.stopPropagation(); setAdding(true); }}
           style={{
-            fontSize: 11, padding: "1px 6px", borderRadius: 4, cursor: "pointer",
+            fontSize: 11, padding: "1px 6px", borderRadius: 4, cursor: "pointer", background: "transparent",
             border: "1px dashed var(--pf-t--global--border--color--default)",
             color: "var(--pf-t--global--text--color--subtle)", opacity: 0.6,
           }}
           title="Add tag"
-        >+ tag</span>
+        >+ tag</button>
       )}
     </div>
   );

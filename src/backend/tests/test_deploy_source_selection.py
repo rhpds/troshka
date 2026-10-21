@@ -197,10 +197,11 @@ def test_preflight_raises_on_missing_central_library_disk():
             }
         ]
     }
+    exception_mock = MagicMock()
     with pytest.raises(deploy_service.DeployError) as ei:
         deploy_service._preflight_verify_library_disks(
             topology,
-            MagicMock(),
+            exception_mock,
             "troshka-images",
             {},
             central_client,

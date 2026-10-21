@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import WorkloadRunsModal from "@/components/canvas/WorkloadRunsModal";
 import { useCanvasStore } from "@/stores/canvasStore";
 
@@ -32,7 +32,7 @@ describe("WorkloadRunsModal", () => {
   it("lists runs and opens one on View", async () => {
     const onOpenRun = vi.fn();
     render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={onOpenRun} />);
-    await waitFor(() => expect(screen.getByText("some.role")).toBeInTheDocument());
+    expect(await screen.findByText("some.role")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /view/i }));
     expect(onOpenRun).toHaveBeenCalledWith("run-1");
   });
@@ -70,7 +70,7 @@ describe("WorkloadRunsModal", () => {
     );
 
     render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={() => {}} />);
-    await waitFor(() => expect(screen.getByText("prod")).toBeInTheDocument());
+    expect(await screen.findByText("prod")).toBeInTheDocument();
   });
 
   it("renders target label for vms-mode runs", async () => {
@@ -104,7 +104,7 @@ describe("WorkloadRunsModal", () => {
     );
 
     render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={() => {}} />);
-    await waitFor(() => expect(screen.getByText("web1, db1")).toBeInTheDocument());
+    expect(await screen.findByText("web1, db1")).toBeInTheDocument();
   });
 
   it("shows the template workload chain from the canvas store", async () => {
@@ -131,9 +131,7 @@ describe("WorkloadRunsModal", () => {
     );
 
     render(<WorkloadRunsModal projectId="p1" onClose={() => {}} onOpenRun={() => {}} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("workload-chain-section")).toBeInTheDocument(),
-    );
+    expect(await screen.findByTestId("workload-chain-section")).toBeInTheDocument();
     expect(screen.getByText("Template chain")).toBeInTheDocument();
     expect(screen.getAllByTestId("workload-chain-entry")).toHaveLength(2);
     expect(screen.getByText("operators")).toBeInTheDocument();

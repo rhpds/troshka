@@ -27,6 +27,7 @@ _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 _YAML_BLOCK_SCALAR = "  - |\n"
 _MKDIR_OCP_INSTALL = "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+_OCP_INSTALL_DIR = "/home/cloud-user/ocp-install"
 _API_VIP_OFFSET = 2
 _INGRESS_VIP_OFFSET = 3
 _DEFAULT_BASE_DOMAIN = "ocp.local"
@@ -253,9 +254,7 @@ def _validate_topology_ocp_mounts(topology):
         )
 
 
-def _generate_ocp_mount_script(
-    topology, install_dir="/home/cloud-user/ocp-install", indent="    "
-):
+def _generate_ocp_mount_script(topology, install_dir=_OCP_INSTALL_DIR, indent="    "):
     """Generate shell script lines to create MachineConfig extra manifests for ocp_mount disks.
 
     Follows the Red Hat Solution 4952011 pattern:
@@ -2906,7 +2905,7 @@ def _build_install_script(
             )
             + _CLOUD_INIT_INDENT_NL
             + "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-            + _serve_iso_cmd("    ", "/home/cloud-user/ocp-install", 8080)
+            + _serve_iso_cmd("    ", _OCP_INSTALL_DIR, 8080)
             + _CLOUD_INIT_INDENT_NL
             + _redfish_insert_media_cmd("    ", bmc_ips_str)
             + _CLOUD_INIT_INDENT_NL
@@ -2920,7 +2919,7 @@ def _build_install_script(
             + _wait_for_complete_cmd(
                 "    ",
                 "/home/cloud-user/openshift-install",
-                "/home/cloud-user/ocp-install",
+                _OCP_INSTALL_DIR,
                 tee_path="/home/cloud-user/ocp-install/install.log",
             )
             + "    OCP_EXIT=${PIPESTATUS[0]}\n"

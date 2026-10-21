@@ -771,7 +771,10 @@ def get_pattern(
 
 @router.get(
     "/{pattern_id}/export-template",
-    responses={404: {"description": "Pattern not found"}},
+    responses={
+        404: {"description": "Pattern not found"},
+        500: {"description": "Exported template failed schema validation"},
+    },
 )
 def export_pattern_template(
     pattern_id: str,
@@ -779,8 +782,8 @@ def export_pattern_template(
     db: DbSession,
 ):
     from app.services.template_loader import (
+        apply_topology_export_metadata,
         export_topology_to_template,
-        sanitize_template_dns_records,
     )
     from app.services.template_schema import (
         TemplateSchemaError,
@@ -814,22 +817,7 @@ def export_pattern_template(
         description=pattern.description or "",
     )
 
-    # export_topology_to_template emits ``ocp:`` as a list from topology
-    # ``clusters``. Only fall back to the legacy single-mapping ocpMeta synth
-    # for legacy topologies that predate the clusters[] model.
-    if "ocp" not in result:
-        ocp_meta = topo.get("ocpMeta", {})
-        if ocp_meta.get("clusterName"):
-            result["ocp"] = {
-                "name": ocp_meta["clusterName"],
-                "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
-            }
-
-    for key in ("disconnected", "bastion_services"):
-        if topo.get(key):
-            result[key] = topo[key]
-    if topo.get("dns_records"):
-        result["dns_records"] = sanitize_template_dns_records(topo["dns_records"])
+    apply_topology_export_metadata(result, topo)
 
     try:
         ensure_exported_template_valid(result)

@@ -1,5 +1,8 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+import { CaptureError, checkCaptureName, stopForCapture, waitForDiskCapture } from "./captureLifecycle";
+import LabeledField from "@/components/LabeledField";
 import React, { useState } from "react";
 
 interface SnapshotVMModalProps {
@@ -11,7 +14,7 @@ interface SnapshotVMModalProps {
   onClose: () => void;
 }
 
-export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, onSaved, onClose }: SnapshotVMModalProps) {
+export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, onSaved, onClose }: Readonly<SnapshotVMModalProps>) {
   const [name, setName] = useState(`${vmName} snapshot`);
   const [description, setDescription] = useState("");
   const [stopVM, setStopVM] = useState(isRunning);
@@ -33,42 +36,17 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
     if (!name.trim()) { setError("Name is required"); return; }
     setSaving(true);
     setError("");
+    let stopRequested = false;
     try {
-      // Check for duplicate name before shutting anything down
-      const checkResp = await fetch(`/api/v1/library/?type=snapshot&q=${encodeURIComponent(name.trim())}`);
-      if (checkResp.ok) {
-        const items = await checkResp.json();
-        if (Array.isArray(items) && items.some((item: { name: string }) => item.name === name.trim())) {
-          setError(`You already have a snapshot named "${name.trim()}"`);
-          setSaving(false);
-          return;
-        }
-      }
-
+      await checkCaptureName(`/api/v1/library/?type=snapshot&q=${encodeURIComponent(name.trim())}`, name.trim(), "snapshot");
       if (isRunning && stopVM) {
-        setSavingStatus("Graceful shutdown...");
-        await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/stop`, { method: "POST" });
-        let stopped = false;
-        for (let i = 0; i < 10; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
-          if (stateResp.ok) {
-            const st = await stateResp.json();
-            if (st.state === "shut off" || st.state === "shut_off") { stopped = true; break; }
-          }
-        }
-        if (!stopped) {
-          setSavingStatus("Force powering off...");
-          await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/forcestop`, { method: "POST" });
-          for (let i = 0; i < 10; i++) {
-            await new Promise((r) => setTimeout(r, 2000));
-            const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
-            if (stateResp.ok) {
-              const st = await stateResp.json();
-              if (st.state === "shut off" || st.state === "shut_off") break;
-            }
-          }
-        }
+        stopRequested = true;
+        await stopForCapture({
+          baseUrl: `/api/v1/projects/${projectId}/vms/${vmId}`,
+          statusUrl: `/api/v1/projects/${projectId}/vms/${vmId}/status`,
+          forceAction: "forcestop", stoppedStates: ["shut off", "shut_off"],
+          subject: "VM", onStatus: setSavingStatus,
+        });
       }
 
       setSavingStatus("Creating snapshot...");
@@ -81,24 +59,8 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
         const snapData = await resp.json();
         // Wait for disk capture to complete (flatten + S3 upload)
         setSavingStatus("Capturing disk...");
-        for (let i = 0; i < 120; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const stateResp = await fetch(`/api/v1/library/${snapData.id}`);
-          if (stateResp.ok) {
-            const item = await stateResp.json();
-            if (item.state === "ready") break;
-            if (item.state === "error") {
-              setError("Disk capture failed");
-              if (isRunning && stopVM) {
-                setSavingStatus("Restarting VM...");
-                await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" });
-              }
-              setSaving(false);
-              return;
-            }
-          }
-        }
-        if (isRunning && stopVM) {
+        await waitForDiskCapture(snapData.id);
+        if (stopRequested) {
           setSavingStatus("Restarting VM...");
           await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" });
         }
@@ -106,13 +68,13 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
       } else {
         const err = await resp.json().catch(() => ({ detail: "Failed to create snapshot" }));
         setError(err.detail || "Failed to create snapshot");
-        if (isRunning && stopVM) {
+        if (stopRequested) {
           await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" });
         }
       }
-    } catch {
-      setError("Failed to connect to server");
-      if (isRunning && stopVM) {
+    } catch (error) {
+      setError(error instanceof CaptureError ? error.message : "Failed to connect to server");
+      if (stopRequested) {
         await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" }).catch(() => {});
       }
     }
@@ -120,11 +82,11 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
   };
 
   return (
-    <div style={{
+    <ModalBackdrop label="Save VM snapshot" style={{
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+    }} onClose={() => { if (!saving) onClose(); }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: 440, maxWidth: "90vw",
@@ -142,38 +104,38 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
             <div>This VM is currently running. The snapshot may capture inconsistent disk state.</div>
             <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
               <input type="checkbox" checked={stopVM} onChange={(e) => setStopVM(e.target.checked)} disabled={saving} />
-              Shut down VM before snapshot, restart after
+              {"Shut down VM before snapshot, restart after"}
             </label>
           </div>
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Snapshot name" disabled={saving} />
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Snapshot name" disabled={saving} /></LabeledField>
           </div>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description</label>
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Description</>}>
             <textarea
               style={{ ...inputStyle, minHeight: 60, resize: "vertical" }}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional description"
               disabled={saving}
-            />
+            /></LabeledField>
           </div>
 
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button
+            <button type="button"
               onClick={onClose}
               disabled={saving}
               style={{ ...inputStyle, width: "auto", cursor: saving ? "not-allowed" : "pointer", padding: "6px 16px", opacity: saving ? 0.4 : 1 }}
             >
               Cancel
             </button>
-            <button
+            <button type="button"
               onClick={handleSave}
               disabled={saving}
               style={{
@@ -187,6 +149,6 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
           </div>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

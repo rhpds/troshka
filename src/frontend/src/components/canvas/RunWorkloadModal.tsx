@@ -1,11 +1,13 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 
 interface ReqRow {
+  id: string;
   name: string;
   type: string;
   version: string;
@@ -20,6 +22,32 @@ interface Props {
   initialVmNames?: string[];
 }
 
+async function launchClusterWorkloads(projectId: string, selectedClusterIds: string[], clusters: Array<{id: string; name: string}>, baseBody: Record<string, unknown>) {
+        // Fan-out: one POST per cluster (best-effort, continue on partial failure)
+        const runIds: string[] = [];
+        const failures: Array<{ clusterId: string; detail: string }> = [];
+        for (const clusterId of selectedClusterIds) {
+          const body = {
+            ...baseBody,
+            target_map: { mode: "cluster", cluster_id: clusterId },
+          };
+          const r = await fetch(`/api/v1/projects/${projectId}/workloads`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (r.status !== 202) {
+            const data = await r.json().catch(() => ({}));
+            const clusterName = clusters.find((c) => c.id === clusterId)?.name || clusterId;
+            failures.push({ clusterId: clusterName, detail: data.detail || `${r.status}` });
+          } else {
+            const data = await r.json();
+            runIds.push(data.id);
+          }
+        }
+  return { runIds, failures };
+}
+
 export default function RunWorkloadModal({
   projectId,
   onClose,
@@ -27,7 +55,7 @@ export default function RunWorkloadModal({
   initialMode,
   initialClusterIds,
   initialVmNames,
-}: Props) {
+}: Readonly<Props>) {
   const [roleFqcn, setRoleFqcn] = useState("");
   const [eeImage, setEeImage] = useState("");
   const [rows, setRows] = useState<ReqRow[]>([]);
@@ -98,6 +126,14 @@ export default function RunWorkloadModal({
     }
   };
 
+  const updateRequirement = (index: number, field: "name" | "version", value: string) => {
+    setRows((current) => current.map((row, i) => i === index ? { ...row, [field]: value } : row));
+  };
+
+  const removeRequirement = (index: number) => {
+    setRows((current) => current.filter((_, i) => i !== index));
+  };
+
   const launch = async () => {
     setLaunching(true);
     setError("");
@@ -117,28 +153,7 @@ export default function RunWorkloadModal({
 
     try {
       if (mode === "cluster") {
-        // Fan-out: one POST per cluster (best-effort, continue on partial failure)
-        const runIds: string[] = [];
-        const failures: Array<{ clusterId: string; detail: string }> = [];
-        for (const clusterId of selectedClusterIds) {
-          const body = {
-            ...baseBody,
-            target_map: { mode: "cluster", cluster_id: clusterId },
-          };
-          const r = await fetch(`/api/v1/projects/${projectId}/workloads`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(body),
-          });
-          if (r.status !== 202) {
-            const data = await r.json().catch(() => ({}));
-            const clusterName = clusters.find((c) => c.id === clusterId)?.name || clusterId;
-            failures.push({ clusterId: clusterName, detail: data.detail || `${r.status}` });
-          } else {
-            const data = await r.json();
-            runIds.push(data.id);
-          }
-        }
+        const { runIds, failures } = await launchClusterWorkloads(projectId, selectedClusterIds, clusters, baseBody);
         // If all succeeded → route to run(s)
         if (failures.length === 0) {
           onLaunched(runIds);
@@ -210,33 +225,33 @@ export default function RunWorkloadModal({
       >
         <h2 style={{ marginTop: 0, marginBottom: 16 }}>Run Workload</h2>
 
-        <label style={{ fontSize: 12, opacity: 0.8 }}>Role FQCN</label>
+        <LabeledField style={{ fontSize: 12, opacity: 0.8 }} label={<>Role FQCN</>}>
         <input
           className="props-input"
           value={roleFqcn}
           onChange={(e) => setRoleFqcn(e.target.value)}
           placeholder="role FQCN, e.g. agnosticd.core_workloads.ocp4_workload_example"
           style={{ width: "100%", marginBottom: 12 }}
-        />
+        /></LabeledField>
 
-        <label style={{ fontSize: 12, opacity: 0.8 }}>EE image (optional)</label>
+        <LabeledField style={{ fontSize: 12, opacity: 0.8 }} label={<>EE image (optional)</>}>
         <input
           className="props-input"
           value={eeImage}
           onChange={(e) => setEeImage(e.target.value)}
           placeholder="defaults to server config"
           style={{ width: "100%", marginBottom: 12 }}
-        />
+        /></LabeledField>
 
         <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Requirements (git collections)</div>
         {rows.map((row, i) => (
-          <div key={i} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+          <div key={row.id} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
             <input
               className="props-input"
               placeholder="git URL"
               value={row.name}
               onChange={(e) =>
-                setRows((rs) => rs.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)))
+                updateRequirement(i, "name", e.target.value)
               }
               style={{ flex: 3 }}
             />
@@ -245,16 +260,16 @@ export default function RunWorkloadModal({
               placeholder="version"
               value={row.version}
               onChange={(e) =>
-                setRows((rs) => rs.map((r, j) => (j === i ? { ...r, version: e.target.value } : r)))
+                updateRequirement(i, "version", e.target.value)
               }
               style={{ flex: 1 }}
             />
-            <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}>✕</button>
+            <button type="button" onClick={() => removeRequirement(i)}>✕</button>
           </div>
         ))}
         <button type="button"
           className="props-library-btn"
-          onClick={() => setRows((rs) => [...rs, { name: "", type: "git", version: "main" }])}
+          onClick={() => setRows((rs) => [...rs, { id: crypto.randomUUID(), name: "", type: "git", version: "main" }])}
           style={{ padding: "4px 8px", fontSize: 11, marginBottom: 12 }}
         >
           + Add requirement

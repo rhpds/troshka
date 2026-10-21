@@ -45,6 +45,7 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 
 VERSION = "dev"  # stamped by backend at push time; self-hashes if unstamped
+_BINARY_CONTENT_TYPE = "application/octet-stream"
 
 
 def _compute_version():
@@ -837,14 +838,14 @@ class TroshkadHandler(BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(length)
 
-    def _send_binary(self, status, data, content_type="application/octet-stream"):
+    def _send_binary(self, status, data, content_type=_BINARY_CONTENT_TYPE):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def _stream_file(self, status, file_path, content_type="application/octet-stream"):
+    def _stream_file(self, status, file_path, content_type=_BINARY_CONTENT_TYPE):
         size = os.path.getsize(file_path)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -2124,6 +2125,23 @@ def _parse_memory(root):
     return mem_val
 
 
+def _vm_config_nic(iface):
+    source = iface.find("source")
+    mac = iface.find("mac")
+    driver = iface.find("driver")
+    trust = (
+        driver is not None
+        and (driver.get("trustGuestRxFilters") or "").lower() in ("yes", "true", "1")
+    )
+    entry = {
+        "bridge": source.get("bridge", "") if source is not None else "",
+        "mac": mac.get("address", "") if mac is not None else "",
+    }
+    if trust:
+        entry["allow_nested_macs"] = True
+    return entry
+
+
 def _handle_vm_config(job, params):
     """Get VM config from inactive XML — structured dict."""
     domain = _validate_domain_name(params["domain_name"])
@@ -2142,22 +2160,7 @@ def _handle_vm_config(job, params):
     vcpus = int(root.findtext("vcpu", "0"))
     ram_mb = _parse_memory(root)
 
-    nics = []
-    for iface in root.findall(".//interface"):
-        source = iface.find("source")
-        mac = iface.find("mac")
-        driver = iface.find("driver")
-        trust = (
-            driver is not None
-            and (driver.get("trustGuestRxFilters") or "").lower() in ("yes", "true", "1")
-        )
-        entry = {
-            "bridge": source.get("bridge", "") if source is not None else "",
-            "mac": mac.get("address", "") if mac is not None else "",
-        }
-        if trust:
-            entry["allow_nested_macs"] = True
-        nics.append(entry)
+    nics = [_vm_config_nic(iface) for iface in root.findall(".//interface")]
 
     disks = []
     cdroms = []
@@ -3754,7 +3757,7 @@ def handle_tcp_tunnel(handler, params):
     except Exception:
         pass
     handler.send_response(200)
-    handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Content-Type", _BINARY_CONTENT_TYPE)
     handler.end_headers()
 
     t_out = threading.Thread(
@@ -11391,11 +11394,11 @@ def _console_detect_state(ocr_text):
         return "unknown"
     last_lines = "\n".join(text.split("\n")[-5:])
     # Password before login — OCR often leaves "hostname login: core" on screen.
-    if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
+    if re.search(r"[Pp]ass[wvu]ord(?:\s*:)?\s*$", last_lines, re.MULTILINE):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
-    _login = r"(?:\blogin\s*:?|\S+\s+login\s*:?)"
+    _login = r"\blogin(?:\s*:)?"
     # Username only at EOL — OCR often appends boot text after "login:" on the same line.
     if re.search(_login + r"\s+[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
         return "login_submit"
@@ -11462,11 +11465,13 @@ def _console_extract_output(ocr_text):
     """Extract command output between markers."""
     import re
 
-    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", ocr_text, re.DOTALL)
-    if m:
-        output = m.group(1).strip()
-        exit_code = int(m.group(2)) if m.group(2) else None
-        return output, exit_code
+    begin = re.search(r"TROSHKA_BEGIN[ \t\r]*\n", ocr_text)
+    if begin:
+        end = re.search(r"TROSHKA_EXIT\s*(\d+)?", ocr_text[begin.end():])
+        if end:
+            output = ocr_text[begin.end():begin.end() + end.start()].strip()
+            exit_code = int(end.group(1)) if end.group(1) else None
+            return output, exit_code
     return ocr_text.strip(), None
 
 

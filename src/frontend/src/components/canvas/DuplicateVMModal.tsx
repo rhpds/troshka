@@ -11,7 +11,7 @@ interface Props {
   onCancel: () => void;
 }
 
-export default function DuplicateVMModal({ vmName, hasUuid, onConfirm, onCancel }: Props) {
+export default function DuplicateVMModal({ vmName, hasUuid, onConfirm, onCancel }: Readonly<Props>) {
   const [cloneUuid, setCloneUuid] = useState(false);
 
   return (

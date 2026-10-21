@@ -120,8 +120,10 @@ class TestPrepareCephCapture:
         with patcher:
             from app.services.pattern_service import _prepare_ceph_capture
 
+            exception_mock = MagicMock()
+            exception_mock_2 = MagicMock()
             with pytest.raises(RuntimeError, match="not Ready"):
-                _prepare_ceph_capture(MagicMock(), MagicMock(), "ns-1", "pat-1")
+                _prepare_ceph_capture(exception_mock, exception_mock_2, "ns-1", "pat-1")
         freeze.assert_not_called()
 
     def test_pvc_mismatch_raises_without_freezing(self):
@@ -131,8 +133,10 @@ class TestPrepareCephCapture:
         with patcher:
             from app.services.pattern_service import _prepare_ceph_capture
 
+            exception_mock = MagicMock()
+            exception_mock_2 = MagicMock()
             with pytest.raises(ValueError, match="expected 3 ceph-osd"):
-                _prepare_ceph_capture(MagicMock(), MagicMock(), "ns-1", "pat-1")
+                _prepare_ceph_capture(exception_mock, exception_mock_2, "ns-1", "pat-1")
         freeze.assert_not_called()
 
 

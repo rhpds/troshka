@@ -40,7 +40,7 @@ const CHAIN_STATUS_STYLE: Record<
   done: { label: "Done (runOnce)", color: "rgba(167,139,250,0.95)" },
 };
 
-export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Props) {
+export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Readonly<Props>) {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -226,10 +226,8 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
         >
           Run history
         </h3>
-        {loading ? (
-          <div style={{ opacity: 0.6 }}>Loading…</div>
-        ) : runs.length === 0 ? (
-          <div style={{ opacity: 0.6 }}>No workload runs yet.</div>
+        {loading || runs.length === 0 ? (
+          <div style={{ opacity: 0.6 }}>{loading ? "Loading…" : "No workload runs yet."}</div>
         ) : (
           <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
             <thead>

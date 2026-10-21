@@ -230,7 +230,8 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
         for provider in providers:
             try:
                 creds = provider.get_credentials()
-                assert provider.security_group_id is not None
+                if provider.security_group_id is None:
+                    continue
                 ensure_sg_troshkad_ip(
                     provider.security_group_id, current_ip, credentials=creds
                 )

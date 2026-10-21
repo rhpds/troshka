@@ -50,8 +50,9 @@ def test_supports_hibernate_true_for_shared():
 # hibernate_vm_on_host — KubeVirt unsupported
 # ---------------------------------------------------------------------------
 def test_hibernate_kubevirt_raises():
+    exception_host = SimpleNamespace(host_type="kubevirt-cluster")
     with pytest.raises(HibernateUnsupported):
-        hibernate_vm_on_host(SimpleNamespace(host_type="kubevirt-cluster"), "p", "v")
+        hibernate_vm_on_host(exception_host, "p", "v")
 
 
 def test_hibernate_unsupported_code():

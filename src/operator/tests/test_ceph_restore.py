@@ -349,11 +349,12 @@ class TestWaitForCephRestoreDatavolumes:
         custom_api.get_namespaced_custom_object.return_value = {
             "status": {"phase": "Failed"}
         }
-        with pytest.raises(RuntimeError, match="failed to import"):
-            asyncio.run(
-                wait_for_ceph_restore_datavolumes(
+        exception_operation = wait_for_ceph_restore_datavolumes(
                     custom_api, "ns", ["troshka-ceph-osd-0"]
                 )
+        with pytest.raises(RuntimeError, match="failed to import"):
+            asyncio.run(
+                exception_operation
             )
 
     def test_raises_on_mon_job_failed(self):
@@ -367,11 +368,12 @@ class TestWaitForCephRestoreDatavolumes:
         job.status.conditions = [cond]
         job.status.failed = 1
         batch_api.read_namespaced_job.return_value = job
-        with pytest.raises(RuntimeError, match="mon Job"):
-            asyncio.run(
-                wait_for_ceph_restore_datavolumes(
+        exception_operation = wait_for_ceph_restore_datavolumes(
                     custom_api, "ns", ["troshka-ceph-mon"], batch_api=batch_api
                 )
+        with pytest.raises(RuntimeError, match="mon Job"):
+            asyncio.run(
+                exception_operation
             )
 
     def test_raises_on_timeout(self):
@@ -379,15 +381,16 @@ class TestWaitForCephRestoreDatavolumes:
         custom_api.get_namespaced_custom_object.return_value = {
             "status": {"phase": "ImportInProgress"}
         }
-        with pytest.raises(RuntimeError, match="not complete"):
-            asyncio.run(
-                wait_for_ceph_restore_datavolumes(
+        exception_operation = wait_for_ceph_restore_datavolumes(
                     custom_api,
                     "ns",
                     ["troshka-ceph-osd-0"],
                     max_wait_seconds=1,
                     sleep_seconds=1,
                 )
+        with pytest.raises(RuntimeError, match="not complete"):
+            asyncio.run(
+                exception_operation
             )
 
     def test_polls_until_succeeded(self):
@@ -413,15 +416,16 @@ class TestWaitForCephRestoreDatavolumes:
     def test_missing_datavolume_treated_as_pending_not_error(self):
         custom_api = MagicMock()
         custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
-        with pytest.raises(RuntimeError, match="not complete"):
-            asyncio.run(
-                wait_for_ceph_restore_datavolumes(
+        exception_operation = wait_for_ceph_restore_datavolumes(
                     custom_api,
                     "ns",
                     ["troshka-ceph-osd-0"],
                     max_wait_seconds=1,
                     sleep_seconds=1,
                 )
+        with pytest.raises(RuntimeError, match="not complete"):
+            asyncio.run(
+                exception_operation
             )
 
 
@@ -541,8 +545,9 @@ class TestCephRestorePollHelpers:
         from unittest.mock import patch
 
         with patch("helpers.ceph_restore._mon_job_status", return_value="failed"):
+            exception_mock = MagicMock()
             with pytest.raises(RuntimeError, match="mon Job"):
-                _check_mon_restore_status(MagicMock(), "ns", True)
+                _check_mon_restore_status(exception_mock, "ns", True)
 
     def test_filter_pending_osds(self):
         from helpers.ceph_restore import _filter_pending_osd_restores
@@ -560,8 +565,9 @@ class TestCephRestorePollHelpers:
         from unittest.mock import patch
 
         with patch("helpers.ceph_restore._dv_phase", return_value="Failed"):
+            exception_mock = MagicMock()
             with pytest.raises(RuntimeError, match="failed to import"):
-                _filter_pending_osd_restores(MagicMock(), "ns", ["osd-0"])
+                _filter_pending_osd_restores(exception_mock, "ns", ["osd-0"])
 
     def test_job_already_succeeded(self):
         from helpers.ceph_restore import _job_already_succeeded

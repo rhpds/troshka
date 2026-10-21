@@ -101,18 +101,18 @@ def pick_host_cpu_model(
 
     ranked = sorted(inventory.items(), key=_score, reverse=True)
     best_model, best_stats = ranked[0]
-    if min_cpu_m or min_memory_b:
-        if best_stats.get("cpu_m", 0) < min_cpu_m or best_stats.get(
-            "memory_b", 0
-        ) < min_memory_b:
-            logger.warning(
-                "No host CPU model meets project request "
-                "(need cpu_m=%s memory_b=%s); best=%s stats=%s",
-                min_cpu_m,
-                min_memory_b,
-                best_model,
-                best_stats,
-            )
+    if (min_cpu_m or min_memory_b) and (
+        best_stats.get("cpu_m", 0) < min_cpu_m
+        or best_stats.get("memory_b", 0) < min_memory_b
+    ):
+        logger.warning(
+            "No host CPU model meets project request "
+            "(need cpu_m=%s memory_b=%s); best=%s stats=%s",
+            min_cpu_m,
+            min_memory_b,
+            best_model,
+            best_stats,
+        )
     return best_model
 
 

@@ -1,5 +1,7 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
+import ModalBackdrop from "@/components/ModalBackdrop";
 import { useEffect, useRef, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
@@ -11,7 +13,6 @@ import {
   CardBody,
   Alert,
   Switch,
-  Spinner,
 } from "@patternfly/react-core";
 
 interface StoragePool {
@@ -73,6 +74,11 @@ const modeLabels: Record<string, string> = {
   "shared-azure-files": "Azure Files NFS (Azure)",
 };
 
+function poolAutoExtendLabel(pool: StoragePool) {
+  if (!pool.auto_extend_enabled) return "Auto-extend";
+  return `Auto-extend (${pool.auto_extend_threshold_pct}% → +${pool.auto_extend_increment_gb} GB)`;
+}
+
 function poolStorageGb(pool: StoragePool): number | null {
   return pool.fsx_storage_gb || pool.azure_files_capacity_gb || null;
 }
@@ -86,6 +92,77 @@ const inputStyle = {
   color: "var(--pf-t--global--text--color--regular)",
   fontSize: 13,
 };
+
+
+function retainedBufferActions(previous: Record<string, string>, pools: StoragePool[]) {
+  const next: Record<string, string> = {};
+  for (const [id, action] of Object.entries(previous)) {
+    const pool = pools.find(p => p.id === id);
+    if (pool && ((action === "waking" && pool.worker_status === "stopped") ||
+      (action === "sleeping" && pool.worker_status === "connected"))) next[id] = action;
+  }
+  return next;
+}
+
+interface StorageHost { id: string; storage_pool_id?: string; agent_version?: string }
+interface StoragePartition { mount: string; used_bytes: number; total_bytes: number; used_pct: number }
+type HostStorage = Record<string, { partitions?: StoragePartition[] }>;
+
+function collectPoolUsage(hosts: StorageHost[], storage: HostStorage) {
+  const usage: Record<string, { used_gb: number; total_gb: number; used_pct: number }> = {};
+  for (const host of hosts) {
+    if (!host.storage_pool_id || usage[host.storage_pool_id]) continue;
+    const shared = storage[host.id]?.partitions?.find(part => part.mount.includes("shared"));
+    if (!shared) continue;
+    usage[host.storage_pool_id] = {
+      used_gb: Math.round(shared.used_bytes / (1024**3) * 10) / 10,
+      total_gb: Math.round(shared.total_bytes / (1024**3) * 10) / 10,
+      used_pct: shared.used_pct,
+    };
+  }
+  return usage;
+}
+
+const settledStatuses = new Set(["available", "error"]);
+
+function isSettledPool(pool: StoragePool) {
+  return settledStatuses.has(pool.status);
+}
+
+function defaultProviderType(mode: string) {
+  return ({ "shared-ceph-nfs": "ocpvirt", "shared-netapp": "gcp", "shared-azure-files": "azure" } as Record<string, string>)[mode] || "ec2";
+}
+
+function providerSupportsMode(provider: Provider, mode: string) {
+  if (mode === "shared-fsx") return provider.type === "ec2";
+  if (mode === "shared-azure-files") return provider.type === "azure";
+  return provider.type !== "s3";
+}
+
+function createPoolError(name: string, mode: string, providerId: string, az: string, nfs: string) {
+  if (!name.trim()) return "Name is required";
+  const names: Record<string, string> = { local: "local", "shared-fsx": "FSx", "shared-ceph-nfs": "Ceph-NFS", "shared-netapp": "NetApp Volumes", "shared-azure-files": "Azure Files" };
+  if (names[mode] && !providerId) return `Provider is required for ${names[mode]} pools`;
+  const zones: Record<string, string> = { "shared-fsx": "AZ is required for FSx pools", "shared-netapp": "Zone is required for NetApp Volumes pools", "shared-azure-files": "Location is required for Azure Files pools" };
+  if (zones[mode] && !az) return zones[mode];
+  if (mode === "shared-byo" && !nfs) return "NFS endpoint is required";
+  return "";
+}
+
+function validatePoolEdit(pool: StoragePool, throughput: number, size: number, nfs: string) {
+  if (pool.mode === "shared-byo") {
+    if (!nfs.trim()) return "NFS endpoint is required";
+    if (!nfs.includes(":")) return "NFS endpoint must be in host:/path format";
+  }
+  if (pool.mode !== "shared-fsx" && pool.mode !== "shared-azure-files") return "";
+  const minThroughput = pool.mode === "shared-fsx" ? 160 : 100;
+  if (throughput < minThroughput) return `Throughput must be at least ${minThroughput} MBps`;
+  const minStorage = pool.mode === "shared-fsx" ? 64 : 100;
+  if (size < (poolStorageGb(pool) || minStorage)) return "Storage can only grow, not shrink";
+  const minGrow = Math.ceil((poolStorageGb(pool) || minStorage) * 1.1);
+  if (size > (poolStorageGb(pool) || 0) && size < minGrow) return `Storage increase must be at least 10% (minimum ${minGrow} GB)`;
+  return "";
+}
 
 export default function StoragePoolsPage() {
   const [pools, setPools] = useState<StoragePool[]>([]);
@@ -123,7 +200,6 @@ export default function StoragePoolsPage() {
   const [pbPoolId, setPbPoolId] = useState<string | null>(null);
   const [pbAction, setPbAction] = useState<Record<string, string>>({});
   const [pbError, setPbError] = useState<string | null>(null);
-  const [pbErrorDismissed, setPbErrorDismissed] = useState<Set<string>>(new Set());
   const pbErrorDismissedRef = useRef<Set<string>>(new Set());
   const [pbErrorPoolId, setPbErrorPoolId] = useState<string | null>(null);
   const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
@@ -163,52 +239,23 @@ export default function StoragePoolsPage() {
         setPbError(errPool.worker_error);
         setPbErrorPoolId(errPool.id);
         pbErrorDismissedRef.current.add(errPool.id);
-        setPbErrorDismissed(new Set(pbErrorDismissedRef.current));
       }
-      setPbAction(prev => {
-        const next: Record<string, string> = {};
-        for (const [id, action] of Object.entries(prev)) {
-          const pool = p.find((pp: StoragePool) => pp.id === id);
-          if (pool && ((action === "waking" && pool.worker_status === "stopped") ||
-                       (action === "sleeping" && pool.worker_status === "connected"))) {
-            next[id] = action;
-          }
-        }
-        return next;
-      });
+      setPbAction(prev => retainedBufferActions(prev, p));
     });
-    fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []).then((hosts: any[]) => {
-      const versions = hosts.map((h: any) => h.agent_version).filter(Boolean);
-      if (versions.length > 0) setExpectedAgentVersion(versions[0]);
-      fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((storage: any) => {
-        const usage: Record<string, { used_gb: number; total_gb: number; used_pct: number }> = {};
-        for (const h of hosts) {
-          if (!h.storage_pool_id || usage[h.storage_pool_id]) continue;
-          const info = storage[h.id];
-          if (!info) continue;
-          const parts = info.partitions;
-          if (parts) {
-            const shared = parts.find((p: any) => p.mount.includes("shared"));
-            if (shared) {
-              usage[h.storage_pool_id] = {
-                used_gb: Math.round(shared.used_bytes / (1024**3) * 10) / 10,
-                total_gb: Math.round(shared.total_bytes / (1024**3) * 10) / 10,
-                used_pct: shared.used_pct,
-              };
-            }
-          }
-        }
-        setPoolUsage(usage);
+    fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []).then((hosts: StorageHost[]) => {
+      const versions = hosts.map(h => h.agent_version).filter(Boolean);
+      if (versions.length > 0) setExpectedAgentVersion(versions[0]!);
+      fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((storage: HostStorage) => {
+        setPoolUsage(collectPoolUsage(hosts, storage));
       }).catch(() => {});
     }).catch(() => {});
   };
 
   const pollUntilSettled = () => {
-    const settled = ["available", "error"];
     const poll = setInterval(() => {
       fetch("/api/v1/storage-pools/").then((r) => r.ok ? r.json() : []).then((data: StoragePool[]) => {
         setPools(data);
-        if (data.every((p) => settled.includes(p.status))) clearInterval(poll);
+        if (data.every(isSettledPool)) clearInterval(poll);
       }).catch(() => {});
     }, 2000);
   };
@@ -265,18 +312,10 @@ export default function StoragePoolsPage() {
 
   const handleCreate = async () => {
     setError("");
-    if (!newName.trim()) { setError("Name is required"); return; }
-    if (newMode === "local" && !newProviderId) { setError("Provider is required for local pools"); return; }
-    if (newMode === "shared-fsx" && !newProviderId) { setError("Provider is required for FSx pools"); return; }
-    if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
-    if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
-    if (newMode === "shared-ceph-nfs" && !newProviderId) { setError("Provider is required for Ceph-NFS pools"); return; }
-    if (newMode === "shared-netapp" && !newProviderId) { setError("Provider is required for NetApp Volumes pools"); return; }
-    if (newMode === "shared-netapp" && !newAz) { setError("Zone is required for NetApp Volumes pools"); return; }
-    if (newMode === "shared-azure-files" && !newProviderId) { setError("Provider is required for Azure Files pools"); return; }
-    if (newMode === "shared-azure-files" && !newAz) { setError("Location is required for Azure Files pools"); return; }
+    const validationError = createPoolError(newName, newMode, newProviderId, newAz, newNfsEndpoint);
+    if (validationError) { setError(validationError); return; }
 
-    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : newMode === "shared-netapp" ? "gcp" : newMode === "shared-azure-files" ? "azure" : "ec2";
+    const autoProviderType = defaultProviderType(newMode);
     const providerId = newProviderId || providers.find((p) => p.type === autoProviderType)?.id;
     if (!providerId) { setError(`No ${autoProviderType} provider configured`); return; }
 
@@ -287,7 +326,7 @@ export default function StoragePoolsPage() {
       provider_id: providerId,
       az: newAz || null,
       fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
-      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : null,
+      fsx_storage_gb: ({ "shared-fsx": newStorageGb, "shared-ceph-nfs": newStorageQuotaGb } as Record<string, number>)[newMode] ?? null,
       netapp_capacity_gb: newMode === "shared-netapp" ? newStorageGb : null,
       azure_files_capacity_gb: newMode === "shared-azure-files" ? newStorageGb : null,
       azure_files_throughput: newMode === "shared-azure-files" ? newThroughput : null,
@@ -330,20 +369,8 @@ export default function StoragePoolsPage() {
 
   const saveEdit = async (pool: StoragePool) => {
     setError("");
-    if (pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") {
-      const minThroughput = pool.mode === "shared-fsx" ? 160 : 100;
-      if (editThroughput < minThroughput) { setError(`Throughput must be at least ${minThroughput} MBps`); return; }
-      const minStorage = pool.mode === "shared-fsx" ? 64 : 100;
-      if (editStorageGb < (poolStorageGb(pool) || minStorage)) { setError("Storage can only grow, not shrink"); return; }
-      const minGrow = Math.ceil((poolStorageGb(pool) || minStorage) * 1.1);
-      if (editStorageGb > (poolStorageGb(pool) || 0) && editStorageGb < minGrow) {
-        setError(`Storage increase must be at least 10% (minimum ${minGrow} GB)`); return;
-      }
-    }
-    if (pool.mode === "shared-byo") {
-      if (!editNfsEndpoint.trim()) { setError("NFS endpoint is required"); return; }
-      if (!editNfsEndpoint.includes(":")) { setError("NFS endpoint must be in host:/path format"); return; }
-    }
+    const validationError = validatePoolEdit(pool, editThroughput, editStorageGb, editNfsEndpoint);
+    if (validationError) { setError(validationError); return; }
     setSaving(true);
     const body: Record<string, unknown> = {};
     if (pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") {
@@ -409,11 +436,11 @@ export default function StoragePoolsPage() {
       try {
         const r = await fetch("/api/v1/hosts/storage");
         if (!r.ok) return;
-        const storage = await r.json();
-        for (const [, info] of Object.entries(storage) as [string, any][]) {
+        const storage: HostStorage = await r.json();
+        for (const [, info] of Object.entries(storage)) {
           const parts = info.partitions;
           if (!parts) continue;
-          const shared = parts.find((p: any) => p.mount.includes("shared"));
+          const shared = parts.find(p => p.mount.includes("shared"));
           if (shared && shared.total_bytes / (1024**3) >= targetGb - 1) {
             clearInterval(poll);
             setExtending((prev) => ({ ...prev, [pool.id]: false }));
@@ -432,7 +459,7 @@ export default function StoragePoolsPage() {
   };
 
   const handleResizePool = async (pool: StoragePool) => {
-    const targetGb = parseInt(extendTarget[pool.id]);
+    const targetGb = Number.parseInt(extendTarget[pool.id]);
     const currentGb = poolStorageGb(pool) || 0;
     if (!targetGb || targetGb <= currentGb) {
       setError(`New size must be larger than current (${currentGb} GB)`);
@@ -479,172 +506,36 @@ export default function StoragePoolsPage() {
     }
   };
 
-  return (
-    <PageSection>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <Title headingLevel="h1">Storage Pools</Title>
-        <Button variant="primary" onClick={() => setShowCreate(!showCreate)}>
-          {showCreate ? "Cancel" : "Create Pool"}
-        </Button>
-      </div>
-
-      {error && <Alert variant="danger" title={error} style={{ marginBottom: 16 }} />}
-
-      {showCreate && (
-        <Card style={{ marginBottom: 16 }}>
-          <CardBody>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 500 }}>
-              <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
-                <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
-                  <option value="local">Local — Pattern Buffer Only (All Providers)</option>
-                  <option value="shared-fsx">FSx OpenZFS (AWS)</option>
-                  <option value="shared-byo">BYO NFS (All Providers)</option>
-                  <option value="shared-ceph-nfs">Ceph-NFS (OCP Virt)</option>
-                  <option value="shared-azure-files">Azure Files NFS (Azure)</option>
-                </select>
-              </div>
-              <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
-                       placeholder="e.g. prod-east-1b" />
-              </div>
-              {(newMode === "local" || newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
-                  <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
-                    <option value="">Select provider...</option>
-                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : newMode === "shared-azure-files" ? p.type === "azure" : p.type !== "s3").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </div>
-              )}
-              {(newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{newMode === "shared-netapp" ? "Zone" : "Availability Zone"}</label>
-                  <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
-                    <option value="">{availableAzs.length ? "Select AZ..." : "Select a provider first"}</option>
-                    {availableAzs.map((az) => <option key={az} value={az}>{az}</option>)}
-                  </select>
-                </div>
-              )}
-              {newMode === "shared-fsx" && (
-                <>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
-                    <input style={inputStyle} type="number" value={newThroughput}
-                           onChange={(e) => setNewThroughput(parseInt(e.target.value) || 160)} min={160} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
-                    <input style={inputStyle} type="number" value={newStorageGb}
-                           onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 64)} min={64} />
-                  </div>
-                </>
-              )}
-              {newMode === "shared-netapp" && (
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
-                  <input style={inputStyle} type="number" value={newStorageGb}
-                         onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 1024)} min={1024} />
-                </div>
-              )}
-              {newMode === "shared-byo" && (
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>NFS Endpoint</label>
-                  <input style={inputStyle} value={newNfsEndpoint} onChange={(e) => setNewNfsEndpoint(e.target.value)}
-                         placeholder="10.0.1.50:/exports/troshka" />
-                </div>
-              )}
-              {newMode === "shared-ceph-nfs" && (
-                <>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Quota (GB)</label>
-                    <input style={inputStyle} type="number" value={newStorageQuotaGb}
-                           onChange={(e) => setNewStorageQuotaGb(parseInt(e.target.value) || 500)} min={100} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
-                    <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
-                      <option value="">Select provider...</option>
-                      {providers.filter((p) => p.type === "ocpvirt").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  </div>
-                </>
-              )}
-              {newMode === "shared-azure-files" && (
-                <>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
-                    <input style={inputStyle} type="number" value={newStorageGb}
-                           onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 100)} min={100} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
-                    <input style={inputStyle} type="number" value={newThroughput}
-                           onChange={(e) => setNewThroughput(parseInt(e.target.value) || 100)} min={100} />
-                  </div>
-                </>
-              )}
-              <Button variant="primary" onClick={handleCreate} isLoading={creating} isDisabled={creating}>
-                Create Pool
-              </Button>
-            </div>
-          </CardBody>
-        </Card>
-      )}
-
-      {pools.length === 0 && !showCreate && (
-        <Card><CardBody style={{ textAlign: "center", padding: 40, color: "var(--pf-t--global--text--color--subtle)" }}>
-          No storage pools configured. Create one to get started.
-        </CardBody></Card>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {pools.map((pool) => (
-          <Card key={pool.id}>
-            <CardBody>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontWeight: 600, fontSize: 15 }}>{pool.name}</span>
-                    <span style={{
-                      fontSize: 11, padding: "2px 8px", borderRadius: 10,
-                      background: statusColors[pool.status] || "gray", color: "#fff",
-                    }}>{pool.status}</span>
-                    <span style={{
-                      fontSize: 11, padding: "2px 8px", borderRadius: 10,
-                      border: "1px solid var(--pf-t--global--border--color--default)",
-                    }}>{modeLabels[pool.mode] || pool.mode}</span>
-                  </div>
-                  {editId === pool.id ? (
+  function renderPoolEditor(pool: StoragePool) {
+    return (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8, maxWidth: 400 }}>
                       {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && (
                         <>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Throughput (MBps)</>}>
                             <input style={inputStyle} type="number" value={editThroughput}
-                                   onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={pool.mode === "shared-fsx" ? 160 : 100} />
+                                   onChange={(e) => setEditThroughput(Number.parseInt(e.target.value) || 160)} min={pool.mode === "shared-fsx" ? 160 : 100} /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage (GB)</>}>
                             <input style={inputStyle} type="number" value={editStorageGb}
-                                   onChange={(e) => setEditStorageGb(parseInt(e.target.value) || 64)}
-                                   min={poolStorageGb(pool) || (pool.mode === "shared-fsx" ? 64 : 100)} />
+                                   onChange={(e) => setEditStorageGb(Number.parseInt(e.target.value) || 64)}
+                                   min={poolStorageGb(pool) || (pool.mode === "shared-fsx" ? 64 : 100)} /></LabeledField>
                           </div>
                         </>
                       )}
                       {pool.mode === "shared-byo" && (
                         <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>NFS Endpoint</label>
+                          <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>NFS Endpoint</>}>
                           <input style={inputStyle} value={editNfsEndpoint}
                                  onChange={(e) => setEditNfsEndpoint(e.target.value)}
-                                 placeholder="10.0.1.50:/exports/troshka" />
+                                 placeholder="10.0.1.50:/exports/troshka" /></LabeledField>
                         </div>
                       )}
                       {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && (
                         <>
                           <div style={{ marginTop: 12, borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 10 }}>
-                            <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Auto-Extend</label>
+                            <span style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Auto-Extend</span>
                           </div>
                           <Switch
                             label="Auto-extend enabled"
@@ -652,22 +543,22 @@ export default function StoragePoolsPage() {
                             onChange={(_, checked) => setEditAutoExtend(checked)}
                           />
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Threshold (%)</>}>
                             <input style={inputStyle} type="number" value={editThresholdPct}
-                                   onChange={(e) => setEditThresholdPct(parseInt(e.target.value) || 80)}
-                                   min={50} max={95} />
+                                   onChange={(e) => setEditThresholdPct(Number.parseInt(e.target.value) || 80)}
+                                   min={50} max={95} /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Increment (GB)</>}>
                             <input style={inputStyle} type="number" value={editIncrementGb}
-                                   onChange={(e) => setEditIncrementGb(parseInt(e.target.value) || 64)}
-                                   min={64} />
+                                   onChange={(e) => setEditIncrementGb(Number.parseInt(e.target.value) || 64)}
+                                   min={64} /></LabeledField>
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB, optional)</label>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Max (GB, optional)</>}>
                             <input style={inputStyle} type="number" value={editMaxGb || ""}
-                                   onChange={(e) => setEditMaxGb(e.target.value ? parseInt(e.target.value) : null)}
-                                   placeholder="No limit" />
+                                   onChange={(e) => setEditMaxGb(e.target.value ? Number.parseInt(e.target.value) : null)}
+                                   placeholder="No limit" /></LabeledField>
                           </div>
                         </>
                       )}
@@ -677,111 +568,11 @@ export default function StoragePoolsPage() {
                         <Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button>
                       </div>
                     </div>
-                  ) : (
-                    <>
-                      <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16, flexWrap: "wrap" }}>
-                        {pool.az && <span>AZ: {pool.az}</span>}
-                        <span>Hosts: {pool.host_count}</span>
-                        {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
-                        {pool.azure_storage_account && <span>Account: {pool.azure_storage_account}/{pool.azure_file_share_name}</span>}
-                        {(pool.fsx_throughput_mbps || pool.azure_files_throughput) && <span>Throughput: {pool.fsx_throughput_mbps || pool.azure_files_throughput} MBps</span>}
-                        {poolStorageGb(pool) && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${poolStorageGb(pool)} GB (${poolUsage[pool.id].used_pct}%)` : `${poolStorageGb(pool)} GB`}</span>}
-                        {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
-                      </div>
-                      {pool.fsx_dns_name && (
-                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.fsx_dns_name}:/fsx</div>
-                      )}
-                      {pool.azure_file_share_url && (
-                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.azure_file_share_url}</div>
-                      )}
-                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.status === "available" && (
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <input
-                              style={{ ...inputStyle, width: 80, padding: "5px 8px", fontSize: 12 }}
-                              type="number"
-                              value={extendTarget[pool.id] || ""}
-                              onChange={(e) => setExtendTarget({ ...extendTarget, [pool.id]: e.target.value })}
-                              placeholder={`${poolStorageGb(pool)} GB`}
-                              min={(poolStorageGb(pool) || 0) + 1}
-                            />
-                            <Button
-                              variant="secondary"
-                              onClick={() => handleResizePool(pool)}
-                              isLoading={extending[pool.id]}
-                              isDisabled={extending[pool.id] || !extendTarget[pool.id] || parseInt(extendTarget[pool.id]) <= (poolStorageGb(pool) || 0)}
-                            >
-                              Resize
-                            </Button>
-                          </div>
-                          <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24 }} />
-                          <Switch
-                            label={`Auto-extend${pool.auto_extend_enabled ? ` (${pool.auto_extend_threshold_pct}% → +${pool.auto_extend_increment_gb} GB)` : ""}`}
-                            isChecked={pool.auto_extend_enabled}
-                            onChange={(_, checked) => updatePoolField(pool.id, "auto_extend_enabled", checked)}
-                            style={{ fontSize: 12 }}
-                          />
-                          {pool.auto_extend_enabled && (
-                            <Button
-                              variant="plain"
-                              size="sm"
-                              onClick={() => setExpandedAutoExtend({ ...expandedAutoExtend, [pool.id]: !expandedAutoExtend[pool.id] })}
-                              style={{ padding: "2px 6px", fontSize: 11 }}
-                            >
-                              {expandedAutoExtend[pool.id] ? "▲" : "▼"}
-                            </Button>
-                          )}
-                        </div>
-                      )}
-                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.auto_extend_enabled && expandedAutoExtend[pool.id] && (
-                        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600, marginTop: 8 }}>
-                          <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
-                            <input
-                              style={{ ...inputStyle, width: 80 }}
-                              type="number"
-                              value={pool.auto_extend_threshold_pct}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value) || 80;
-                                if (val >= 50 && val <= 95) updatePoolField(pool.id, "auto_extend_threshold_pct", val);
-                              }}
-                              min={50}
-                              max={95}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
-                            <input
-                              style={{ ...inputStyle, width: 80 }}
-                              type="number"
-                              value={pool.auto_extend_increment_gb}
-                              onChange={(e) => updatePoolField(pool.id, "auto_extend_increment_gb", parseInt(e.target.value) || 64)}
-                              min={64}
-                            />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB)</label>
-                            <input
-                              style={{ ...inputStyle, width: 100 }}
-                              type="number"
-                              value={pool.auto_extend_max_gb || ""}
-                              onChange={(e) => updatePoolField(pool.id, "auto_extend_max_gb", e.target.value ? parseInt(e.target.value) : null)}
-                              placeholder="No limit"
-                            />
-                          </div>
-                          <div style={{ display: "flex", alignItems: "flex-end" }}>
-                            <Button variant="primary" size="sm" onClick={() => handleExtendNow(pool)} isLoading={extending[pool.id]} isDisabled={extending[pool.id]}>
-                              Extend Now (+{pool.auto_extend_increment_gb} GB)
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
-                  <div style={{ fontSize: 11, marginBottom: 4 }}>
-                    {pool.worker_status === "connected" ? (
+    );
+  }
+
+  function renderBufferStatus(pool: StoragePool) {
+    if (pool.worker_status === "connected") return (
                       <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""}{pool.worker_private_ip ? ` (${pool.worker_private_ip})` : ""} · {pool.worker_instance_id || ""}{pool.pb_auto_sleep_minutes > 0 && pool.pb_last_activity_at && (() => {
   const idleMin = Math.floor((Date.now() - new Date(pool.pb_last_activity_at!).getTime()) / 60000);
   return (
@@ -790,19 +581,31 @@ export default function StoragePoolsPage() {
     </span>
   );
 })()}</span>
-                    ) : pool.worker_status === "stopped" ? (
+                    );
+    if (pool.worker_status === "stopped") return (
                       <span style={{ opacity: 0.5 }}>Pattern Buffer: sleeping · {pool.worker_instance_type}</span>
-                    ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
+                    );
+    if (pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active") return (
                       <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
-                    ) : pool.worker_status === "error" ? (
+                    );
+    if (pool.worker_status === "error") return (
                       <span style={{ color: "#f87171" }}>Pattern Buffer failed: {pool.worker_error || "unknown error"}</span>
-                    ) : pool.worker_host_id ? (
+                    );
+    if (pool.worker_host_id) return (
                       <span style={{ color: "#f87171" }}>Pattern Buffer: {pool.worker_status || "disconnected"}{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
-                    ) : (
+                    );
+    return (
                       <span style={{ opacity: 0.5 }}>No Pattern Buffer</span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: 6 }}>
+                    );
+  }
+
+  function finishBufferUpdate(poolId: string) {
+    setPbAction(previous => { const next = { ...previous }; delete next[poolId]; return next; });
+    loadData();
+  }
+
+  function renderBufferActions(pool: StoragePool) {
+    return (                  <div style={{ display: "flex", gap: 6 }}>
                     {!pbAction[pool.id] && pool.worker_status === "connected" && (
                       <Button variant="secondary" size="sm"
                         isLoading={extending[`gc-${pool.id}`]}
@@ -827,7 +630,7 @@ export default function StoragePoolsPage() {
                       <Button variant="primary" size="sm" isLoading={pbAction[pool.id] === "updating"} isDisabled={!!pbAction[pool.id]} onClick={async () => {
                         setPbAction(prev => ({ ...prev, [pool.id]: "updating" }));
                         await fetch(`/api/v1/hosts/${pool.worker_host_id}/update-agent`, { method: "POST" });
-                        setTimeout(() => { setPbAction(prev => { const next = { ...prev }; delete next[pool.id]; return next; }); loadData(); }, 5000);
+                        setTimeout(() => finishBufferUpdate(pool.id), 5000);
                       }}>Update Pattern Buffer Agent</Button>
                     )}
                     {pool.worker_status === "connected" && (
@@ -877,13 +680,140 @@ export default function StoragePoolsPage() {
                       </Button>
                     )}
                   </div>
+    );
+  }
+
+  function renderPool(pool: StoragePool) {
+    return (
+          <Card key={pool.id}>
+            <CardBody>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>{pool.name}</span>
+                    <span style={{
+                      fontSize: 11, padding: "2px 8px", borderRadius: 10,
+                      background: statusColors[pool.status] || "gray", color: "#fff",
+                    }}>{pool.status}</span>
+                    <span style={{
+                      fontSize: 11, padding: "2px 8px", borderRadius: 10,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                    }}>{modeLabels[pool.mode] || pool.mode}</span>
+                  </div>
+                  {editId === pool.id ? (
+renderPoolEditor(pool)
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16, flexWrap: "wrap" }}>
+                        {pool.az && <span>AZ: {pool.az}</span>}
+                        <span>Hosts: {pool.host_count}</span>
+                        {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
+                        {pool.azure_storage_account && <span>Account: {pool.azure_storage_account}/{pool.azure_file_share_name}</span>}
+                        {(pool.fsx_throughput_mbps || pool.azure_files_throughput) && <span>Throughput: {pool.fsx_throughput_mbps || pool.azure_files_throughput} MBps</span>}
+                        {poolStorageGb(pool) && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${poolStorageGb(pool)} GB (${poolUsage[pool.id].used_pct}%)` : `${poolStorageGb(pool)} GB`}</span>}
+                        {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
+                      </div>
+                      {pool.fsx_dns_name && (
+                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.fsx_dns_name}:/fsx</div>
+                      )}
+                      {pool.azure_file_share_url && (
+                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.azure_file_share_url}</div>
+                      )}
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.status === "available" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <input
+                              style={{ ...inputStyle, width: 80, padding: "5px 8px", fontSize: 12 }}
+                              type="number"
+                              value={extendTarget[pool.id] || ""}
+                              onChange={(e) => setExtendTarget({ ...extendTarget, [pool.id]: e.target.value })}
+                              placeholder={`${poolStorageGb(pool)} GB`}
+                              min={(poolStorageGb(pool) || 0) + 1}
+                            />
+                            <Button
+                              variant="secondary"
+                              onClick={() => handleResizePool(pool)}
+                              isLoading={extending[pool.id]}
+                              isDisabled={extending[pool.id] || !extendTarget[pool.id] || Number.parseInt(extendTarget[pool.id]) <= (poolStorageGb(pool) || 0)}
+                            >
+                              Resize
+                            </Button>
+                          </div>
+                          <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24 }} />
+                          <Switch
+                            label={poolAutoExtendLabel(pool)}
+                            isChecked={pool.auto_extend_enabled}
+                            onChange={(_, checked) => updatePoolField(pool.id, "auto_extend_enabled", checked)}
+                            style={{ fontSize: 12 }}
+                          />
+                          {pool.auto_extend_enabled && (
+                            <Button
+                              variant="plain"
+                              size="sm"
+                              onClick={() => setExpandedAutoExtend({ ...expandedAutoExtend, [pool.id]: !expandedAutoExtend[pool.id] })}
+                              style={{ padding: "2px 6px", fontSize: 11 }}
+                            >
+                              {expandedAutoExtend[pool.id] ? "▲" : "▼"}
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.auto_extend_enabled && expandedAutoExtend[pool.id] && (
+                        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600, marginTop: 8 }}>
+                          <div>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Threshold (%)</>}>
+                            <input
+                              style={{ ...inputStyle, width: 80 }}
+                              type="number"
+                              value={pool.auto_extend_threshold_pct}
+                              onChange={(e) => {
+                                const val = Number.parseInt(e.target.value) || 80;
+                                if (val >= 50 && val <= 95) updatePoolField(pool.id, "auto_extend_threshold_pct", val);
+                              }}
+                              min={50}
+                              max={95}
+                            /></LabeledField>
+                          </div>
+                          <div>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Increment (GB)</>}>
+                            <input
+                              style={{ ...inputStyle, width: 80 }}
+                              type="number"
+                              value={pool.auto_extend_increment_gb}
+                              onChange={(e) => updatePoolField(pool.id, "auto_extend_increment_gb", Number.parseInt(e.target.value) || 64)}
+                              min={64}
+                            /></LabeledField>
+                          </div>
+                          <div>
+                            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Max (GB)</>}>
+                            <input
+                              style={{ ...inputStyle, width: 100 }}
+                              type="number"
+                              value={pool.auto_extend_max_gb || ""}
+                              onChange={(e) => updatePoolField(pool.id, "auto_extend_max_gb", e.target.value ? Number.parseInt(e.target.value) : null)}
+                              placeholder="No limit"
+                            /></LabeledField>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "flex-end" }}>
+                            <Button variant="primary" size="sm" onClick={() => handleExtendNow(pool)} isLoading={extending[pool.id]} isDisabled={extending[pool.id]}>
+                              Extend Now (+{pool.auto_extend_increment_gb} GB)
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
+                  <div style={{ fontSize: 11, marginBottom: 4 }}>{renderBufferStatus(pool)}</div>
+                  {renderBufferActions(pool)}
                   {pool.worker_host_id && (
                     <div style={{ marginTop: 6 }}>
                       <select
                         style={{ padding: "4px 8px", borderRadius: 4, fontSize: 11, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                         value={pool.pb_auto_sleep_minutes}
                         onChange={async (e) => {
-                          const val = parseInt(e.target.value);
+                          const val = Number.parseInt(e.target.value);
                           await fetch(`/api/v1/storage-pools/${pool.id}`, {
                             method: "PATCH",
                             headers: { "Content-Type": "application/json" },
@@ -905,17 +835,141 @@ export default function StoragePoolsPage() {
               </div>
             </CardBody>
           </Card>
-        ))}
+    );
+  }
+
+  return (
+    <PageSection>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <Title headingLevel="h1">Storage Pools</Title>
+        <Button variant="primary" onClick={() => setShowCreate(!showCreate)}>
+          {showCreate ? "Cancel" : "Create Pool"}
+        </Button>
+      </div>
+
+      {error && <Alert variant="danger" title={error} style={{ marginBottom: 16 }} />}
+
+      {showCreate && (
+        <Card style={{ marginBottom: 16 }}>
+          <CardBody>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 500 }}>
+              <div>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Mode</>}>
+                <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
+                  <option value="local">Local — Pattern Buffer Only (All Providers)</option>
+                  <option value="shared-fsx">FSx OpenZFS (AWS)</option>
+                  <option value="shared-byo">BYO NFS (All Providers)</option>
+                  <option value="shared-ceph-nfs">Ceph-NFS (OCP Virt)</option>
+                  <option value="shared-azure-files">Azure Files NFS (Azure)</option>
+                </select></LabeledField>
+              </div>
+              <div>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
+                       placeholder="e.g. prod-east-1b" /></LabeledField>
+              </div>
+              {(newMode === "local" || newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Provider</>}>
+                  <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
+                    <option value="">Select provider...</option>
+                    {providers.filter((p) => providerSupportsMode(p, newMode)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select></LabeledField>
+                </div>
+              )}
+              {(newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={newMode === "shared-netapp" ? "Zone" : "Availability Zone"}>
+                  <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
+                    <option value="">{availableAzs.length ? "Select AZ..." : "Select a provider first"}</option>
+                    {availableAzs.map((az) => <option key={az} value={az}>{az}</option>)}
+                  </select></LabeledField>
+                </div>
+              )}
+              {newMode === "shared-fsx" && (
+                <>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Throughput (MBps)</>}>
+                    <input style={inputStyle} type="number" value={newThroughput}
+                           onChange={(e) => setNewThroughput(Number.parseInt(e.target.value) || 160)} min={160} /></LabeledField>
+                  </div>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage (GB)</>}>
+                    <input style={inputStyle} type="number" value={newStorageGb}
+                           onChange={(e) => setNewStorageGb(Number.parseInt(e.target.value) || 64)} min={64} /></LabeledField>
+                  </div>
+                </>
+              )}
+              {newMode === "shared-netapp" && (
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage (GB)</>}>
+                  <input style={inputStyle} type="number" value={newStorageGb}
+                         onChange={(e) => setNewStorageGb(Number.parseInt(e.target.value) || 1024)} min={1024} /></LabeledField>
+                </div>
+              )}
+              {newMode === "shared-byo" && (
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>NFS Endpoint</>}>
+                  <input style={inputStyle} value={newNfsEndpoint} onChange={(e) => setNewNfsEndpoint(e.target.value)}
+                         placeholder="10.0.1.50:/exports/troshka" /></LabeledField>
+                </div>
+              )}
+              {newMode === "shared-ceph-nfs" && (
+                <>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage Quota (GB)</>}>
+                    <input style={inputStyle} type="number" value={newStorageQuotaGb}
+                           onChange={(e) => setNewStorageQuotaGb(Number.parseInt(e.target.value) || 500)} min={100} /></LabeledField>
+                  </div>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Provider</>}>
+                    <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
+                      <option value="">Select provider...</option>
+                      {providers.filter((p) => p.type === "ocpvirt").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select></LabeledField>
+                  </div>
+                </>
+              )}
+              {newMode === "shared-azure-files" && (
+                <>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage (GB)</>}>
+                    <input style={inputStyle} type="number" value={newStorageGb}
+                           onChange={(e) => setNewStorageGb(Number.parseInt(e.target.value) || 100)} min={100} /></LabeledField>
+                  </div>
+                  <div>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Throughput (MBps)</>}>
+                    <input style={inputStyle} type="number" value={newThroughput}
+                           onChange={(e) => setNewThroughput(Number.parseInt(e.target.value) || 100)} min={100} /></LabeledField>
+                  </div>
+                </>
+              )}
+              <Button variant="primary" onClick={handleCreate} isLoading={creating} isDisabled={creating}>
+                Create Pool
+              </Button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+
+      {pools.length === 0 && !showCreate && (
+        <Card><CardBody style={{ textAlign: "center", padding: 40, color: "var(--pf-t--global--text--color--subtle)" }}>
+          No storage pools configured. Create one to get started.
+        </CardBody></Card>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {pools.map(renderPool)}
       </div>
       {pbPoolId && (
-        <div style={{
+        <ModalBackdrop label="Add Pattern Buffer" style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
           display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
-        }} onClick={() => setPbPoolId(null)}>
-          <Card style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+        }} onClose={() => setPbPoolId(null)}>
+          <Card style={{ width: 420 }}>
             <CardBody>
               <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>Add Pattern Buffer</div>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
+              <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Instance Type</>}>
               <select
                 style={inputStyle}
                 value={pbInstanceType}
@@ -924,7 +978,7 @@ export default function StoragePoolsPage() {
                 {(pbTypesByProvider[providers.find((p) => p.id === pools.find((pp) => pp.id === pbPoolId)?.provider_id)?.type || "ec2"] || pbTypesByProvider["ec2"]).map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
-              </select>
+              </select></LabeledField>
               <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
                 <Button variant="secondary" size="sm" onClick={() => setPbPoolId(null)}>Cancel</Button>
                 <Button variant="primary" size="sm" onClick={() => {
@@ -939,23 +993,23 @@ export default function StoragePoolsPage() {
               </div>
             </CardBody>
           </Card>
-        </div>
+        </ModalBackdrop>
       )}
       {pbError && (
-        <div style={{
+        <ModalBackdrop label="Pattern Buffer Error" style={{
           position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
           display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
-        }} onClick={() => setPbError(null)}>
-          <Card style={{ width: 500 }} onClick={(e) => e.stopPropagation()}>
+        }} onClose={() => setPbError(null)}>
+          <Card style={{ width: 500 }}>
             <CardBody>
               <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: "#f87171" }}>Pattern Buffer Error</div>
               <div style={{ fontSize: 13, marginBottom: 16 }}>{pbError}</div>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button variant="secondary" size="sm" onClick={() => { if (pbErrorPoolId) { pbErrorDismissedRef.current.add(pbErrorPoolId); setPbErrorDismissed(new Set(pbErrorDismissedRef.current)); } setPbError(null); }}>Close</Button>
+                <Button variant="secondary" size="sm" onClick={() => { if (pbErrorPoolId) { pbErrorDismissedRef.current.add(pbErrorPoolId); } setPbError(null); }}>Close</Button>
               </div>
             </CardBody>
           </Card>
-        </div>
+        </ModalBackdrop>
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </PageSection>

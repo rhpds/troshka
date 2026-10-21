@@ -11,7 +11,6 @@ import {
   MastheadBrand,
   MastheadContent,
   MastheadMain,
-  MastheadToggle,
   Nav,
   NavItem,
   NavList,
@@ -37,11 +36,66 @@ interface UserInfo {
   email: string;
   role: string;
   display_name?: string;
+  denied?: boolean;
+  detail?: string;
+  auth_source?: string;
 }
 
 const THEME_BOOTSTRAP = `(function(){try{if(localStorage.getItem("troshka-theme")==="light"){document.documentElement.classList.remove("pf-v6-theme-dark");}else{document.documentElement.classList.add("pf-v6-theme-dark");}}catch(e){document.documentElement.classList.add("pf-v6-theme-dark");}})();`;
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+function roleColors(role: string) {
+  if (role === "admin") return { background: "rgba(108,99,255,0.2)", color: "#a78bfa" };
+  if (role === "operator") return { background: "rgba(251,191,36,0.2)", color: "#fbbf24" };
+  return { background: "rgba(148,163,184,0.2)", color: "#94a3b8" };
+}
+
+function updateButtonLabel(busy: boolean, mode?: string) {
+  if (busy) return "Update in progress…";
+  return mode === "dev" ? "Restart backend" : "Apply update";
+}
+
+interface UpdateStatus {
+  mode?: string; stale_key?: string; up_to_date?: boolean; rolling_out?: boolean; rollout_error?: string;
+  components?: Record<string, { current?: string; available?: string }>;
+}
+
+function shouldShowUpdate(admin: boolean, status: UpdateStatus | null, target: string | null, dismissed: string | null) {
+  return admin && status && status.mode !== "disabled" &&
+    (status.up_to_date === false || status.rolling_out || status.rollout_error) &&
+    target != null && (dismissed !== target || !!status.rollout_error || !!status.rolling_out);
+}
+
+interface MonitoredHost {
+  id: string; storage_pool_id?: string; agent_status?: string; agent_version?: string;
+  storage_warnings?: { mount?: string; level?: string }[];
+}
+interface DiskUsage { used_pct?: number; partitions?: { mount?: string; used_pct?: number }[] }
+
+function hostStorageWarnings(host: MonitoredHost, usage?: DiskUsage) {
+  let hosts = false;
+  let pools = false;
+  for (const warning of host.storage_warnings || []) {
+    if (warning.mount?.includes("/shared") && host.storage_pool_id) pools = true;
+    else if (warning.level === "warning" || warning.level === "critical") hosts = true;
+  }
+  const usedPct = usage?.used_pct ?? usage?.partitions?.find(p => p.mount?.includes("troshka"))?.used_pct ?? usage?.partitions?.[0]?.used_pct;
+  if (typeof usedPct === "number" && usedPct >= 80) hosts = true;
+  return { hosts, pools };
+}
+
+function summarizeHosts(hosts: MonitoredHost[], expected: string, storage: Record<string, DiskUsage>) {
+  const warnings = { hosts: false, pools: false };
+  const stale: string[] = [];
+  for (const host of hosts) {
+    const warn = hostStorageWarnings(host, storage?.[host.id]);
+    warnings.hosts ||= warn.hosts;
+    warnings.pools ||= warn.pools;
+    if (expected && host.agent_status === "connected" && host.agent_version && host.agent_version !== expected) stale.push(host.id);
+  }
+  return { warnings, stale };
+}
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
   const router = useRouter();
   const [isDark, setIsDark] = useState(true);
@@ -63,7 +117,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           const body = await r.json().catch(() => ({}));
           const detail = body.detail || "Access denied";
           const emailMatch = detail.match(/user\s+(\S+@\S+)/);
-          setUser({ denied: true, detail, email: emailMatch?.[1] || "" } as any);
+          setUser({ id: "", role: "", denied: true, detail, email: emailMatch?.[1] || "" });
           return null;
         }
         if (!r.ok) { setUser(null); return null; }
@@ -117,7 +171,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isLoginPage = pathname === "/login";
   const isConsolePage = pathname?.startsWith("/console");
   const isPortalPage = pathname?.startsWith("/portal");
-  const isDenied = !!(user as any)?.denied;
+  const isDenied = !!user?.denied;
   const isAuthenticated = !!user && !isLoginPage && !isDenied;
   const isAdmin = user?.role === "admin";
 
@@ -136,7 +190,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const [showGettingStartedShine, setShowGettingStartedShine] = useState(false);
   useEffect(() => {
-    if (!user || (user as any).denied) return;
+    if (!user || user.denied) return;
     const seen = localStorage.getItem("troshka-seen-getting-started");
     if (!seen && pathname !== "/getting-started") setShowGettingStartedShine(true);
   }, [user]);
@@ -165,28 +219,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         // Live disk/Ceph usage — Hosts page reds Storage at ≥80%; nav must match
         // even when storage_warnings hasn't been written yet by the health poller.
         fetch("/api/v1/hosts/storage").then(r => r.ok ? r.json() : {}),
-      ]).then(([hosts, ev, storage]: [any[], { version?: string }, Record<string, any>]) => {
+      ]).then(([hosts, ev, storage]: [MonitoredHost[], { version?: string }, Record<string, DiskUsage>]) => {
         if (cancelled) return;
-        const expected = ev?.version || "";
-        let hostWarn = false;
-        let poolWarn = false;
-        const stale: string[] = [];
-        for (const h of hosts) {
-          for (const w of (h.storage_warnings || [])) {
-            if (w.mount?.includes("/shared") && h.storage_pool_id) poolWarn = true;
-            else if (w.level === "warning" || w.level === "critical") hostWarn = true;
-          }
-          const si = storage?.[h.id];
-          const usedPct = si?.used_pct ?? si?.partitions?.find((p: any) => p.mount?.includes("troshka"))?.used_pct
-            ?? si?.partitions?.[0]?.used_pct;
-          if (typeof usedPct === "number" && usedPct >= 80) hostWarn = true;
-          // A connected host running an agent that doesn't match the current
-          // troshkad source needs an update/reinstall.
-          if (expected && h.agent_status === "connected" && h.agent_version && h.agent_version !== expected) {
-            stale.push(h.id);
-          }
-        }
-        setNavWarnings({ hosts: hostWarn, pools: poolWarn });
+        const { warnings, stale } = summarizeHosts(hosts, ev?.version || "", storage);
+        setNavWarnings(warnings);
         setStaleHostIds(stale);
         if (stale.length === 0 && !agentUpdating) {
           setDismissedAgentBanner(false);
@@ -198,7 +234,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => { cancelled = true; clearInterval(iv); };
   }, [isAdmin, agentUpdating]);
 
-  const [updateStatus, setUpdateStatus] = useState<any>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [applying, setApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
   // Dev mode: restart RQ workers alongside the backend so deploy/job code
@@ -228,45 +264,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     (updateStatus?.mode === "image" || updateStatus?.mode === "compose"
       ? JSON.stringify(updateStatus?.components || {})
       : null);
-  const showUpdate =
-    isAdmin &&
-    updateStatus &&
-    updateStatus.mode !== "disabled" &&
-    (updateStatus.up_to_date === false || updateStatus.rolling_out || updateStatus.rollout_error) &&
-    updateTargetKey != null &&
-    (dismissedKey !== updateTargetKey || !!updateStatus.rollout_error || !!updateStatus.rolling_out);
-  const updateBusy = applying || updateStatus?.rolling_out;
+  const showUpdate = shouldShowUpdate(isAdmin, updateStatus, updateTargetKey, dismissedKey);
+  const updateBusy = applying || !!updateStatus?.rolling_out;
   const shortDigest = (d?: string) =>
     d ? d.replace(/^sha256:/, "").slice(0, 12) : "—";
   const updateVersions: string[] = updateStatus?.components
     ? Object.entries(updateStatus.components).map(
-        ([name, v]: [string, any]) =>
+        ([name, v]) =>
           `${name} ${shortDigest(v?.current)} → ${shortDigest(v?.available)}`,
       )
     : [];
 
-  const applyUpdate = () => {
-    if (applying) return;
-    setApplying(true);
-    setUpdateError(null);
-    fetch("/api/v1/update/apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restart_workers: restartWorkers }),
-    })
-      .then((r) => {
-        if (!r.ok) {
-          setApplying(false);
-          setUpdateError(
-            r.status === 403
-              ? "Update failed: missing permissions to restart deployments."
-              : `Update failed (${r.status}). Check backend logs.`,
-          );
-          return;
-        }
-        // Success: the backend restarts (backendDown banner covers the gap).
-        // Poll until it's back and current, then stop the spinner. Bounded by a
-        // 90s budget so the button can never spin indefinitely.
+  const pollAppliedUpdate = () => {
         const startedAt = Date.now();
         const poll = () => {
           fetch("/api/v1/update/status")
@@ -300,6 +309,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             });
         };
         setTimeout(poll, 3000);
+  };
+
+  const applyUpdate = () => {
+    if (applying) return;
+    setApplying(true);
+    setUpdateError(null);
+    fetch("/api/v1/update/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restart_workers: restartWorkers }),
+    })
+      .then((r) => {
+        if (!r.ok) {
+          setApplying(false);
+          setUpdateError(
+            r.status === 403
+              ? "Update failed: missing permissions to restart deployments."
+              : `Update failed (${r.status}). Check backend logs.`,
+          );
+          return;
+        }
+        // Success: the backend restarts (backendDown banner covers the gap).
+        // Poll until it's back and current, then stop the spinner. Bounded by a
+        // 90s budget so the button can never spin indefinitely.
+        pollAppliedUpdate();
       })
       .catch(() => {
         setApplying(false);
@@ -307,7 +341,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       });
   };
   const dismissUpdate = () => {
-    localStorage.setItem("troshka-update-dismissed", updateTargetKey);
+    if (updateTargetKey !== null) localStorage.setItem("troshka-update-dismissed", updateTargetKey);
     setDismissedKey(updateTargetKey);
   };
 
@@ -342,6 +376,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { label: "Job Queue", path: "/admin/queue" },
   ];
 
+  function renderContent() {
+    if (!authChecked && !isConsolePage) return null;
+    if (isDenied) return (
+            <div style={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              height: "60vh",
+              flexDirection: "column",
+              gap: "1rem",
+            }}>
+              <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>{user?.detail}</h1>
+            </div>
+          );
+    return children;
+  }
+
   const masthead = (
     <Masthead>
       <MastheadMain>
@@ -352,12 +403,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <BarsIcon style={{ fontSize: "1.5rem" }} />
               </PageToggleButton>
             )}
+            <Link href="/" aria-label="Troshka home">
             <img
               src={isDark ? "/images/troshka-logo-dark-200.png" : "/images/troshka-logo-light-200.png"}
               alt="Troshka"
               style={{ height: "80px", cursor: "pointer" }}
-              onClick={() => router.push("/")}
             />
+            </Link>
           </div>
         </MastheadBrand>
       </MastheadMain>
@@ -376,7 +428,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, opacity: 0.85 }}>
                       <UserIcon />
                       {user.email}
-                      {(user as any).auth_source !== "sso" && (
+                      {user.auth_source !== "sso" && (
                         <select
                           value={user.role}
                           onChange={async (e) => {
@@ -399,8 +451,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                             borderRadius: 4,
                             border: "none",
                             cursor: "pointer",
-                            background: user.role === "admin" ? "rgba(108,99,255,0.2)" : user.role === "operator" ? "rgba(251,191,36,0.2)" : "rgba(148,163,184,0.2)",
-                            color: user.role === "admin" ? "#a78bfa" : user.role === "operator" ? "#fbbf24" : "#94a3b8",
+                            ...roleColors(user.role),
                           }}
                         >
                           <option value="admin">admin</option>
@@ -421,7 +472,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <ToolbarItem>
                   <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, opacity: 0.85 }}>
                     <UserIcon />
-                    {(user as any).email || ""}
+                    {user?.email || ""}
                   </span>
                 </ToolbarItem>
               )}
@@ -536,11 +587,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </span>
               )}
               <Button variant="primary" isDisabled={updateBusy} isLoading={updateBusy} onClick={applyUpdate}>
-                {updateBusy
-                  ? "Update in progress…"
-                  : updateStatus?.mode === "dev"
-                    ? "Restart backend"
-                    : "Apply update"}
+                {updateButtonLabel(updateBusy, updateStatus?.mode)}
               </Button>
               {updateStatus?.mode === "dev" && (
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
@@ -550,7 +597,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     disabled={updateBusy}
                     onChange={(e) => setRestartWorkers(e.target.checked)}
                   />
-                  Also restart workers
+                  {"Also restart workers"}
                 </label>
               )}
               {updateError && (
@@ -621,18 +668,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Button variant="link" isInline isDisabled={agentUpdating} onClick={() => { setDismissedAgentBanner(true); setAgentUpdateError(null); }}>Dismiss</Button>
             </div>
           )}
-          {!authChecked && !isConsolePage ? null : isDenied ? (
-            <div style={{
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              height: "60vh",
-              flexDirection: "column",
-              gap: "1rem",
-            }}>
-              <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>{(user as any).detail}</h1>
-            </div>
-          ) : children}
+          {renderContent()}
           <ConfirmHost />
         </Page>
       </body>

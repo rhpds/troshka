@@ -292,7 +292,7 @@ class TestApplyManifest:
         apps = MagicMock()
         exc = _make_api_exception(403, "Forbidden")
         apps.create_namespaced_deployment.side_effect = exc
-        with pytest.raises(Exception):
+        with pytest.raises(ApiException):
             _apply_manifest("Deployment", "dep", "ns", {}, core, apps)
 
 
@@ -781,9 +781,10 @@ class TestAllocateEip:
 
         provider = _make_provider()
         driver = KubeVirtDriver()
+        exception_mock = MagicMock()
         with pytest.raises(TimeoutError, match="MetalLB did not assign IP"):
             driver.allocate_eip(
-                provider, MagicMock(), "eip-id-1234", project_id="proj-1234"
+                provider, exception_mock, "eip-id-1234", project_id="proj-1234"
             )
 
 

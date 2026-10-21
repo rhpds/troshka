@@ -14,7 +14,7 @@ const FAILED = new Set(["error", "timeout", "cancelled"]);
 export function shortRoleLabel(roleFqcn: string | null | undefined): string {
   if (!roleFqcn) return "";
   const parts = roleFqcn.split(".");
-  return parts[parts.length - 1] || roleFqcn;
+  return parts.at(-1) || roleFqcn;
 }
 
 /** Normalize template workload entries (string or {role|name}) to FQCN list. */

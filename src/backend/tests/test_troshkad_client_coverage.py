@@ -104,8 +104,9 @@ class TestTroshkadRequestRaw(unittest.TestCase):
         pool.urlopen.return_value = _mock_response({"error": "bad request"}, status=400)
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request_raw(FakeHost(), "POST", "/fail")
+            troshkad_request_raw(exception_host, "POST", "/fail")
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.response["error"], "bad request")
 
@@ -118,8 +119,9 @@ class TestTroshkadRequestRaw(unittest.TestCase):
         pool.urlopen.return_value = resp
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request_raw(FakeHost(), "GET", "/fail")
+            troshkad_request_raw(exception_host, "GET", "/fail")
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(ctx.exception.response["error"], "Internal Server Error")
 
@@ -129,8 +131,9 @@ class TestTroshkadRequestRaw(unittest.TestCase):
         pool.urlopen.side_effect = SSLError("fingerprint mismatch")
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request_raw(FakeHost(), "GET", "/path")
+            troshkad_request_raw(exception_host, "GET", "/path")
         self.assertIn("Certificate verification failed", str(ctx.exception))
 
     @patch("app.services.troshkad_client._get_pool")
@@ -141,8 +144,9 @@ class TestTroshkadRequestRaw(unittest.TestCase):
         )
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request_raw(FakeHost(), "GET", "/path")
+            troshkad_request_raw(exception_host, "GET", "/path")
         self.assertIn("Cannot connect", str(ctx.exception))
 
     @patch("app.services.troshkad_client._get_pool")
@@ -151,8 +155,9 @@ class TestTroshkadRequestRaw(unittest.TestCase):
         pool.urlopen.side_effect = RuntimeError("unexpected")
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request_raw(FakeHost(), "GET", "/path")
+            troshkad_request_raw(exception_host, "GET", "/path")
         self.assertIn("troshkad request failed", str(ctx.exception))
 
 
@@ -202,9 +207,10 @@ class TestTroshkadUploadToVm(unittest.TestCase):
             "status": "failed",
             "result": {"error": "disk full"},
         }
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
             troshkad_upload_to_vm(
-                FakeHost(),
+                exception_host,
                 b"data",
                 "proj-1",
                 "192.168.1.10",
@@ -345,8 +351,9 @@ class TestWaitForJob(unittest.TestCase):
             "status": "running",
             "output": [],
         }
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            wait_for_job(FakeHost(), "j1", timeout=50)
+            wait_for_job(exception_host, "j1", timeout=50)
         self.assertIn("timed out", str(ctx.exception))
 
     @patch("app.services.troshkad_client.time.sleep")
@@ -361,8 +368,9 @@ class TestWaitForJob(unittest.TestCase):
     @patch("app.services.troshkad_client.poll_job")
     def test_consecutive_failures_exceed_max(self, mock_poll, mock_sleep):
         mock_poll.side_effect = TroshkadError("Cannot connect", status_code=None)
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError):
-            wait_for_job(FakeHost(), "j1", timeout=9999, poll_interval=0)
+            wait_for_job(exception_host, "j1", timeout=9999, poll_interval=0)
 
     @patch("app.services.troshkad_client.time.sleep")
     @patch("app.services.troshkad_client.poll_job")
@@ -657,8 +665,9 @@ class TestReconfigureVm(unittest.TestCase):
             "status": "failed",
             "result": {"error": "cannot hotplug"},
         }
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            reconfigure_vm(FakeHost(), "test-domain", vcpus=128)
+            reconfigure_vm(exception_host, "test-domain", vcpus=128)
         self.assertIn("Reconfigure failed", str(ctx.exception))
 
 
@@ -765,8 +774,9 @@ class TestCheckDiskUsagePartitions(unittest.TestCase):
         pool.urlopen.side_effect = SSLError("persistent")
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError):
-            check_disk_usage(FakeHost(), retries=3)
+            check_disk_usage(exception_host, retries=3)
         self.assertEqual(pool.urlopen.call_count, 3)
 
 
@@ -794,8 +804,9 @@ class TestCancelJob(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class TestAllowDisconnected(unittest.TestCase):
     def test_disconnected_host_raises_without_flag(self):
+        exception_host = DisconnectedHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request(DisconnectedHost(), "GET", "/health")
+            troshkad_request(exception_host, "GET", "/health")
         self.assertIn("disconnected", str(ctx.exception))
 
     @patch("app.services.troshkad_client._get_pool")
@@ -850,8 +861,9 @@ class TestExecuteSingleRequest(unittest.TestCase):
         resp.data = b"Bad Gateway"
         pool.urlopen.return_value = resp
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            _execute_single_request(pool, FakeHost(), "GET", "/path", None, 30)
+            _execute_single_request(pool, exception_host, "GET", "/path", None, 30)
         self.assertEqual(ctx.exception.status_code, 502)
         self.assertEqual(ctx.exception.response["error"], "Bad Gateway")
 
@@ -862,9 +874,10 @@ class TestExecuteSingleRequest(unittest.TestCase):
         resp.data = json.dumps({"detail": "invalid params"}).encode()
         pool.urlopen.return_value = resp
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
             _execute_single_request(
-                pool, FakeHost(), "POST", "/path", {"key": "val"}, 30
+                pool, exception_host, "POST", "/path", {"key": "val"}, 30
             )
         self.assertEqual(ctx.exception.status_code, 422)
         self.assertEqual(ctx.exception.response["detail"], "invalid params")

@@ -147,9 +147,10 @@ class TestMaterializeCephRestore:
             patch("handlers.project.client.CoreV1Api"),
             patch("handlers.project.client.BatchV1Api"),
         ):
+            exception_operation = _materialize_ceph_restore(custom_api, "ns1", ceph_spec, {}, body)
             with pytest.raises(RuntimeError, match="failed to import"):
                 asyncio.run(
-                    _materialize_ceph_restore(custom_api, "ns1", ceph_spec, {}, body)
+                    exception_operation
                 )
         assert "restore" not in ceph_spec
 

@@ -2,8 +2,13 @@ import type { Edge, Node } from "@xyflow/react";
 import type { ClusterConfig } from "@/stores/canvasStore";
 import { getDhcpRange, ipToNum } from "@/lib/dhcpIpAssignment";
 
+function textField(data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function defaultCephLabIp(cidr: string): string {
-  if (!cidr || !cidr.includes("/")) return "";
+  if (!cidr?.includes("/")) return "";
   const octets = cidr.split("/")[0].split(".");
   if (octets.length !== 4) return "";
   octets[3] = "4";
@@ -32,19 +37,9 @@ function findNicNetwork(
   return null;
 }
 
-export function collectIpsOnNetwork(
-  nodes: Node[],
-  edges: Edge[],
-  clusters: ClusterConfig[],
-  networkId: string,
-): Map<string, string> {
-  const claimed = new Map<string, string>();
-  const netNode = nodes.find((n) => n.id === networkId && n.type === "networkNode");
-  if (!netNode) return claimed;
-
-  const netData = netNode.data as Record<string, unknown>;
-  const cidr = String(netData.cidr || "");
-  const hosts = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+function claimNetworkAddresses(netData: Record<string, unknown>, claimed: Map<string, string>): void {
+  const cidr = textField(netData, "cidr");
+  const hosts = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr);
   if (hosts) {
     const base =
       (Number.parseInt(hosts[1], 10) << 24) +
@@ -73,44 +68,51 @@ export function collectIpsOnNetwork(
     if (ip) claimed.set(ip, `DNS record '${rec.name || "record"}'`);
   }
 
-  const lbIp = String(netData.lbIp || "").trim();
+  const lbIp = textField(netData, "lbIp").trim();
   if (lbIp) claimed.set(lbIp, "load balancer");
+}
 
+function claimNicAddresses(nodes: Node[], edges: Edge[], networkId: string, claimed: Map<string, string>): void {
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
   for (const node of nodes) {
     if (node.type !== "vmNode" && node.type !== "containerNode") continue;
     const data = node.data as Record<string, unknown>;
-    const name = String(data.name || data.label || node.id.slice(0, 8));
+    const name = textField(data, "name") || textField(data, "label") || node.id.slice(0, 8);
     for (const nic of (data.nics as Array<{ id: string; ip?: string }>) || []) {
       if (findNicNetwork(node.id, nic.id, edges, nodesById) !== networkId) continue;
       const ip = String(nic.ip || "").trim();
       if (ip) claimed.set(ip, `VM/container '${name}'`);
     }
   }
+}
 
+function claimClusterVips(data: Record<string, unknown>, claimed: Map<string, string>): void {
+  const name = textField(data, "name") || "cluster";
+  for (const [key, label] of [["apiVip", "API VIP"], ["ingressVip", "ingress VIP"]] as const) {
+    const ip = textField(data, key).trim();
+    if (ip) claimed.set(ip, `cluster '${name}' ${label}`);
+  }
+}
+
+export function collectIpsOnNetwork(
+  nodes: Node[],
+  edges: Edge[],
+  clusters: ClusterConfig[],
+  networkId: string,
+): Map<string, string> {
+  const claimed = new Map<string, string>();
+  const netNode = nodes.find((n) => n.id === networkId && n.type === "networkNode");
+  if (!netNode) return claimed;
+  claimNetworkAddresses(netNode.data, claimed);
+  claimNicAddresses(nodes, edges, networkId, claimed);
   for (const cluster of clusters) {
     if (!(cluster.networkIds || []).includes(networkId)) continue;
-    const cname = cluster.name || "cluster";
-    for (const [key, label] of [
-      ["apiVip", "API VIP"],
-      ["ingressVip", "ingress VIP"],
-    ] as const) {
-      const ip = String(cluster[key] || "").trim();
-      if (ip) claimed.set(ip, `cluster '${cname}' ${label}`);
-    }
+    claimClusterVips({ name: cluster.name, apiVip: cluster.apiVip, ingressVip: cluster.ingressVip }, claimed);
   }
 
   for (const node of nodes) {
     if (node.type !== "clusterNode") continue;
-    const data = node.data as Record<string, unknown>;
-    const cname = String(data.name || "cluster");
-    for (const [key, label] of [
-      ["apiVip", "API VIP"],
-      ["ingressVip", "ingress VIP"],
-    ] as const) {
-      const ip = String(data[key] || "").trim();
-      if (ip) claimed.set(ip, `cluster '${cname}' ${label}`);
-    }
+    claimClusterVips(node.data, claimed);
   }
 
   return claimed;
@@ -126,7 +128,7 @@ function labIpInDhcpPool(labIp: string, netData: Record<string, unknown>): boole
 
 function ipInCidr(ip: string, cidr: string): boolean {
   const ipNum = ipToNum(ip);
-  const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+  const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr);
   if (ipNum === null || !match) return false;
   const base =
     (Number.parseInt(match[1], 10) << 24) +
@@ -145,7 +147,6 @@ export function validateCephLabIp(
   cephData: { networkRef?: string; labIp?: string; name?: string; label?: string },
 ): string[] {
   const issues: string[] = [];
-  const cephName = cephData.name || cephData.label || "Ceph Storage";
   const networkRef = String(cephData.networkRef || "").trim();
   const netNode = nodes.find((n) => n.id === networkRef && n.type === "networkNode");
   if (!networkRef || !netNode) {
@@ -154,8 +155,8 @@ export function validateCephLabIp(
   }
 
   const netData = netNode.data as Record<string, unknown>;
-  const netLabel = String(netData.name || networkRef);
-  const cidr = String(netData.cidr || "");
+  const netLabel = textField(netData, "name") || networkRef;
+  const cidr = textField(netData, "cidr");
   const labIp = String(cephData.labIp || "").trim() || defaultCephLabIp(cidr);
   if (!labIp) {
     issues.push("Lab IP is required");

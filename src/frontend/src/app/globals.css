@@ -637,7 +637,7 @@ html:not(.pf-v6-theme-dark) {
 }
 
 html:not(.pf-v6-theme-dark) .vm-node-warning {
-  background: rgba(202, 138, 4, 0.12);
+  background: #fef3c7;
   color: #92400e;
 }
 

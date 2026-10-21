@@ -33,8 +33,9 @@ def _template(disks=None):
     ],
 )
 def test_inherited_boot_disk_mount_is_rejected(disks):
+    exception_template = _template(disks)
     with pytest.raises(ValueError, match="boot.*disk|disk.*boot"):
-        generate_topology_from_template(_template(disks))
+        generate_topology_from_template(exception_template)
 
 
 def test_first_disk_fallback_cannot_be_formatted_as_extra_mount():
@@ -184,8 +185,9 @@ def test_conflicting_devices_for_mount_within_role_are_rejected():
             {"size_gb": 250, "ocp_mount": "/var/lib/containers"},
         ],
     }
+    topology = generate_topology_from_template(template)
     with pytest.raises(ValueError, match="Conflicting.*mount"):
-        _mount_manifests(generate_topology_from_template(template))
+        _mount_manifests(topology)
 
 
 def test_mount_on_one_bus_cannot_format_another_same_role_vm_root():

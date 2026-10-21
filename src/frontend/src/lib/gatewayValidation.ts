@@ -140,10 +140,14 @@ function outboundEntriesIncludePort(entries: string[], port: string): boolean {
   );
 }
 
+export function gatewayOutboundPorts(gatewayData: Record<string, unknown>): string {
+  return typeof gatewayData.outboundPorts === "string" ? gatewayData.outboundPorts : "";
+}
+
 export function gatewayAllowsDnsUpstream(gatewayData: Record<string, unknown>): boolean {
-  const policy = String(gatewayData.outboundPolicy || "allow-all");
+  const policy = gatewayData.outboundPolicy || "allow-all";
   if (policy !== "restrict") return true;
-  const entries = parseOutboundPortEntries(String(gatewayData.outboundPorts || ""));
+  const entries = parseOutboundPortEntries(gatewayOutboundPorts(gatewayData));
   return outboundEntriesIncludePort(entries, "53");
 }
 
@@ -188,7 +192,12 @@ export function gatewayConnectedDnsNetworkName(nodes: Node[], edges: Edge[]): st
     const sub = d.subtype as string | undefined;
     if (sub && !["network", "dhcp", "dns"].includes(sub)) continue;
     if (!d.dns && sub !== "dns") continue;
-    return String(d.name || d.label || "");
+    return networkName(d);
   }
   return "";
+}
+
+function networkName(data: Record<string, unknown>): string {
+  if (typeof data.name === "string" && data.name) return data.name;
+  return typeof data.label === "string" ? data.label : "";
 }

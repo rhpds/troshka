@@ -213,9 +213,11 @@ class TestPollJobWithProgress:
 
         # Return running forever — the real time.time() will exceed deadline quickly
         mock_poll.return_value = {"status": "running", "output": []}
+        exception_mock = MagicMock()
+        exception_mock_2 = MagicMock()
         with pytest.raises(TroshkadError, match="timed out"):
             _poll_job_with_progress(
-                MagicMock(), "job-1", MagicMock(), timeout=0, poll_interval=0
+                exception_mock, "job-1", exception_mock_2, timeout=0, poll_interval=0
             )
 
     @patch("app.services.troshkad_client.poll_job")

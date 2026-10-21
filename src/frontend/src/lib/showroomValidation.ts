@@ -24,7 +24,7 @@ export const SHOWROOM_GATEWAY_EDGE_STYLE = {
 export const SHOWROOM_GATEWAY_EDGE_TYPE = "step";
 
 export function isShowroomContainer(node: Node | undefined): boolean {
-  if (!node || node.type !== "containerNode") return false;
+  if (node?.type !== "containerNode") return false;
   const d = node.data as Record<string, unknown>;
   return !!(d.isShowroom || d.name === "showroom");
 }
@@ -38,7 +38,7 @@ export function isGatewayNode(node: Node | undefined): boolean {
 
 /** Lab network node (not router/gateway/load balancer). */
 export function isLabNetworkNode(node: Node | undefined): boolean {
-  if (!node || node.type !== "networkNode") return false;
+  if (node?.type !== "networkNode") return false;
   const sub = (node.data as Record<string, unknown>).subtype;
   return sub !== "router" && sub !== "gateway" && sub !== "loadbalancer";
 }
@@ -50,11 +50,17 @@ export function isCephStorageNetworkNode(node: Node | undefined): boolean {
   return networkType !== "bmc";
 }
 
+function showroomEndpoint(source: Node, target: Node): Node | undefined {
+  if (isShowroomContainer(source)) return source;
+  if (isShowroomContainer(target)) return target;
+  return undefined;
+}
+
 export function isShowroomLabNetworkEdge(edge: Edge, nodes: Node[]): boolean {
   const source = nodes.find((n) => n.id === edge.source);
   const target = nodes.find((n) => n.id === edge.target);
   if (!source || !target) return false;
-  const showroom = isShowroomContainer(source) ? source : isShowroomContainer(target) ? target : undefined;
+  const showroom = showroomEndpoint(source, target);
   if (!showroom) return false;
   const other = source.id === showroom.id ? target : source;
   return isLabNetworkNode(other);
@@ -64,7 +70,7 @@ function isInvalidShowroomMountEdge(edge: Edge, nodes: Node[]): boolean {
   const source = nodes.find((n) => n.id === edge.source);
   const target = nodes.find((n) => n.id === edge.target);
   if (!source || !target) return false;
-  const showroom = isShowroomContainer(source) ? source : isShowroomContainer(target) ? target : undefined;
+  const showroom = showroomEndpoint(source, target);
   if (!showroom) return false;
   const handle =
     source.id === showroom.id ? edge.sourceHandle || "" : edge.targetHandle || "";
@@ -175,7 +181,7 @@ export function ensureShowroomGatewayEdge(nodes: Node[], edges: Edge[]): Edge[] 
 }
 
 export function isDnsEnabledLabNetwork(node: Node | undefined): boolean {
-  if (!node || node.type !== "networkNode") return false;
+  if (node?.type !== "networkNode") return false;
   const d = node.data as Record<string, unknown>;
   const sub = d.subtype as string | undefined;
   if (sub && !["network", "dhcp", "dns"].includes(sub)) return false;
@@ -193,12 +199,12 @@ export function getShowroomReadiness(nodes: Node[], edges: Edge[]): ShowroomRead
 
   const data = showroom.data as Record<string, unknown>;
   const buildContent = data.buildContent !== false;
-  const contentRepo = String(data.contentRepo || "").trim();
+  const contentRepo = typeof data.contentRepo === "string" ? data.contentRepo.trim() : "";
   const hasContentRepo = !buildContent || contentRepo.length > 0;
   const hasGateway = !!getGatewayNode(nodes);
   const dnsNetwork = effectiveShowroomDnsNetwork(
     nodes,
-    String(data.dnsNetwork || ""),
+    typeof data.dnsNetwork === "string" ? data.dnsNetwork : "",
     edges,
   );
   const dnsNetworkNode = dnsNetwork

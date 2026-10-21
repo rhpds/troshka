@@ -28,7 +28,7 @@ function stripDeployOnlyClusterFields(dc: ClusterConfig): ClusterConfig {
 
 /** Infer cluster id from a generated member VM id (`<clusterId>-cp-0`, etc.). */
 export function inferClusterIdFromMemberId(vmId: string): string | null {
-  const m = vmId.match(/^(.+)-(cp|worker)-\d+$/);
+  const m = /^(.+)-(cp|worker)-\d+$/.exec(vmId);
   return m ? m[1] : null;
 }
 
@@ -96,7 +96,7 @@ export function reconcileCanvasClusters(
   const hasReplacement = hasRealCanvas || strippedDeployed.length > 0;
   const dropGhost = hasGhost && hasReplacement;
 
-  let base: ClusterConfig[] = dropGhost
+  const base: ClusterConfig[] = dropGhost
     ? canvasClusters.filter((c) => !isLegacyMigrationGhost(c))
     : [...canvasClusters];
 
@@ -115,15 +115,7 @@ export function reconcileCanvasClusters(
       (n.data as Record<string, unknown>)?.clusterId,
   );
 
-  for (const boundary of realBoundaryNodes) {
-    const d = boundary.data as Record<string, unknown>;
-    const cid = d.clusterId as string;
-    if (base.some((c) => c.id === cid || c.nodeId === boundary.id)) continue;
-    const dep = strippedDeployed.find(
-      (c) => c.id === cid || c.nodeId === boundary.id,
-    );
-    base.push(clusterConfigFromBoundaryNode(boundary, dep));
-  }
+  addBoundaryClusters(base, realBoundaryNodes, strippedDeployed);
 
   if (!hasRealCanvas && base.length === 0 && !hasGhost) {
     return canvasClusters;
@@ -132,10 +124,27 @@ export function reconcileCanvasClusters(
   const filtered = dropGhost
     ? base.filter((c) => !isLegacyMigrationGhost(c))
     : base;
-  for (const boundary of realBoundaryNodes) {
+  syncBoundaryCounts(filtered, realBoundaryNodes);
+  return filtered;
+}
+
+function addBoundaryClusters(base: ClusterConfig[], boundaries: Node[], deployed: ClusterConfig[]): void {
+  for (const boundary of boundaries) {
     const d = boundary.data as Record<string, unknown>;
     const cid = d.clusterId as string;
-    const cluster = filtered.find((c) => c.id === cid);
+    if (base.some((c) => c.id === cid || c.nodeId === boundary.id)) continue;
+    const dep = deployed.find(
+      (c) => c.id === cid || c.nodeId === boundary.id,
+    );
+    base.push(clusterConfigFromBoundaryNode(boundary, dep));
+  }
+}
+
+function syncBoundaryCounts(clusters: ClusterConfig[], boundaries: Node[]): void {
+  for (const boundary of boundaries) {
+    const d = boundary.data as Record<string, unknown>;
+    const cid = d.clusterId as string;
+    const cluster = clusters.find((c) => c.id === cid);
     if (!cluster) continue;
     if (d.controlPlane !== undefined && d.controlPlane !== null) {
       cluster.controlPlane = d.controlPlane as number;
@@ -144,7 +153,14 @@ export function reconcileCanvasClusters(
       cluster.workers = d.workers as number;
     }
   }
-  return filtered;
+}
+
+function soleSnoCluster(clusters: ClusterConfig[], deployedIds: Set<string>): string | undefined {
+  const sno = clusters.filter((c) => c.type === "sno" && !isLegacyMigrationGhost(c));
+  const deployedSno = sno.filter((c) => deployedIds.has(c.id));
+  if (deployedSno.length === 1) return deployedSno[0].id;
+  if (sno.length === 1) return sno[0].id;
+  return undefined;
 }
 
 function resolveMemberClusterId(
@@ -165,20 +181,16 @@ function resolveMemberClusterId(
     cid === LEGACY_GHOST_CLUSTER_ID &&
     clusters.some((c) => !isLegacyMigrationGhost(c))
   ) {
-    const name = String(d.name || "");
+    const name = typeof d.name === "string" ? d.name : "";
     if (/^cp-\d+$/.test(name)) {
-      const sno = clusters.filter(
-        (c) => c.type === "sno" && !isLegacyMigrationGhost(c),
-      );
-      const deployedSno = sno.filter((c) => deployedIds.has(c.id));
-      if (deployedSno.length === 1) return deployedSno[0].id;
-      if (sno.length === 1) return sno[0].id;
+      const snoId = soleSnoCluster(clusters, deployedIds);
+      if (snoId) return snoId;
     }
     if (inferred) return inferred;
   }
 
   if (cid && byId.has(cid)) return cid;
-  return inferred && byId.has(inferred) ? inferred : null;
+  return null;
 }
 
 /** Point RHCOS members (and their hidden disks) at the right cluster boundary. */

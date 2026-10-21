@@ -2196,9 +2196,10 @@ class TestCreateDeploymentWithStaleCleanup:
         apps_api = MagicMock()
         apps_api.create_namespaced_deployment.side_effect = ApiException(status=500)
 
+        exception_operation = _create_deployment_with_stale_cleanup(apps_api, "ns", "dep-1", {})
         with pytest.raises(ApiException):
             asyncio.run(
-                _create_deployment_with_stale_cleanup(apps_api, "ns", "dep-1", {})
+                exception_operation
             )
 
 
@@ -2906,6 +2907,7 @@ class TestCreateNetworkCrs:
         networks = [{"id": "net12345678", "cidr": "10.0.0.0/24"}]
         patch = MagicMock()
 
+        exception_body = self._make_body()
         with pytest.raises(ApiException):
             _create_network_crs(
                 custom_api,
@@ -2913,7 +2915,7 @@ class TestCreateNetworkCrs:
                 {},
                 "test-ns",
                 "proj1",
-                self._make_body(),
+                exception_body,
                 patch,
             )
 
@@ -3738,8 +3740,9 @@ class TestEnsureDeploymentGone:
         apps_api = MagicMock()
         apps_api.delete_namespaced_deployment.side_effect = ApiException(status=500)
 
+        exception_operation = _ensure_deployment_gone(apps_api, "ns1", "dep-1")
         with pytest.raises(ApiException):
-            asyncio.run(_ensure_deployment_gone(apps_api, "ns1", "dep-1"))
+            asyncio.run(exception_operation)
 
 
 class TestCleanupRecertJob:
@@ -4245,15 +4248,16 @@ class TestEnsureGoldenPvc:
             status=404
         )
 
-        with pytest.raises((Exception, TypeError)):
-            asyncio.run(
-                _ensure_golden_pvc(
+        exception_operation = _ensure_golden_pvc(
                     custom_api,
                     core_api,
                     "library/abc.qcow2",
                     20,
                     {"bucket": "b"},
                 )
+        with pytest.raises((Exception, TypeError)):
+            asyncio.run(
+                exception_operation
             )
 
 
@@ -4320,11 +4324,12 @@ class TestCreateOrAdoptKubevirtVm:
         )
         kv_vm = {"metadata": {"name": "troshka-vm-abc"}}
 
-        with pytest.raises(ApiException):
-            asyncio.run(
-                _create_or_adopt_kubevirt_vm(
+        exception_operation = _create_or_adopt_kubevirt_vm(
                     custom_api, "ns1", kv_vm, "troshka-vm-abc", ""
                 )
+        with pytest.raises(ApiException):
+            asyncio.run(
+                exception_operation
             )
 
 
@@ -6483,9 +6488,7 @@ class TestProvisionDiskPvcs:
         patch_obj.status = {}
 
         # conftest mocks kopf as MagicMock — TemporaryError isn't a real Exception.
-        with pytest.raises((Exception, TypeError)):
-            asyncio.run(
-                _provision_disk_pvcs(
+        exception_operation = _provision_disk_pvcs(
                     spec,
                     "vm-1",
                     "ns1",
@@ -6496,6 +6499,9 @@ class TestProvisionDiskPvcs:
                     {},
                     patch_obj,
                 )
+        with pytest.raises((Exception, TypeError)):
+            asyncio.run(
+                exception_operation
             )
         assert "retry" in patch_obj.status.get("message", "").lower()
         vm_mod.kopf.TemporaryError.assert_called()
@@ -6956,9 +6962,7 @@ class TestSnapshotAndExportDisk:
         core_api = MagicMock()
         batch_api = MagicMock()
 
-        with pytest.raises(ApiException):
-            asyncio.run(
-                _snapshot_and_export_disk(
+        exception_operation = _snapshot_and_export_disk(
                     self._make_disk_info(),
                     {"bucket": "b"},
                     custom_api,
@@ -6967,6 +6971,9 @@ class TestSnapshotAndExportDisk:
                     "ns1",
                     "proj1",
                 )
+        with pytest.raises(ApiException):
+            asyncio.run(
+                exception_operation
             )
 
         mock_thaw.assert_called_once_with("myvm", "ns1")
@@ -7524,8 +7531,9 @@ class TestEnsureGoldenPvcExtended:
         )
         core_api.create_namespace.side_effect = ApiException(status=500)
 
+        exception_operation = _ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {})
         with pytest.raises(ApiException):
-            asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {}))
+            asyncio.run(exception_operation)
 
     def test_dv_409_is_swallowed(self):
         from handlers.vm import _ensure_golden_pvc
@@ -7556,8 +7564,9 @@ class TestEnsureGoldenPvcExtended:
         # Reading the existing golden DataVolume errors with a non-404 -> propagate.
         custom_api.get_namespaced_custom_object.side_effect = ApiException(status=500)
 
+        exception_operation = _ensure_golden_pvc(custom_api, core_api, "lib/b.qcow2", 20, {})
         with pytest.raises(ApiException):
-            asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/b.qcow2", 20, {}))
+            asyncio.run(exception_operation)
 
     def test_default_secret_name_when_none(self):
         from handlers.vm import _ensure_golden_pvc
@@ -8935,8 +8944,9 @@ class TestEnsureDeploymentGoneNon404Error:
         apps_api = MagicMock()
         apps_api.delete_namespaced_deployment.side_effect = ApiException(status=500)
 
+        exception_operation = _ensure_deployment_gone(apps_api, "ns1", "dep-x")
         with pytest.raises(ApiException):
-            asyncio.run(_ensure_deployment_gone(apps_api, "ns1", "dep-x"))
+            asyncio.run(exception_operation)
 
     def test_timeout_path(self):
         from handlers.project import _ensure_deployment_gone
@@ -8960,8 +8970,9 @@ class TestEnsureDeploymentGoneNon404Error:
         apps_api.delete_namespaced_deployment.return_value = None
         apps_api.read_namespaced_deployment.side_effect = ApiException(status=500)
 
+        exception_operation = _ensure_deployment_gone(apps_api, "ns1", "dep-x")
         with pytest.raises(ApiException):
-            asyncio.run(_ensure_deployment_gone(apps_api, "ns1", "dep-x"))
+            asyncio.run(exception_operation)
 
     def test_read_404_during_wait_returns(self):
         from handlers.project import _ensure_deployment_gone
@@ -10349,8 +10360,9 @@ class TestRecreateVmDeleteRaises:
         custom_api = MagicMock()
         kv_vm = {"metadata": {"name": "kv-vm-1"}}
 
+        exception_operation = _recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1")
         with pytest.raises(RuntimeError, match="delete timed out"):
-            asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
+            asyncio.run(exception_operation)
 
         # create should never be called if delete fails
         custom_api.create_namespaced_custom_object.assert_not_called()
@@ -10372,8 +10384,9 @@ class TestRecreateVmDeleteRaises:
         )
         kv_vm = {"metadata": {"name": "kv-vm-1"}}
 
+        exception_operation = _recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1")
         with pytest.raises(ApiException):
-            asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
+            asyncio.run(exception_operation)
 
 
 # ---------------------------------------------------------------------------
@@ -10437,9 +10450,7 @@ class TestProvisionBlankDiskEdgeCases:
         }
         patch_obj = MagicMock()
 
-        with pytest.raises(ApiException):
-            asyncio.run(
-                _provision_disk_pvcs(
+        exception_operation = _provision_disk_pvcs(
                     spec,
                     "vm-1",
                     "ns1",
@@ -10450,6 +10461,9 @@ class TestProvisionBlankDiskEdgeCases:
                     {},
                     patch_obj,
                 )
+        with pytest.raises(ApiException):
+            asyncio.run(
+                exception_operation
             )
 
     @patch("handlers.vm._ensure_golden_pvc")

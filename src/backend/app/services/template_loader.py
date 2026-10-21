@@ -2704,6 +2704,22 @@ def _export_dns_records(records) -> list[dict]:
     return out
 
 
+def apply_topology_export_metadata(result: dict, topology: dict) -> None:
+    """Preserve legacy OCP metadata and shared project/pattern export settings."""
+    if "ocp" not in result:
+        ocp_meta = topology.get("ocpMeta", {})
+        if ocp_meta.get("clusterName"):
+            result["ocp"] = {
+                "name": ocp_meta["clusterName"],
+                "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
+            }
+    for key in ("disconnected", "bastion_services"):
+        if topology.get(key):
+            result[key] = topology[key]
+    if topology.get("dns_records"):
+        result["dns_records"] = sanitize_template_dns_records(topology["dns_records"])
+
+
 def sanitize_template_dns_records(records) -> list[dict]:
     """Public helper: keep only schema-allowed dns_records fields."""
     return _export_dns_records(records)

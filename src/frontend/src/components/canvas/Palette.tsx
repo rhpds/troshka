@@ -1,7 +1,5 @@
 "use client";
 
-import ModalBackdrop from "@/components/ModalBackdrop";
-
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
@@ -30,11 +28,12 @@ function formatMinutes(m: number): string {
   return `${min}m`;
 }
 
-function currentPresetLabel(minutes: number | null | undefined): string {
-  if (minutes == null) return "None";
-  const preset = TIMER_PRESETS.find(p => p.value === minutes);
-  return preset ? preset.label : formatMinutes(minutes);
-}
+type PaletteVmMetadata = {
+  name?: string; label?: string; ciCloudUserPassword?: string; bmcIp?: string;
+  bmcEnabled?: boolean; networkType?: string; bmcUsername?: string; bmcPassword?: string;
+  ip?: string; redfish_url?: string; redfish_url_ssl?: string; ipmi_address?: string;
+};
+type PaletteBmc = { username?: string; password?: string; vms?: Record<string, PaletteVmMetadata> };
 
 function toggleRevealed(prev: Set<string>, key: string) {
   const next = new Set(prev);
@@ -43,6 +42,19 @@ function toggleRevealed(prev: Set<string>, key: string) {
   return next;
 }
 
+function useBudgetDraft(budget: number | null | undefined) {
+  const [previous, setPrevious] = useState(budget);
+  const [draft, setDraft] = useState(budget == null ? "" : String(budget));
+  if (previous !== budget) {
+    setPrevious(budget);
+    setDraft(budget == null ? "" : String(budget));
+  }
+  return [draft, setDraft] as const;
+}
+
+function disabledPaletteItemTitle(type: string): string {
+  return type === "project-ceph" ? "One Ceph Storage per project" : "One showroom per project";
+}
 function SecretRow({
   rowLabel,
   value,
@@ -50,16 +62,18 @@ function SecretRow({
   revealed,
   onToggle,
   copyLabel,
-}: {
+}: Readonly<{
   rowLabel: string;
   value: string;
   revealKey?: string;
   revealed: Set<string>;
   onToggle: (key: string) => void;
   copyLabel?: string;
-}) {
+}>) {
   const masked = !!revealKey;
-  const shown = masked ? (revealed.has(revealKey) ? (value || "—") : "••••••") : value;
+  const revealedValue = value || "—";
+  const maskedValue = revealed.has(revealKey || "") ? revealedValue : "••••••";
+  const shown = masked ? maskedValue : value;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
       <span style={{ opacity: 0.5, width: 64, flexShrink: 0 }}>{rowLabel}</span>
@@ -74,13 +88,13 @@ function SecretRow({
   );
 }
 
-function BmcSecretRow(props: {
+function BmcSecretRow(props: Readonly<{
   rowLabel: string;
   value: string;
   revealKey?: string;
   revealed: Set<string>;
   onToggle: (key: string) => void;
-}) {
+}>) {
   return (
     <SecretRow
       {...props}
@@ -89,7 +103,7 @@ function BmcSecretRow(props: {
   );
 }
 
-function PaletteCopyBtn({ value, label }: { value: string; label: string }) {
+function PaletteCopyBtn({ value, label }: Readonly<{ value: string; label: string }>) {
   if (!value) return null;
   return (
     <button
@@ -125,12 +139,12 @@ function OcpLocalOcCommands({
   clusterNames,
   open,
   onToggle,
-}: {
+}: Readonly<{
   projectId: string;
   clusterNames: string[];
   open: boolean;
   onToggle: () => void;
-}) {
+}>) {
   const proj = projectId.slice(0, 8);
   // UI origin is often oauth-proxy; CLI needs troshka-api + troshka-tunnel hosts.
   const uiOrigin =
@@ -409,12 +423,7 @@ const sections: PaletteSection[] = [
   },*/
 ];
 
-// The palette OCP STATUS panel is superseded by the per-cluster "Status" button
-// on each cluster box; keep the markup but never render it. Typed boolean (not a
-// literal) so the guarded block's `ocpHealth` narrowing still type-checks.
-const SHOW_PALETTE_OCP_STATUS: boolean = false;
-
-function RJ45Icon({ size = 20 }: { size?: number }) {
+function RJ45Icon({ size = 20 }: Readonly<{ size?: number }>) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <rect x="4" y="2" width="16" height="16" rx="2" />
@@ -429,7 +438,7 @@ function RJ45Icon({ size = 20 }: { size?: number }) {
   );
 }
 
-function LBIcon({ size = 20 }: { size?: number }) {
+function LBIcon({ size = 20 }: Readonly<{ size?: number }>) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="4" cy="12" r="2" />
@@ -444,14 +453,14 @@ function LBIcon({ size = 20 }: { size?: number }) {
   );
 }
 
-function PaletteIcon({ icon, iconClass }: { icon: string; iconClass: string }) {
+function PaletteIcon({ icon, iconClass }: Readonly<{ icon: string; iconClass: string }>) {
   if (icon === "rj45") return <div className={`palette-icon ${iconClass}`}><RJ45Icon /></div>;
   if (icon === "lb") return <div className={`palette-icon ${iconClass}`}><LBIcon /></div>;
   return <div className={`palette-icon ${iconClass}`}>{icon}</div>;
 }
 
 function onDragStart(
-  event: React.DragEvent<HTMLDivElement>,
+  event: React.DragEvent<HTMLElement>,
   item: PaletteItemDef,
 ) {
   event.dataTransfer.setData(
@@ -470,8 +479,188 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }) {
-  const [showDesc, setShowDesc] = useState(false);
+function LabPortal({ projectId }: Readonly<{projectId?: string}>) {
+  const [showPortal, setShowPortal] = useState(false);
+  const [portalToken, setPortalToken] = useState<{ token: string; access_level: string; portal_url: string } | null>(null);
+  const [portalAccessLevel, setPortalAccessLevel] = useState("console");
+  const [portalCopied, setPortalCopied] = useState(false);
+  const createOrUpdatePortalToken = async (level: string) => {
+    if (!projectId) return;
+    try {
+      const resp = await fetch(`/api/v1/projects/${projectId}/portal-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_level: level }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const portalUrl = `${window.location.origin}/portal/${data.token}`;
+        setPortalToken({ ...data, portal_url: portalUrl });
+        setPortalAccessLevel(level);
+      }
+    } catch { /* ignore */ }
+  };
+
+return (      <div className="palette-section">
+        <button type="button"
+          className="plain-button palette-section-title"
+          style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          onClick={() => {
+            if (!showPortal && !portalToken) {
+              createOrUpdatePortalToken(portalAccessLevel);
+            }
+            setShowPortal(!showPortal);
+          }}
+        >
+          <span>Lab Portal</span>
+          <span style={{ fontSize: 9 }}>{showPortal ? "▾" : "▸"}</span>
+        </button>
+        {showPortal && (
+          <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+              <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>Access:</span>
+              <select
+                value={portalAccessLevel}
+                onChange={(e) => {
+                  setPortalAccessLevel(e.target.value);
+                  if (portalToken) createOrUpdatePortalToken(e.target.value);
+                }}
+                style={{
+                  fontSize: 11, padding: "2px 4px", borderRadius: 3,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--secondary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }}
+              >
+                <option value="readonly">Read Only</option>
+                <option value="power">Power</option>
+                <option value="console">Console</option>
+              </select>
+            </div>
+            {portalToken ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
+                  <input
+                    readOnly
+                    value={portalToken.portal_url}
+                    style={{
+                      flex: 1, fontSize: 10, padding: "3px 6px", borderRadius: 3,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                    }}
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                  <button type="button" className="plain-button"
+                    style={{ cursor: "pointer", fontSize: 10, opacity: portalCopied ? 1 : 0.6, whiteSpace: "nowrap" }}
+                    onClick={() => { navigator.clipboard.writeText(portalToken.portal_url); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 2000); }}
+                    title="Copy link"
+                  >{portalCopied ? "✓ Copied" : "Copy"}</button>
+                </div>
+                <a
+                  href={portalToken.portal_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontSize: 10, color: "#73bcf7", textDecoration: "underline" }}
+                >Open Portal ↗</a>
+              </>
+            ) : (
+              <div style={{ fontSize: 10, opacity: 0.5 }}>Generating link...</div>
+            )}
+          </div>
+        )}
+      </div>);
+}
+
+function ProjectDescription({projectDescription, projectGuid, onDescriptionChange}: Readonly<{projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void}>) {
+ const [showDesc, setShowDesc] = useState(false);
+ const [editingDesc, setEditingDesc] = useState(false);
+ return <>      {(
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+          <button type="button"
+            className="plain-button palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
+            onClick={() => setShowDesc(!showDesc)}
+          >
+            <span>INFO</span>
+            <span style={{ fontSize: 9 }}>{showDesc ? "▾" : "▸"}</span>
+          </button>
+          {showDesc && (
+            editingDesc ? (
+              <div style={{ padding: "0 12px 8px" }}>
+                <textarea
+                  autoFocus
+                  defaultValue={projectDescription}
+                  style={{ width: "100%", fontSize: 11, lineHeight: 1.6, background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 4, padding: "4px 6px", resize: "vertical", minHeight: 60 }}
+                  onBlur={(e) => { setEditingDesc(false); if (onDescriptionChange && e.target.value !== projectDescription) onDescriptionChange(e.target.value); }}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditingDesc(false); }}
+                />
+              </div>
+            ) : (
+              <button type="button" className="plain-button"
+                style={{ textAlign: "left", width: "100%", fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", padding: "0 12px 8px", lineHeight: 1.6, cursor: "pointer", maxHeight: 200, overflowY: "auto", overflowX: "auto", whiteSpace: "nowrap" }}
+                onClick={() => setEditingDesc(true)}
+                title="Click to edit"
+              >
+                {projectDescription ? projectDescription.split(" | ").map((part, i) => <div key={i}>{part}</div>) : <span style={{ opacity: 0.4, fontStyle: "italic" }}>Click to add description</span>}
+                {projectGuid && (
+                  <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ opacity: 0.4 }}>GUID:</span>
+                    <code style={{ fontSize: 11 }}>{projectGuid}</code>
+                  </div>
+                )}
+              </button>
+            )
+          )}
+        </div>
+      )}
+</>;
+}
+
+function PaletteLocalOc({projectId, ocpInfo, open, onToggle}: Readonly<{ projectId?: string; ocpInfo: ReturnType<typeof buildPaletteOcpInfo>; open: boolean; onToggle: () => void }>) {
+ if (!ocpInfo.clusters.some((c) => c.kubeconfig)) return null;
+ if (!projectId) return <div style={{ opacity: 0.55, fontSize: 10 }}>Local oc commands available after project id is known</div>;
+ return (                  <div
+                    style={
+                      ocpInfo.showroomUrl
+                        ? { borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }
+                        : undefined
+                    }
+                  >
+                    <OcpLocalOcCommands
+                      projectId={projectId}
+                      clusterNames={ocpInfo.clusters.filter((c) => c.kubeconfig).map((c) => c.name)}
+                      open={open}
+                      onToggle={onToggle}
+                    />
+                  </div>
+);
+}
+
+function SnapshotList({snapshots, loaded, onSnapshotDragStart}: Readonly<{ snapshots: SnapshotItem[]; loaded: boolean; onSnapshotDragStart: (event: React.DragEvent<HTMLElement>, snapshot: SnapshotItem) => void }>) {
+ if (!loaded) return <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>Loading...</div>;
+ if (!snapshots.length) return <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>No snapshots available</div>;
+ return <>{                      snapshots.map((snap) => (
+                        <button type="button"
+                          key={snap.id}
+                          aria-label={snap.name}
+                          className="plain-button palette-item"
+                          draggable
+                          onDragStart={(e) => onSnapshotDragStart(e, snap)}
+                          style={{ padding: "4px 8px", fontSize: 12 }}
+                        >
+                          <div style={{ fontSize: 14 }}>🖥</div>
+                          <div>
+                            <div className="palette-item-label" style={{ fontSize: 12 }}>{snap.name}</div>
+                            <div className="palette-item-desc" style={{ fontSize: 10 }}>
+                              {snap.vm_config ? `${snap.vm_config.vcpus} vCPU · ${snap.vm_config.ram} GB` : "VM snapshot"}
+                            </div>
+                          </div>
+                        </button>
+                      ))}</>;
+}
+
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: Readonly<{ onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }>) {
   const [showBmc, setShowBmc] = useState(false);
   const bmcHeaderRef = React.useRef<HTMLButtonElement>(null);
   const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
@@ -480,20 +669,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [ocpLocalOcOpen, setOcpLocalOcOpen] = useState(false);
   const ocpHeaderRef = React.useRef<HTMLButtonElement>(null);
   const [ocpFlyoutPos, setOcpFlyoutPos] = useState({ top: 0, left: 220 });
-  const [budgetDraft, setBudgetDraft] = useState("");
-  useEffect(() => {
-    setBudgetDraft(budgetUsd == null ? "" : String(budgetUsd));
-  }, [budgetUsd]);
-  const [editingDesc, setEditingDesc] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useBudgetDraft(budgetUsd);
   const [showPasswords, setShowPasswords] = useState(false);
-  const [showOcpStatus, setShowOcpStatus] = useState(true);
-  const [ocpLogModal, setOcpLogModal] = useState(false);
-  const [ocpLog, setOcpLog] = useState("");
-  const [showPortal, setShowPortal] = useState(false);
-  const [portalToken, setPortalToken] = useState<{ token: string; access_level: string; portal_url: string } | null>(null);
-  const [portalAccessLevel, setPortalAccessLevel] = useState("console");
-  const [portalCopied, setPortalCopied] = useState(false);
-  const ocpLogRef = React.useRef<HTMLPreElement>(null);
+
 
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Kubernetes", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
@@ -513,9 +691,6 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const showroomExists = hasShowroomNode(nodes);
   const isKubevirt =
     providerType === "kubevirt" || hostInfo?.provider_type === "kubevirt";
-  // Pod (bastionless) installs surface OCP status + log per-cluster on each
-  // cluster box, so the palette OCP STATUS panel is redundant and hidden.
-  const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
 
   useEffect(() => {
     if (!hostId) return;
@@ -524,90 +699,35 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
     ]).then(([h, providers]) => {
       if (!h) return;
-      const prov = Array.isArray(providers) ? providers.find((p: any) => p.id === h.provider_id) : null;
+      const prov = Array.isArray(providers) ? providers.find((p: { id: string }) => p.id === h.provider_id) : null;
       setHostInfo({ instance_id: h.instance_id, ip_address: h.ip_address, provider_type: prov?.type || h.provider_type || "", provider_name: prov?.name || "" });
     }).catch(() => {});
   }, [hostId]);
 
-  const createOrUpdatePortalToken = async (level: string) => {
-    if (!projectId) return;
-    try {
-      const resp = await fetch(`/api/v1/projects/${projectId}/portal-token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ access_level: level }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const portalUrl = `${window.location.origin}/portal/${data.token}`;
-        setPortalToken({ ...data, portal_url: portalUrl });
-        setPortalAccessLevel(level);
-      }
-    } catch { /* ignore */ }
-  };
 
-  React.useEffect(() => {
-    if (!ocpLogModal || !projectId) return;
-    const bastionNode = nodes.find((n: any) => n.type === "vmNode" && n.data?.label === "bastion");
-    let active = true;
-    const scrollToEnd = () => setTimeout(() => { if (ocpLogRef.current) ocpLogRef.current.scrollTop = ocpLogRef.current.scrollHeight; }, 50);
-    const poll = async () => {
-      while (active) {
-        try {
-          // Ask the backend where the install runs: pod (ops pod) vs bastion.
-          const r = await fetch(`/api/v1/projects/${projectId}/ocp/install-log`);
-          const d = r.ok ? await r.json() : {};
-          if (d.install_via === "pod") {
-            if (active) {
-              setOcpLog(d.output || "Install log not available yet — waiting for the ops pod to start the OCP installer...");
-              scrollToEnd();
-            }
-          } else if (bastionNode) {
-            // Bastion install: read the bastion VM's install.log directly.
-            const br = await fetch(`/api/v1/projects/${projectId}/vms/${bastionNode.id}/exec`, {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null", timeout: 10 }),
-            });
-            if (br.ok) {
-              const bd = await br.json();
-              if (active) {
-                setOcpLog(bd.output || "Install log not available yet — waiting for bastion to start the OCP installer...");
-                scrollToEnd();
-              }
-            }
-          } else if (active) {
-            setOcpLog("Install log not available (no bastion, and this is not a pod install).");
-          }
-        } catch {}
-        await new Promise(r => setTimeout(r, 5000));
-      }
-    };
-    poll();
-    return () => { active = false; };
-  }, [ocpLogModal, projectId, nodes]);
   const passwords = React.useMemo(() => {
-    const result: { label: string; value: string }[] = [];
+    const result: { id: string; label: string; value: string }[] = [];
     for (const n of nodes) {
-      const d = n.data as Record<string, any>;
+      const d = n.data as PaletteVmMetadata;
       if (n.type === "vmNode" && d.ciCloudUserPassword) {
-        result.push({ label: `${d.name || d.label || n.id} (cloud-user)`, value: d.ciCloudUserPassword });
+        result.push({ id: n.id, label: `${d.name || d.label || n.id} (cloud-user)`, value: d.ciCloudUserPassword });
       }
     }
     return result;
   }, [nodes]);
 
   const bmcInfo = React.useMemo(() => {
-    const topo = (typeof window !== "undefined" ? (window as any).__deployedTopology : null) || {};
+    const topo = (typeof window !== "undefined" ? (window as Window & { __deployedTopology?: { bmc?: PaletteBmc } }).__deployedTopology : null) || {};
     const bmc = topo.bmc || {};
-    const bmcNet = nodes.find((n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
-    const netData = (bmcNet?.data || {}) as Record<string, any>;
+    const bmcNet = nodes.find((n) => n.type === "networkNode" && (n.data as PaletteVmMetadata).networkType === "bmc");
+    const netData = (bmcNet?.data || {}) as PaletteVmMetadata;
     const username = bmc.username || netData.bmcUsername || "admin";
     const password = bmc.password || netData.bmcPassword || "";
     const nodeById = Object.fromEntries(nodes.map((n) => [n.id, n]));
-    const deployedVms = bmc.vms && typeof bmc.vms === "object" ? Object.entries(bmc.vms) as [string, Record<string, any>][] : [];
+    const deployedVms = bmc.vms && typeof bmc.vms === "object" ? Object.entries(bmc.vms) as [string, PaletteVmMetadata][] : [];
     const vms = deployedVms.length
       ? deployedVms.map(([id, vm]) => {
-          const vmData = (nodeById[id]?.data || {}) as Record<string, any>;
+          const vmData = (nodeById[id]?.data || {}) as PaletteVmMetadata;
           const ip = vm.ip || vmData.bmcIp || "";
           return {
             id,
@@ -621,9 +741,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           };
         })
       : nodes
-          .filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled)
+          .filter((n) => n.type === "vmNode" && (n.data as PaletteVmMetadata).bmcEnabled)
           .map((n) => {
-            const vmData = n.data as Record<string, any>;
+            const vmData = n.data as PaletteVmMetadata;
             const ip = vmData.bmcIp || "";
             return {
               id: n.id,
@@ -639,7 +759,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
     const bmcEnabled =
       !!bmcNet &&
       (deployedVms.length > 0 ||
-        nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled));
+        nodes.some((n) => n.type === "vmNode" && (n.data as PaletteVmMetadata).bmcEnabled));
     return { username, password, vms, bmcEnabled };
   }, [nodes]);
 
@@ -747,7 +867,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       .catch(() => setSnapshotsLoaded(true));
   };
 
-  const onSnapshotDragStart = (event: React.DragEvent<HTMLDivElement>, snapshot: SnapshotItem) => {
+  const onSnapshotDragStart = (event: React.DragEvent<HTMLElement>, snapshot: SnapshotItem) => {
     event.dataTransfer.setData(
       "application/troshka-node",
       JSON.stringify({
@@ -762,45 +882,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
 
   return (
     <div className="canvas-palette">
-      {(
-        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
-          <div
-            className="palette-section-title"
-            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
-            onClick={() => setShowDesc(!showDesc)}
-          >
-            <span>INFO</span>
-            <span style={{ fontSize: 9 }}>{showDesc ? "▾" : "▸"}</span>
-          </div>
-          {showDesc && (
-            editingDesc ? (
-              <div style={{ padding: "0 12px 8px" }}>
-                <textarea
-                  autoFocus
-                  defaultValue={projectDescription}
-                  style={{ width: "100%", fontSize: 11, lineHeight: 1.6, background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 4, padding: "4px 6px", resize: "vertical", minHeight: 60 }}
-                  onBlur={(e) => { setEditingDesc(false); if (onDescriptionChange && e.target.value !== projectDescription) onDescriptionChange(e.target.value); }}
-                  onKeyDown={(e) => { if (e.key === "Escape") setEditingDesc(false); }}
-                />
-              </div>
-            ) : (
-              <div
-                style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", padding: "0 12px 8px", lineHeight: 1.6, cursor: "pointer", maxHeight: 200, overflowY: "auto", overflowX: "auto", whiteSpace: "nowrap" }}
-                onClick={() => setEditingDesc(true)}
-                title="Click to edit"
-              >
-                {projectDescription ? projectDescription.split(" | ").map((part, i) => <div key={i}>{part}</div>) : <span style={{ opacity: 0.4, fontStyle: "italic" }}>Click to add description</span>}
-                {projectGuid && (
-                  <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ opacity: 0.4 }}>GUID:</span>
-                    <code style={{ fontSize: 11 }}>{projectGuid}</code>
-                  </div>
-                )}
-              </div>
-            )
-          )}
-        </div>
-      )}
+      <ProjectDescription projectDescription={projectDescription} projectGuid={projectGuid} onDescriptionChange={onDescriptionChange} />
       {bmcInfo.bmcEnabled && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)", position: "relative" }}>
           <button type="button"
@@ -939,26 +1021,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <PaletteCopyBtn value={ocpInfo.showroomUrl} label="Showroom URL" />
                   </div>
                 )}
-                {projectId && ocpInfo.clusters.some((c) => c.kubeconfig) ? (
-                  <div
-                    style={
-                      ocpInfo.showroomUrl
-                        ? { borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8 }
-                        : undefined
-                    }
-                  >
-                    <OcpLocalOcCommands
-                      projectId={projectId}
-                      clusterNames={ocpInfo.clusters.filter((c) => c.kubeconfig).map((c) => c.name)}
-                      open={ocpLocalOcOpen}
-                      onToggle={() => setOcpLocalOcOpen((v) => !v)}
-                    />
-                  </div>
-                ) : ocpInfo.clusters.some((c) => c.kubeconfig) ? (
-                  <div style={{ opacity: 0.55, fontSize: 10 }}>
-                    Local oc commands available after project id is known
-                  </div>
-                ) : null}
+                <PaletteLocalOc projectId={projectId} ocpInfo={ocpInfo} open={ocpLocalOcOpen} onToggle={() => setOcpLocalOcOpen((v) => !v)} />
                 {ocpInfo.clusters.map((cluster, idx) => (
                   <div
                     key={cluster.id}
@@ -1024,176 +1087,40 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       )}
       {passwords.length > 0 && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
-          <div
-            className="palette-section-title"
+          <button type="button"
+            className="plain-button palette-section-title"
             style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={() => setShowPasswords(!showPasswords)}
           >
             <span>PASSWORDS</span>
             <span style={{ fontSize: 9 }}>{showPasswords ? "▾" : "▸"}</span>
-          </div>
+          </button>
           {showPasswords && (
             <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
-              {passwords.map((pw, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+              {passwords.map((pw) => (
+                <div key={pw.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                   <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>{pw.label}</span>
-                  <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
-                    onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has(pw.label)) s.delete(pw.label); else s.add(pw.label); return s; })}
-                  >{revealedPasswords.has(pw.label) ? pw.value : "••••••"}</code>
-                  <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw.value)} title="Copy">Copy</span>
+                  <button type="button" className="plain-button code-action" style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                    onClick={() => setRevealedPasswords((prev) => toggleRevealed(prev, pw.label))}
+                  >{revealedPasswords.has(pw.label) ? pw.value : "••••••"}</button>
+                  <button type="button" className="plain-button" style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw.value)} title="Copy">Copy</button>
                 </div>
               ))}
             </div>
           )}
         </div>
       )}
-      {/* OCP STATUS panel removed from the palette — superseded by the per-cluster
-          "Status" button on each cluster box (status + install log + kubeadmin
-          password + kubeconfig download, live). Disabled via SHOW_PALETTE_OCP_STATUS
-          rather than deleted to preserve the (bastion-era) markup for reference. */}
-      {ocpHealth && SHOW_PALETTE_OCP_STATUS && ocpInstallVia !== "pod" && (
-        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
-          <div
-            className="palette-section-title"
-            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
-            onClick={() => setShowOcpStatus(!showOcpStatus)}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "error" && ocpHealth.phase !== "timeout" && ocpHealth.phase !== "waiting" && ocpHealth.phase !== "warning" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
-              {(ocpHealth.phase === "waiting" || ocpHealth.phase === "warning") && <span style={{ color: "#fbbf24" }}>⚠</span>}
-              {(ocpHealth.phase === "error" || ocpHealth.phase === "timeout") && <span style={{ color: "#f87171" }}>✗</span>}
-              OCP STATUS
-            </span>
-            <span style={{ fontSize: 9 }}>{showOcpStatus ? "▾" : "▸"}</span>
-          </div>
-          {showOcpStatus && (
-            <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
-              <div style={{ marginBottom: 4, color: ocpHealth.phase === "ready" ? "#4ade80" : ocpHealth.phase === "error" || ocpHealth.phase === "timeout" ? "#f87171" : ocpHealth.phase === "warning" ? "#fbbf24" : "var(--pf-t--global--text--color--regular)", display: "flex", alignItems: "center", gap: 6 }}>
-                {ocpHealth.phase === "ready" && "✓"} {(ocpHealth.phase === "error" || ocpHealth.phase === "timeout") && "✗"} {ocpHealth.phase === "warning" && "⚠"} {ocpHealth.detail}
-              </div>
-              {ocpHealth.items && (
-                <div style={{ fontSize: 10, lineHeight: 1.6, color: "var(--pf-t--global--text--color--subtle)" }}>
-                  {ocpHealth.items.map((item, i) => {
-                    const [name, status] = [item.split(":")[0].trim(), item.split(":").slice(1).join(":").trim()];
-                    const isGood = status.includes("✓") || status.includes("available") || status.includes("Ready") || status.includes("reachable") || status.includes("ready");
-                    const isBad = status.includes("✗") || status.includes("degraded") || status.includes("failed") || status.includes("not available");
-                    return (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 4 }}>
-                        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
-                        <span style={{ color: isGood ? "#4ade80" : isBad ? "#f87171" : "#fbbf24", whiteSpace: "nowrap", flexShrink: 0 }}>
-                          {isGood ? "✓" : isBad ? "✗" : status}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {ocpHealth.phase === "ready" && (() => {
-                const ocpVms = nodes.filter((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeadminPassword);
-                if (ocpVms.length === 0) {
-                  // Don't fall back to the bastion password — it is NOT the
-                  // kubeadmin password. The monitor reads the real one from the
-                  // bastion shortly after the cluster is ready; until then, point
-                  // to where it lives on the bastion (stacked so the long path
-                  // doesn't overlap the label in the narrow panel).
-                  return (
-                    <div style={{ marginTop: 4 }}>
-                      <div style={{ color: "var(--pf-t--global--text--color--subtle)" }}>kubeadmin</div>
-                      <div style={{ fontSize: 10, opacity: 0.6, wordBreak: "break-all" }}>
-                        on bastion: <code>~/ocp-install/auth/kubeadmin-password</code>
-                      </div>
-                    </div>
-                  );
-                }
-                return ocpVms.map((vm: any) => {
-                  const vmName = (vm.data as any)?.label || (vm.data as any)?.name || "vm";
-                  const pw = (vm.data as any)?.ocpKubeadminPassword || "";
-                  const key = `kubeadmin-${vm.id}`;
-                  const label = ocpVms.length > 1 ? `kubeadmin (${vmName})` : "kubeadmin";
-                  return (
-                    <div key={vm.id} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>{label}</span>
-                      <button type="button" style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
-                        onClick={() => setRevealedPasswords((prev) => {
-                          const s = new Set(prev);
-                          if (s.has(key)) {
-                            s.delete(key);
-                          } else {
-                            s.add(key);
-                          }
-                          return s;
-                        })} className="plain-button code-action"
-                      >{revealedPasswords.has(key) ? pw : "••••••"}</button>
-                      <button type="button" style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy" className="plain-button">Copy</button>
-                    </div>
-                  );
-                });
-              })()}
-              {ocpHealth.phase === "ready" && projectId && (() => {
-                const kcVms = nodes.filter((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeconfig);
-                if (kcVms.length === 0) return null;
-                return (
-                  <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {kcVms.map((vm: any) => {
-                      const vmName = (vm.data as any)?.label || (vm.data as any)?.name || "vm";
-                      const label = kcVms.length > 1 ? `kubeconfig (${vmName})` : "kubeconfig";
-                      return (
-                        <button type="button" key={vm.id} style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }}
-                          onClick={() => {
-                            const kc = (vm.data as any)?.ocpKubeconfig || "";
-                            const blob = new Blob([kc], { type: "application/x-yaml" });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url; a.download = `kubeconfig-${vmName}.yaml`; a.click();
-                            URL.revokeObjectURL(url);
-                          }} className="plain-button"
-                        >{label}</button>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-        </div>
-      )}
-      {ocpLogModal && (
-        <ModalBackdrop label="OpenShift details" style={{
-          position: "fixed", inset: 0, zIndex: 10000,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(0,0,0,0.6)",
-        }} onClose={() => { setOcpLogModal(false); }}>
-          <div style={{
-            background: "var(--pf-t--global--background--color--primary--default)",
-            borderRadius: 12, padding: 24, width: "80vw", maxWidth: 800, maxHeight: "80vh",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-            border: "1px solid var(--pf-t--global--border--color--default)",
-            display: "flex", flexDirection: "column",
-          }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>OpenShift Install Log</h3>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                {ocpLog && <button onClick={(e) => { navigator.clipboard.writeText(ocpLog); const btn = e.currentTarget; btn.textContent = "Copied!"; btn.style.background = "rgba(34,197,94,0.2)"; btn.style.borderColor = "rgba(34,197,94,0.5)"; setTimeout(() => { btn.textContent = "Copy All"; btn.style.background = "rgba(255,255,255,0.08)"; btn.style.borderColor = "rgba(255,255,255,0.15)"; }, 1500); }} style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 11, padding: "4px 10px", borderRadius: 4, transition: "all 0.2s" }}>Copy All</button>}
-                <button onClick={() => setOcpLogModal(false)} style={{ background: "transparent", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 18 }}>✕</button>
-              </div>
-            </div>
-            <pre ref={ocpLogRef} style={{ fontSize: 11, fontFamily: "monospace", whiteSpace: "pre-wrap", overflowY: "auto", flex: 1, margin: 0, padding: 8, background: "rgba(0,0,0,0.2)", borderRadius: 6, lineHeight: 1.5 }}>
-              {ocpLog || <span style={{ opacity: 0.5 }}><span className="project-btn-spinner" style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />Loading install log...</span>}
-            </pre>
-          </div>
-        </ModalBackdrop>
-      )}
       {sections.map((section) => (
         <React.Fragment key={section.title}>
           <div className="palette-section">
-            <div
-              className="palette-section-title"
+            <button type="button"
+              className="plain-button palette-section-title"
               style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-              onClick={() => setCollapsedSections((prev) => { const s = new Set(prev); if (s.has(section.title)) s.delete(section.title); else s.add(section.title); return s; })}
+              onClick={() => setCollapsedSections((prev) => toggleRevealed(prev, section.title))}
             >
               <span>{section.title}</span>
               <span style={{ fontSize: 9 }}>{collapsedSections.has(section.title) ? "▸" : "▾"}</span>
-            </div>
+            </button>
             {!collapsedSections.has(section.title) && (<div className="palette-section-body">
               {section.items.map((item) => {
                 if (item.kubevirtOnly && !isKubevirt) return null;
@@ -1201,9 +1128,10 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   (item.type === "showroom" && showroomExists) ||
                   (item.type === "project-ceph" && cephExists);
                 return (
-                <div
+                <button type="button"
                   key={item.type}
-                  className="palette-item"
+                  aria-label={item.label}
+                  className="plain-button palette-item"
                   draggable={!disabled}
                   onDragStart={(e) => {
                     if (disabled) {
@@ -1214,11 +1142,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   }}
                   style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
                   title={
-                    disabled
-                      ? item.type === "project-ceph"
-                        ? "One Ceph Storage per project"
-                        : "One showroom per project"
-                      : undefined
+                    disabled ? disabledPaletteItemTitle(item.type) : undefined
                   }
                 >
                   <PaletteIcon icon={item.icon} iconClass={item.iconClass} />
@@ -1226,22 +1150,22 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <div className="palette-item-label">{item.label}</div>
                     <div className="palette-item-desc">{item.desc}</div>
                   </div>
-                </div>
+                </button>
               );})}
             {section.title === "Networking" && (
-              <div className="palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer" }}>
+              <button type="button" className="plain-button palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer", textAlign: "left", width: "100%" }}>
                 <div className="palette-icon palette-icon-gateway">🌍</div>
                 <div>
                   <div className="palette-item-label">External IPs</div>
                   <div className="palette-item-desc">Public IP pool</div>
                 </div>
-              </div>
+              </button>
             )}
             {section.title === "Compute" && (
               <>
-                <div
-                  className="palette-item"
-                  style={{ cursor: "pointer" }}
+                <button type="button"
+                  className="plain-button palette-item"
+                  style={{ cursor: "pointer", textAlign: "left", width: "100%" }}
                   onClick={() => {
                     if (!snapshotsLoaded) loadSnapshots();
                     setShowSnapshots(!showSnapshots);
@@ -1252,32 +1176,10 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <div className="palette-item-label">Snapshots</div>
                     <div className="palette-item-desc">Virtual machine snapshot</div>
                   </div>
-                </div>
+                </button>
                 {showSnapshots && (
                   <div style={{ paddingLeft: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                    {!snapshotsLoaded ? (
-                      <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>Loading...</div>
-                    ) : snapshots.length === 0 ? (
-                      <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>No snapshots available</div>
-                    ) : (
-                      snapshots.map((snap) => (
-                        <div
-                          key={snap.id}
-                          className="palette-item"
-                          draggable
-                          onDragStart={(e) => onSnapshotDragStart(e, snap)}
-                          style={{ padding: "4px 8px", fontSize: 12 }}
-                        >
-                          <div style={{ fontSize: 14 }}>🖥</div>
-                          <div>
-                            <div className="palette-item-label" style={{ fontSize: 12 }}>{snap.name}</div>
-                            <div className="palette-item-desc" style={{ fontSize: 10 }}>
-                              {snap.vm_config ? `${snap.vm_config.vcpus} vCPU · ${snap.vm_config.ram} GB` : "VM snapshot"}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
+                    <SnapshotList snapshots={snapshots} loaded={snapshotsLoaded} onSnapshotDragStart={onSnapshotDragStart} />
                   </div>
                 )}
               </>
@@ -1287,18 +1189,19 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         </React.Fragment>
       ))}
       <div className="palette-section">
-        <div
-          className="palette-section-title"
+        <button type="button"
+          className="plain-button palette-section-title"
           style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-          onClick={() => setCollapsedSections((prev) => { const s = new Set(prev); if (s.has("Project")) s.delete("Project"); else s.add("Project"); return s; })}
+          onClick={() => setCollapsedSections((prev) => toggleRevealed(prev, "Project"))}
         >
           <span>Project</span>
           <span style={{ fontSize: 9 }}>{collapsedSections.has("Project") ? "▸" : "▾"}</span>
-        </div>
+        </button>
         {!collapsedSections.has("Project") && (
           <div className="palette-section-body">
-            <div
-              className="palette-item"
+            <button type="button"
+              className="plain-button palette-item"
+              aria-label="Showroom"
               draggable={!showroomExists}
               onDragStart={(e) => {
                 if (showroomExists) {
@@ -1321,14 +1224,14 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 <div className="palette-item-label">Showroom</div>
                 <div className="palette-item-desc">Lab guide UI (pod)</div>
               </div>
-            </div>
-            <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
+            </button>
+            <button type="button" className="plain-button palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer", textAlign: "left", width: "100%" }}>
               <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
               <div>
                 <div className="palette-item-label">Start Order</div>
                 <div className="palette-item-desc">VM boot sequence</div>
               </div>
-            </div>
+            </button>
 
             {/* Auto-Stop Timer */}
             <div className="palette-item" style={{ cursor: "default" }}>
@@ -1371,7 +1274,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                     />
                     <span style={{ fontSize: 10, opacity: 0.6 }}>m</span>
-                    <button onClick={() => {
+                    <button type="button" onClick={() => {
                       const total = customStopH * 60 + customStopM;
                       if (total > 0) { onAutoStopChange?.(total); setCustomStopOpen(false); }
                     }}
@@ -1455,7 +1358,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                     />
                     <span style={{ fontSize: 10, opacity: 0.6 }}>m</span>
-                    <button onClick={() => {
+                    <button type="button" onClick={() => {
                       const total = customDeleteH * 60 + customDeleteM;
                       if (total > 0) { onAutoDeleteChange?.(total); setCustomDeleteOpen(false); }
                     }}
@@ -1472,7 +1375,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div className="palette-item-label">Clock</div>
-                  <div
+                  <button type="button" aria-label="Override guest clock" aria-pressed={clockOpen}
                     onClick={() => {
                       if (clockOpen) {
                         setClockOpen(false);
@@ -1485,7 +1388,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       }
                     }}
                     style={{
-                      width: 28, height: 14, borderRadius: 7, cursor: "pointer", flexShrink: 0,
+                      border: 0, padding: 0, width: 28, height: 14, borderRadius: 7, cursor: "pointer", flexShrink: 0,
                       background: clockOpen ? "rgba(108,99,255,0.7)" : "rgba(255,255,255,0.15)",
                       position: "relative", transition: "background 0.2s",
                     }}
@@ -1495,7 +1398,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       background: "#fff", position: "absolute", top: 2,
                       left: clockOpen ? 16 : 2, transition: "left 0.2s",
                     }} />
-                  </div>
+                  </button>
                 </div>
                 <div className="palette-item-desc">{clockTarget ? (() => {
                   const target = new Date(clockTarget);
@@ -1521,7 +1424,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                         flex: 1, minWidth: 0, boxSizing: "border-box",
                       }}
                     />
-                    <button
+                    <button type="button"
                       onClick={() => { if (clockDraft) onClockTargetChange?.(clockDraft + ":00Z"); }}
                       style={{
                         fontSize: 10, padding: "2px 6px", borderRadius: 3, flexShrink: 0,
@@ -1542,7 +1445,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div className="palette-item-label">Guest Exec</div>
-                  <div
+                  <button type="button" aria-label="Guest Exec" aria-pressed={guestExecEnabled !== false}
                     onClick={() => onGuestExecChange?.(!guestExecEnabled)}
                     style={{
                       width: 28, height: 14, borderRadius: 7, cursor: "pointer", flexShrink: 0,
@@ -1555,7 +1458,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       background: "#fff", position: "absolute", top: 2,
                       left: (guestExecEnabled !== false) ? 16 : 2, transition: "left 0.2s",
                     }} />
-                  </div>
+                  </button>
                 </div>
                 <div className="palette-item-desc">Enable VM command exec</div>
               </div>
@@ -1563,70 +1466,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           </div>
         )}
       </div>
-      <div className="palette-section">
-        <div
-          className="palette-section-title"
-          style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-          onClick={() => { if (!showPortal && !portalToken) createOrUpdatePortalToken(portalAccessLevel); setShowPortal(!showPortal); }}
-        >
-          <span>Lab Portal</span>
-          <span style={{ fontSize: 9 }}>{showPortal ? "▾" : "▸"}</span>
-        </div>
-        {showPortal && (
-          <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-              <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>Access:</span>
-              <select
-                value={portalAccessLevel}
-                onChange={(e) => {
-                  setPortalAccessLevel(e.target.value);
-                  if (portalToken) createOrUpdatePortalToken(e.target.value);
-                }}
-                style={{
-                  fontSize: 11, padding: "2px 4px", borderRadius: 3,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--secondary--default)",
-                  color: "var(--pf-t--global--text--color--regular)",
-                }}
-              >
-                <option value="readonly">Read Only</option>
-                <option value="power">Power</option>
-                <option value="console">Console</option>
-              </select>
-            </div>
-            {portalToken ? (
-              <>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
-                  <input
-                    readOnly
-                    value={portalToken.portal_url}
-                    style={{
-                      flex: 1, fontSize: 10, padding: "3px 6px", borderRadius: 3,
-                      border: "1px solid var(--pf-t--global--border--color--default)",
-                      background: "var(--pf-t--global--background--color--secondary--default)",
-                      color: "var(--pf-t--global--text--color--regular)",
-                    }}
-                    onClick={(e) => (e.target as HTMLInputElement).select()}
-                  />
-                  <span
-                    style={{ cursor: "pointer", fontSize: 10, opacity: portalCopied ? 1 : 0.6, whiteSpace: "nowrap" }}
-                    onClick={() => { navigator.clipboard.writeText(portalToken.portal_url); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 2000); }}
-                    title="Copy link"
-                  >{portalCopied ? "✓ Copied" : "Copy"}</span>
-                </div>
-                <a
-                  href={portalToken.portal_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ fontSize: 10, color: "#73bcf7", textDecoration: "underline" }}
-                >Open Portal ↗</a>
-              </>
-            ) : (
-              <div style={{ fontSize: 10, opacity: 0.5 }}>Generating link...</div>
-            )}
-          </div>
-        )}
-      </div>
+      <LabPortal projectId={projectId} />
     </div>
   );
 }

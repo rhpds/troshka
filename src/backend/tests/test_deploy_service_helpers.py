@@ -8,6 +8,8 @@ import re
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ── Pure-logic helpers ──────────────────────────────────────────────────
 from app.services.deploy_service import (
     _approve_csrs_if_due,
@@ -374,23 +376,19 @@ class TestParseUnavailableOperators:
 
 
 class TestIsRouteReady:
-    def test_200(self):
-        assert _is_route_ready("200") is True
-
-    def test_301(self):
-        assert _is_route_ready("301") is True
-
-    def test_403(self):
-        assert _is_route_ready("403") is True
-
-    def test_000(self):
-        assert _is_route_ready("000") is False
-
-    def test_500(self):
-        assert _is_route_ready("500") is False
-
-    def test_404(self):
-        assert _is_route_ready("404") is False
+    @pytest.mark.parametrize(
+        ("status", "ready"),
+        [
+            ("200", True),
+            ("301", True),
+            ("403", True),
+            ("000", False),
+            ("500", False),
+            ("404", False),
+        ],
+    )
+    def test_status(self, status, ready):
+        assert _is_route_ready(status) is ready
 
 
 # ═══════════════════════════════════════════════════════════════════════

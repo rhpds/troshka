@@ -2,6 +2,7 @@ import type { Edge, Node } from "@xyflow/react";
 import {
   injectShowroomOutboundPorts,
   stripShowroomOutboundPorts,
+  gatewayOutboundPorts,
 } from "@/lib/gatewayValidation";
 import {
   ensureShowroomGatewayEdge,
@@ -161,11 +162,11 @@ function stripShowroomGatewayPortForwardsOnNodes(nodes: Node[]): Node[] {
   const managedOutbound = (gwData.showroomManagedOutbound as string[]) || [];
   const strippedOutbound =
     gwData.outboundPolicy === "restrict" && managedOutbound.length
-      ? stripShowroomOutboundPorts(String(gwData.outboundPorts || ""), managedOutbound)
-      : String(gwData.outboundPorts || "");
+      ? stripShowroomOutboundPorts(gatewayOutboundPorts(gwData), managedOutbound)
+      : gatewayOutboundPorts(gwData);
 
   const pfChanged = !portForwardsEqual(stripped, existing);
-  const outboundChanged = strippedOutbound !== String(gwData.outboundPorts || "");
+  const outboundChanged = strippedOutbound !== gatewayOutboundPorts(gwData);
   if (!pfChanged && !outboundChanged) return nodes;
 
   const nextData: Record<string, unknown> = { ...gwData };
@@ -251,8 +252,8 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const needsPf = !portForwardsEqual(withEip, existing);
   const outboundInject =
     gwData.outboundPolicy === "restrict"
-      ? injectShowroomOutboundPorts(String(gwData.outboundPorts || ""))
-      : { ports: String(gwData.outboundPorts || ""), added: [] as string[] };
+      ? injectShowroomOutboundPorts(gatewayOutboundPorts(gwData))
+      : { ports: gatewayOutboundPorts(gwData), added: [] as string[] };
   const needsOutbound = outboundInject.added.length > 0;
   if (!needsMode && !needsPf && !needsOutbound) return nodes;
 

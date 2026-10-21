@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import {
   Button,
@@ -58,11 +59,63 @@ interface Host {
   billing_mode?: "shared" | "dedicated";
 }
 
+const PROVIDER_BADGES: Record<string, { color: string; background: string; label: string }> = {
+  ec2: { color: "#fb923c", background: "rgba(251,146,60,0.15)", label: "AWS" },
+  gcp: { color: "#60a5fa", background: "rgba(96,165,250,0.15)", label: "GCP" },
+  azure: { color: "#22d3ee", background: "rgba(34,211,238,0.15)", label: "AZURE" },
+  kubevirt: { color: "#a78bfa", background: "rgba(167,139,250,0.15)", label: "KubeVirt" },
+  ocpvirt: { color: "#f472b6", background: "rgba(244,114,182,0.15)", label: "OCP Virt" },
+};
+
+function providerBorderColor(type: string): string {
+  return PROVIDER_BADGES[type]?.color || "#6b7280";
+}
+
+function providerBadge(type: string) {
+  return PROVIDER_BADGES[type] || { color: "#9ca3af", background: "rgba(107,114,128,0.15)", label: type.toUpperCase() };
+}
+
+function providerSetupWarning(hasImage: boolean, hasVpc: boolean): string {
+  if (!hasImage && !hasVpc) return "Provider needs setup. Go to Providers and select an image and Setup VPC.";
+  return hasImage ? "No VPC set. Go to Providers and click Setup VPC." : "No image set. Go to Providers and select an image.";
+}
+
+function poweringLabel(state: string): string {
+  if (state === "stopped") return "Powering on...";
+  return state === "paused" || state === "starting" ? "Resuming..." : "Powering off...";
+}
+
+function garbageCollectionSummary(report: Record<string, any>): string {
+                        const cap = report.capacity || {};
+                        const orphans = report.orphans_found || 0;
+                        const cleaned = report.cleanup?.cleaned || 0;
+                        const parts = [];
+                        if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
+                        if (orphans > 0) {
+                          parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                          if (report.cleanup?.output) parts.push(report.cleanup.output);
+                          if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
+                        }
+                        const cacheCleaned = report.cleanup?.cache_cleaned || 0;
+                        if (cacheCleaned > 0) parts.push(`Cache cleaned: ${cacheCleaned} items`);
+                        const repaired = report.network_repair?.repaired || 0;
+                        if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
+                        const s3 = report.s3_cleanup;
+                        if (s3?.deleted > 0) parts.push(`S3 cleaned: ${s3.deleted} objects (${s3.deleted_gb || 0} GB)`);
+                        if (report.shared_cache_entries_cleaned) parts.push(`Shared cache entries cleaned: ${report.shared_cache_entries_cleaned}`);
+                        if (parts.length === 0) parts.push("Nothing to do — host is clean");
+  return parts.join("\n");
+}
+
+function hostAgentLabel(host: Host, labels: Record<string, string>): string {
+  if (host.state === "starting" && host.agent_status === "disconnected") return "reconnecting";
+  return labels[host.agent_status] || host.agent_status;
+}
+
 export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [loading, setLoading] = useState(true);
   const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_image: string | null; gcp_zone?: string; azure_location?: string}>>([]);
-  const [provisioning, setProvisioning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProviderId, setNewProviderId] = useState("");
   const [newInstanceType, setNewInstanceType] = useState("m8i.xlarge");
@@ -492,7 +545,7 @@ export default function AdminHostsPage() {
   };
 
   const handleResizeStorage = async (host: Host) => {
-    const sizeGb = parseInt(resizeTarget[host.id]);
+    const sizeGb = Number.parseInt(resizeTarget[host.id]);
     if (!sizeGb || sizeGb <= host.storage_size_gb) {
       setError(`New size must be larger than current (${host.storage_size_gb} GB)`);
       return;
@@ -518,6 +571,203 @@ export default function AdminHostsPage() {
       setResizing({ ...resizing, [host.id]: false });
     }
   };
+
+  const renderHostActions = (h: Host) => {
+                const isPowering = poweringHosts.has(h.id);
+                const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
+                if (isPowering) return (
+                  <>
+                    <Button variant="secondary" isLoading isDisabled>
+                      {poweringLabel(h.state)}
+                    </Button>
+                    <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id)} isLoading={removingHosts.has(h.id)}>
+                      {removingHosts.has(h.id) ? "Terminating..." : "Remove"}
+                    </Button>
+                  </>
+                );
+                return (<>
+              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
+                <Button variant="secondary" onClick={async () => {
+                  if (!(await appConfirm({ message: `Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`, confirmLabel: "Install" }))) return;
+                  installAgent(h.id);
+                }} isLoading={installingHosts.has(h.id)} isDisabled={hostBusy}>
+                  {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
+                </Button>
+              )}
+              {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && (
+                <Button variant="secondary" isDisabled isLoading>
+                  Installing...
+                </Button>
+              )}
+              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && h.host_type !== "pattern_buffer" && h.host_type !== "kubevirt-cluster" && (
+                <Button variant="secondary" isDisabled={hostBusy} onClick={() => handleEvacuate(h.id)}>
+                  Evacuate
+                </Button>
+              )}
+              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "kubevirt-cluster" && (
+                <>
+                  {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
+                          isLoading={updatingHosts.has(h.id)} isDisabled={hostBusy} onClick={async (e) => {
+                    const force = e.shiftKey;
+                    const msg = force
+                      ? "FORCE update troshkad? This will kill any running jobs."
+                      : "Update troshkad on this host? (Shift+click for force update)";
+                    if (!(await appConfirm({ message: msg }))) return;
+                    setUpdatingHosts((prev) => new Set(prev).add(h.id));
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
+                      if (!resp.ok) {
+                        const data = await resp.json();
+                        setAlertMsg(data.detail || "Update failed");
+                        return;
+                      }
+                      const data = await resp.json();
+                      const targetVersion = data.version;
+                      const oldVersion = h.agent_version;
+                      if (targetVersion && targetVersion === oldVersion) {
+                        setAlertMsg(`Already up to date (v${oldVersion})`);
+                        return;
+                      }
+                      let sawDown = false;
+                      for (let i = 0; i < 60; i++) {
+                        await new Promise(r => setTimeout(r, 3000));
+                        const hostsResp = await fetch("/api/v1/hosts/");
+                        if (hostsResp.ok) {
+                          const hostsList = await hostsResp.json();
+                          const updated = hostsList.find((x: Host) => x.id === h.id);
+                          if (!updated || updated.agent_status === "disconnected") {
+                            sawDown = true;
+                          } else if ((sawDown && updated.agent_status === "connected") || (updated.agent_version && updated.agent_version !== oldVersion)) {
+                            setAlertMsg(`Updated → v${updated.agent_version}`);
+                            loadData();
+                            return;
+                          }
+                        }
+                      }
+                      setAlertMsg("Update timed out — check host status");
+                    } finally {
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
+                    }
+                  }}>
+                    {updatingHosts.has(h.id) ? "Updating..." : "Update Agent"}
+                  </Button>}
+                  <Button variant="secondary" isLoading={installingHosts.has(h.id)} isDisabled={hostBusy} onClick={async () => {
+                    if (!(await appConfirm({ message: "Reinstall the agent on this host? This re-runs the full install script via SSH.", confirmLabel: "Reinstall" }))) return;
+                    installAgent(h.id);
+                  }}>
+                    {installingHosts.has(h.id) ? "Reinstalling..." : "Reinstall Agent"}
+                  </Button>
+                  {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updatingHosts.has(`gc-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`gc-${h.id}`)} onClick={async () => {
+                    if (!(await appConfirm({ message: `Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`, confirmLabel: "Run GC" }))) return;
+                    setUpdatingHosts((prev) => new Set(prev).add(`gc-${h.id}`));
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
+                      if (resp.ok) {
+                        const report = await resp.json();
+                        const fullMsg = garbageCollectionSummary(report);
+                        const copy = await appConfirm({ message: fullMsg + "\n\nClick OK to copy to clipboard.", confirmLabel: "Copy" });
+                        if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
+                        loadData();
+                      } else {
+                        setAlertMsg("GC failed — check server logs");
+                      }
+                    } finally {
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
+                    }
+                  }}>
+                    Clean
+                  </Button>}
+                  {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updatingHosts.has(`wipe-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`wipe-${h.id}`)} onClick={async () => {
+                    if (!(await appConfirm({
+                      title: "WIPE HOST",
+                      message: "WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?",
+                      confirmLabel: "Wipe",
+                      variant: "danger",
+                    }))) return;
+                    if (!(await appConfirm({
+                      title: "Final Warning",
+                      message: "FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?",
+                      confirmLabel: "Continue",
+                      variant: "danger",
+                    }))) return;
+                    setUpdatingHosts((prev) => new Set(prev).add(`wipe-${h.id}`));
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
+                      if (resp.ok) {
+                        const data = await resp.json();
+                        setAlertMsg(`Wiped: ${data.projects_destroyed} destroyed, ${data.projects_reset} reset, ${data.nft_reset?.flushed_chains || 0} nft chains flushed`);
+                        loadData();
+                      } else {
+                        setAlertMsg("Wipe failed — check server logs");
+                      }
+                    } finally {
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
+                    }
+                  }}>
+                    {updatingHosts.has(`wipe-${h.id}`) ? "Wiping..." : "Wipe Host"}
+                  </Button>}
+                </>
+              )}
+              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (
+                <Button variant="secondary" onClick={async () => {
+                  const msg = h.used_vcpus > 0
+                    ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
+                    : `Power off ${h.instance_id}?`;
+                  if (!(await appConfirm({ message: msg, confirmLabel: "Power off" }))) return;
+                  powerHost(h.id, "poweroff");
+                }} isDisabled={hostBusy} isLoading={poweringHosts.has(h.id)}>
+                  Power Off
+                </Button>
+              )}
+              {h.state === "stopped" && (() => {
+                const willResize = resizeType[h.id] && resizeType[h.id] !== h.instance_type;
+                return (
+                  <Button variant="secondary" onClick={async () => {
+                    const msg = willResize
+                      ? `Resize ${h.instance_id} from ${h.instance_type} → ${resizeType[h.id]} and power on?`
+                      : `Power on ${h.instance_id}?`;
+                    if (!(await appConfirm({ message: msg, confirmLabel: willResize ? "Resize & power on" : "Power on" }))) return;
+                    powerHost(h.id, "poweron", resizeType[h.id] || undefined);
+                  }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
+                    {willResize ? "Resize & Power On" : "Power On"}
+                  </Button>
+                );
+              })()}
+              {h.state === "paused" && (
+                <Button variant="secondary" onClick={async () => {
+                  const pauseWarn = (h.storage_warnings || []).find((w: any) => w?.reason === "paused" || w?.mount === "vm-paused");
+                  const detail = pauseWarn?.message ? `\n\n${pauseWarn.message}` : "";
+                  if (!(await appConfirm({
+                    message: `Resume ${h.instance_id}? The guest is paused (often an IO error on rootdisk). Unpause may fail again if storage is still unhealthy.${detail}`,
+                    confirmLabel: "Resume",
+                  }))) return;
+                  powerHost(h.id, "poweron");
+                }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
+                  Resume
+                </Button>
+              )}
+              {isOcpVirtHost(h) && (h.state === "active" || h.state === "paused") && (
+                <Button variant="secondary" onClick={async () => {
+                  if (!(await appConfirm({
+                    message: `Live migrate ${h.instance_id} to another worker node? KubeVirt will create a VirtualMachineInstanceMigration. If the guest is IO-paused, migration may still fail until storage recovers.`,
+                    confirmLabel: "Live Migrate",
+                  }))) return;
+                  migrateHost(h.id);
+                }} isLoading={migratingHosts.has(h.id)} isDisabled={migratingHosts.has(h.id) || poweringHosts.has(h.id)}>
+                  Live Migrate
+                </Button>
+              )}
+              {h.state === "starting" && (
+                <Button variant="secondary" isDisabled isLoading>
+                  Starting...
+                </Button>
+              )}
+              {h.host_type !== "kubevirt-cluster" && (
+                <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
+                  {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
+                </Button>
+              )}
+              </>); };
 
   if (loading) {
     return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
@@ -570,7 +820,7 @@ export default function AdminHostsPage() {
               )}
               <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap" }}>
                 <div style={{ minWidth: 180 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Provider</>}>
                   <select
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     value={newProviderId}
@@ -590,38 +840,34 @@ export default function AdminHostsPage() {
                     {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
-                  </select>
+                  </select></LabeledField>
                 </div>
-                {newProviderId && !selectedProviderReady && selectedProvider && selectedProvider.type === "ec2" && (
+                {newProviderId && !selectedProviderReady && selectedProvider?.type === "ec2" && (
                   <Alert variant="warning" title={
-                    !selectedProviderHasImage && !selectedProviderHasVpc
-                      ? "Provider needs setup. Go to Providers and select an image and Setup VPC."
-                      : !selectedProviderHasImage
-                        ? "No image set. Go to Providers and select an image."
-                        : "No VPC set. Go to Providers and click Setup VPC."
+                    providerSetupWarning(selectedProviderHasImage, selectedProviderHasVpc)
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}
-                {!newProviderId ? null : selectedProvider?.type === "ocpvirt" ? (
+                {newProviderId && (selectedProvider?.type === "ocpvirt" ? (
                   <>
                     <div style={{ minWidth: 120 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>CPU Cores</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>CPU Cores</>}>
                       <input
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                         type="number"
                         value={newCpuCores}
-                        onChange={(e) => setNewCpuCores(parseInt(e.target.value) || 1)}
+                        onChange={(e) => setNewCpuCores(Number.parseInt(e.target.value) || 1)}
                         min={1}
-                      />
+                      /></LabeledField>
                     </div>
                     <div style={{ minWidth: 120 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Memory GB</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Memory GB</>}>
                       <input
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                         type="number"
                         value={newMemoryGb}
-                        onChange={(e) => setNewMemoryGb(parseInt(e.target.value) || 1)}
+                        onChange={(e) => setNewMemoryGb(Number.parseInt(e.target.value) || 1)}
                         min={1}
-                      />
+                      /></LabeledField>
                     </div>
                     <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
                       <Button variant="tertiary" size="sm" onClick={() => { setNewCpuCores(8); setNewMemoryGb(32); }}>8c / 32G</Button>
@@ -632,7 +878,7 @@ export default function AdminHostsPage() {
                 ) : (
                   <>
                     <div style={{ minWidth: 280 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Instance Type</>}>
                       <select
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                         value={newInstanceType}
@@ -641,11 +887,11 @@ export default function AdminHostsPage() {
                         {instanceTypes.map((t) => (
                           <option key={t.value} value={t.value}>{t.label}</option>
                         ))}
-                      </select>
+                      </select></LabeledField>
                     </div>
                     {selectedProvider?.type === "ec2" ? (
                       <div style={{ minWidth: 200 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Region</>}>
                         <select
                           style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                           value={newRegion}
@@ -654,22 +900,22 @@ export default function AdminHostsPage() {
                           {awsRegions.map((r) => (
                             <option key={r.value} value={r.value}>{r.label}</option>
                           ))}
-                        </select>
+                        </select></LabeledField>
                       </div>
                     ) : (
                       <div style={{ minWidth: 150 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Zone</label>
+                        <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Zone</>}>
                         <input
                           style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                           value={newRegion}
                           disabled
-                        />
+                        /></LabeledField>
                       </div>
                     )}
                   </>
-                )}
+                ))}
                 {newProviderId && <div style={{ minWidth: 220 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Storage Pool</>}>
                   <select
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     value={selectedPool}
@@ -679,7 +925,7 @@ export default function AdminHostsPage() {
                     {pools.filter(p => p.status === "available" && (selectedProvider?.type !== "ocpvirt" || p.mode !== "shared-fsx")).map((p) => (
                       <option key={p.id} value={p.id}>{p.name} ({p.mode}{p.az ? `, ${p.az}` : ""})</option>
                     ))}
-                  </select>
+                  </select></LabeledField>
                 </div>}
                 {newProviderId && <Button variant="primary" onClick={addHost} isDisabled={!selectedProviderReady}>
                   Provision Host
@@ -750,9 +996,9 @@ export default function AdminHostsPage() {
             return (
             <Card key={ps.id} isClickable isSelectable
               onClick={() => setFilterProvider(ps.id === filterProvider ? "" : ps.id)}
-              style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : `3px solid ${ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#6b7280"}40` }}>
+              style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : `3px solid ${providerBorderColor(ps.type)}40` }}>
               <CardBody>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: ps.type === "ec2" ? "rgba(251,146,60,0.15)" : ps.type === "gcp" ? "rgba(96,165,250,0.15)" : ps.type === "azure" ? "rgba(34,211,238,0.15)" : ps.type === "kubevirt" ? "rgba(167,139,250,0.15)" : ps.type === "ocpvirt" ? "rgba(244,114,182,0.15)" : "rgba(107,114,128,0.15)", color: ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#9ca3af" }}>{ps.type === "ec2" ? "AWS" : ps.type === "kubevirt" ? "KubeVirt" : ps.type === "ocpvirt" ? "OCP Virt" : ps.type.toUpperCase()}</span></div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: providerBadge(ps.type).background, color: providerBadge(ps.type).color }}>{providerBadge(ps.type).label}</span></div>
                 {ps.type === "kubevirt" ? (
                   <>
                     <div style={{ fontSize: 24, fontWeight: 700 }}>{pRunningVms} <span style={{ fontSize: 14, opacity: 0.5 }}>VMs</span></div>
@@ -782,7 +1028,7 @@ export default function AdminHostsPage() {
 
       {/* Host List */}
       <PageSection>
-        {filteredHosts.length > 0 && (() => {
+        {hosts.length > 0 && (() => {
           const selected = filteredHosts.filter((h) => selectedHosts.has(h.id));
           const allSelected = selected.length === filteredHosts.length && filteredHosts.length > 0;
           const someSelected = selected.length > 0;
@@ -935,7 +1181,7 @@ export default function AdminHostsPage() {
                   {h.state !== "stopped" && (
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${agentColors[h.agent_status] || "#94a3b8"}22`, color: agentColors[h.agent_status] || "#94a3b8" }}>
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
-                    {h.state === "starting" && h.agent_status === "disconnected" ? "reconnecting" : (agentLabels[h.agent_status] || h.agent_status)}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
+                    {hostAgentLabel(h, agentLabels)}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
                   )}
                   {expectedVersion && h.agent_version && h.agent_status === "connected" && h.agent_version !== expectedVersion && (
@@ -953,8 +1199,8 @@ export default function AdminHostsPage() {
                     if (localWarnings.length === 0 && !liveWarn) return null;
                     const critical = liveCritical || localWarnings.some((w: any) => w.level === "critical");
                     const tipLines = localWarnings.length
-                      ? localWarnings.map((w: any, i: number) => (
-                          <div key={i}>
+                      ? localWarnings.map((w: any) => (
+                          <div key={`${w.mount}:${w.message || "storage"}`}>
                             {w.message
                               ? w.message
                               : `${w.mount}: ${w.used_pct}% used (${w.level})`}
@@ -1046,228 +1292,7 @@ export default function AdminHostsPage() {
                   {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
                 </Button>
               )}
-              {(() => {
-                const isPowering = poweringHosts.has(h.id);
-                const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
-                if (isPowering) return (
-                  <>
-                    <Button variant="secondary" isLoading isDisabled>
-                      {h.state === "stopped"
-                        ? "Powering on..."
-                        : h.state === "paused" || h.state === "starting"
-                          ? "Resuming..."
-                          : "Powering off..."}
-                    </Button>
-                    <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id)} isLoading={removingHosts.has(h.id)}>
-                      {removingHosts.has(h.id) ? "Terminating..." : "Remove"}
-                    </Button>
-                  </>
-                );
-                return (<>
-              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
-                <Button variant="secondary" onClick={async () => {
-                  if (!(await appConfirm({ message: `Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`, confirmLabel: "Install" }))) return;
-                  installAgent(h.id);
-                }} isLoading={installingHosts.has(h.id)} isDisabled={hostBusy}>
-                  {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
-                </Button>
-              )}
-              {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && (
-                <Button variant="secondary" isDisabled isLoading>
-                  Installing...
-                </Button>
-              )}
-              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && h.host_type !== "pattern_buffer" && h.host_type !== "kubevirt-cluster" && (
-                <Button variant="secondary" isDisabled={hostBusy} onClick={() => handleEvacuate(h.id)}>
-                  Evacuate
-                </Button>
-              )}
-              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "kubevirt-cluster" && (
-                <>
-                  {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
-                          isLoading={updatingHosts.has(h.id)} isDisabled={hostBusy} onClick={async (e) => {
-                    const force = e.shiftKey;
-                    const msg = force
-                      ? "FORCE update troshkad? This will kill any running jobs."
-                      : "Update troshkad on this host? (Shift+click for force update)";
-                    if (!(await appConfirm({ message: msg }))) return;
-                    setUpdatingHosts((prev) => new Set(prev).add(h.id));
-                    try {
-                      const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
-                      if (!resp.ok) {
-                        const data = await resp.json();
-                        setAlertMsg(data.detail || "Update failed");
-                        return;
-                      }
-                      const data = await resp.json();
-                      const targetVersion = data.version;
-                      const oldVersion = h.agent_version;
-                      if (targetVersion && targetVersion === oldVersion) {
-                        setAlertMsg(`Already up to date (v${oldVersion})`);
-                        return;
-                      }
-                      let sawDown = false;
-                      for (let i = 0; i < 60; i++) {
-                        await new Promise(r => setTimeout(r, 3000));
-                        const hostsResp = await fetch("/api/v1/hosts/");
-                        if (hostsResp.ok) {
-                          const hostsList = await hostsResp.json();
-                          const updated = hostsList.find((x: Host) => x.id === h.id);
-                          if (!updated || updated.agent_status === "disconnected") {
-                            sawDown = true;
-                          } else if (sawDown && updated.agent_status === "connected") {
-                            setAlertMsg(`Updated → v${updated.agent_version}`);
-                            loadData();
-                            return;
-                          } else if (updated.agent_version && updated.agent_version !== oldVersion) {
-                            setAlertMsg(`Updated → v${updated.agent_version}`);
-                            loadData();
-                            return;
-                          }
-                        }
-                      }
-                      setAlertMsg("Update timed out — check host status");
-                    } finally {
-                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
-                    }
-                  }}>
-                    {updatingHosts.has(h.id) ? "Updating..." : "Update Agent"}
-                  </Button>}
-                  <Button variant="secondary" isLoading={installingHosts.has(h.id)} isDisabled={hostBusy} onClick={async () => {
-                    if (!(await appConfirm({ message: "Reinstall the agent on this host? This re-runs the full install script via SSH.", confirmLabel: "Reinstall" }))) return;
-                    installAgent(h.id);
-                  }}>
-                    {installingHosts.has(h.id) ? "Reinstalling..." : "Reinstall Agent"}
-                  </Button>
-                  {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updatingHosts.has(`gc-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`gc-${h.id}`)} onClick={async () => {
-                    if (!(await appConfirm({ message: `Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`, confirmLabel: "Run GC" }))) return;
-                    setUpdatingHosts((prev) => new Set(prev).add(`gc-${h.id}`));
-                    try {
-                      const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
-                      if (resp.ok) {
-                        const report = await resp.json();
-                        const cap = report.capacity || {};
-                        const orphans = report.orphans_found || 0;
-                        const cleaned = report.cleanup?.cleaned || 0;
-                        const parts = [];
-                        if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
-                        if (orphans > 0) {
-                          parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
-                          if (report.cleanup?.output) parts.push(report.cleanup.output);
-                          if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
-                        }
-                        const cacheCleaned = report.cleanup?.cache_cleaned || 0;
-                        if (cacheCleaned > 0) parts.push(`Cache cleaned: ${cacheCleaned} items`);
-                        const repaired = report.network_repair?.repaired || 0;
-                        if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
-                        const s3 = report.s3_cleanup;
-                        if (s3?.deleted > 0) parts.push(`S3 cleaned: ${s3.deleted} objects (${s3.deleted_gb || 0} GB)`);
-                        if (report.shared_cache_entries_cleaned) parts.push(`Shared cache entries cleaned: ${report.shared_cache_entries_cleaned}`);
-                        if (parts.length === 0) parts.push("Nothing to do — host is clean");
-                        const fullMsg = parts.join("\n");
-                        const copy = await appConfirm({ message: fullMsg + "\n\nClick OK to copy to clipboard.", confirmLabel: "Copy" });
-                        if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
-                        loadData();
-                      } else {
-                        setAlertMsg("GC failed — check server logs");
-                      }
-                    } finally {
-                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
-                    }
-                  }}>
-                    Clean
-                  </Button>}
-                  {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updatingHosts.has(`wipe-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`wipe-${h.id}`)} onClick={async () => {
-                    if (!(await appConfirm({
-                      title: "WIPE HOST",
-                      message: "WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?",
-                      confirmLabel: "Wipe",
-                      variant: "danger",
-                    }))) return;
-                    if (!(await appConfirm({
-                      title: "Final Warning",
-                      message: "FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?",
-                      confirmLabel: "Continue",
-                      variant: "danger",
-                    }))) return;
-                    setUpdatingHosts((prev) => new Set(prev).add(`wipe-${h.id}`));
-                    try {
-                      const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
-                      if (resp.ok) {
-                        const data = await resp.json();
-                        setAlertMsg(`Wiped: ${data.projects_destroyed} destroyed, ${data.projects_reset} reset, ${data.nft_reset?.flushed_chains || 0} nft chains flushed`);
-                        loadData();
-                      } else {
-                        setAlertMsg("Wipe failed — check server logs");
-                      }
-                    } finally {
-                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
-                    }
-                  }}>
-                    {updatingHosts.has(`wipe-${h.id}`) ? "Wiping..." : "Wipe Host"}
-                  </Button>}
-                </>
-              )}
-              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (
-                <Button variant="secondary" onClick={async () => {
-                  const msg = h.used_vcpus > 0
-                    ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
-                    : `Power off ${h.instance_id}?`;
-                  if (!(await appConfirm({ message: msg, confirmLabel: "Power off" }))) return;
-                  powerHost(h.id, "poweroff");
-                }} isDisabled={hostBusy} isLoading={poweringHosts.has(h.id)}>
-                  Power Off
-                </Button>
-              )}
-              {h.state === "stopped" && (() => {
-                const willResize = resizeType[h.id] && resizeType[h.id] !== h.instance_type;
-                return (
-                  <Button variant="secondary" onClick={async () => {
-                    const msg = willResize
-                      ? `Resize ${h.instance_id} from ${h.instance_type} → ${resizeType[h.id]} and power on?`
-                      : `Power on ${h.instance_id}?`;
-                    if (!(await appConfirm({ message: msg, confirmLabel: willResize ? "Resize & power on" : "Power on" }))) return;
-                    powerHost(h.id, "poweron", resizeType[h.id] || undefined);
-                  }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
-                    {willResize ? "Resize & Power On" : "Power On"}
-                  </Button>
-                );
-              })()}
-              {h.state === "paused" && (
-                <Button variant="secondary" onClick={async () => {
-                  const pauseWarn = (h.storage_warnings || []).find((w: any) => w?.reason === "paused" || w?.mount === "vm-paused");
-                  const detail = pauseWarn?.message ? `\n\n${pauseWarn.message}` : "";
-                  if (!(await appConfirm({
-                    message: `Resume ${h.instance_id}? The guest is paused (often an IO error on rootdisk). Unpause may fail again if storage is still unhealthy.${detail}`,
-                    confirmLabel: "Resume",
-                  }))) return;
-                  powerHost(h.id, "poweron");
-                }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
-                  Resume
-                </Button>
-              )}
-              {isOcpVirtHost(h) && (h.state === "active" || h.state === "paused") && (
-                <Button variant="secondary" onClick={async () => {
-                  if (!(await appConfirm({
-                    message: `Live migrate ${h.instance_id} to another worker node? KubeVirt will create a VirtualMachineInstanceMigration. If the guest is IO-paused, migration may still fail until storage recovers.`,
-                    confirmLabel: "Live Migrate",
-                  }))) return;
-                  migrateHost(h.id);
-                }} isLoading={migratingHosts.has(h.id)} isDisabled={migratingHosts.has(h.id) || poweringHosts.has(h.id)}>
-                  Live Migrate
-                </Button>
-              )}
-              {h.state === "starting" && (
-                <Button variant="secondary" isDisabled isLoading>
-                  Starting...
-                </Button>
-              )}
-              {h.host_type !== "kubevirt-cluster" && (
-                <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
-                  {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
-                </Button>
-              )}
-              </>); })()}
+              {renderHostActions(h)}
               {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.host_type !== "kubevirt-cluster" && !isOcpVirtHost(h) && (
                 <>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
@@ -1284,14 +1309,14 @@ export default function AdminHostsPage() {
                       variant="secondary"
                       onClick={() => handleResizeStorage(h)}
                       isLoading={resizing[h.id]}
-                      isDisabled={resizing[h.id] || !resizeTarget[h.id] || parseInt(resizeTarget[h.id]) <= h.storage_size_gb}
+                      isDisabled={resizing[h.id] || !resizeTarget[h.id] || Number.parseInt(resizeTarget[h.id]) <= h.storage_size_gb}
                     >
                       Resize
                     </Button>
                   </div>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
                   <Switch
-                    label={`Auto-extend${h.auto_extend_enabled ? ` (${h.auto_extend_threshold_pct}% → +${h.auto_extend_increment_gb} GB)` : ""}`}
+                    label={h.auto_extend_enabled ? `Auto-extend (${h.auto_extend_threshold_pct}% → +${h.auto_extend_increment_gb} GB)` : "Auto-extend"}
                     isChecked={h.auto_extend_enabled}
                     onChange={(_, checked) => updateAutoExtend(h.id, "auto_extend_enabled", checked)}
                     style={{ fontSize: 12 }}
@@ -1321,38 +1346,38 @@ export default function AdminHostsPage() {
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
                 <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600 }}>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Threshold (%)</>}>
                     <input
                       style={{ ...inputStyle, width: 80 }}
                       type="number"
                       value={h.auto_extend_threshold_pct}
                       onChange={(e) => {
-                        const val = parseInt(e.target.value) || 80;
+                        const val = Number.parseInt(e.target.value) || 80;
                         if (val >= 50 && val <= 95) updateAutoExtend(h.id, "auto_extend_threshold_pct", val);
                       }}
                       min={50}
                       max={95}
-                    />
+                    /></LabeledField>
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Increment (GB)</>}>
                     <input
                       style={{ ...inputStyle, width: 80 }}
                       type="number"
                       value={h.auto_extend_increment_gb}
-                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_increment_gb", parseInt(e.target.value) || 100)}
+                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_increment_gb", Number.parseInt(e.target.value) || 100)}
                       min={10}
-                    />
+                    /></LabeledField>
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB)</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Max (GB)</>}>
                     <input
                       style={{ ...inputStyle, width: 100 }}
                       type="number"
                       value={h.auto_extend_max_gb || ""}
-                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_max_gb", e.target.value ? parseInt(e.target.value) : null)}
+                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_max_gb", e.target.value ? Number.parseInt(e.target.value) : null)}
                       placeholder="No limit"
-                    />
+                    /></LabeledField>
                   </div>
                   <div style={{ display: "flex", alignItems: "flex-end" }}>
                     <Button variant="primary" size="sm" onClick={() => handleExtendStorage(h)} isLoading={extending[h.id]} isDisabled={extending[h.id]}>
@@ -1365,7 +1390,7 @@ export default function AdminHostsPage() {
             {expandedMetering[h.id] && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
                 <div style={{ marginBottom: 12 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Billing mode</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Billing mode</>}>
                   <select
                     style={{ ...inputStyle, width: 180 }}
                     value={h.billing_mode || "shared"}
@@ -1375,7 +1400,7 @@ export default function AdminHostsPage() {
                   >
                     <option value="shared">shared (nested factor)</option>
                     <option value="dedicated">dedicated (full host)</option>
-                  </select>
+                  </select></LabeledField>
                   <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>
                     Shared: guest CPU/RAM with nested discount. Dedicated: full host hourly whether VMs are running or not.
                   </div>
@@ -1383,7 +1408,7 @@ export default function AdminHostsPage() {
                 <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                   {(["vcpu_hour", "ram_gib_hour", "disk_gib_hour", "eip_hour", "ceph_gib_hour"] as const).map((key) => (
                     <div key={key}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{key}</label>
+                      <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={key}>
                       <input
                         style={{ ...inputStyle, width: 100 }}
                         type="number"
@@ -1393,7 +1418,7 @@ export default function AdminHostsPage() {
                         placeholder="default"
                         onBlur={(e) => {
                           const raw = e.target.value.trim();
-                          const next = { ...(h.metering_rates || {}) };
+                          const next = { ...(h.metering_rates) };
                           if (raw === "") {
                             delete next[key];
                           } else {
@@ -1401,7 +1426,7 @@ export default function AdminHostsPage() {
                           }
                           updateMeteringRates(h.id, Object.keys(next).length ? next : null);
                         }}
-                      />
+                      /></LabeledField>
                     </div>
                   ))}
                 </div>
@@ -1413,7 +1438,7 @@ export default function AdminHostsPage() {
                   {keyData[h.id].ssh_script_command && (
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                        <label style={{ fontSize: 11, fontWeight: 600 }}>SSH Script</label>
+                        <span style={{ fontSize: 11, fontWeight: 600 }}>SSH Script</span>
                         <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].ssh_script_command!, "SSH script command")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
                       </div>
                       <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4 }}>{keyData[h.id].ssh_script_command}</code>
@@ -1422,7 +1447,7 @@ export default function AdminHostsPage() {
                   {keyData[h.id].ssh_command && (
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                        <label style={{ fontSize: 11, fontWeight: 600 }}>SSH Command</label>
+                        <span style={{ fontSize: 11, fontWeight: 600 }}>SSH Command</span>
                         <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].ssh_command!, "SSH command")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
                       </div>
                       <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4 }}>{keyData[h.id].ssh_command}</code>
@@ -1438,7 +1463,7 @@ export default function AdminHostsPage() {
                   {keyData[h.id].public_key && (
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                        <label style={{ fontSize: 11, fontWeight: 600 }}>Public Key</label>
+                        <span style={{ fontSize: 11, fontWeight: 600 }}>Public Key</span>
                         <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].public_key!, "Public key")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
                       </div>
                       <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4, wordBreak: "break-all" }}>{keyData[h.id].public_key}</code>

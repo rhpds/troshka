@@ -554,8 +554,8 @@ describe("applyClusterDisks", () => {
     const { nodes: n2, edges: e2 } = applyClusterDisks(cluster, n1, e1);
 
     // Node count and structure should be identical
-    expect(n2.length).toBe(n1.length);
-    expect(e2.length).toBe(e1.length);
+    expect(n2).toHaveLength(n1.length);
+    expect(e2).toHaveLength(e1.length);
 
     // Storage node IDs should be identical
     const storageIds1 = n1.filter((n) => n.type === "storageNode").map((n) => n.id).sort();
@@ -1037,7 +1037,7 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
 
     const members = materialized.filter((n) => n.type === "vmNode");
-    expect(members.length).toBe(8);
+    expect(members).toHaveLength(8);
 
     // Check pairwise: no two 180×205 rects overlap
     for (let i = 0; i < members.length; i++) {
@@ -1155,7 +1155,7 @@ describe("Cluster Network Anchors", () => {
     const memberNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as any).clusterId === "prod");
     for (const member of memberNodes) {
       const nics = (member.data as any).nics || [];
-      expect(nics.length).toBe(2);
+      expect(nics).toHaveLength(2);
       expect(nics[0].name).toBe("eth0");
       expect(nics[1].name).toBe("eth1");
     }
@@ -1225,7 +1225,7 @@ describe("Cluster Network Anchors", () => {
     const memberNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as any).clusterId === "prod");
     for (const member of memberNodes) {
       const nics = (member.data as any).nics || [];
-      expect(nics.length).toBe(3);
+      expect(nics).toHaveLength(3);
     }
   });
 
@@ -1538,10 +1538,10 @@ describe("applyClusterDns single DNS network", () => {
     const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
     const base = { id: "ocp", name: "ocp", baseDomain: "local", apiVip: "10.0.0.5", ingressVip: "10.0.0.6", networkIds: ["net1", "net2"] } as any;
     const first = applyClusterDns({ ...base, dnsNetworkId: "net1" }, [net1, net2]);
-    expect(((first[0].data as any).dnsRecords as any[]).length).toBe(3);
+    expect(((first[0].data as any).dnsRecords as any[])).toHaveLength(3);
     const second = applyClusterDns({ ...base, dnsNetworkId: "net2" }, first);
     expect((second[0].data as any).dnsRecords).toEqual([]); // net1 stripped
-    expect(((second[1].data as any).dnsRecords as any[]).length).toBe(3); // net2 now hosts
+    expect(((second[1].data as any).dnsRecords as any[])).toHaveLength(3); // net2 now hosts
   });
 });
 

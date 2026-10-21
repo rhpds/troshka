@@ -12,131 +12,40 @@ import {
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
 } from "@/lib/showroomValidation";
 import { getPodDisplayPorts } from "@/lib/showroomTabs";
+import ModalBackdrop from "@/components/ModalBackdrop";
 
-function ContainerNodeComponent({ id, data, selected }: NodeProps) {
-  const projectState = useCanvasStore((s) => s.projectState);
-  const { isPreview } = useCanvasDisplay();
-  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
-  const updateNodeData = useCanvasStore((s) => s.updateNodeData);
-  const updateNodeInternals = useUpdateNodeInternals();
-  const d = data as unknown as ContainerNodeData;
-  const isRunning = d.status === "running";
-  const isDeployed = (projectState === "active" || projectState === "stopped") && deployedVmIds.has(id);
-  const projectId = useCanvasStore((s) => s.currentProjectId);
-  const [actionPending, setActionPending] = useState<string | null>(null);
-  const [logModalOpen, setLogModalOpen] = useState(false);
-  const [logContent, setLogContent] = useState("");
+function containerStatusColor(status: string): string {
+  if (status === "running") return "var(--troshka-green)";
+  return status === "created" ? "var(--troshka-yellow)" : "var(--troshka-text-dim)";
+}
+
+function containerImageName(image?: string): string {
+  if (!image) return "no image";
+  return image.split("/").pop()?.split(":")[0] || image;
+}
+
+function containerAppearance(selected: boolean, isPod: boolean, isShowroom: boolean, hasIssues: boolean) {
+  const pod = isPod && !isShowroom;
+  let borderColor = pod ? "rgba(168, 85, 247, 0.45)" : "rgba(56, 189, 248, 0.3)";
+  if (isShowroom && hasIssues) borderColor = "rgba(251, 191, 36, 0.55)";
+  if (selected) borderColor = pod ? "var(--troshka-purple)" : "var(--troshka-blue)";
+  let icon = isPod ? "🫛" : "📦";
+  if (isShowroom) icon = "📖";
+  return { borderColor, icon };
+}
+
+function PodContainers({ podContainers, initContainers }: Readonly<{
+  podContainers: Array<{name: string; image: string}>;
+  initContainers: Array<{name: string; image: string}>;
+}>) {
   const [podExpanded, setPodExpanded] = useState(false);
-  const isPod = !!((d as Record<string, unknown>).isPod);
-  const isShowroom = !!((d as Record<string, unknown>).isShowroom || d.name === "showroom");
-  const edges = useCanvasStore((s) => s.edges);
-  const allNodes = useCanvasStore((s) => s.nodes);
-  const showroomIssues = isShowroom ? getShowroomReadiness(allNodes, edges).issues : [];
-  const podContainers = ((d as Record<string, unknown>).podContainers || []) as Array<{name: string; image: string; ports: Array<{containerPort: number}>}>;
-  const initContainers = ((d as Record<string, unknown>).initContainers || []) as Array<{name: string; image: string}>;
-
-  const nicCount = (d.nics || []).length;
-  const mountCount = (d.mounts || []).length;
-  useEffect(() => {
-    const t1 = setTimeout(() => updateNodeInternals(id), 0);
-    const t2 = setTimeout(() => updateNodeInternals(id), 200);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [id, nicCount, mountCount, updateNodeInternals]);
-
-  const displayStatus = d.status || "stopped";
-
-  const statusColor =
-    displayStatus === "running"
-      ? "var(--troshka-green)"
-      : displayStatus === "created"
-        ? "var(--troshka-yellow)"
-        : "var(--troshka-text-dim)";
-
-  const imageName = d.image
-    ? d.image.split("/").pop()?.split(":")[0] || d.image
-    : "no image";
-
-  return (
-    <div
-      className={`canvas-node canvas-node-container ${isPod && !isShowroom ? "canvas-node-pod" : ""} ${selected ? "canvas-node-selected" : ""}`}
-      style={{
-        borderColor: selected
-          ? isPod && !isShowroom
-            ? "var(--troshka-purple)"
-            : "var(--troshka-blue)"
-          : isShowroom && showroomIssues.length > 0
-            ? "rgba(251, 191, 36, 0.55)"
-            : isPod && !isShowroom
-              ? "rgba(168, 85, 247, 0.45)"
-              : "rgba(56, 189, 248, 0.3)",
-        boxShadow:
-          selected && isPod && !isShowroom
-            ? "0 0 0 3px rgba(168, 85, 247, 0.3)"
-            : undefined,
-        opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
-        transition: "opacity 0.3s",
-      }}
-    >
-      <div className="canvas-node-header">
-        <span className="canvas-node-icon">{isShowroom ? "📖" : isPod ? "🫛" : "📦"}</span>
-        <span className="canvas-node-label">{d.name || "container"}</span>
-        {isShowroom && showroomIssues.length > 0 && (
-          <span title={showroomIssues.join("\n")} style={{ fontSize: 10, color: "var(--troshka-yellow)" }}>⚠</span>
-        )}
-        <span
-          className="canvas-node-status-dot"
-          style={{ background: statusColor }}
-          title={displayStatus}
-        />
-      </div>
-
-      <div className="canvas-node-body">
-        {!isPod && (
-          <div
-            className="canvas-node-detail"
-            style={{ fontFamily: "monospace", fontSize: 10 }}
-            title={d.image}
-          >
-            {imageName}
-          </div>
-        )}
-        {!isPod && (
-          <div className="canvas-node-detail">
-            {d.cpus} CPU · {d.memory >= 1024 ? `${d.memory / 1024}G` : `${d.memory}M`} RAM
-          </div>
-        )}
-        {(() => {
-          const liveIps = (d as Record<string, unknown>).liveIps as string[] | undefined;
-          const staticIps = (d.nics || []).map((nic) => nic.ip).filter(Boolean);
-          const ips = liveIps && liveIps.length > 0 ? liveIps : staticIps;
-          const portList =
-            isPod || isShowroom
-              ? getPodDisplayPorts(
-                  d as Record<string, unknown>,
-                  podContainers,
-                  allNodes,
-                  isShowroom,
-                )
-              : (d.ports || []).map((p) => p.containerPort).filter(Boolean);
-          if (!ips.length && !portList.length) return null;
-          return (
-            <div className="canvas-node-detail" style={{ fontFamily: "monospace", fontSize: 10, color: "var(--troshka-green)" }}>
-              {ips.length > 0 && ips.join(", ")}
-              {ips.length > 0 && portList.length > 0 && ":"}
-              {portList.length > 0 && portList.join(",")}
-            </div>
-          );
-        })()}
-      </div>
-
-      {isPod && podContainers.length > 0 && (
+  return <>      {podContainers.length > 0 && (
         <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-          <div
+          <button type="button"
+            aria-expanded={podExpanded}
             className="nopan nodrag"
             style={{
+              border: 0, background: "none", width: "100%", textAlign: "left",
               padding: "4px 10px",
               fontSize: 10,
               color: "var(--troshka-text-dim)",
@@ -153,7 +62,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           >
             <span style={{ fontSize: 8 }}>{podExpanded ? "▾" : "▸"}</span>
             {podContainers.length} container{podContainers.length !== 1 ? "s" : ""}
-          </div>
+          </button>
           {podExpanded && (
             <div style={{ padding: "0 10px 6px" }}>
               {initContainers.map((ic) => (
@@ -197,231 +106,11 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           )}
         </div>
       )}
+</>;
+}
 
-      {isDeployed && (
-        <div className="vm-node-footer nopan nodrag">
-          {!isRunning && (
-            <button
-              className="vm-node-action power-stopped"
-              title="Start"
-              onClick={async (e) => {
-                e.stopPropagation();
-                if (!projectId || actionPending) return;
-                setActionPending("start");
-                try {
-                  await fetch(`/api/v1/projects/${projectId}/containers/${id}/start`, { method: "POST" });
-                  updateNodeData(id, { status: "running" });
-                } catch { /* */ }
-                setActionPending(null);
-              }}
-              disabled={!!actionPending}
-            >
-              {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
-            </button>
-          )}
-          {isRunning && (
-            <>
-              <button
-                className="vm-node-action power-running"
-                title="Stop"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!projectId || actionPending) return;
-                  setActionPending("stop");
-                  try {
-                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/stop`, { method: "POST" });
-                    updateNodeData(id, { status: "stopped" });
-                  } catch { /* */ }
-                  setActionPending(null);
-                }}
-                disabled={!!actionPending}
-              >
-                {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
-              </button>
-              <button
-                className="vm-node-action restart"
-                title="Restart"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!projectId || actionPending) return;
-                  setActionPending("restart");
-                  try {
-                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/restart`, { method: "POST" });
-                  } catch { /* */ }
-                  setActionPending(null);
-                }}
-                disabled={!!actionPending}
-              >
-                {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
-              </button>
-              <button type="button"
-                className="vm-node-action redeploy"
-                title="Redeploy (rebuild content from repo)"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!projectId || actionPending) return;
-                  if (!window.confirm("Redeploy this container? It is destroyed and recreated (content is rebuilt from the repo). VMs are not affected.")) return;
-                  setActionPending("redeploy");
-                  try {
-                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/redeploy`, { method: "POST" });
-                  } catch { /* */ }
-                  setActionPending(null);
-                }}
-                disabled={!!actionPending}
-              >
-                {actionPending === "redeploy" ? <span className="vm-btn-spinner" /> : "♻"}
-              </button>
-            </>
-          )}
-          <button
-            className="vm-node-action console"
-            title="View Logs"
-            onClick={async (e) => {
-              e.stopPropagation();
-              if (!projectId) return;
-              try {
-                const resp = await fetch(`/api/v1/projects/${projectId}/containers/${id}/logs?tail=500`);
-                if (resp.ok) {
-                  const logData = await resp.json();
-                  setLogContent(logData.logs || "(no logs)");
-                  setLogModalOpen(true);
-                }
-              } catch { /* */ }
-            }}
-          >
-            📜
-          </button>
-        </div>
-      )}
-
-      {logModalOpen && createPortal(
-        <div
-          className="nopan nodrag"
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(0,0,0,0.6)",
-            zIndex: 9999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          onClick={() => setLogModalOpen(false)}
-        >
-          <div
-            style={{
-              background: "var(--troshka-surface)",
-              borderRadius: 12,
-              width: "min(800px, 90vw)",
-              maxHeight: "80vh",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-              border: "1px solid var(--troshka-border)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                padding: "12px 16px",
-                borderBottom: "1px solid var(--troshka-border)",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                background: "var(--troshka-surface)",
-                borderRadius: "12px 12px 0 0",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>📜 Container Logs</div>
-                <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                  {d.name}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  style={{
-                    background: "var(--troshka-surface2)",
-                    border: "1px solid var(--troshka-border)",
-                    borderRadius: 6,
-                    padding: "4px 10px",
-                    color: "var(--troshka-text)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                  }}
-                  onClick={() => {
-                    navigator.clipboard.writeText(logContent);
-                  }}
-                >
-                  Copy All
-                </button>
-                <button
-                  style={{
-                    background: "var(--troshka-surface2)",
-                    border: "1px solid var(--troshka-border)",
-                    borderRadius: 6,
-                    padding: "4px 10px",
-                    color: "var(--troshka-text)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                  }}
-                  onClick={async () => {
-                    if (!projectId) return;
-                    try {
-                      const resp = await fetch(`/api/v1/projects/${projectId}/containers/${id}/logs?tail=500`);
-                      if (resp.ok) {
-                        const logData = await resp.json();
-                        setLogContent(logData.logs || "(no logs)");
-                      }
-                    } catch { /* */ }
-                  }}
-                >
-                  ↻ Refresh
-                </button>
-                <button
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--troshka-text-dim)",
-                    cursor: "pointer",
-                    fontSize: 18,
-                    padding: "0 4px",
-                  }}
-                  onClick={() => setLogModalOpen(false)}
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-            <pre
-              style={{
-                margin: 0,
-                padding: 16,
-                overflow: "auto",
-                flex: 1,
-                fontFamily: "monospace",
-                fontSize: 12,
-                lineHeight: 1.5,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-                color: "var(--troshka-text)",
-                background: "var(--troshka-surface2)",
-                userSelect: "text",
-                cursor: "text",
-                maxHeight: "60vh",
-              }}
-            >
-              {logContent}
-            </pre>
-          </div>
-        </div>,
-        document.body,
-      )}
-
-      {/* Cosmetic gateway link for infra showroom */}
+function ContainerHandles({data: d, isShowroom, isPod}: Readonly<{data: ContainerNodeData; isShowroom: boolean; isPod: boolean}>) {
+  return <>      {/* Cosmetic gateway link for infra showroom */}
       {isShowroom && (
         <Handle
           type="source"
@@ -489,7 +178,337 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
             )}
           </React.Fragment>
         );
-      })}
+      })}</>;
+}
+
+function ContainerNodeComponent({ id, data, selected }: NodeProps) {
+  const projectState = useCanvasStore((s) => s.projectState);
+  const { isPreview } = useCanvasDisplay();
+  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
+  const updateNodeData = useCanvasStore((s) => s.updateNodeData);
+  const updateNodeInternals = useUpdateNodeInternals();
+  const d = data as unknown as ContainerNodeData;
+  const isRunning = d.status === "running";
+  const isDeployed = ["active", "stopped"].includes(projectState) && deployedVmIds.has(id);
+  const projectId = useCanvasStore((s) => s.currentProjectId);
+  const [actionPending, setActionPending] = useState<string | null>(null);
+  const [logModalOpen, setLogModalOpen] = useState(false);
+  const [logContent, setLogContent] = useState("");
+  const isPod = !!((d as Record<string, unknown>).isPod);
+  const isShowroom = !!((d as Record<string, unknown>).isShowroom || d.name === "showroom");
+  const edges = useCanvasStore((s) => s.edges);
+  const allNodes = useCanvasStore((s) => s.nodes);
+  const showroomIssues = isShowroom ? getShowroomReadiness(allNodes, edges).issues : [];
+  const podContainers = ((d as Record<string, unknown>).podContainers || []) as Array<{name: string; image: string; ports: Array<{containerPort: number}>}>;
+  const initContainers = ((d as Record<string, unknown>).initContainers || []) as Array<{name: string; image: string}>;
+
+  const nicCount = (d.nics || []).length;
+  const mountCount = (d.mounts || []).length;
+  useEffect(() => {
+    const t1 = setTimeout(() => updateNodeInternals(id), 0);
+    const t2 = setTimeout(() => updateNodeInternals(id), 200);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [id, nicCount, mountCount, updateNodeInternals]);
+
+  const displayStatus = d.status || "stopped";
+
+  const statusColor = containerStatusColor(displayStatus);
+  const appearance = containerAppearance(!!selected, isPod, isShowroom, showroomIssues.length > 0);
+
+  const imageName = containerImageName(d.image);
+
+  return (
+    <div
+      className={`canvas-node canvas-node-container ${isPod && !isShowroom ? "canvas-node-pod" : ""} ${selected ? "canvas-node-selected" : ""}`}
+      style={{
+        borderColor: appearance.borderColor,
+        boxShadow:
+          selected && isPod && !isShowroom
+            ? "0 0 0 3px rgba(168, 85, 247, 0.3)"
+            : undefined,
+        opacity: projectState === "draft" && !isPreview ? 0.55 : 1,
+        transition: "opacity 0.3s",
+      }}
+    >
+      <div className="canvas-node-header">
+        <span className="canvas-node-icon">{appearance.icon}</span>
+        <span className="canvas-node-label">{d.name || "container"}</span>
+        {isShowroom && showroomIssues.length > 0 && (
+          <span title={showroomIssues.join("\n")} style={{ fontSize: 10, color: "var(--troshka-yellow)" }}>⚠</span>
+        )}
+        <span
+          className="canvas-node-status-dot"
+          style={{ background: statusColor }}
+          title={displayStatus}
+        />
+      </div>
+
+      <div className="canvas-node-body">
+        {!isPod && (
+          <div
+            className="canvas-node-detail"
+            style={{ fontFamily: "monospace", fontSize: 10 }}
+            title={d.image}
+          >
+            {imageName}
+          </div>
+        )}
+        {!isPod && (
+          <div className="canvas-node-detail">
+            {d.cpus} CPU · {d.memory >= 1024 ? `${d.memory / 1024}G` : `${d.memory}M`} RAM
+          </div>
+        )}
+        {(() => {
+          const liveIps = (d as Record<string, unknown>).liveIps as string[] | undefined;
+          const staticIps = (d.nics || []).map((nic) => nic.ip).filter(Boolean);
+          const ips = liveIps && liveIps.length > 0 ? liveIps : staticIps;
+          const portList =
+            isPod || isShowroom
+              ? getPodDisplayPorts(
+                  d as Record<string, unknown>,
+                  podContainers,
+                  allNodes,
+                  isShowroom,
+                )
+              : (d.ports || []).map((p) => p.containerPort).filter(Boolean);
+          if (!ips.length && !portList.length) return null;
+          return (
+            <div className="canvas-node-detail" style={{ fontFamily: "monospace", fontSize: 10, color: "var(--troshka-green)" }}>
+              {ips.length > 0 && ips.join(", ")}
+              {ips.length > 0 && portList.length > 0 && ":"}
+              {portList.length > 0 && portList.join(",")}
+            </div>
+          );
+        })()}
+      </div>
+
+      {isPod && <PodContainers podContainers={podContainers} initContainers={initContainers} />}
+
+      {isDeployed && (
+        <div className="vm-node-footer nopan nodrag">
+          {!isRunning && (
+            <button type="button"
+              className="vm-node-action power-stopped"
+              title="Start"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (!projectId || actionPending) return;
+                setActionPending("start");
+                try {
+                  await fetch(`/api/v1/projects/${projectId}/containers/${id}/start`, { method: "POST" });
+                  updateNodeData(id, { status: "running" });
+                } catch { /* */ }
+                setActionPending(null);
+              }}
+              disabled={!!actionPending}
+            >
+              {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
+            </button>
+          )}
+          {isRunning && (
+            <>
+              <button type="button"
+                className="vm-node-action power-running"
+                title="Stop"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId || actionPending) return;
+                  setActionPending("stop");
+                  try {
+                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/stop`, { method: "POST" });
+                    updateNodeData(id, { status: "stopped" });
+                  } catch { /* */ }
+                  setActionPending(null);
+                }}
+                disabled={!!actionPending}
+              >
+                {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
+              </button>
+              <button type="button"
+                className="vm-node-action restart"
+                title="Restart"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId || actionPending) return;
+                  setActionPending("restart");
+                  try {
+                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/restart`, { method: "POST" });
+                  } catch { /* */ }
+                  setActionPending(null);
+                }}
+                disabled={!!actionPending}
+              >
+                {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
+              </button>
+              <button type="button"
+                className="vm-node-action redeploy"
+                title="Redeploy (rebuild content from repo)"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId || actionPending) return;
+                  if (!window.confirm("Redeploy this container? It is destroyed and recreated (content is rebuilt from the repo). VMs are not affected.")) return;
+                  setActionPending("redeploy");
+                  try {
+                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/redeploy`, { method: "POST" });
+                  } catch { /* */ }
+                  setActionPending(null);
+                }}
+                disabled={!!actionPending}
+              >
+                {actionPending === "redeploy" ? <span className="vm-btn-spinner" /> : "♻"}
+              </button>
+            </>
+          )}
+          <button type="button"
+            className="vm-node-action console"
+            title="View Logs"
+            onClick={async (e) => {
+              e.stopPropagation();
+              if (!projectId) return;
+              try {
+                const resp = await fetch(`/api/v1/projects/${projectId}/containers/${id}/logs?tail=500`);
+                if (resp.ok) {
+                  const logData = await resp.json();
+                  setLogContent(logData.logs || "(no logs)");
+                  setLogModalOpen(true);
+                }
+              } catch { /* */ }
+            }}
+          >
+            📜
+          </button>
+        </div>
+      )}
+
+      {logModalOpen && createPortal(
+        <ModalBackdrop label="Container logs" onClose={() => setLogModalOpen(false)}
+          className="nopan nodrag"
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.6)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              background: "var(--troshka-surface)",
+              borderRadius: 12,
+              width: "min(800px, 90vw)",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              border: "1px solid var(--troshka-border)",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--troshka-border)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: "var(--troshka-surface)",
+                borderRadius: "12px 12px 0 0",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>📜 Container Logs</div>
+                <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 2 }}>
+                  {d.name}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button"
+                  style={{
+                    background: "var(--troshka-surface2)",
+                    border: "1px solid var(--troshka-border)",
+                    borderRadius: 6,
+                    padding: "4px 10px",
+                    color: "var(--troshka-text)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                  onClick={() => {
+                    navigator.clipboard.writeText(logContent);
+                  }}
+                >
+                  Copy All
+                </button>
+                <button type="button"
+                  style={{
+                    background: "var(--troshka-surface2)",
+                    border: "1px solid var(--troshka-border)",
+                    borderRadius: 6,
+                    padding: "4px 10px",
+                    color: "var(--troshka-text)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                  onClick={async () => {
+                    if (!projectId) return;
+                    try {
+                      const resp = await fetch(`/api/v1/projects/${projectId}/containers/${id}/logs?tail=500`);
+                      if (resp.ok) {
+                        const logData = await resp.json();
+                        setLogContent(logData.logs || "(no logs)");
+                      }
+                    } catch { /* */ }
+                  }}
+                >
+                  ↻ Refresh
+                </button>
+                <button type="button"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--troshka-text-dim)",
+                    cursor: "pointer",
+                    fontSize: 18,
+                    padding: "0 4px",
+                  }}
+                  onClick={() => setLogModalOpen(false)}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <pre
+              style={{
+                margin: 0,
+                padding: 16,
+                overflow: "auto",
+                flex: 1,
+                fontFamily: "monospace",
+                fontSize: 12,
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                color: "var(--troshka-text)",
+                background: "var(--troshka-surface2)",
+                userSelect: "text",
+                cursor: "text",
+                maxHeight: "60vh",
+              }}
+            >
+              {logContent}
+            </pre>
+          </div>
+        </ModalBackdrop>,
+        document.body,
+      )}
+
+      <ContainerHandles data={d} isShowroom={isShowroom} isPod={isPod} />
     </div>
   );
 }

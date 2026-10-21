@@ -13,7 +13,7 @@ interface ConfirmModalProps {
   onCancel: () => void;
 }
 
-export default function ConfirmModal({ message, title, confirmLabel, variant, checkboxLabel, onCheckboxChange, onConfirm, onCancel }: ConfirmModalProps) {
+export default function ConfirmModal({ message, title, confirmLabel, variant, checkboxLabel, onCheckboxChange, onConfirm, onCancel }: Readonly<ConfirmModalProps>) {
   return (
     <ModalBackdrop label="Confirm action" className="start-order-overlay" onClose={() => { onCancel(); }}>
       <div className="start-order-modal" style={{ maxWidth: 480 }} >

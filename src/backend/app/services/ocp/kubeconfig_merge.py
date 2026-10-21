@@ -76,6 +76,45 @@ def kubeconfig_server_host(kc_yaml: str) -> str:
     return ""
 
 
+def _set_cluster_tls_name(cl, orig_host, preserve_tls_server_name, tls_server_name):
+    if tls_server_name:
+        cl["tls-server-name"] = tls_server_name
+    elif preserve_tls_server_name:
+        existing_sni = str(cl.get("tls-server-name") or "").strip()
+        if existing_sni:
+            cl["tls-server-name"] = existing_sni
+        elif not _IPV4_RE.match(orig_host):
+            cl["tls-server-name"] = orig_host
+
+
+def _rewrite_cluster_server(
+    cl,
+    new_host,
+    port,
+    preserve_tls_server_name,
+    tls_server_name,
+    skip_if_server_is_ip,
+    insecure_skip_tls_verify,
+):
+    if not isinstance(cl, dict):
+        return False
+    m = _SERVER_HOST_RE.match(str(cl.get("server", "")))
+    if not m:
+        return False
+    orig_host = m.group(1)
+    orig_port = m.group(2) or ""
+    if skip_if_server_is_ip and _IPV4_RE.match(orig_host):
+        return False
+    port_suffix = f":{port}" if port is not None else orig_port
+    cl["server"] = f"https://{new_host}{port_suffix}"
+    _set_cluster_tls_name(cl, orig_host, preserve_tls_server_name, tls_server_name)
+    if insecure_skip_tls_verify:
+        cl["insecure-skip-tls-verify"] = True
+        cl.pop("certificate-authority-data", None)
+        cl.pop("certificate-authority", None)
+    return True
+
+
 def rewrite_kubeconfig_server(
     kc_yaml: str,
     new_host: str,
@@ -109,30 +148,16 @@ def rewrite_kubeconfig_server(
     changed = False
     for entry in doc.get("clusters", []) or []:
         cl = entry.get("cluster") if isinstance(entry, dict) else None
-        if not isinstance(cl, dict):
-            continue
-        m = _SERVER_HOST_RE.match(str(cl.get("server", "")))
-        if not m:
-            continue
-        orig_host = m.group(1)
-        orig_port = m.group(2) or ""
-        if skip_if_server_is_ip and _IPV4_RE.match(orig_host):
-            continue
-        port_suffix = f":{port}" if port is not None else orig_port
-        cl["server"] = f"https://{new_host}{port_suffix}"
-        if tls_server_name:
-            cl["tls-server-name"] = tls_server_name
-        elif preserve_tls_server_name:
-            existing_sni = str(cl.get("tls-server-name") or "").strip()
-            if existing_sni:
-                cl["tls-server-name"] = existing_sni
-            elif not _IPV4_RE.match(orig_host):
-                cl["tls-server-name"] = orig_host
-        if insecure_skip_tls_verify:
-            cl["insecure-skip-tls-verify"] = True
-            cl.pop("certificate-authority-data", None)
-            cl.pop("certificate-authority", None)
-        changed = True
+        if _rewrite_cluster_server(
+            cl,
+            new_host,
+            port,
+            preserve_tls_server_name,
+            tls_server_name,
+            skip_if_server_is_ip,
+            insecure_skip_tls_verify,
+        ):
+            changed = True
     if not changed:
         return kc_yaml
     return yaml.safe_dump(doc, default_flow_style=False, sort_keys=False)

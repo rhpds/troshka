@@ -17,6 +17,11 @@ interface VmInfo {
   name: string;
 }
 
+function placeholderLabel(state: string): string {
+  if (state === "stopped" || state === "shut off") return "VM is stopped";
+  return state === "unknown" ? "Loading..." : state;
+}
+
 // Module-level to survive hot-reloads
 let _rfbInstances: Record<string, any> = {};
 
@@ -25,9 +30,9 @@ function MegaConsolePage() {
   const projectId = searchParams.get("project") || "";
   const [projectName, setProjectName] = useState("");
   const [vms, setVms] = useState<VmInfo[]>([]);
-  const [columns, setColumnsState] = useState(() => {
+  const [columns, setColumns] = useState(() => {
     if (typeof window !== "undefined") {
-      return parseInt(localStorage.getItem("megaconsole-cols") || "3") || 3;
+      return Number.parseInt(localStorage.getItem("megaconsole-cols") || "3") || 3;
     }
     return 3;
   });
@@ -119,8 +124,8 @@ function MegaConsolePage() {
   }, [projectName]);
 
   // Persist state
-  const setColumns = useCallback((n: number) => {
-    setColumnsState(n);
+  const updateColumns = useCallback((n: number) => {
+    setColumns(n);
     localStorage.setItem("megaconsole-cols", String(n));
   }, []);
 
@@ -294,7 +299,7 @@ function MegaConsolePage() {
   const openConsole = useCallback((vmId: string, vmName: string) => {
     window.open(
       `/console?vm=${encodeURIComponent(vmId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`,
-      `console_${projectId.replace(/-/g, "")}_${vmId.replace(/-/g, "")}`,
+      `console_${projectId.replaceAll("-", "")}_${vmId.replaceAll("-", "")}`,
       "width=1024,height=768,menubar=no,toolbar=no,location=no",
     );
   }, [projectId]);
@@ -311,7 +316,7 @@ function MegaConsolePage() {
       <style>{megaConsoleCSS}</style>
 
       {/* Overlay for closing hidden menu */}
-      {hiddenMenuOpen && <div className="mc-overlay" onClick={() => setHiddenMenuOpen(false)} />}
+      {hiddenMenuOpen && <button type="button" aria-label="Close hidden VM menu" className="mc-overlay" style={{ border: 0 }} onClick={() => setHiddenMenuOpen(false)} />}
 
       {/* Header */}
       <div className="mc-header">
@@ -323,10 +328,10 @@ function MegaConsolePage() {
         <div className="mc-header-right">
           <div className="mc-col-selector">
             {[2, 3, 4, 5].map((n) => (
-              <button
+              <button type="button"
                 key={n}
                 className={`mc-col-btn ${columns === n ? "active" : ""}`}
-                onClick={() => setColumns(n)}
+                onClick={() => updateColumns(n)}
               >
                 {n}
               </button>
@@ -334,7 +339,7 @@ function MegaConsolePage() {
           </div>
 
           <div style={{ position: "relative" }}>
-            <button className="mc-hidden-btn" onClick={() => setHiddenMenuOpen(!hiddenMenuOpen)}>
+            <button type="button" className="mc-hidden-btn" onClick={() => setHiddenMenuOpen(!hiddenMenuOpen)}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M10.79 12.912l-1.614-1.615a3.5 3.5 0 01-4.474-4.474l-2.06-2.06C.938 6.278 0 8 0 8s3 5.5 8 5.5a7.029 7.029 0 002.79-.588zM5.21 3.088A7.028 7.028 0 018 2.5c5 0 8 5.5 8 5.5s-.939 1.721-2.641 3.238l-2.062-2.062a3.5 3.5 0 00-4.474-4.474L5.21 3.088z"/>
                 <path d="M5.525 7.646a2.5 2.5 0 002.829 2.829l-2.83-2.829zm4.95.708l-2.829-2.83a2.5 2.5 0 012.829 2.829z"/>
@@ -351,13 +356,13 @@ function MegaConsolePage() {
                   hiddenVms.map((vm) => {
                     const vmState = ws.vmStates[vm.id] || "unknown";
                     return (
-                      <div key={vm.id} className="mc-hidden-item" onClick={() => showVm(vm.id)}>
+                      <button type="button" key={vm.id} className="mc-hidden-item" style={{ width: "100%", border: 0, color: "inherit", background: "transparent", textAlign: "left" }} onClick={() => showVm(vm.id)}>
                         <span>
                           <span className={`mc-status-dot ${vmState === "running" ? "running" : "stopped"}`} />
                           {vm.name}
                         </span>
                         <span className="mc-show-label">Show</span>
-                      </div>
+                      </button>
                     );
                   })
                 )}
@@ -391,7 +396,7 @@ function MegaConsolePage() {
                   )}
                 </span>
                 <span className="mc-tile-actions">
-                  <button
+                  <button type="button"
                     className="mc-tile-btn"
                     onClick={(e) => { e.stopPropagation(); openConsole(vm.id, vm.name); }}
                     title="Open full console"
@@ -401,7 +406,7 @@ function MegaConsolePage() {
                       <path d="M10.172 5.828a.5.5 0 0 0 .707 0l4.096-4.096V4.5a.5.5 0 1 0 1 0V.525a.5.5 0 0 0-.5-.5H11.5a.5.5 0 0 0 0 1h2.768l-4.096 4.096a.5.5 0 0 0 0 .707z"/>
                     </svg>
                   </button>
-                  <button
+                  <button type="button"
                     className="mc-tile-btn"
                     onClick={(e) => { e.stopPropagation(); hideVm(vm.id); }}
                     title="Hide this VM"
@@ -428,7 +433,7 @@ function MegaConsolePage() {
                       <line x1="8" y1="21" x2="16" y2="21" />
                       <line x1="12" y1="17" x2="12" y2="21" />
                     </svg>
-                    <span>{vmState === "stopped" || vmState === "shut off" ? "VM is stopped" : vmState === "unknown" ? "Loading..." : vmState}</span>
+                    <span>{placeholderLabel(vmState)}</span>
                   </div>
                 )}
                 {isRunning && !isConnected && (

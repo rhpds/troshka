@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 HEARTBEAT_INTERVAL = 30
+_SCOPED_KEY_CLOSE_REASON = "Scoped API keys cannot open websockets"
 
 
 def _is_scoped_api_key(token: str | None, db) -> bool:
@@ -132,9 +133,7 @@ async def project_websocket(websocket: WebSocket, project_id: str):
     db = SessionLocal()
     try:
         if _is_scoped_api_key(token, db):
-            await websocket.close(
-                code=4003, reason="Scoped API keys cannot open websockets"
-            )
+            await websocket.close(code=4003, reason=_SCOPED_KEY_CLOSE_REASON)
             return
 
         user = _authenticate_ws(token, db, headers=dict(websocket.headers))
@@ -181,7 +180,7 @@ def _authorize_project_ws(websocket: WebSocket, project_id: str, db):
     """AuthN/AuthZ for project-scoped websockets. Returns (user, project) or None."""
     token = websocket.query_params.get("token")
     if _is_scoped_api_key(token, db):
-        return None, None, 4003, "Scoped API keys cannot open websockets"
+        return None, None, 4003, _SCOPED_KEY_CLOSE_REASON
     user = _authenticate_ws(token, db, headers=dict(websocket.headers))
     if not user:
         return None, None, 4001, "Unauthorized"
@@ -225,9 +224,7 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
     db = SessionLocal()
     try:
         if _is_scoped_api_key(token, db):
-            await websocket.close(
-                code=4003, reason="Scoped API keys cannot open websockets"
-            )
+            await websocket.close(code=4003, reason=_SCOPED_KEY_CLOSE_REASON)
             return
 
         user = _authenticate_ws(token, db, headers=dict(websocket.headers))

@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { ExternalIp } from "@/stores/canvasStore";
@@ -9,7 +11,7 @@ interface Props {
   onClose: () => void;
 }
 
-export default function ExternalIpsPanel({ projectId, onClose }: Props) {
+export default function ExternalIpsPanel({ projectId, onClose }: Readonly<Props>) {
   const externalIps = useCanvasStore((s) => s.externalIps);
   const setExternalIps = useCanvasStore((s) => s.setExternalIps);
 
@@ -48,11 +50,11 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
   };
 
   return (
-    <div className="start-order-overlay" onClick={onClose}>
-      <div className="start-order-modal" style={{ width: 450 }} onClick={(e) => e.stopPropagation()}>
+    <ModalBackdrop label="External IPs" className="start-order-overlay" onClose={onClose}>
+      <div className="start-order-modal" style={{ width: 450 }}>
         <div className="start-order-header">
           <span>External IPs</span>
-          <button onClick={onClose}>✕</button>
+          <button type="button" onClick={onClose}>✕</button>
         </div>
         <div className="start-order-body">
           <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", marginBottom: 12 }}>
@@ -86,7 +88,7 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
                       {eip.ip}
                     </span>
                   )}
-                  <button
+                  <button type="button"
                     style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 14, padding: 4, flexShrink: 0 }}
                     onClick={() => removeIp(i)}
                     title={eip.ip ? "Release and remove" : "Remove"}
@@ -97,10 +99,10 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
           })}
         </div>
         <div className="start-order-footer">
-          <button className="start-order-btn cancel" onClick={addIp}>+ Add IP</button>
-          <button className="start-order-btn save" onClick={onClose}>Done</button>
+          <button type="button" className="start-order-btn cancel" onClick={addIp}>+ Add IP</button>
+          <button type="button" className="start-order-btn save" onClick={onClose}>Done</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

@@ -1345,7 +1345,14 @@ def _build_export_header(pw_mode):
     return "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
 
 
-@router.post("/{project_id}/export-template", responses={403: {}, 404: {}})
+@router.post(
+    "/{project_id}/export-template",
+    responses={
+        403: {},
+        404: {},
+        500: {"description": "Exported template failed schema validation"},
+    },
+)
 def export_template(
     project_id: str,
     user: CurrentUser,
@@ -1353,8 +1360,8 @@ def export_template(
     body: dict | None = None,
 ):
     from app.services.template_loader import (
+        apply_topology_export_metadata,
         export_topology_to_template,
-        sanitize_template_dns_records,
     )
     from app.services.template_schema import (
         TemplateSchemaError,
@@ -1377,22 +1384,7 @@ def export_template(
     if project.clock_target:
         result["clock_target"] = project.clock_target.isoformat()
 
-    # export_topology_to_template emits ``ocp:`` as a list from topology
-    # ``clusters``. Only fall back to the legacy single-mapping ocpMeta synth
-    # for legacy topologies that predate the clusters[] model.
-    if "ocp" not in result:
-        ocp_meta = topo.get("ocpMeta", {})
-        if ocp_meta.get("clusterName"):
-            result["ocp"] = {
-                "name": ocp_meta["clusterName"],
-                "base_domain": ocp_meta.get("baseDomain", _OCP_LOCAL),
-            }
-
-    for key in ("disconnected", "bastion_services"):
-        if topo.get(key):
-            result[key] = topo[key]
-    if topo.get("dns_records"):
-        result["dns_records"] = sanitize_template_dns_records(topo["dns_records"])
+    apply_topology_export_metadata(result, topo)
 
     # Apply password mode
     body = body or {}
@@ -1952,6 +1944,12 @@ def get_kubeconfig(
     )
 
 
+def _reset_project_budget_flags(project):
+    project.budget_warned = False
+    if project.budget_usd is None:
+        project.budget_stopped = False
+
+
 def _recompute_auto_stop_timer(project, fields):
     """Recompute auto-stop expiry when auto_stop_minutes changes."""
     if fields["auto_stop_minutes"] is None:
@@ -2059,9 +2057,7 @@ def update_project(
     if "auto_delete_minutes" in fields:
         _recompute_auto_delete_timer(project, fields)
     if "budget_usd" in fields:
-        project.budget_warned = False
-        if project.budget_usd is None:
-            project.budget_stopped = False
+        _reset_project_budget_flags(project)
 
     if "clock_target" in fields and project.state == "active":
         from app.services.clock_service import adjust_clocks_async
@@ -2466,6 +2462,11 @@ def _do_kubevirt_wipe(
             _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
         except Exception as e:
             logger.warning("Failed to restart VM after wipe: %s", e)
+            _wipe_status[wipe_key] = {
+                "status": "error",
+                "detail": "Disk wiped, but VM restart failed",
+            }
+            return
 
     _wipe_status[wipe_key] = {"status": "done"}
     notify_project(
@@ -3128,6 +3129,15 @@ def restart_vm(
         return {"action": "restart", "success": False}
 
 
+def _wait_wipe_job(host, job_id, timeout):
+    """Require confirmed success before advancing a destructive disk operation."""
+    job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+    if job.get("status") != "completed":
+        result = job.get("result") or {}
+        detail = result.get("error") or job.get("error") or "Agent job did not complete"
+        raise TroshkadError(detail)
+
+
 def _wipe_disk_troshkad(project, host, vm_id, disk, restart, db) -> dict:
     """Wipe a single disk via troshkad; stop/start the VM around the wipe."""
     pool = _get_storage_pool_for_host(host, db)
@@ -3141,7 +3151,7 @@ def _wipe_disk_troshkad(project, host, vm_id, disk, restart, db) -> dict:
     if was_running:
         try:
             job_id = start_job(host, "/vms/stop", {"domain_name": dom})
-            wait_for_job(host, job_id, timeout=120, poll_interval=2)
+            _wait_wipe_job(host, job_id, timeout=120)
         except TroshkadError as e:
             raise HTTPException(
                 status_code=409, detail=f"Failed to stop VM before wipe: {e}"
@@ -3155,7 +3165,7 @@ def _wipe_disk_troshkad(project, host, vm_id, disk, restart, db) -> dict:
             wipe_params["format"] = "qcow2"
     try:
         job_id = start_job(host, "/disks/wipe", wipe_params)
-        wait_for_job(host, job_id, timeout=60, poll_interval=2)
+        _wait_wipe_job(host, job_id, timeout=60)
     except TroshkadError as e:
         logger.exception("Failed to wipe disk %s: %s", sanitize_log(disk_path), e)
         raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}") from e
@@ -3163,9 +3173,12 @@ def _wipe_disk_troshkad(project, host, vm_id, disk, restart, db) -> dict:
     if restart or was_running:
         try:
             job_id = start_job(host, _VMS_START_PATH, {"domain_name": dom})
-            wait_for_job(host, job_id, timeout=120, poll_interval=2)
+            _wait_wipe_job(host, job_id, timeout=120)
         except TroshkadError as e:
             logger.warning("VM start after wipe failed: %s", e)
+            raise HTTPException(
+                status_code=500, detail=f"Disk wiped, but VM restart failed: {e}"
+            ) from e
     return {"status": "wiped"}
 
 

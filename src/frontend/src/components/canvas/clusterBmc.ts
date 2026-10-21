@@ -109,7 +109,8 @@ export function collectUsedBmcIps(nodes: Node[]): Set<string> {
 /** Next host in the BMC network CIDR from .11 upward (.1 is gateway). */
 export function nextFreeBmcIp(nodes: Node[], bmcNet?: Node | null, usedOverride?: Set<string>): string {
   const net = bmcNet ?? findBmcNetwork(nodes);
-  const cidr = String((net?.data as Record<string, unknown>)?.cidr || DEFAULT_BMC_CIDR);
+  const configuredCidr = net?.data.cidr;
+  const cidr = typeof configuredCidr === "string" && configuredCidr ? configuredCidr : DEFAULT_BMC_CIDR;
   const base = cidr.split("/")[0].split(".").slice(0, 3).join(".");
   const usedIps = usedOverride ?? collectUsedBmcIps(nodes);
 

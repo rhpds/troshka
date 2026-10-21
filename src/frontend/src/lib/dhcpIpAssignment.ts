@@ -1,6 +1,11 @@
 import type { Edge, Node } from "@xyflow/react";
 import { isShowroomContainer } from "@/lib/showroomValidation";
 
+function textField(data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function numToIp(num: number): string {
   return [
     (num >>> 24) & 255,
@@ -20,7 +25,7 @@ export function ipToNum(ip: string): number | null {
 
 /** Host addresses for a CIDR (excludes network and broadcast). */
 export function listCidrHosts(cidr: string): string[] {
-  const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
+  const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr);
   if (!match) return [];
   const ip =
     (Number.parseInt(match[1], 10) << 24) +
@@ -52,7 +57,7 @@ export function computeDhcpBounds(
       rangeStart = hosts[Math.min(9, hosts.length - 2)];
     }
     if (!rangeEnd) {
-      rangeEnd = hosts[hosts.length - 1];
+      rangeEnd = hosts.at(-1)!;
     }
   }
   return [rangeStart, rangeEnd];
@@ -60,9 +65,9 @@ export function computeDhcpBounds(
 
 /** Mirror deploy_topology._get_dhcp_range. */
 export function getDhcpRange(netData: Record<string, unknown>): [number, number] | null {
-  let rangeStart = String(netData.dhcpRangeStart || "");
-  let rangeEnd = String(netData.dhcpRangeEnd || "");
-  const cidr = String(netData.cidr || "");
+  let rangeStart = textField(netData, "dhcpRangeStart");
+  let rangeEnd = textField(netData, "dhcpRangeEnd");
+  const cidr = textField(netData, "cidr");
   if (!rangeStart || !rangeEnd) {
     [rangeStart, rangeEnd] = computeDhcpBounds(cidr, rangeStart, rangeEnd);
   }
@@ -72,39 +77,43 @@ export function getDhcpRange(netData: Record<string, unknown>): [number, number]
   return [startNum, endNum];
 }
 
+function reserveNodeAddresses(node: Node, used: Set<string>): void {
+  const data = node.data as Record<string, unknown>;
+  if (node.type === "networkNode") {
+    const cidr = textField(data, "cidr");
+    if (cidr) {
+      const hosts = listCidrHosts(cidr);
+      if (hosts.length > 0) used.add(hosts[0]);
+    }
+  }
+  // Reserve VIPs so member NICs and other clusters cannot reuse them.
+  if (node.type === "clusterNode") {
+    const apiVip = textField(data, "apiVip").trim();
+    const ingressVip = textField(data, "ingressVip").trim();
+    if (apiVip) used.add(apiVip);
+    if (ingressVip) used.add(ingressVip);
+  }
+  // Ceph mon and OSD addresses are static on the Multus interface.
+  if (node.type === "cephClusterNode") {
+    const labIp = textField(data, "labIp").trim();
+    if (labIp) used.add(labIp);
+    addNonemptyIps(used, (data.osdIps as string[]) || []);
+  }
+}
+
+function addNonemptyIps(used: Set<string>, ips: Array<string | undefined>): void {
+  for (const ip of ips) {
+    if (ip) used.add(ip);
+  }
+}
+
 /** Mirror deploy_topology._collect_used_ips. */
 export function collectUsedIps(nodes: Node[]): Set<string> {
   const used = new Set<string>();
   for (const node of nodes) {
-    const data = node.data as Record<string, unknown>;
-    const nics = (data.nics || []) as Array<{ ip?: string }>;
-    for (const nic of nics) {
-      if (nic.ip) used.add(nic.ip);
-    }
-    if (node.type === "networkNode") {
-      const cidr = String(data.cidr || "");
-      if (cidr) {
-        const hosts = listCidrHosts(cidr);
-        if (hosts.length > 0) used.add(hosts[0]);
-      }
-    }
-    // Cluster VIPs are reserved addresses — count them so a member NIC or another
-    // cluster's VIP/SNO-node IP is never allocated on top of them.
-    if (node.type === "clusterNode") {
-      const apiVip = String(data.apiVip || "").trim();
-      const ingressVip = String(data.ingressVip || "").trim();
-      if (apiVip) used.add(apiVip);
-      if (ingressVip) used.add(ingressVip);
-    }
-    // Ceph mon + OSD statics are self-assigned on the Multus interface, so they
-    // must be treated as used or a VM NIC / container could be allocated on top.
-    if (node.type === "cephClusterNode") {
-      const labIp = String(data.labIp || "").trim();
-      if (labIp) used.add(labIp);
-      for (const ip of (data.osdIps as string[]) || []) {
-        if (ip) used.add(ip);
-      }
-    }
+    const nics = (node.data.nics || []) as Array<{ ip?: string }>;
+    addNonemptyIps(used, nics.map((nic) => nic.ip));
+    reserveNodeAddresses(node, used);
   }
   return used;
 }
@@ -115,7 +124,7 @@ export function cephIpConflict(nodes: Node[], ip: string): string | null {
   for (const node of nodes) {
     if (node.type !== "cephClusterNode") continue;
     const data = node.data as Record<string, unknown>;
-    if (String(data.labIp || "") === ip) return "Ceph mon";
+    if (textField(data, "labIp") === ip) return "Ceph mon";
     if (((data.osdIps as string[]) || []).includes(ip)) return "Ceph OSD";
   }
   return null;
@@ -154,14 +163,14 @@ export function assignCephOsdIps(nodes: Node[]): Node[] {
   const ceph = nodes.find((n) => n.type === "cephClusterNode");
   if (!ceph) return nodes;
   const data = ceph.data as Record<string, unknown>;
-  const networkRef = String(data.networkRef || "");
+  const networkRef = textField(data, "networkRef");
   const netNode = nodes.find(
     (n) =>
       n.type === "networkNode" &&
-      (String((n.data as Record<string, unknown>)?.id || "") === networkRef ||
+      (textField(n.data, "id") === networkRef ||
         n.id === networkRef),
   );
-  const cidr = String((netNode?.data as Record<string, unknown>)?.cidr || "");
+  const cidr = netNode ? textField(netNode.data, "cidr") : "";
   if (!cidr) return nodes;
   const hosts = new Set(listCidrHosts(cidr));
   if (hosts.size === 0) return nodes;
@@ -176,11 +185,7 @@ export function assignCephOsdIps(nodes: Node[]): Node[] {
   const dnsmasq = listCidrHosts(cidr)[1];
   if (dnsmasq) reserved.add(dnsmasq);
 
-  const kept: string[] = [];
-  for (const ip of existing) {
-    if (hosts.has(ip) && !reserved.has(ip) && !kept.includes(ip)) kept.push(ip);
-    if (kept.length >= osdCount) break;
-  }
+  const kept = keepExistingOsdIps(existing, hosts, reserved, osdCount);
   const need = osdCount - kept.length;
   if (need > 0) {
     const excl = new Set(reserved);
@@ -194,6 +199,15 @@ export function assignCephOsdIps(nodes: Node[]): Node[] {
   return nodes.map((n) =>
     n.id === ceph.id ? { ...n, data: { ...data, osdIps: kept } } : n,
   );
+}
+
+function keepExistingOsdIps(existing: string[], hosts: Set<string>, reserved: Set<string>, count: number): string[] {
+  const kept: string[] = [];
+  for (const ip of existing) {
+    if (hosts.has(ip) && !reserved.has(ip) && !kept.includes(ip)) kept.push(ip);
+    if (kept.length >= count) break;
+  }
+  return kept;
 }
 
 export function pickAvailableIp(
@@ -256,7 +270,7 @@ export function pickTemplateStyleNicIp(
 /** BMC CIDR allocation from .11 upward (.1 gateway). */
 export function pickBmcNicIp(cidr: string, usedIps: Set<string>): string | null {
   const base = cidr.split("/")[0].split(".").slice(0, 3).join(".");
-  if (!base || base.split(".").length !== 3) return null;
+  if (base?.split(".").length !== 3) return null;
   for (let i = 11; i < 250; i += 1) {
     const candidate = `${base}.${i}`;
     if (!usedIps.has(candidate)) return candidate;
@@ -269,7 +283,7 @@ export function pickClusterMemberNicIp(
   netData: Record<string, unknown>,
   usedIps: Set<string>,
 ): string | null {
-  const cidr = String(netData.cidr || "");
+  const cidr = textField(netData, "cidr");
   if (!cidr) return null;
   if (netData.networkType === "bmc") {
     return pickBmcNicIp(cidr, usedIps);

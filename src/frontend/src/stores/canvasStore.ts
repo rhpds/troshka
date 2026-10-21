@@ -12,6 +12,7 @@ import {
   addEdge,
 } from "@xyflow/react";
 import { appConfirm } from "@/lib/confirm";
+import { numericNameSuffix } from "@/lib/textBoundaries";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
 import {
@@ -69,7 +70,6 @@ import {
   pickIpForNetwork,
 } from "@/lib/dhcpIpAssignment";
 import {
-  ensureShowroomGatewayEdge,
   getGatewayNode,
   getShowroomNode,
   isShowroomGatewayEdge,
@@ -296,7 +296,7 @@ export interface ClusterConfig {
   monitorHealth?: boolean;
   configureBastionBrowser?: boolean;
   /** Per-cluster install outcome (independent of siblings). */
-  ocpInstallStatus?: "ready" | "error" | "monitoring" | string;
+  ocpInstallStatus?: string;
   ocpInstallElapsed?: number;
   /** When false, deploy provisions VMs/BMC but skips the OpenShift install. */
   installOnDeploy?: boolean;
@@ -373,7 +373,7 @@ interface CanvasState {
 
   // React Flow callbacks
   onNodesChange: OnNodesChange;
-  onEdgesChange: OnEdgesChange;
+  onEdgesChange: (changes: Parameters<OnEdgesChange>[0], beforeRemove?: () => void) => void;
   onConnect: OnConnect;
 
   // Actions
@@ -467,13 +467,29 @@ export function generateDiskControllerId(): string {
   return `dp-${crypto.randomUUID()}`;
 }
 
+function remapDuplicatedHandle(
+  handle: string | null | undefined,
+  oldPorts: Array<{ id: string }>,
+  newPorts: Array<{ id: string }>,
+  kind: "nic" | "dp",
+): string | null | undefined {
+  if (!handle) return handle;
+  for (let i = 0; i < oldPorts.length; i++) {
+    const prefix = `${kind}-${oldPorts[i].id}-`;
+    if (handle.startsWith(prefix) && newPorts[i]) {
+      return `${kind}-${newPorts[i].id}-${handle.slice(prefix.length)}`;
+    }
+  }
+  return handle;
+}
+
 export function generateMac(): string {
   const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
   return `52:54:00:${hex()}:${hex()}:${hex()}`;
 }
 
 function isShowroomContainer(node: Node | undefined): boolean {
-  if (!node || node.type !== "containerNode") return false;
+  if (node?.type !== "containerNode") return false;
   const d = node.data as Record<string, unknown>;
   return !!(d.isShowroom || d.name === "showroom");
 }
@@ -510,30 +526,26 @@ function parseShowroomFromTopology(
     const s = topologyShowroom as Record<string, unknown>;
     return {
       enabled: s.enabled !== false,
-      content_repo: String(s.content_repo || nodeData?.contentRepo || ""),
-      content_ref: String(s.content_ref || nodeData?.contentRef || "main"),
+      content_repo: firstTextField(s.content_repo, nodeData?.contentRepo),
+      content_ref: firstTextField(s.content_ref, nodeData?.contentRef, "main"),
       build_content: s.build_content !== false && nodeData?.buildContent !== false,
       dns_network:
         effectiveShowroomDnsNetwork(
           nodes,
-          String(s.dns_network || nodeData?.dnsNetwork || ""),
+          firstTextField(s.dns_network, nodeData?.dnsNetwork),
           edges,
         ) || undefined,
-      tabs: Array.isArray(s.tabs)
-        ? (s.tabs as ShowroomTab[])
-        : Array.isArray(nodeData?.showroomTabs)
-          ? (nodeData.showroomTabs as ShowroomTab[])
-          : undefined,
+      tabs: showroomTabs(s.tabs, nodeData?.showroomTabs),
     };
   }
   if (!showroomNode) return null;
   const d = showroomNode.data as Record<string, unknown>;
   return {
     enabled: true,
-    content_repo: String(d.contentRepo || ""),
-    content_ref: String(d.contentRef || "main"),
+    content_repo: firstTextField(d.contentRepo),
+    content_ref: firstTextField(d.contentRef, "main"),
     build_content: d.buildContent !== false,
-    dns_network: effectiveShowroomDnsNetwork(nodes, String(d.dnsNetwork || ""), edges) || undefined,
+    dns_network: effectiveShowroomDnsNetwork(nodes, firstTextField(d.dnsNetwork), edges) || undefined,
     tabs: Array.isArray(d.showroomTabs) ? (d.showroomTabs as ShowroomTab[]) : [],
   };
 }
@@ -582,7 +594,6 @@ function refreshShowroomTabRoutes(state: {
 const _transitionalStatuses = new Set(["stopping", "restarting", "starting"]);
 
 export function setLatestVmStates(states: Record<string, string>) {
-  _latestVmStates = states;
   const store = useCanvasStore.getState();
   if (!store.nodes.length) return;
   let changed = false;
@@ -600,9 +611,7 @@ export function setLatestVmStates(states: Record<string, string>) {
   if (changed) useCanvasStore.setState({ nodes: updated });
 }
 
-let _latestContainerStates: Record<string, { state: string; ips?: string[] }> = {};
 export function setLatestContainerStates(states: Record<string, { state: string; ips?: string[] }>) {
-  _latestContainerStates = states;
   const store = useCanvasStore.getState();
   if (!store.nodes.length) return;
   let changed = false;
@@ -659,8 +668,8 @@ function normalizeShowroomContainer(c: unknown): unknown {
     );
     if ((out.envVars as unknown[]).length === 0) delete out.envVars;
   }
-  const name = String(out.name || "");
-  const image = String(out.image || "");
+  const name = scalarText(out.name || "");
+  const image = scalarText(out.image || "");
   if (SHOWROOM_INIT_CONTAINER_NAMES.has(name)) {
     // Deploy regenerates these from showroomTabs and always attaches the
     // showroom disk mount; the canvas materialization uses a shorter
@@ -675,7 +684,7 @@ function normalizeShowroomContainer(c: unknown): unknown {
     delete out.memory;
     if (Array.isArray(out.command)) {
       out.command = (out.command as unknown[]).filter(
-        (a) => !String(a).startsWith("--ssh-pass="),
+        (a) => !scalarText(a).startsWith("--ssh-pass="),
       );
     } else if (typeof out.command === "string") {
       out.command = out.command.replace(/--ssh-pass=\S*/, "").trim();
@@ -716,7 +725,7 @@ const DEPLOY_UI_ONLY_NODE_KEYS = ["minWidth", "minHeight"] as const;
 function normalizeOcpMemberInstallFields(stable: Record<string, unknown>): void {
   if (!stable.clusterId) return;
   if (stable.powerOnAtDeploy === undefined) {
-    stable.powerOnAtDeploy = stable.deferOcpInstall === true ? false : true;
+    stable.powerOnAtDeploy = stable.deferOcpInstall !== true;
   }
   if (stable.bootMethod === undefined || stable.bootMethod === null || stable.bootMethod === "") {
     stable.bootMethod = "disk";
@@ -728,7 +737,7 @@ function normalizeOcpMemberInstallFields(stable: Record<string, unknown>): void 
 export function resolvePowerOnAtDeploy(data: Record<string, unknown> | undefined): boolean {
   if (!data) return true;
   if (typeof data.powerOnAtDeploy === "boolean") return data.powerOnAtDeploy;
-  return data.deferOcpInstall === true ? false : true;
+  return data.deferOcpInstall !== true;
 }
 
 /**
@@ -765,16 +774,18 @@ export function setVmPowerOnAtDeploy(vmId: string, enabled: boolean): void {
  * underscore enrichment) while the user-visible rule is unchanged — that made
  * Apply Changes show Gateway Port Forwards MODIFIED with identical before/after.
  */
-function _stablePortForward(pf: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    extPort: String(pf.extPort ?? ""),
-    intIp: String(pf.intIp ?? "").trim(),
-    intPort: String(pf.intPort ?? ""),
-    proto: String(pf.proto || "tcp").toLowerCase(),
+type StablePortForward = { extPort: string; intIp: string; intPort: string; proto: string; extIpId?: string };
+
+function _stablePortForward(pf: Record<string, unknown>): StablePortForward {
+  const out: StablePortForward = {
+    extPort: scalarText(pf.extPort ?? ""),
+    intIp: scalarText(pf.intIp ?? "").trim(),
+    intPort: scalarText(pf.intPort ?? ""),
+    proto: scalarText(pf.proto || "tcp").toLowerCase(),
   };
   // Deploy stamps extIpId:"route-api" on OCP API route forwards; the canvas
   // often omits it. Keep real EIP UUIDs so rebinding still dirties.
-  const extIpId = String(pf.extIpId ?? "").trim();
+  const extIpId = scalarText(pf.extIpId ?? "").trim();
   if (extIpId && extIpId !== "route-api") out.extIpId = extIpId;
   return out;
 }
@@ -793,7 +804,7 @@ export function stableNodeData(
   if (Array.isArray(stable.dnsRecords)) {
     stable.dnsRecords = (stable.dnsRecords as Array<Record<string, unknown>>)
       .map((r) => ({ name: r?.name ?? "", ip: r?.ip ?? "" }))
-      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      .sort((a, b) => scalarText(a.name).localeCompare(scalarText(b.name)));
   }
   // Cluster-managed DNS sets dnsDomain from the cluster baseDomain in the canvas,
   // but deploy often persists only dnsRecords — comparing the domain string left
@@ -825,29 +836,7 @@ export function stableNodeData(
     if (userForwards.length) stable.portForwards = userForwards;
     else delete stable.portForwards;
   }
-  if (stable.isShowroom) {
-    // The cluster-terminal containers (wetty-clusters pod + oc-fetch init) are
-    // regenerated at deploy from showroomTabs — the frontend never materializes
-    // them, so a deployed project's canvas (tabs present, container absent) would
-    // read perpetually dirty. showroomTabs IS compared, so a real tab change still
-    // dirties; drop only the derived containers here.
-    if (Array.isArray(stable.initContainers)) {
-      let inits = (stable.initContainers as Array<Record<string, unknown>>)
-        .filter((c) => c?.name !== "oc-fetch");
-      // Pattern/snapshot deploys skip git-cloner + antora at runtime
-      // (buildContent=false) but keep them in the persisted spec — drop them
-      // from dirty compare so only the regenerated nginx-config matters.
-      if (stable.buildContent === false) {
-        inits = inits.filter((c) => c?.name === "nginx-config");
-      }
-      stable.initContainers = inits.map(normalizeShowroomContainer);
-    }
-    if (Array.isArray(stable.podContainers)) {
-      stable.podContainers = (stable.podContainers as Array<Record<string, unknown>>)
-        .filter((c) => c?.name !== "wetty-clusters")
-        .map(normalizeShowroomContainer);
-    }
-  }
+  normalizeStableShowroom(stable);
   return stable;
 }
 
@@ -1008,11 +997,12 @@ function applyDeployedTopologySnapshot(
   project: { deployed_topology?: DeployedTopologySnapshot; bmc?: unknown; state?: string },
 ) {
   const deployed = project.deployed_topology;
+  const topologyWindow = window as Window & { __deployedTopology?: DeployedTopologySnapshot | { bmc: unknown } };
   if (deployed?.nodes?.length) {
     useCanvasStore.setState(buildDeployedBaseline(deployed));
   }
   if (project.state === "draft") {
-    delete (window as any).__deployedTopology;
+    delete topologyWindow.__deployedTopology;
     return;
   }
   // Keep the FULL deployed topology on window (showroom URL/token, endpoints,
@@ -1020,12 +1010,12 @@ function applyDeployedTopologySnapshot(
   // was present — Open Showroom then fell back to a bare route hostname and
   // hit nginx 401 after capability-token gating.
   if (deployed && typeof deployed === "object") {
-    (window as any).__deployedTopology = {
+    topologyWindow.__deployedTopology = {
       ...deployed,
       ...(project.bmc ? { bmc: project.bmc } : {}),
     };
   } else if (project.bmc) {
-    (window as any).__deployedTopology = { bmc: project.bmc };
+    topologyWindow.__deployedTopology = { bmc: project.bmc };
   }
 }
 
@@ -1088,7 +1078,7 @@ export type TopologyDiffState = {
 // the deployed baseline so both label a node identically.
 function _nodeDisplayName(n: { id: string; data?: Record<string, unknown> }): string {
   const d = n.data || {};
-  return String(d.name || d.label || n.id);
+  return firstTextField(d.name, d.label, n.id);
 }
 
 // Friendly resource-type label from a node's type + subtype.
@@ -1119,14 +1109,14 @@ function _formatDiffValue(key: string, v: unknown): string {
   }
   if (typeof v === "object") return "(set)";
   if (typeof v === "number" && _MEMORY_KEY_RE.test(key)) return `${v} MB`;
-  return String(v);
+  return scalarText(v);
 }
 
 // camelCase / snake / kebab -> "Title case" label.
 function _humanizeKey(key: string): string {
   const words = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
+    .replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replaceAll(/[_-]+/g, " ")
     .trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
@@ -1261,12 +1251,12 @@ function _diffClusters(state: TopologyDiffState): TopologyDiffEntry[] {
   if (curKey === state.deployedClusters) return [];
   const cur = JSON.parse(curKey) as Array<Record<string, unknown>>;
   const dep = JSON.parse(state.deployedClusters) as Array<Record<string, unknown>>;
-  const depById = new Map(dep.map((c) => [String(c.id), c]));
-  const curById = new Map(cur.map((c) => [String(c.id), c]));
+  const depById = new Map(dep.map((c) => [scalarText(c.id), c]));
+  const curById = new Map(cur.map((c) => [scalarText(c.id), c]));
   const out: TopologyDiffEntry[] = [];
   for (const c of cur) {
-    const id = String(c.id);
-    const name = String(c.name || id);
+    const id = scalarText(c.id);
+    const name = firstTextField(c.name, id);
     const d = depById.get(id);
     if (!d) {
       out.push({ kind: "added", resourceType: "Cluster", name, id, fields: [] });
@@ -1276,9 +1266,9 @@ function _diffClusters(state: TopologyDiffState): TopologyDiffEntry[] {
     if (fields.length) out.push({ kind: "modified", resourceType: "Cluster", name, id, fields });
   }
   for (const c of dep) {
-    const id = String(c.id);
+    const id = scalarText(c.id);
     if (!curById.has(id)) {
-      out.push({ kind: "removed", resourceType: "Cluster", name: String(c.name || id), id, fields: [] });
+      out.push({ kind: "removed", resourceType: "Cluster", name: firstTextField(c.name, id), id, fields: [] });
     }
   }
   return out;
@@ -1338,206 +1328,14 @@ function needsShowroomVniSync(
   return topologyHasLabNetwork(nodes);
 }
 
-export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
-  nodes: [],
-  edges: [],
-  selectedNodeId: null,
-  showMinimap: true,
-  hiddenNodeIds: [],
-  suppressDeleteWarning: false,
-  panMode: true,
-  providerType: null,
-  clusterCapabilities: null,
-  supportsHibernate: true,
-  powerWarnDismissed: false,
-  currentProjectId: null as string | null,
-  projectState: "draft" as string,
-  deployedVmIds: new Set<string>(),
-  deployedDiskSizes: {} as Record<string, number>,
-  deployedNodeData: {} as Record<string, string>,
-  deployedNodeMeta: {} as Record<string, { type: string; name: string }>,
-  deployedEdgeKey: "",
-  deployedEdges: [] as Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>,
-  deployedExternalIps: "[]",
-  deployedClusters: "[]",
-  deployedClusterRows: [] as ClusterConfig[],
-  topologyDirty: false,
-  startOrder: [] as StartOrderEntry[],
-  externalIps: [] as ExternalIp[],
-  vniMap: {} as Record<string, number>,
-  showroom: null as ShowroomConfig | null,
-  clusters: [] as ClusterConfig[],
-  ocpInstallVia: null as string | null,
-  topologyPlacement: null as Record<string, unknown> | null,
-  topologyWorkloads: null as unknown[] | null,
-  topologyRequirementsContent: null as Record<string, unknown> | null,
-  topologyWorkloadsDone: null as string[] | null,
-  clusterLogTarget: null as { clusterKey: string; name: string } | null,
-  ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
-  clusterOcpPhases: {} as Record<string, string>,
-
-  onNodesChange: (changes) => {
-    const hasBmcVm = () =>
-      get().nodes.some(
-        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
-      );
-    const isBmcNetId = (id: string) => {
-      const n = get().nodes.find((node) => node.id === id);
-      return (
-        n?.type === "networkNode" &&
-        (n.data as Record<string, any>).networkType === "bmc"
-      );
-    };
-    // BMC network is not manually deletable while any VM has BMC enabled.
-    const removals = changes.filter(
-      (c) => c.type === "remove" && !(isBmcNetId((c as { id: string }).id) && hasBmcVm()),
-    );
-    const others = changes.filter((c) => c.type !== "remove");
-
-    // Always apply non-removal changes first (selection, position, etc.)
-    const updatedNodes = applyNodeChanges(others, get().nodes);
-
-    // Sync selectedNodeId from React Flow's selection state
-    const selected = updatedNodes.find((n) => n.selected);
-    if (selected && selected.id !== get().selectedNodeId) {
-      set({ selectedNodeId: selected.id });
-    }
-
-    if (removals.length > 0) {
-      set({ nodes: updatedNodes });
-      if (!get().suppressDeleteWarning) {
-        const names = removals
-          .map((r) => {
-            const node = updatedNodes.find((n) => n.id === (r as { id: string }).id);
-            return node ? (node.data as Record<string, any>).name as string || node.id : (r as { id: string }).id;
-          })
-          .join(", ");
-        appConfirm({
-          message: `Delete ${removals.length > 1 ? `${removals.length} items` : names}?`,
-          title: "Delete",
-          confirmLabel: "Delete",
-          variant: "danger",
-        }).then((confirmed) => {
-          if (!confirmed) return;
-          get().pushHistory();
-          const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
-          const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
-            removedIds,
-            get().nodes,
-          );
-          for (const diskId of extraDiskIds) removedIds.add(diskId);
-          const nextStartOrder = removedShowroomId
-            ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
-            : get().startOrder;
-          let nodes = applyNodeChanges(removals, get().nodes).filter(
-            (n) => !extraDiskIds.has(n.id),
-          );
-          const stillHasBmcVm = nodes.some(
-            (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
-          );
-          const bmcNet = findBmcNetwork(nodes);
-          if (!stillHasBmcVm && bmcNet) {
-            removedIds.add(bmcNet.id);
-            nodes = nodes.filter((n) => n.id !== bmcNet.id);
-          }
-          const edges = get().edges.filter(
-            (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
-          );
-          const synced = syncShowroomGatewayState(
-            nodes,
-            edges,
-            get().externalIps,
-            get().vniMap,
-          );
-          set({
-            ...applyShowroomGatewaySync(synced, get()),
-            selectedNodeId: removedIds.has(get().selectedNodeId || "")
-              ? null
-              : get().selectedNodeId,
-            ...(clearShowroom ? { showroom: null } : {}),
-            startOrder: nextStartOrder,
-          });
-          set({ topologyDirty: computeTopologyDirty(get()) });
-        });
-        return;
-      }
-      get().pushHistory();
-      const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
-      const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
-        removedIds,
-        updatedNodes,
-      );
-      for (const diskId of extraDiskIds) removedIds.add(diskId);
-      const nextStartOrder = removedShowroomId
-        ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
-        : get().startOrder;
-      let nodes = applyNodeChanges(removals, updatedNodes).filter(
-        (n) => !extraDiskIds.has(n.id),
-      );
-      const stillHasBmcVm = nodes.some(
-        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
-      );
-      const bmcNet = findBmcNetwork(nodes);
-      if (!stillHasBmcVm && bmcNet) {
-        removedIds.add(bmcNet.id);
-        nodes = nodes.filter((n) => n.id !== bmcNet.id);
-      }
-      const edges = get().edges.filter(
-        (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
-      );
-      const synced = syncShowroomGatewayState(
-        nodes,
-        edges,
-        get().externalIps,
-        get().vniMap,
-      );
-      set({
-        ...applyShowroomGatewaySync(synced, get()),
-        selectedNodeId: removedIds.has(get().selectedNodeId || "")
-          ? null
-          : get().selectedNodeId,
-        ...(clearShowroom ? { showroom: null } : {}),
-        startOrder: nextStartOrder,
-      });
-      set({ topologyDirty: computeTopologyDirty(get()) });
-    } else {
-      set({ nodes: updatedNodes });
-    }
-  },
-
-  onEdgesChange: (changes) => {
-    const removals = changes.filter((c) => c.type === "remove");
-    const others = changes.filter((c) => c.type !== "remove");
-
-    if (removals.length > 0 && !get().suppressDeleteWarning) {
-      if (others.length > 0) set({ edges: applyEdgeChanges(others, get().edges) });
-      appConfirm({
-        message: `Delete ${removals.length} connection${removals.length > 1 ? "s" : ""}?`,
-        title: "Delete",
-        confirmLabel: "Delete",
-        variant: "danger",
-      }).then((confirmed) => {
-        if (!confirmed) return;
-        get().pushHistory();
-        set({ edges: applyEdgeChanges(changes, get().edges) });
-        set({ topologyDirty: computeTopologyDirty(get()) });
-      });
-      return;
-    }
-    if (removals.length > 0) get().pushHistory();
-    set({ edges: applyEdgeChanges(changes, get().edges) });
-    if (removals.length > 0) set({ topologyDirty: computeTopologyDirty(get()) });
-  },
-
-  onConnect: (connection) => {
-    const sourceNode = get().nodes.find((n) => n.id === connection.source);
-    const targetNode = get().nodes.find((n) => n.id === connection.target);
-    if (!sourceNode || !targetNode) return;
-
+type CanvasGet = () => CanvasState;
+type CanvasSet = (patch: Partial<CanvasState>) => void;
+type CanvasConnection = Parameters<OnConnect>[0];
+function canvasConnectionContext(get: CanvasGet, set: CanvasSet, connection: CanvasConnection, sourceNode: Node, targetNode: Node) {
     const sType = sourceNode.type;
     const tType = targetNode.type;
-    const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
-    const tSub = (targetNode.data as Record<string, any>).subtype as string | undefined;
+    const sSub = (sourceNode.data as Record<string, unknown>).subtype as string | undefined;
+    const tSub = (targetNode.data as Record<string, unknown>).subtype as string | undefined;
 
     const sIsRouter = sType === "networkNode" && sSub === "router";
     const tIsRouter = tType === "networkNode" && tSub === "router";
@@ -1556,6 +1354,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const sIsCeph = sType === "cephClusterNode";
     const tIsCeph = tType === "cephClusterNode";
 
+    const isBmcSource = sType === "networkNode" && sourceNode.data.networkType === "bmc";
+    const isBmcTarget = tType === "networkNode" && targetNode.data.networkType === "bmc";
+    const isWorkloadNet = (sType === "networkNode" && !sIsLoadBalancer && (tType === "vmNode" || tIsContainer)) ||
+      (tType === "networkNode" && !tIsLoadBalancer && (sType === "vmNode" || sIsContainer));
+    return { get, set, connection, sourceNode, targetNode, sType, tType, sSub, tSub, sIsRouter, tIsRouter, sIsGateway, tIsGateway, sIsLoadBalancer, tIsLoadBalancer, sIsNetwork, tIsNetwork, sIsContainer, tIsContainer, sIsShowroom, tIsShowroom, sIsPod, tIsPod, sIsCeph, tIsCeph, isBmcSource, isBmcTarget, isWorkloadNet };
+}
+type CanvasConnectionContext = ReturnType<typeof canvasConnectionContext>;
+
+function connectCephCluster(context: CanvasConnectionContext) {
+  const { get, set, connection, sourceNode, targetNode, sIsCeph, tIsCeph } = context;
     if (sIsCeph || tIsCeph) {
       const cephNode = sIsCeph ? sourceNode : targetNode;
       const clusterNode = sIsCeph ? targetNode : sourceNode;
@@ -1600,9 +1408,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         ),
       });
       set({ topologyDirty: computeTopologyDirty(get()) });
-      return;
     }
 
+
+}
+
+function connectShowroomGateway(context: CanvasConnectionContext) {
+  const { get, set, connection, sourceNode, targetNode, sIsGateway, tIsGateway, sIsShowroom, tIsShowroom } = context;
     // Cosmetic showroom ↔ gateway (infra networking — not used for deploy wiring)
     if ((sIsShowroom && tIsGateway) || (tIsShowroom && sIsGateway)) {
       const showroomNode = sIsShowroom ? sourceNode : targetNode;
@@ -1638,12 +1450,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         ),
       });
       set({ topologyDirty: computeTopologyDirty(get()) });
-      return;
     }
 
-    // Showroom uses infra transit networking — never attach lab network NICs
-    if ((sIsShowroom && tIsNetwork) || (tIsShowroom && sIsNetwork)) return;
 
+}
+
+function connectLoadBalancer(context: CanvasConnectionContext) {
+  const { get, set, connection, sourceNode, targetNode, sIsLoadBalancer, tIsLoadBalancer } = context;
     // Load balancers connect to VMs and pods via top/bottom ↔ NIC handles
     if (sIsLoadBalancer || tIsLoadBalancer) {
       if (!isValidLbBackendConnection(connection, sourceNode, targetNode)) return;
@@ -1660,65 +1473,74 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         ),
       });
       set({ topologyDirty: computeTopologyDirty(get()) });
-      return;
     }
 
+
+}
+
+function validContainerConnection(context: CanvasConnectionContext) {
+  const { sourceNode, targetNode, sType, tType, sIsContainer, tIsContainer } = context;
     // Containers can only connect to networks (via NIC handles) and storage (via mount handles)
     if (sIsContainer || tIsContainer) {
       const otherType = sIsContainer ? tType : sType;
-      if (otherType !== "networkNode" && otherType !== "storageNode") return;
+      if (otherType !== "networkNode" && otherType !== "storageNode") return false;
       // Containers cannot connect to routers/gateways/loadbalancers directly
       const otherSub = sIsContainer
-        ? (targetNode.data as Record<string, any>).subtype
-        : (sourceNode.data as Record<string, any>).subtype;
-      if (otherSub === "router" || otherSub === "gateway" || otherSub === "loadbalancer") return;
+        ? (targetNode.data as Record<string, unknown>).subtype
+        : (sourceNode.data as Record<string, unknown>).subtype;
+      if (otherSub === "router" || otherSub === "gateway" || otherSub === "loadbalancer") return false;
     }
 
+
+    return true;
+
+}
+
+function connectsNodes(edge: Edge, source: string, target: string): boolean {
+  return (edge.source === source && edge.target === target) ||
+    (edge.source === target && edge.target === source);
+}
+
+function connectionStorageNode(source: Node, target: Node): Node | undefined {
+  if (source.type === "storageNode") return source;
+  return target.type === "storageNode" ? target : undefined;
+}
+
+function validRouterConnection(context: CanvasConnectionContext) {
+  const { get, connection, sourceNode, targetNode, sIsRouter, tIsRouter, sIsGateway, tIsGateway, sIsNetwork, tIsNetwork } = context;
     // Router/Gateway can only connect to networks
     if (sIsRouter || sIsGateway) {
-      if (!tIsNetwork) return;
+      if (!tIsNetwork) return false;
     }
     if (tIsRouter || tIsGateway) {
-      if (!sIsNetwork) return;
+      if (!sIsNetwork) return false;
     }
 
     // No duplicate connections between the same network and router/gateway
-    if ((sIsRouter || sIsGateway) && tIsNetwork) {
-      if (sIsGateway && connection.sourceHandle !== "bottom") return;
-      const alreadyConnected = get().edges.some(
-        (e) => (e.source === sourceNode.id && e.target === targetNode.id) ||
-               (e.source === targetNode.id && e.target === sourceNode.id)
-      );
-      if (alreadyConnected) return;
-    }
-    if ((tIsRouter || tIsGateway) && sIsNetwork) {
-      if (tIsGateway && connection.targetHandle !== "bottom") return;
-      const alreadyConnected = get().edges.some(
-        (e) => (e.source === sourceNode.id && e.target === targetNode.id) ||
-               (e.source === targetNode.id && e.target === sourceNode.id)
-      );
-      if (alreadyConnected) return;
-    }
+    if (sIsGateway && connection.sourceHandle !== "bottom") return false;
+    if (tIsGateway && connection.targetHandle !== "bottom") return false;
+    if (!(sIsRouter || sIsGateway || tIsRouter || tIsGateway)) return true;
+    return !get().edges.some((edge) => connectsNodes(edge, sourceNode.id, targetNode.id));
 
+}
+
+function validStorageConnection(context: CanvasConnectionContext) {
+  const { get, connection, sourceNode, targetNode, sType, tType } = context;
     // Storage can only connect to VMs and containers, and only one VM/container per disk (ISOs exempt)
-    if (sType === "storageNode" && tType !== "vmNode" && tType !== "containerNode") return;
-    if (tType === "storageNode" && sType !== "vmNode" && sType !== "containerNode") return;
+    if (sType === "storageNode" && tType !== "vmNode" && tType !== "containerNode") return false;
+    if (tType === "storageNode" && sType !== "vmNode" && sType !== "containerNode") return false;
 
-    if (sType === "storageNode" && connection.sourceHandle !== STORAGE_SOURCE_HANDLE) return;
-    if (tType === "storageNode" && connection.targetHandle !== STORAGE_SOURCE_HANDLE) return;
+    if (sType === "storageNode" && connection.sourceHandle !== STORAGE_SOURCE_HANDLE) return false;
+    if (tType === "storageNode" && connection.targetHandle !== STORAGE_SOURCE_HANDLE) return false;
 
-    const storageId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
-    if (storageId) {
-      const storageNode = get().nodes.find((n) => n.id === storageId);
-      const isIso = storageNode && (storageNode.data as Record<string, any>).format === "iso";
-      if (!isIso) {
-        const alreadyConnected = get().edges.some(
-          (e) => e.source === storageId || e.target === storageId
-        );
-        if (alreadyConnected) return;
-      }
-    }
+    const storage = connectionStorageNode(sourceNode, targetNode);
+    if (!storage || storage.data.format === "iso") return true;
+    return !get().edges.some((edge) => edge.source === storage.id || edge.target === storage.id);
 
+}
+
+function validDiskHandles(context: CanvasConnectionContext) {
+  const { connection, sType, tType, sIsShowroom, tIsShowroom, sIsPod, tIsPod } = context;
     // Showroom and pod disks attach on the left mount handle only
     if (
       (sIsShowroom || tIsShowroom || sIsPod || tIsPod) &&
@@ -1728,7 +1550,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         sIsShowroom || sIsPod
           ? connection.sourceHandle || ""
           : connection.targetHandle || "";
-      if (!isContainerMountLeftHandle(containerHandle)) return;
+      if (!isContainerMountLeftHandle(containerHandle)) return false;
     }
 
     // VM disks attach on the left disk-controller handle only
@@ -1738,24 +1560,38 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     ) {
       const vmHandle =
         sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
-      if (!isVmDiskLeftHandle(vmHandle)) return;
+      if (!isVmDiskLeftHandle(vmHandle)) return false;
     }
 
+
+    return true;
+
+}
+
+function validWorkloadConnection(context: CanvasConnectionContext) {
+  const { sourceNode, targetNode, sType, tType, sIsRouter, tIsRouter, sIsGateway, tIsGateway, sIsNetwork, tIsNetwork } = context;
     // VMs connect to networks and storage only
-    if (sType === "vmNode" && tType === "vmNode") return;
-    if (sType === "vmNode" && (tIsRouter || tIsGateway)) return;
-    if (tType === "vmNode" && (sIsRouter || sIsGateway)) return;
+    if (sType === "vmNode" && tType === "vmNode") return false;
+    if (sType === "vmNode" && (tIsRouter || tIsGateway)) return false;
+    if (tType === "vmNode" && (sIsRouter || sIsGateway)) return false;
 
     // Networks don't connect to other networks
-    if (sIsNetwork && tIsNetwork) return;
+    if (sIsNetwork && tIsNetwork) return false;
 
     // BMC network: only VMs can connect (the provisioner)
-    const isBmcSource = sourceNode?.type === "networkNode" && (sourceNode.data as Record<string, any>).networkType === "bmc";
-    const isBmcTarget = targetNode?.type === "networkNode" && (targetNode.data as Record<string, any>).networkType === "bmc";
+    const isBmcSource = sourceNode?.type === "networkNode" && (sourceNode.data as Record<string, unknown>).networkType === "bmc";
+    const isBmcTarget = targetNode?.type === "networkNode" && (targetNode.data as Record<string, unknown>).networkType === "bmc";
     if ((isBmcSource || isBmcTarget) && (sourceNode?.type !== "vmNode" && targetNode?.type !== "vmNode")) {
-      return;
+      return false;
     }
 
+
+    return true;
+
+}
+
+function connectionAppearance(context: CanvasConnectionContext) {
+  const { sType, tType, sIsRouter, tIsRouter, sIsGateway, tIsGateway, isBmcSource, isBmcTarget } = context;
     let edgeStyle: React.CSSProperties;
     let animated = false;
 
@@ -1786,18 +1622,18 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
+    return { edgeStyle, animated, className };
+}
+function connectionWithNic(context: CanvasConnectionContext) {
+  const { get, set, connection, sourceNode, targetNode, sType, isWorkloadNet } = context;
     // Auto-add NIC before creating edge when connecting a network to a VM/container with no matching handle
     const finalConnection = { ...connection };
-    const isWorkloadNet =
-      ((sType === "networkNode" && !sIsLoadBalancer) &&
-        (tType === "vmNode" || tType === "containerNode")) ||
-      ((tType === "networkNode" && !tIsLoadBalancer) &&
-        (sType === "vmNode" || sType === "containerNode"));
-    if (isWorkloadNet) {
+    if (!isWorkloadNet) return finalConnection;
+    {
       const workloadNode = sType === "vmNode" || sType === "containerNode" ? sourceNode : targetNode;
       const netNode = sType === "networkNode" ? sourceNode : targetNode;
       const workloadHandle = (sType === "vmNode" || sType === "containerNode") ? connection.sourceHandle : connection.targetHandle;
-      const workloadNics = ((workloadNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
+      const workloadNics = ((workloadNode.data as Record<string, unknown>).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
       const nicForHandle = workloadNics.find((nic) =>
         workloadHandle === `nic-${nic.id}-top` || workloadHandle === `nic-${nic.id}-bottom`
       );
@@ -1808,7 +1644,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         (e.target === workloadNode.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
       );
       if (!nicForHandle || handleAlreadyConnected) {
-        const netData = netNode.data as Record<string, any>;
+        const netData = netNode.data as Record<string, unknown>;
         const autoIp = pickIpForNetwork(netData, collectUsedIps(get().nodes)) || "";
         const suffix = workloadHandle?.endsWith("-top") ? "top" : "bottom";
         const newNic = {
@@ -1831,22 +1667,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       }
     }
 
-    get().pushHistory();
-    set({
-      edges: addEdge(
-        {
-          ...finalConnection,
-          type: "smoothstep",
-          style: edgeStyle,
-          animated,
-          className,
-        },
-        get().edges,
-      ),
-    });
+    return finalConnection;
+}
 
+function normalizeConnectedContainerDisk(context: CanvasConnectionContext) {
+  const { get, set, sourceNode, targetNode, sType, tType } = context;
     // Force disk format to raw when connecting storage to a container
-    const diskId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
+    const diskId = connectionStorageNode(sourceNode, targetNode)?.id;
     const containerConnected = sType === "containerNode" || tType === "containerNode";
     if (diskId && containerConnected) {
       const storageData = (sType === "storageNode" ? sourceNode : targetNode).data as Record<string, unknown>;
@@ -1860,6 +1687,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         });
       }
     }
+}
+
+function finishCanvasConnection(context: CanvasConnectionContext) {
+  const { get, set, isWorkloadNet } = context;
+    normalizeConnectedContainerDisk(context);
     set({ topologyDirty: computeTopologyDirty(get()) });
 
     if (isWorkloadNet) {
@@ -1884,123 +1716,277 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         _flushTopologySaveForShowroom(projectId);
       }
     }
-  },
+}
 
-  addNode: (node) => {
-    get().pushHistory();
-    const nodes = [...get().nodes, node];
-    const synced = syncShowroomGatewayState(
-      nodes,
-      get().edges,
-      get().externalIps,
-      get().vniMap,
-    );
-    // Baseline is the CURRENT store state (get()), not the freshly-built `nodes`:
-    // when there is no showroom the sync is a no-op and returns its input array,
-    // so diffing against `nodes` would drop the new node entirely.
-    set({
-      ...applyShowroomGatewaySync(synced, get()),
-    });
-    set({ topologyDirty: computeTopologyDirty(get()) });
-    const projectId = get().currentProjectId;
-    if (projectId && needsShowroomVniSync(synced.nodes, get().vniMap)) {
-      _flushTopologySaveForShowroom(projectId);
-    }
-  },
-
-  updateNodeData: (nodeId, data) => {
-    const isStatusOnly = Object.keys(data).length === 1 && "status" in data;
-    const handlesChanged = "nics" in data || "diskControllers" in data;
-    const resourceFields = Object.keys(data).filter(key => ["vcpus", "ram", "disk", "diskControllers", "bootDevices", "nics"].includes(key));
-    const source = get().nodes.find(node => node.id === nodeId);
-    const diskEdited = source?.type === "storageNode" && ["size", "format", "ocpMount", "imageId", "isoId"].some(key => key in data);
-    const diskOwners = new Set(diskEdited ? get().edges.filter(edge => edge.source === nodeId && edge.targetHandle?.startsWith("dp-")).map(edge => edge.target) : []);
-    set({
-      nodes: get().nodes.map((node) =>
-        node.id === nodeId
-          ? { ...node, data: { ...node.data, ...data, ...clusterOverridePatch(node, resourceFields) } }
-          : diskOwners.has(node.id)
-            ? { ...node, data: { ...node.data, ...clusterOverridePatch(node, ["disks"]) } }
-            : node,
-      ),
-      // Force React Flow to re-route edges by creating new edge references
-      ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
-    });
-    if (!isStatusOnly) set({ topologyDirty: computeTopologyDirty(get()) });
-
-    // (Re)allocate Ceph OSD statics when a ceph node's network / osdCount / mon
-    // changes so data.osdIps stays populated and shown in the panel.
-    if (!isStatusOnly) {
-      const withOsd = assignCephOsdIps(get().nodes);
-      if (withOsd !== get().nodes) set({ nodes: withOsd });
+function nextDuplicateName(baseName: string, allNames: string[]): string {
+    const trailingNum = numericNameSuffix(baseName);
+    let newName: string;
+    if (trailingNum) {
+      const prefix = trailingNum.prefix;
+      const sep = baseName.includes("-") ? "-" : "";
+      let num = Number.parseInt(trailingNum.digits, 10) + 1;
+      const padLen = trailingNum.digits.length;
+      while (allNames.includes(`${prefix}${sep}${scalarText(num).padStart(padLen, "0")}`)) num++;
+      newName = `${prefix}${sep}${scalarText(num).padStart(padLen, "0")}`;
+    } else {
+      let suffix = 2;
+      while (allNames.includes(`${baseName}-${suffix}`)) suffix++;
+      newName = `${baseName}-${suffix}`;
     }
 
-    if (!isStatusOnly && ("nics" in data || "isShowroom" in data)) {
-      const showroom = getShowroomNode(get().nodes);
-      if (showroom) {
-        const nodes = refreshShowroomTabRoutes(get());
-        if (nodes !== get().nodes) set({ nodes });
+    return newName;
+}
+
+function usedVmNicIps(nodes: Node[]): Set<string> {
+      const usedIps = new Set<string>();
+      for (const n of nodes) {
+        if (n.type !== "vmNode") continue;
+        for (const nic of ((n.data as Record<string, unknown>).nics || []) as Array<{ip?: string}>) {
+          if (nic.ip) usedIps.add(nic.ip);
+        }
       }
+      return usedIps;
+}
+
+function duplicateVmNic(nic: VMNic, usedIps: Set<string>): VMNic {
+          let newIp = nic.ip;
+          if (newIp) {
+            const parts = newIp.split(".");
+            const base = parts.slice(0, 3).join(".");
+            let octet = Number.parseInt(parts[3], 10) + 1;
+            while (octet < 250 && usedIps.has(`${base}.${octet}`)) octet++;
+            newIp = octet < 250 ? `${base}.${octet}` : newIp;
+            usedIps.add(newIp);
+          }
+          return { ...nic, id: generateNicId(), mac: generateMac(), ...(newIp ? { ip: newIp } : {}) };
+}
+
+function duplicateNodeData(source: Node, newName: string, get: CanvasGet, opts: Parameters<CanvasState["duplicateNode"]>[1]) {
+    // Generate new NIC IDs and MACs for VMs
+    let newData: Record<string, unknown> = { ...source.data, name: newName, label: newName };
+    if (source.type === "vmNode") {
+      const nics = (source.data as Record<string, unknown>).nics as Array<{id: string; name: string; mac: string; model: string; ip?: string}> || [];
+      const usedIps = usedVmNicIps(get().nodes);
+      newData = {
+        ...newData,
+        nics: nics.map((nic) => duplicateVmNic(nic, usedIps)),
+        diskControllers: ((source.data as Record<string, unknown>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
+          .map((dc) => ({ ...dc, id: generateDiskControllerId() })),
+      };
+      if (newData.bmcEnabled && newData.bmcIp) {
+        newData.bmcIp = allocateBmcIp();
+      }
+      if (opts?.cloneUuid) {
+        // Keep the same smbiosUuid (or copy domainUuid as smbiosUuid)
+        const srcUuid = (source.data as Record<string, unknown>).smbiosUuid as string
+          || (source.data as Record<string, unknown>).domainUuid as string || "";
+        if (srcUuid) newData.smbiosUuid = srcUuid;
+      } else {
+        // Generate a new UUID (default)
+        newData.smbiosUuid = crypto.randomUUID();
+      }
+      // Never carry over the deployed domainUuid
+      delete newData.domainUuid;
     }
 
-    if (!isStatusOnly && nodeId && get().nodes.find((n) => n.id === nodeId)?.type === "vmNode" && "nics" in data) {
-      const refreshed = refreshShowroomTabRoutes(get());
-      if (refreshed !== get().nodes) set({ nodes: refreshed });
-    }
+    return newData;
+}
 
-    if (!isStatusOnly && "portForwards" in data) {
-      const gw = get().nodes.find((n) => n.id === nodeId);
-      if (
-        gw?.type === "networkNode" &&
-        (gw.data as Record<string, unknown>).subtype === "gateway"
-      ) {
-        const synced = syncShowroomGatewayState(
-          get().nodes,
-          get().edges,
-          get().externalIps,
-          get().vniMap,
+function cloneConnectedDisk(otherNode: Node, allNames: string[]): Node {
+            const diskNewId = generateNodeId();
+            const diskName = (otherNode.data as Record<string, unknown>).name as string || "disk";
+            const diskNewName = nextDuplicateName(diskName, allNames);
+            allNames.push(diskNewName);
+
+            return {
+              ...otherNode,
+              id: diskNewId,
+              position: { x: otherNode.position.x + 40, y: otherNode.position.y + 40 },
+              selected: false,
+              data: { ...otherNode.data, name: diskNewName, label: diskNewName },
+            };
+}
+
+function duplicateVmEdge(edge: Edge, otherNode: Node, source: Node, newNode: Node, allNames: string[], result: { nodes: Node[]; edges: Edge[]; diskIds: Record<string, string> }) {
+  const { nodes: newNodes, edges: newEdges, diskIds: diskIdMap } = result;
+  const nodeId = source.id;
+  const newId = newNode.id;
+  const otherNodeId = otherNode.id;
+  const oldNics = (source.data.nics as VMNic[]) || [];
+  const newNics = (newNode.data.nics as VMNic[]) || [];
+  const oldDcs = (source.data.diskControllers as VMDiskController[]) || [];
+  const newDcs = (newNode.data.diskControllers as VMDiskController[]) || [];
+        // Network connections: duplicate the edge pointing to the same network
+        if (otherNode.type === "networkNode") {
+          const newHandle = remapDuplicatedHandle(
+            edge.source === nodeId ? edge.sourceHandle : edge.targetHandle,
+            oldNics, newNics, "nic",
+          );
+          newEdges.push(duplicatedEdge(edge, nodeId, newId, otherNodeId, newHandle));
+        }
+
+        // Storage connections: duplicate the disk (not ISOs) and connect
+        if (otherNode.type === "storageNode") {
+
+          const clonedDisk = cloneConnectedDisk(otherNode, allNames);
+          newNodes.push(clonedDisk);
+          diskIdMap[otherNodeId] = clonedDisk.id;
+          const diskTargetId = clonedDisk.id;
+
+          const newHandle = remapDuplicatedHandle(
+            edge.source === nodeId ? edge.sourceHandle : edge.targetHandle,
+            oldDcs, newDcs, "dp",
+          );
+
+          newEdges.push(duplicatedEdge(edge, nodeId, newId, diskTargetId, newHandle));
+        }
+}
+
+function duplicatedEdge(edge: Edge, nodeId: string, newId: string, otherId: string, handle: string | null | undefined): Edge {
+  return { ...edge,
+    id: `${newId}-${otherId}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    source: edge.source === nodeId ? newId : otherId,
+    target: edge.target === nodeId ? newId : otherId,
+    sourceHandle: edge.source === nodeId ? handle : edge.sourceHandle,
+    targetHandle: edge.target === nodeId ? handle : edge.targetHandle,
+  };
+}
+
+function remapDuplicateBootDevices(source: Node, newNode: Node, diskIdMap: Record<string, string>) {
+    // Remap bootDevices to cloned disk IDs
+    if (source.type === "vmNode" && Object.keys(diskIdMap).length > 0) {
+      const bootDevs = (newNode.data as Record<string, unknown>).bootDevices as string[] | undefined;
+      if (bootDevs) {
+        (newNode.data as Record<string, unknown>).bootDevices = bootDevs.map(
+          (id) => diskIdMap[id] || id
         );
-        const patch = applyShowroomGatewaySync(synced, get());
-        if (Object.keys(patch).length > 0) set(patch);
       }
     }
-  },
 
-  setAllVmStatus: (status) => {
-    set({
-      nodes: get().nodes.map((node) =>
-        node.type === "vmNode"
-          ? { ...node, data: { ...node.data, status } }
-          : node,
-      ),
-    });
-  },
+}
 
-  deleteNode: (nodeId) => {
-    const target = get().nodes.find((n) => n.id === nodeId);
-    // BMC network is managed by VM BMC toggles — cannot delete while any VM
-    // still has BMC enabled. It is removed automatically once none do.
-    if (
-      target?.type === "networkNode" &&
-      (target.data as Record<string, any>).networkType === "bmc" &&
-      get().nodes.some(
-        (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
-      )
-    ) {
-      return;
+function applyCanvasNodeRemovals(removals: Parameters<OnNodesChange>[0], get: CanvasGet, set: CanvasSet) {
+          get().pushHistory();
+          const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
+          const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
+            removedIds,
+            get().nodes,
+          );
+          for (const diskId of extraDiskIds) removedIds.add(diskId);
+          const nextStartOrder = removedShowroomId
+            ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
+            : get().startOrder;
+          let nodes = applyNodeChanges(removals, get().nodes).filter(
+            (n) => !extraDiskIds.has(n.id),
+          );
+          const stillHasBmcVm = nodes.some(
+            (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled,
+          );
+          const bmcNet = findBmcNetwork(nodes);
+          if (!stillHasBmcVm && bmcNet) {
+            removedIds.add(bmcNet.id);
+            nodes = nodes.filter((n) => n.id !== bmcNet.id);
+          }
+          const edges = get().edges.filter(
+            (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
+          );
+          const synced = syncShowroomGatewayState(
+            nodes,
+            edges,
+            get().externalIps,
+            get().vniMap,
+          );
+          set({
+            ...applyShowroomGatewaySync(synced, get()),
+            selectedNodeId: removedIds.has(get().selectedNodeId || "")
+              ? null
+              : get().selectedNodeId,
+            ...(clearShowroom ? { showroom: null } : {}),
+            startOrder: nextStartOrder,
+          });
+          set({ topologyDirty: computeTopologyDirty(get()) });
+}
+
+function normalizeStableShowroom(stable: Record<string, unknown>): void {
+  if (stable.isShowroom) {
+    // The cluster-terminal containers (wetty-clusters pod + oc-fetch init) are
+    // regenerated at deploy from showroomTabs — the frontend never materializes
+    // them, so a deployed project's canvas (tabs present, container absent) would
+    // read perpetually dirty. showroomTabs IS compared, so a real tab change still
+    // dirties; drop only the derived containers here.
+    if (Array.isArray(stable.initContainers)) {
+      let inits = (stable.initContainers as Array<Record<string, unknown>>)
+        .filter((c) => c?.name !== "oc-fetch");
+      // Pattern/snapshot deploys skip git-cloner + antora at runtime
+      // (buildContent=false) but keep them in the persisted spec — drop them
+      // from dirty compare so only the regenerated nginx-config matters.
+      if (stable.buildContent === false) {
+        inits = inits.filter((c) => c?.name === "nginx-config");
+      }
+      stable.initContainers = inits.map(normalizeShowroomContainer);
     }
-    get().pushHistory();
-    const removedIds = new Set([nodeId]);
-    const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
-      removedIds,
-      get().nodes,
-    );
-    for (const diskId of extraDiskIds) removedIds.add(diskId);
-    // Deleting a cluster boundary cascades to its member children (nodes
-    // parented to it) and drops the matching clusters[] entry — otherwise the
-    // config lingers (permanent dirty) and children keep a dangling parentId.
-    let nextClusters = get().clusters;
-    let baseNodes = get().nodes;
+    if (Array.isArray(stable.podContainers)) {
+      stable.podContainers = (stable.podContainers as Array<Record<string, unknown>>)
+        .filter((c) => c?.name !== "wetty-clusters")
+        .map(normalizeShowroomContainer);
+    }
+  }
+}
+
+function hydrateLoadedNodes(nodes: Node[], t: { showroom?: unknown; edges?: Edge[] }, deployedGatewayEndpoints: Map<string, Array<Record<string, unknown>>>, deployedEffectiveDns: Map<string, string>): Node[] {
+
+            const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
+            const showroomCfg = parseShowroomFromTopology(t.showroom, nodes, (t.edges || []) as Edge[]);
+            const tabs =
+              (showroomCfg?.tabs && showroomCfg.tabs.length > 0
+                ? showroomCfg.tabs
+                : ((showroomNode?.data as Record<string, unknown> | undefined)
+                    ?.showroomTabs as ShowroomTab[] | undefined)) || [];
+            const withGatewayEndpoints = nodes.map((n: Node) => {
+              const data = (n.data || {}) as Record<string, unknown>;
+              let out = n;
+              const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
+              if (deployedEndpoints?.length && data.subtype === "gateway") {
+                out = { ...out, data: { ...data, externalEndpoints: deployedEndpoints } };
+              }
+              const effDns = deployedEffectiveDns.get(n.id);
+              if (effDns && n.type === "networkNode" && !data.effectiveDnsIp) {
+                out = {
+                  ...out,
+                  data: { ...(out.data as Record<string, unknown>), effectiveDnsIp: effDns },
+                };
+              }
+              return out;
+            });
+            const withNicIps = assignMissingContainerNicIps(
+              withGatewayEndpoints,
+              (t.edges || []) as Edge[],
+            );
+            if (!showroomNode || tabs.length === 0) return withNicIps;
+            const updatedData = applyShowroomTabsToNode(
+              showroomNode.data as Record<string, unknown>,
+              tabs,
+              withNicIps,
+              t.edges || [],
+            );
+            return withNicIps.map((n: Node) =>
+              n.id === showroomNode.id ? { ...n, data: updatedData } : n,
+            );
+}
+
+function loadedClusterPhases(finalClusters: ClusterConfig[]): Record<string, string> {
+          const clusterOcpPhases: Record<string, string> = {};
+          for (const c of finalClusters) {
+            const key = c.id || c.name;
+            if (c.ocpInstallStatus === "ready") clusterOcpPhases[key] = "complete";
+            else if (c.ocpInstallStatus === "error") clusterOcpPhases[key] = "failed";
+          }
+  return clusterOcpPhases;
+}
+
+function removedClusterTopology(target: Node | undefined, nodeId: string, removedIds: Set<string>, get: CanvasGet) {
+  let nextClusters = get().clusters;
+  let baseNodes = get().nodes;
     if (target?.type === "clusterNode") {
       const clusterId = (target.data as Record<string, unknown>)?.clusterId as string | undefined;
       for (const child of get().nodes) {
@@ -2035,13 +2021,302 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         return { ...n, data: { ...d, dnsRecords: kept } };
       });
     }
+  return { nextClusters, baseNodes };
+}
+
+function updatedCanvasNode(node: Node, nodeId: string, data: Record<string, unknown>, resourceFields: string[], diskOwners: Set<string>): Node {
+  if (node.id === nodeId) return { ...node, data: { ...node.data, ...data, ...clusterOverridePatch(node, resourceFields) } };
+  if (diskOwners.has(node.id)) return { ...node, data: { ...node.data, ...clusterOverridePatch(node, ["disks"]) } };
+  return node;
+}
+
+function refreshChangedShowroom(data: Record<string, unknown>, get: CanvasGet, set: CanvasSet) {
+  if (!("nics" in data || "isShowroom" in data)) return;
+  if (!getShowroomNode(get().nodes)) return;
+  const nodes = refreshShowroomTabRoutes(get());
+  if (nodes !== get().nodes) set({ nodes });
+}
+
+function refreshUpdatedGateway(nodeId: string, data: Record<string, unknown>, get: CanvasGet, set: CanvasSet) {
+    if ("portForwards" in data) {
+      const gw = get().nodes.find((n) => n.id === nodeId);
+      if (
+        gw?.type === "networkNode" &&
+        (gw.data as Record<string, unknown>).subtype === "gateway"
+      ) {
+        const synced = syncShowroomGatewayState(
+          get().nodes,
+          get().edges,
+          get().externalIps,
+          get().vniMap,
+        );
+        const patch = applyShowroomGatewaySync(synced, get());
+        if (Object.keys(patch).length > 0) set(patch);
+      }
+    }
+}
+
+function firstTextField(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === "string" && value.length > 0) || "";
+}
+
+function scalarText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return "";
+}
+
+function showroomTabs(primary: unknown, fallback: unknown): ShowroomTab[] | undefined {
+  if (Array.isArray(primary)) return primary as ShowroomTab[];
+  return Array.isArray(fallback) ? fallback as ShowroomTab[] : undefined;
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
+  nodes: [],
+  edges: [],
+  selectedNodeId: null,
+  showMinimap: true,
+  hiddenNodeIds: [],
+  suppressDeleteWarning: false,
+  panMode: true,
+  providerType: null,
+  clusterCapabilities: null,
+  supportsHibernate: true,
+  powerWarnDismissed: false,
+  currentProjectId: null as string | null,
+  projectState: "draft" as string,
+  deployedVmIds: new Set<string>(),
+  deployedDiskSizes: {} as Record<string, number>,
+  deployedNodeData: {} as Record<string, string>,
+  deployedNodeMeta: {} as Record<string, { type: string; name: string }>,
+  deployedEdgeKey: "",
+  deployedEdges: [] as Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>,
+  deployedExternalIps: "[]",
+  deployedClusters: "[]",
+  deployedClusterRows: [] as ClusterConfig[],
+  topologyDirty: false,
+  startOrder: [] as StartOrderEntry[],
+  externalIps: [] as ExternalIp[],
+  vniMap: {} as Record<string, number>,
+  showroom: null as ShowroomConfig | null,
+  clusters: [] as ClusterConfig[],
+  ocpInstallVia: null as string | null,
+  topologyPlacement: null as Record<string, unknown> | null,
+  topologyWorkloads: null as unknown[] | null,
+  topologyRequirementsContent: null as Record<string, unknown> | null,
+  topologyWorkloadsDone: null as string[] | null,
+  clusterLogTarget: null as { clusterKey: string; name: string } | null,
+  ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
+  clusterOcpPhases: {} as Record<string, string>,
+
+  onNodesChange: (changes) => {
+    const hasBmcVm = () =>
+      get().nodes.some(
+        (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled,
+      );
+    const isBmcNetId = (id: string) => {
+      const n = get().nodes.find((node) => node.id === id);
+      return (
+        n?.type === "networkNode" &&
+        (n.data as Record<string, unknown>).networkType === "bmc"
+      );
+    };
+    // BMC network is not manually deletable while any VM has BMC enabled.
+    const removals = changes.filter(
+      (c) => c.type === "remove" && !(isBmcNetId((c as { id: string }).id) && hasBmcVm()),
+    );
+    const others = changes.filter((c) => c.type !== "remove");
+
+    // Always apply non-removal changes first (selection, position, etc.)
+    const updatedNodes = applyNodeChanges(others, get().nodes);
+
+    // Sync selectedNodeId from React Flow's selection state
+    const selected = updatedNodes.find((n) => n.selected);
+    if (selected && selected.id !== get().selectedNodeId) {
+      set({ selectedNodeId: selected.id });
+    }
+
+    if (removals.length > 0) {
+      set({ nodes: updatedNodes });
+      if (!get().suppressDeleteWarning) {
+        const names = removals
+          .map((r) => {
+            const node = updatedNodes.find((n) => n.id === (r as { id: string }).id);
+            return node ? (node.data as Record<string, unknown>).name as string || node.id : (r as { id: string }).id;
+          })
+          .join(", ");
+        appConfirm({
+          message: `Delete ${removals.length > 1 ? removals.length + " items" : names}?`,
+          title: "Delete",
+          confirmLabel: "Delete",
+          variant: "danger",
+        }).then((confirmed) => {
+          if (!confirmed) return;
+          applyCanvasNodeRemovals(removals, get, set);
+        });
+        return;
+      }
+      applyCanvasNodeRemovals(removals, get, set);
+    } else {
+      set({ nodes: updatedNodes });
+    }
+  },
+
+  onEdgesChange: async (changes, beforeRemove) => {
+    const removals = changes.filter((c) => c.type === "remove");
+    const others = changes.filter((c) => c.type !== "remove");
+    if (others.length > 0) set({ edges: applyEdgeChanges(others, get().edges) });
+    if (removals.length === 0) return;
+
+    if (!get().suppressDeleteWarning) {
+      const confirmed = await appConfirm({
+        message: `Delete ${removals.length} connection${removals.length > 1 ? "s" : ""}?`,
+        title: "Delete",
+        confirmLabel: "Delete",
+        variant: "danger",
+      });
+      if (!confirmed) return;
+    }
+    get().pushHistory();
+    beforeRemove?.();
+    set({ edges: applyEdgeChanges(removals, get().edges) });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  onConnect: (connection) => {
+    const sourceNode = get().nodes.find((n) => n.id === connection.source);
+    const targetNode = get().nodes.find((n) => n.id === connection.target);
+    if (!sourceNode || !targetNode) return;
+
+    const context = canvasConnectionContext(get, set, connection, sourceNode, targetNode);
+    if (context.sIsCeph || context.tIsCeph) return connectCephCluster(context);
+    if ((context.sIsShowroom && context.tIsGateway) || (context.tIsShowroom && context.sIsGateway)) {
+      return connectShowroomGateway(context);
+    }
+    if ((context.sIsShowroom && context.tIsNetwork) || (context.tIsShowroom && context.sIsNetwork)) return;
+    if (context.sIsLoadBalancer || context.tIsLoadBalancer) return connectLoadBalancer(context);
+    const validators = [validContainerConnection, validRouterConnection, validStorageConnection, validDiskHandles, validWorkloadConnection];
+    if (!validators.every((validate) => validate(context))) return;
+    const { edgeStyle, animated, className } = connectionAppearance(context);
+    const finalConnection = connectionWithNic(context);
+    get().pushHistory();
+    set({
+      edges: addEdge(
+        {
+          ...finalConnection,
+          type: "smoothstep",
+          style: edgeStyle,
+          animated,
+          className,
+        },
+        get().edges,
+      ),
+    });
+
+    finishCanvasConnection(context);
+
+
+  },
+
+  addNode: (node) => {
+    get().pushHistory();
+    const nodes = [...get().nodes, node];
+    const synced = syncShowroomGatewayState(
+      nodes,
+      get().edges,
+      get().externalIps,
+      get().vniMap,
+    );
+    // Baseline is the CURRENT store state (get()), not the freshly-built `nodes`:
+    // when there is no showroom the sync is a no-op and returns its input array,
+    // so diffing against `nodes` would drop the new node entirely.
+    set({
+      ...applyShowroomGatewaySync(synced, get()),
+    });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+    const projectId = get().currentProjectId;
+    if (projectId && needsShowroomVniSync(synced.nodes, get().vniMap)) {
+      _flushTopologySaveForShowroom(projectId);
+    }
+  },
+
+  updateNodeData: (nodeId, data) => {
+    const isStatusOnly = Object.keys(data).length === 1 && "status" in data;
+    const handlesChanged = "nics" in data || "diskControllers" in data;
+    const resourceFields = Object.keys(data).filter(key => ["vcpus", "ram", "disk", "diskControllers", "bootDevices", "nics"].includes(key));
+    const source = get().nodes.find(node => node.id === nodeId);
+    const diskEdited = source?.type === "storageNode" && ["size", "format", "ocpMount", "imageId", "isoId"].some(key => key in data);
+    const diskOwners = new Set(diskEdited ? get().edges.filter(edge => edge.source === nodeId && edge.targetHandle?.startsWith("dp-")).map(edge => edge.target) : []);
+    set({
+      nodes: get().nodes.map((node) => updatedCanvasNode(node, nodeId, data, resourceFields, diskOwners)),
+      // Force React Flow to re-route edges by creating new edge references
+      ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
+    });
+    if (isStatusOnly) return;
+    set({ topologyDirty: computeTopologyDirty(get()) });
+
+    // (Re)allocate Ceph OSD statics when a ceph node's network / osdCount / mon
+    // changes so data.osdIps stays populated and shown in the panel.
+    {
+      const withOsd = assignCephOsdIps(get().nodes);
+      if (withOsd !== get().nodes) set({ nodes: withOsd });
+    }
+
+    refreshChangedShowroom(data, get, set);
+
+    if (nodeId && get().nodes.find((n) => n.id === nodeId)?.type === "vmNode" && "nics" in data) {
+      const refreshed = refreshShowroomTabRoutes(get());
+      if (refreshed !== get().nodes) set({ nodes: refreshed });
+    }
+
+    refreshUpdatedGateway(nodeId, data, get, set);
+  },
+
+  setAllVmStatus: (status) => {
+    set({
+      nodes: get().nodes.map((node) =>
+        node.type === "vmNode"
+          ? { ...node, data: { ...node.data, status } }
+          : node,
+      ),
+    });
+  },
+
+  deleteNode: (nodeId) => {
+    const target = get().nodes.find((n) => n.id === nodeId);
+    // BMC network is managed by VM BMC toggles — cannot delete while any VM
+    // still has BMC enabled. It is removed automatically once none do.
+    if (
+      target?.type === "networkNode" &&
+      (target.data as Record<string, unknown>).networkType === "bmc" &&
+      get().nodes.some(
+        (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled,
+      )
+    ) {
+      return;
+    }
+    get().pushHistory();
+    const removedIds = new Set([nodeId]);
+    const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
+      removedIds,
+      get().nodes,
+    );
+    for (const diskId of extraDiskIds) removedIds.add(diskId);
+    // Deleting a cluster boundary cascades to its member children (nodes
+    // parented to it) and drops the matching clusters[] entry — otherwise the
+    // config lingers (permanent dirty) and children keep a dangling parentId.
+    const { nextClusters, baseNodes } = removedClusterTopology(target, nodeId, removedIds, get);
     const nextStartOrder = removedShowroomId
       ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
       : get().startOrder;
     // Drop the BMC network when the last BMC-enabled VM is removed.
     const remainingForBmc = baseNodes.filter((n) => !removedIds.has(n.id));
     const stillHasBmcVm = remainingForBmc.some(
-      (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled,
+      (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled,
     );
     const bmcNet = findBmcNetwork(baseNodes);
     if (!stillHasBmcVm && bmcNet) removedIds.add(bmcNet.id);
@@ -2214,7 +2489,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               )
               .map(
                 (n: { id: string; data?: Record<string, unknown> }) =>
-                  [n.id, String(n.data?.effectiveDnsIp)] as [string, string],
+                  [n.id, scalarText(n.data?.effectiveDnsIp)] as [string, string],
               ),
           );
           const externalIps = (t.externalIps || []).map((e: ExternalIp) => {
@@ -2223,45 +2498,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               ? { ...e, ip: dep.ip, _private_ip: dep._private_ip ?? e._private_ip, state: dep.state ?? e.state }
               : e;
           });
-          const loadedNodes = (() => {
-            const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
-            const showroomCfg = parseShowroomFromTopology(t.showroom, nodes, (t.edges || []) as Edge[]);
-            const tabs =
-              (showroomCfg?.tabs && showroomCfg.tabs.length > 0
-                ? showroomCfg.tabs
-                : ((showroomNode?.data as Record<string, unknown> | undefined)
-                    ?.showroomTabs as ShowroomTab[] | undefined)) || [];
-            const withGatewayEndpoints = nodes.map((n: Node) => {
-              const data = (n.data || {}) as Record<string, unknown>;
-              let out = n;
-              const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
-              if (deployedEndpoints?.length && data.subtype === "gateway") {
-                out = { ...out, data: { ...data, externalEndpoints: deployedEndpoints } };
-              }
-              const effDns = deployedEffectiveDns.get(n.id);
-              if (effDns && n.type === "networkNode" && !data.effectiveDnsIp) {
-                out = {
-                  ...out,
-                  data: { ...(out.data as Record<string, unknown>), effectiveDnsIp: effDns },
-                };
-              }
-              return out;
-            });
-            const withNicIps = assignMissingContainerNicIps(
-              withGatewayEndpoints,
-              (t.edges || []) as Edge[],
-            );
-            if (!showroomNode || tabs.length === 0) return withNicIps;
-            const updatedData = applyShowroomTabsToNode(
-              showroomNode.data as Record<string, unknown>,
-              tabs,
-              withNicIps,
-              t.edges || [],
-            );
-            return withNicIps.map((n: Node) =>
-              n.id === showroomNode.id ? { ...n, data: updatedData } : n,
-            );
-          })();
+          const loadedNodes = hydrateLoadedNodes(nodes, t, deployedGatewayEndpoints, deployedEffectiveDns);
           // Populate Ceph OSD statics on load so existing projects show them and
           // never leave them unallocated for deploy.
           const withCephOsd = assignCephOsdIps(loadedNodes);
@@ -2343,12 +2580,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             deployedClusters: deployedClusterRows,
           });
           const finalClusters = healed.clusters;
-          const clusterOcpPhases: Record<string, string> = {};
-          for (const c of finalClusters) {
-            const key = c.id || c.name;
-            if (c.ocpInstallStatus === "ready") clusterOcpPhases[key] = "complete";
-            else if (c.ocpInstallStatus === "error") clusterOcpPhases[key] = "failed";
-          }
+          const clusterOcpPhases = loadedClusterPhases(finalClusters);
           set({
             // Tag cluster-managed DNS records (api/api-int/*.apps) so they render
             // in the read-only ☸ group instead of the editable list (deploy stores
@@ -2369,14 +2601,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             deployedClusters: stableClusterKey(deployedClusterBaseline),
             ocpInstallVia: (t.ocpInstallVia as string) || null,
             topologyPlacement:
-              t.placement && typeof t.placement === "object"
-                ? (t.placement as Record<string, unknown>)
-                : null,
+              optionalRecord(t.placement),
             topologyWorkloads: Array.isArray(t.workloads) ? (t.workloads as unknown[]) : null,
             topologyRequirementsContent:
-              t.requirements_content && typeof t.requirements_content === "object"
-                ? (t.requirements_content as Record<string, unknown>)
-                : null,
+              optionalRecord(t.requirements_content),
             topologyWorkloadsDone: Array.isArray(t.workloadsDone)
               ? (t.workloadsDone as string[]).filter((x) => typeof x === "string")
               : null,
@@ -2385,7 +2613,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             supportsHibernate: project.supports_hibernate !== false,
             powerWarnDismissed: !!project.power_warn_dismissed,
           });
-          _lastSavedNodeCount = (t.nodes || []).length;
         } else {
           set({
             vniMap: vniMapFromProject,
@@ -2559,69 +2786,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       return;
     }
 
-    const allNames = get().nodes.map((n) => (n.data as Record<string, any>).name as string).filter(Boolean);
-    const baseName = (source.data as Record<string, any>).name as string || "node";
+    const allNames = get().nodes.map((n) => (n.data as Record<string, unknown>).name as string).filter(Boolean);
+    const baseName = (source.data as Record<string, unknown>).name as string || "node";
 
-    const trailingNum = baseName.match(/^(.*?)[-_]?(\d+)$/);
-    let newName: string;
-    if (trailingNum) {
-      const prefix = trailingNum[1];
-      const sep = baseName.includes("-") ? "-" : "";
-      let num = parseInt(trailingNum[2], 10) + 1;
-      const padLen = trailingNum[2].length;
-      while (allNames.includes(`${prefix}${sep}${String(num).padStart(padLen, "0")}`)) num++;
-      newName = `${prefix}${sep}${String(num).padStart(padLen, "0")}`;
-    } else {
-      let suffix = 2;
-      while (allNames.includes(`${baseName}-${suffix}`)) suffix++;
-      newName = `${baseName}-${suffix}`;
-    }
+    const newName = nextDuplicateName(baseName, allNames);
 
     const newId = generateNodeId();
 
-    // Generate new NIC IDs and MACs for VMs
-    let newData: Record<string, any> = { ...source.data, name: newName, label: newName };
-    if (source.type === "vmNode") {
-      const nics = (source.data as Record<string, any>).nics as Array<{id: string; name: string; mac: string; model: string; ip?: string}> || [];
-      const usedIps = new Set<string>();
-      for (const n of get().nodes) {
-        if (n.type !== "vmNode") continue;
-        for (const nic of ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>) {
-          if (nic.ip) usedIps.add(nic.ip);
-        }
-      }
-      newData = {
-        ...newData,
-        nics: nics.map((nic, i) => {
-          let newIp = nic.ip;
-          if (newIp) {
-            const parts = newIp.split(".");
-            const base = parts.slice(0, 3).join(".");
-            let octet = parseInt(parts[3], 10) + 1;
-            while (octet < 250 && usedIps.has(`${base}.${octet}`)) octet++;
-            newIp = octet < 250 ? `${base}.${octet}` : newIp;
-            usedIps.add(newIp);
-          }
-          return { ...nic, id: generateNicId(), mac: generateMac(), ...(newIp ? { ip: newIp } : {}) };
-        }),
-        diskControllers: ((source.data as Record<string, any>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
-          .map((dc) => ({ ...dc, id: generateDiskControllerId() })),
-      };
-      if (newData.bmcEnabled && newData.bmcIp) {
-        newData.bmcIp = allocateBmcIp();
-      }
-      if (opts?.cloneUuid) {
-        // Keep the same smbiosUuid (or copy domainUuid as smbiosUuid)
-        const srcUuid = (source.data as Record<string, any>).smbiosUuid as string
-          || (source.data as Record<string, any>).domainUuid as string || "";
-        if (srcUuid) newData.smbiosUuid = srcUuid;
-      } else {
-        // Generate a new UUID (default)
-        newData.smbiosUuid = crypto.randomUUID();
-      }
-      // Never carry over the deployed domainUuid
-      delete newData.domainUuid;
-    }
+    const newData = duplicateNodeData(source, newName, get, opts);
 
     const newNode: Node = {
       ...source,
@@ -2638,106 +2810,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
     if (source.type === "vmNode") {
       const sourceEdges = get().edges.filter((e) => e.source === nodeId || e.target === nodeId);
-      const oldNics = (source.data as Record<string, any>).nics as Array<{id: string}> || [];
-      const newNics = (newData as Record<string, any>).nics as Array<{id: string}> || [];
-      const oldDcs = (source.data as Record<string, any>).diskControllers as Array<{id: string}> || [];
-      const newDcs = (newData as Record<string, any>).diskControllers as Array<{id: string}> || [];
 
       for (const edge of sourceEdges) {
         const otherNodeId = edge.source === nodeId ? edge.target : edge.source;
         const otherNode = get().nodes.find((n) => n.id === otherNodeId);
         if (!otherNode) continue;
 
-        // Network connections: duplicate the edge pointing to the same network
-        if (otherNode.type === "networkNode") {
-          let newHandle = edge.source === nodeId ? edge.sourceHandle : edge.targetHandle;
-          // Map old NIC handle to new NIC handle
-          if (newHandle) {
-            for (let i = 0; i < oldNics.length; i++) {
-              if (newHandle.includes(oldNics[i].id) && newNics[i]) {
-                newHandle = newHandle.replace(oldNics[i].id, newNics[i].id);
-                break;
-              }
-            }
-          }
-          const newEdge: Edge = {
-            ...edge,
-            id: `${newId}-${otherNodeId}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-            source: edge.source === nodeId ? newId : otherNodeId,
-            target: edge.target === nodeId ? newId : otherNodeId,
-            sourceHandle: edge.source === nodeId ? newHandle : edge.sourceHandle,
-            targetHandle: edge.target === nodeId ? newHandle : edge.targetHandle,
-          };
-          newEdges.push(newEdge);
-        }
-
-        // Storage connections: duplicate the disk (not ISOs) and connect
-        if (otherNode.type === "storageNode") {
-          let diskTargetId = otherNodeId;
-
-          {
-            // Clone the disk/ISO node visually (ISOs share the same backend image)
-            const diskNewId = generateNodeId();
-            const diskName = (otherNode.data as Record<string, any>).name as string || "disk";
-            const diskTrailing = diskName.match(/^(.*?)[-_]?(\d+)$/);
-            let diskNewName: string;
-            if (diskTrailing) {
-              const prefix = diskTrailing[1];
-              const sep = diskName.includes("-") ? "-" : "";
-              let num = parseInt(diskTrailing[2], 10) + 1;
-              const padLen = diskTrailing[2].length;
-              while (allNames.includes(`${prefix}${sep}${String(num).padStart(padLen, "0")}`)) num++;
-              diskNewName = `${prefix}${sep}${String(num).padStart(padLen, "0")}`;
-            } else {
-              let suffix = 2;
-              while (allNames.includes(`${diskName}-${suffix}`)) suffix++;
-              diskNewName = `${diskName}-${suffix}`;
-            }
-            allNames.push(diskNewName);
-
-            newNodes.push({
-              ...otherNode,
-              id: diskNewId,
-              position: { x: otherNode.position.x + 40, y: otherNode.position.y + 40 },
-              selected: false,
-              data: { ...otherNode.data, name: diskNewName, label: diskNewName },
-            });
-            diskIdMap[otherNodeId] = diskNewId;
-            diskTargetId = diskNewId;
-          }
-
-          let newHandle = edge.source === nodeId ? edge.sourceHandle : edge.targetHandle;
-          if (newHandle) {
-            for (let i = 0; i < oldDcs.length; i++) {
-              if (newHandle.includes(oldDcs[i].id) && newDcs[i]) {
-                newHandle = newHandle.replace(oldDcs[i].id, newDcs[i].id);
-                break;
-              }
-            }
-          }
-
-          const newEdge: Edge = {
-            ...edge,
-            id: `${newId}-${diskTargetId}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-            source: edge.source === nodeId ? newId : diskTargetId,
-            target: edge.target === nodeId ? newId : diskTargetId,
-            sourceHandle: edge.source === nodeId ? newHandle : edge.sourceHandle,
-            targetHandle: edge.target === nodeId ? newHandle : edge.targetHandle,
-          };
-          newEdges.push(newEdge);
-        }
+        duplicateVmEdge(edge, otherNode, source, newNode, allNames, { nodes: newNodes, edges: newEdges, diskIds: diskIdMap });
       }
     }
 
-    // Remap bootDevices to cloned disk IDs
-    if (source.type === "vmNode" && Object.keys(diskIdMap).length > 0) {
-      const bootDevs = (newNode.data as Record<string, any>).bootDevices as string[] | undefined;
-      if (bootDevs) {
-        (newNode.data as Record<string, any>).bootDevices = bootDevs.map(
-          (id) => diskIdMap[id] || id
-        );
-      }
-    }
+    remapDuplicateBootDevices(source, newNode, diskIdMap);
 
     set({
       nodes: [...get().nodes, ...newNodes],
@@ -2784,12 +2867,12 @@ export function syncBmcNetwork() {
   const nodes = state.nodes;
 
   const hasBmcVm = nodes.some(
-    (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled
   );
   const bmcNetNode = findBmcNetwork(nodes);
 
   if (hasBmcVm && !bmcNetNode) {
-    const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
+    const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).bmcEnabled);
     const avgX = vmNodes.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(vmNodes.length, 1);
     const avgY = vmNodes.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(vmNodes.length, 1);
     const placed = repositionBmcNetworkClearOfClusters(
@@ -2843,7 +2926,10 @@ export function _saveTopologyToApi(
   });
   const cleanNodes = healed.nodes.map((n) => {
     if (n.type !== "vmNode") return n;
-    const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, any>;
+    const rest = { ...n.data };
+    delete rest.status;
+    delete rest.redeployStep;
+    delete rest.redeployDetail;
     return { ...n, data: rest };
   });
   const topology: Record<string, unknown> = {
@@ -2946,9 +3032,7 @@ function _flushTopologySaveForShowroom(projectId: string) {
 
 // Debounced auto-save to API — only save in draft mode
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
-let _lastSavedNodeCount = 0;
 let _loadingProject = false;
-let _latestVmStates: Record<string, string> = {};
 let _lastSavedTopologyKey = "";
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
@@ -2974,7 +3058,6 @@ useCanvasStore.subscribe((state) => {
     ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps) + "||sr:" + JSON.stringify(s.showroom) + "||cl:" + JSON.stringify(s.clusters);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
-    _lastSavedNodeCount = s.nodes.length;
     _saveTopologyToApi(s.currentProjectId!, s).then((project) => {
       if (project) _applyShowroomSaveResponse(project);
     });

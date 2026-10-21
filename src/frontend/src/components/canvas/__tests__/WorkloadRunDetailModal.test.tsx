@@ -14,7 +14,7 @@ describe("WorkloadRunDetailModal", () => {
       json: () => Promise.resolve({ id: "run-empty", status: "succeeded", log: "" }),
     } as Response)));
     render(<WorkloadRunDetailModal runId="run-empty" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText("No saved log is available for this completed run.")).toBeInTheDocument());
+    expect(await screen.findByText("No saved log is available for this completed run.")).toBeInTheDocument();
     expect(screen.queryByText("No log yet.")).not.toBeInTheDocument();
   });
 
@@ -41,7 +41,7 @@ describe("WorkloadRunDetailModal", () => {
       ),
     );
     render(<WorkloadRunDetailModal runId="run-1" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/PLAY RECAP/)).toBeInTheDocument());
+    expect(await screen.findByText(/PLAY RECAP/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "troshka_workload_cclm_operators" })).toBeInTheDocument();
     expect(screen.getByTestId("workload-run-fqcn")).toHaveTextContent(
       "rhpds.demo_workloads.troshka_workload_cclm_operators",
@@ -72,7 +72,7 @@ describe("WorkloadRunDetailModal", () => {
     );
     const onClose = vi.fn();
     render(<WorkloadRunDetailModal runId="run-abc" onClose={onClose} />);
-    await waitFor(() => expect(screen.getByText("Pop out")).toBeInTheDocument());
+    expect(await screen.findByText("Pop out")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Pop out"));
     expect(open).toHaveBeenCalledWith(
       expect.stringContaining("/console/workload-log?run=run-abc"),
@@ -185,11 +185,11 @@ describe("WorkloadRunDetailModal", () => {
     const { rerender } = render(
       <WorkloadRunDetailModal runId="run-1" onClose={() => {}} />,
     );
-    await waitFor(() => expect(screen.getByText(/PLAY RECAP first/)).toBeInTheDocument());
+    expect(await screen.findByText(/PLAY RECAP first/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "first" })).toBeInTheDocument();
 
     rerender(<WorkloadRunDetailModal runId="run-2" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/TASK \[next role\]/)).toBeInTheDocument());
+    expect(await screen.findByText(/TASK \[next role\]/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "second" })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/workloads/run-2/log");
   });
@@ -231,7 +231,7 @@ describe("WorkloadRunDetailModal", () => {
         wsNudge={{ run_id: "run-1", percent: 100 }}
       />,
     );
-    await waitFor(() => expect(screen.getByText("done")).toBeInTheDocument());
+    expect(await screen.findByText("done")).toBeInTheDocument();
 
     rerender(
       <WorkloadRunDetailModal
@@ -242,6 +242,6 @@ describe("WorkloadRunDetailModal", () => {
       />,
     );
     await waitFor(() => expect(onRunIdChange).toHaveBeenCalledWith("run-2"));
-    await waitFor(() => expect(screen.getByText(/TASK \[chained\]/)).toBeInTheDocument());
+    expect(await screen.findByText(/TASK \[chained\]/)).toBeInTheDocument();
   });
 });

@@ -22,13 +22,14 @@ export function spreadClustersForCeph(nodes: Node[]): Node[] {
   if (!hasCeph || clusters.length < 2) return nodes;
 
   const left = clusterBounds(clusters[0]);
-  const right = clusterBounds(clusters[clusters.length - 1]);
+  const rightmost = clusters.at(-1)!;
+  const right = clusterBounds(rightmost);
   const gap = right.x - (left.x + left.w);
   const needed = cephGapWidth();
   if (gap >= needed) return nodes;
 
   const shift = needed - gap;
-  const rightId = clusters[clusters.length - 1].id;
+  const rightId = rightmost.id;
   return nodes.map((n) => {
     if (n.id === rightId) {
       return {
@@ -51,7 +52,7 @@ export function cephClusterPosition(nodes: Node[]): { x: number; y: number } {
 
   if (clusters.length >= 2) {
     const left = clusterBounds(clusters[0]);
-    const right = clusterBounds(clusters[clusters.length - 1]);
+    const right = clusterBounds(clusters.at(-1)!);
     const gap = right.x - (left.x + left.w);
     return {
       x: left.x + left.w + Math.max(CEPH_CLUSTER_GAP, (gap - CEPH_NODE_W) / 2),

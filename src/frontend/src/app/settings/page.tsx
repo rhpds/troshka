@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
@@ -23,13 +24,13 @@ function SettingsSection({
   info,
   children,
   bare = false,
-}: {
+}: Readonly<{
   id?: string;
   title: string;
   info?: React.ReactNode;
   children: React.ReactNode;
   bare?: boolean;
-}) {
+}>) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -107,10 +108,10 @@ function SettingsSection({
 function SettingsGroup({
   title,
   children,
-}: {
+}: Readonly<{
   title: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <PageSection>
       <div
@@ -246,7 +247,7 @@ export default function SettingsPage() {
     setNewKey(null);
 
     const body: Record<string, unknown> = { name: newKeyName.trim() };
-    if (expiresDays) body.expires_days = parseInt(expiresDays);
+    if (expiresDays) body.expires_days = Number.parseInt(expiresDays);
 
     const resp = await fetch("/api/v1/api-keys/", {
       method: "POST",
@@ -327,179 +328,7 @@ export default function SettingsPage() {
     fetchCreds();
   };
 
-  return (
-    <>
-      <PageSection>
-        <Title headingLevel="h1">Settings</Title>
-      </PageSection>
-      <SettingsGroup title="User Settings">
-      <SettingsSection bare title="API Keys">
-        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
-          API keys authenticate external tools and scripts. Keys use the format <code>trk_...</code> and are passed as <code>Authorization: Bearer trk_...</code>
-        </p>
-
-        <Card style={{ marginBottom: 16 }}>
-          <CardBody>
-            <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                <input
-                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
-                  value={newKeyName}
-                  onChange={(e) => setNewKeyName(e.target.value)}
-                  placeholder="e.g. ansible-collection, ci-pipeline"
-                />
-              </div>
-              <div style={{ flex: "0 0 120px" }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Expires</label>
-                <select
-                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
-                  value={expiresDays}
-                  onChange={(e) => setExpiresDays(e.target.value)}
-                >
-                  <option value="">Never</option>
-                  <option value="30">30 days</option>
-                  <option value="90">90 days</option>
-                  <option value="365">1 year</option>
-                </select>
-              </div>
-              <Button variant="primary" onClick={createKey}>Create Key</Button>
-            </div>
-            {error && <Alert variant="danger" title={error} style={{ marginTop: 8 }} />}
-          </CardBody>
-        </Card>
-
-        {newKey && (
-          <Alert variant="success" title="API key created — copy it now, it won't be shown again" style={{ marginBottom: 16 }}>
-            <code style={{ fontSize: 14, fontFamily: "monospace", wordBreak: "break-all", display: "block", padding: "8px", background: "rgba(0,0,0,0.2)", borderRadius: 4, marginTop: 8 }}>
-              {newKey}
-            </code>
-            <Button variant="secondary" style={{ marginTop: 8 }} onClick={() => { navigator.clipboard.writeText(newKey); }}>
-              Copy to Clipboard
-            </Button>
-          </Alert>
-        )}
-
-        {keys.length === 0 && !newKey && (
-          <p style={{ opacity: 0.6 }}>No API keys created yet.</p>
-        )}
-
-        {keys.length > 0 && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              marginBottom: 8,
-              fontSize: 13,
-            }}
-          >
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={allKeysSelected}
-                ref={(el) => {
-                  if (el) el.indeterminate = someKeysSelected && !allKeysSelected;
-                }}
-                onChange={() => {
-                  if (allKeysSelected) setSelectedKeyIds(new Set());
-                  else setSelectedKeyIds(new Set(keys.map((k) => k.id)));
-                }}
-              />
-              Select all
-            </label>
-            <Button
-              variant="danger"
-              isDisabled={!someKeysSelected}
-              onClick={() => revokeKeys([...selectedKeyIds])}
-            >
-              Revoke selected{someKeysSelected ? ` (${selectedKeyIds.size})` : ""}
-            </Button>
-          </div>
-        )}
-
-        {keys.map((k) => (
-          <Card key={k.id} style={{ marginBottom: 8 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, flex: 1, cursor: "pointer", minWidth: 0 }}>
-                <input
-                  type="checkbox"
-                  checked={selectedKeyIds.has(k.id)}
-                  onChange={() => toggleKeySelected(k.id)}
-                  style={{ marginTop: 4 }}
-                />
-                <div>
-                  <strong>{k.name}</strong>
-                  <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6, fontFamily: "monospace" }}>{k.key_prefix}...</span>
-                  <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
-                    Created {new Date(k.created_at).toLocaleDateString()}
-                    {k.last_used_at && ` · Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
-                    {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
-                  </div>
-                </div>
-              </label>
-              <Button variant="danger" onClick={() => revokeKeys([k.id])}>Revoke</Button>
-            </CardBody>
-          </Card>
-        ))}
-      </SettingsSection>
-      <SettingsSection bare title="SSH Public Keys">
-        <SshKeysSection />
-      </SettingsSection>
-      <SettingsSection bare title="Red Hat Offline Token">
-        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
-          Required for building custom host images via Image Builder. Generate a token at{" "}
-          <a href="https://access.redhat.com/management/api" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>access.redhat.com/management/api</a>.
-        </p>
-        {hasRhToken && !rhTokenEdit ? (
-          <Card>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{rhTokenMasked}</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button variant="secondary" onClick={() => setRhTokenEdit(true)}>Replace</Button>
-                <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/rh-offline-token", { method: "DELETE" }); setHasRhToken(false); setRhTokenMasked(""); }}>Delete</Button>
-              </div>
-            </CardBody>
-          </Card>
-        ) : (
-          <Card>
-            <CardBody>
-              <input type="password" style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={rhTokenInput} onChange={(e) => setRhTokenInput(e.target.value)} placeholder="eyJhbGci..." />
-              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-                {rhTokenEdit && <Button variant="secondary" onClick={() => { setRhTokenEdit(false); setRhTokenInput(""); }}>Cancel</Button>}
-                <Button variant="primary" isDisabled={!rhTokenInput.trim() || rhTokenSaving} onClick={async () => {
-                  setRhTokenSaving(true);
-                  const resp = await fetch("/api/v1/auth/rh-offline-token", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offline_token: rhTokenInput }) });
-                  if (resp.ok) { setHasRhToken(true); setRhTokenEdit(false); setRhTokenInput(""); const data = await fetch("/api/v1/auth/rh-offline-token").then(r => r.json()); setRhTokenMasked(data.masked || ""); }
-                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); setAlertMsg(err.detail || "Save failed"); }
-                  setRhTokenSaving(false);
-                }}>{rhTokenSaving ? "Saving..." : "Save Token"}</Button>
-              </div>
-            </CardBody>
-          </Card>
-        )}
-      </SettingsSection>
-      <SettingsSection bare title="OCP Pull Secret">
-        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
-          Required for OpenShift installation. Get yours from{" "}
-          <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>console.redhat.com</a>.
-        </p>
-        <Card style={{ marginBottom: 12 }}>
-          <CardBody>
-            <Switch
-              id="ptr-toggle"
-              label="Use a pull-through registry"
-              isChecked={pullThroughRegistry}
-              onChange={async (_event, checked) => {
-                if (!checked && hasPullSecret) {
-                  await fetch("/api/v1/auth/ocp-pull-secret", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_through_registry: false }) });
-                }
-                setPullThroughRegistry(checked);
-              }}
-            />
-          </CardBody>
-        </Card>
-        {pullThroughRegistry ? (
+  function renderPullThroughRegistry() { return (
           hasPullSecret && !pullSecretEdit ? (
             <Card>
               <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -523,36 +352,36 @@ export default function SettingsPage() {
               <CardBody>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Registry URL</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Registry URL</>}>
                     <input
                       style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                       value={ptrUrl}
                       onChange={(e) => setPtrUrl(e.target.value)}
                       placeholder="e.g., registry.example.com"
-                    />
+                    /></LabeledField>
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Username</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Username</>}>
                     <input
                       style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                       value={ptrUser}
                       onChange={(e) => setPtrUser(e.target.value)}
                       placeholder="Registry username"
-                    />
+                    /></LabeledField>
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password</label>
+                    <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Password</>}>
                     <input
                       type="password"
                       style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                       value={ptrPassword}
                       onChange={(e) => setPtrPassword(e.target.value)}
                       placeholder={pullSecretEdit ? "(leave blank to keep existing)" : ""}
-                    />
+                    /></LabeledField>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-                  {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPtrUrl(ptrUrl); setPtrUser(""); setPtrPassword(""); }}>Cancel</Button>}
+                  {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPtrUser(""); setPtrPassword(""); }}>Cancel</Button>}
                   <Button
                     variant="primary"
                     isDisabled={!ptrUrl.trim() || !ptrUser.trim() || (!ptrPassword.trim() && !pullSecretEdit) || ptrSaving}
@@ -589,7 +418,9 @@ export default function SettingsPage() {
               </CardBody>
             </Card>
           )
-        ) : (
+  ); }
+
+  function renderPullSecret() { return (
           hasPullSecret && !pullSecretEdit ? (
             <Card>
               <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -617,9 +448,33 @@ export default function SettingsPage() {
               </CardBody>
             </Card>
           )
-        )}
+  ); }
+
+  function renderOcpSettings() { return (<SettingsSection bare title="OCP Pull Secret">
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Required for OpenShift installation. Get yours from{" "}
+          <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>console.redhat.com</a>.
+        </p>
+        <Card style={{ marginBottom: 12 }}>
+          <CardBody>
+            <Switch
+              id="ptr-toggle"
+              label="Use a pull-through registry"
+              isChecked={pullThroughRegistry}
+              onChange={async (_event, checked) => {
+                if (!checked && hasPullSecret) {
+                  await fetch("/api/v1/auth/ocp-pull-secret", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_through_registry: false }) });
+                }
+                setPullThroughRegistry(checked);
+              }}
+            />
+          </CardBody>
+        </Card>
+        {pullThroughRegistry ? renderPullThroughRegistry() : renderPullSecret()}
       </SettingsSection>
-      <SettingsSection bare title="Registry Credentials">
+  ); }
+
+  function renderRegistryCredentials() { return (<SettingsSection bare title="Registry Credentials">
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
           Container registry credentials for pulling private images. Referenced by name in container nodes.
         </p>
@@ -670,40 +525,40 @@ export default function SettingsPage() {
             <CardBody>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
                   <input
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     placeholder="e.g., Quay.io prod"
                     value={credForm.name}
                     onChange={(e) => setCredForm({ ...credForm, name: e.target.value })}
-                  />
+                  /></LabeledField>
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Registry</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Registry</>}>
                   <input
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     placeholder="e.g., quay.io"
                     value={credForm.registry}
                     onChange={(e) => setCredForm({ ...credForm, registry: e.target.value })}
-                  />
+                  /></LabeledField>
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Username</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Username</>}>
                   <input
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     value={credForm.username}
                     onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
-                  />
+                  /></LabeledField>
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password</label>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Password</>}>
                   <input
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
                     type="password"
                     placeholder={editCredId ? "(unchanged)" : ""}
                     value={credForm.password}
                     onChange={(e) => setCredForm({ ...credForm, password: e.target.value })}
-                  />
+                  /></LabeledField>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -729,6 +584,165 @@ export default function SettingsPage() {
           </Button>
         )}
       </SettingsSection>
+  ); }
+
+  function renderRhToken() { return (<SettingsSection bare title="Red Hat Offline Token">
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Required for building custom host images via Image Builder. Generate a token at{" "}
+          <a href="https://access.redhat.com/management/api" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>access.redhat.com/management/api</a>.
+        </p>
+        {hasRhToken && !rhTokenEdit ? (
+          <Card>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{rhTokenMasked}</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button variant="secondary" onClick={() => setRhTokenEdit(true)}>Replace</Button>
+                <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/rh-offline-token", { method: "DELETE" }); setHasRhToken(false); setRhTokenMasked(""); }}>Delete</Button>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <Card>
+            <CardBody>
+              <input type="password" style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={rhTokenInput} onChange={(e) => setRhTokenInput(e.target.value)} placeholder="eyJhbGci..." />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                {rhTokenEdit && <Button variant="secondary" onClick={() => { setRhTokenEdit(false); setRhTokenInput(""); }}>Cancel</Button>}
+                <Button variant="primary" isDisabled={!rhTokenInput.trim() || rhTokenSaving} onClick={async () => {
+                  setRhTokenSaving(true);
+                  const resp = await fetch("/api/v1/auth/rh-offline-token", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offline_token: rhTokenInput }) });
+                  if (resp.ok) { setHasRhToken(true); setRhTokenEdit(false); setRhTokenInput(""); const data = await fetch("/api/v1/auth/rh-offline-token").then(r => r.json()); setRhTokenMasked(data.masked || ""); }
+                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); setAlertMsg(err.detail || "Save failed"); }
+                  setRhTokenSaving(false);
+                }}>{rhTokenSaving ? "Saving..." : "Save Token"}</Button>
+              </div>
+            </CardBody>
+          </Card>
+        )}
+      </SettingsSection>
+  ); }
+
+  return (
+    <>
+      <PageSection>
+        <Title headingLevel="h1">Settings</Title>
+      </PageSection>
+      <SettingsGroup title="User Settings">
+      <SettingsSection bare title="API Keys">
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
+          API keys authenticate external tools and scripts. Keys use the format <code>trk_...</code> and are passed as <code>Authorization: Bearer trk_...</code>
+        </p>
+
+        <Card style={{ marginBottom: 16 }}>
+          <CardBody>
+            <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
+              <div style={{ flex: 1 }}>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+                <input
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                  placeholder="e.g. ansible-collection, ci-pipeline"
+                /></LabeledField>
+              </div>
+              <div style={{ flex: "0 0 120px" }}>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Expires</>}>
+                <select
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                  value={expiresDays}
+                  onChange={(e) => setExpiresDays(e.target.value)}
+                >
+                  <option value="">Never</option>
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="365">1 year</option>
+                </select></LabeledField>
+              </div>
+              <Button variant="primary" onClick={createKey}>Create Key</Button>
+            </div>
+            {error && <Alert variant="danger" title={error} style={{ marginTop: 8 }} />}
+          </CardBody>
+        </Card>
+
+        {newKey && (
+          <Alert variant="success" title="API key created — copy it now, it won't be shown again" style={{ marginBottom: 16 }}>
+            <code style={{ fontSize: 14, fontFamily: "monospace", wordBreak: "break-all", display: "block", padding: "8px", background: "rgba(0,0,0,0.2)", borderRadius: 4, marginTop: 8 }}>
+              {newKey}
+            </code>
+            <Button variant="secondary" style={{ marginTop: 8 }} onClick={() => { navigator.clipboard.writeText(newKey); }}>
+              Copy to Clipboard
+            </Button>
+          </Alert>
+        )}
+
+        {keys.length === 0 && !newKey && (
+          <p style={{ opacity: 0.6 }}>No API keys created yet.</p>
+        )}
+
+        {keys.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 8,
+              fontSize: 13,
+            }}
+          >
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={allKeysSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someKeysSelected && !allKeysSelected;
+                }}
+                onChange={() => {
+                  if (allKeysSelected) setSelectedKeyIds(new Set());
+                  else setSelectedKeyIds(new Set(keys.map((k) => k.id)));
+                }}
+              />
+              {"Select all"}
+            </label>
+            <Button
+              variant="danger"
+              isDisabled={!someKeysSelected}
+              onClick={() => revokeKeys([...selectedKeyIds])}
+            >
+              Revoke selected{someKeysSelected ? ` (${selectedKeyIds.size})` : ""}
+            </Button>
+          </div>
+        )}
+
+        {keys.map((k) => (
+          <Card key={k.id} style={{ marginBottom: 8 }}>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <label aria-label={`Select API key ${k.name}`} style={{ display: "flex", alignItems: "flex-start", gap: 10, flex: 1, cursor: "pointer", minWidth: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedKeyIds.has(k.id)}
+                  onChange={() => toggleKeySelected(k.id)}
+                  style={{ marginTop: 4 }}
+                />
+                <div>
+                  <strong>{k.name}</strong>
+                  <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.6, fontFamily: "monospace" }}>{k.key_prefix}...</span>
+                  <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
+                    Created {new Date(k.created_at).toLocaleDateString()}
+                    {k.last_used_at && ` · Last used ${new Date(k.last_used_at).toLocaleDateString()}`}
+                    {k.expires_at && ` · Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                  </div>
+                </div>
+              </label>
+              <Button variant="danger" onClick={() => revokeKeys([k.id])}>Revoke</Button>
+            </CardBody>
+          </Card>
+        ))}
+      </SettingsSection>
+      <SettingsSection bare title="SSH Public Keys">
+        <SshKeysSection />
+      </SettingsSection>
+      {renderRhToken()}
+      {renderOcpSettings()}
+      {renderRegistryCredentials()}
       </SettingsGroup>
       {isAdmin && (
         <SettingsGroup title="Admin Settings">
@@ -747,13 +761,13 @@ export default function SettingsPage() {
             )}
             <Card>
               <CardBody>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Controller name</label>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Controller name</>}>
                 <input
                   style={{ width: "100%", maxWidth: 420, padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
                   value={ingressController}
                   onChange={(e) => { setIngressController(e.target.value); setIngressSaved(false); }}
                   placeholder="default"
-                />
+                /></LabeledField>
                 <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
                   <Button
                     variant="primary"
@@ -889,7 +903,7 @@ export default function SettingsPage() {
 }
 
 function SshKeysSection() {
-  const [keys, setSshKeys] = useState<Array<{ id: number; name: string; public_key: string; created_at: string }>>([]);
+  const [keys, setKeys] = useState<Array<{ id: number; name: string; public_key: string; created_at: string }>>([]);
   const [newName, setNewName] = useState("");
   const [newKey, setNewKey] = useState("");
   const [sshError, setSshError] = useState("");
@@ -897,7 +911,7 @@ function SshKeysSection() {
   const loadKeys = () => {
     fetch("/api/v1/auth/ssh-keys")
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => setSshKeys(Array.isArray(data) ? data : []))
+      .then((data) => setKeys(Array.isArray(data) ? data : []))
       .catch(() => {});
   };
 
@@ -937,12 +951,12 @@ function SshKeysSection() {
         <CardBody>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-              <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Work Laptop, CI Key" />
+              <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Name</>}>
+              <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Work Laptop, CI Key" /></LabeledField>
             </div>
             <div>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Public Key</label>
-              <textarea style={{ ...inputStyle, minHeight: 60, fontFamily: "monospace", fontSize: 11 }} value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." />
+              <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Public Key</>}>
+              <textarea style={{ ...inputStyle, minHeight: 60, fontFamily: "monospace", fontSize: 11 }} value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." /></LabeledField>
             </div>
             <Button variant="primary" onClick={addKey} style={{ alignSelf: "flex-start" }}>Add Key</Button>
             {sshError && <Alert variant="danger" title={sshError} />}

@@ -24,7 +24,7 @@ export default function WorkloadStatusChip({
   onCancel,
   retrying = false,
   cancelling = false,
-}: Props) {
+}: Readonly<Props>) {
   const failed = variant === "failed";
   const title = failed
     ? `${headline} — ${detail} (interrupted/failed — retry to continue the chain)`

@@ -16,7 +16,7 @@ interface StepProps {
   children: React.ReactNode;
 }
 
-function Step({ number, title, image, imageAlt, children }: StepProps) {
+function Step({ number, title, image, imageAlt, children }: Readonly<StepProps>) {
   return (
     <div style={{
       display: "flex",
@@ -64,7 +64,7 @@ function Step({ number, title, image, imageAlt, children }: StepProps) {
   );
 }
 
-function Tip({ children }: { children: React.ReactNode }) {
+function Tip({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <div style={{
       background: "rgba(108,99,255,0.08)",
@@ -89,7 +89,7 @@ const tocItems = [
   { label: "Import Template YAML", href: "#import-yaml" },
 ];
 
-function SectionHeading({ id, children }: { id: string; children: React.ReactNode }) {
+function SectionHeading({ id, children }: Readonly<{ id: string; children: React.ReactNode }>) {
   return (
     <h2 id={id} style={{ fontSize: 22, fontWeight: 600, marginTop: 48, marginBottom: 32, paddingBottom: 12, borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
       {children}
@@ -125,6 +125,8 @@ export default function GettingStartedPage() {
                   style={{ color: "#a78bfa", textDecoration: "none", fontSize: 14 }}
                   onMouseOver={(e) => { (e.target as HTMLElement).style.textDecoration = "underline"; }}
                   onMouseOut={(e) => { (e.target as HTMLElement).style.textDecoration = "none"; }}
+                  onFocus={(e) => { e.currentTarget.style.textDecoration = "underline"; }}
+                  onBlur={(e) => { e.currentTarget.style.textDecoration = "none"; }}
                 >
                   {item.label}
                 </a>

@@ -11,6 +11,8 @@ import {
   MiniMap,
   SelectionMode,
   type Node,
+  type Connection,
+  type Edge,
   type OnSelectionChangeParams,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -59,12 +61,24 @@ import {
 import {
   isGatewayNode,
   isCephStorageNetworkNode,
-  isLabNetworkNode,
   isShowroomContainer,
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
   SHOWROOM_GATEWAY_TARGET_HANDLE,
 } from "@/lib/showroomValidation";
 import { useIsDarkTheme } from "@/hooks/useIsDarkTheme";
+
+function removeClusterNetworkAnchor(edge: Edge) {
+  const state = useCanvasStore.getState();
+  const target = state.nodes.find((node) => node.id === edge.target);
+  if (target?.type !== "clusterNode") return;
+  const cluster = state.clusters.find((candidate) => candidate.nodeId === target.id);
+  if (!cluster) return;
+  const networkIds = (cluster.networkIds ?? []).filter((id) => id !== edge.source);
+  const updated = { ...cluster, networkIds };
+  const next = applyClusterNetworks(updated, state.nodes, state.edges);
+  state.updateCluster(cluster.id, { networkIds });
+  useCanvasStore.setState({ nodes: next.nodes, edges: next.edges });
+}
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -99,8 +113,501 @@ interface CanvasProps {
     vmNames?: string[];
   }) => void;
 }
+type DropItem = { type: string; label: string; icon: string; defaults?: Record<string, unknown> };
+type DropContext = { item: DropItem; id: string; position: { x: number; y: number }; nextName: (prefix: string) => string };
 
-export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
+function dropVm({ item, id, position, nextName }: DropContext): Node | undefined {
+
+        const defaults = item.defaults || {};
+        const name = nextName("vm");
+        const newNode: Node = {
+          id,
+          type: "vmNode",
+          position,
+          data: {
+            label: name,
+            name,
+            vcpus: (defaults.vcpus as number) || 2,
+            ram: (defaults.ram as number) || 4,
+            os: (defaults.os as string) || "rhel10",
+            status: "stopped" as const,
+            bootOrder: undefined,
+            bootMethod: "disk",
+            cloudInit: true,
+            icon: "🖥",
+            nics: [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }],
+            diskControllers: [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }],
+          },
+        };
+
+        return newNode;
+
+}
+
+function nextNetworkCidr(): string {
+        const existingCidrs = useCanvasStore.getState().nodes
+          .filter((n) => n.type === "networkNode")
+          .map((n) => (n.data as Record<string, unknown>).cidr as string)
+          .filter((c) => c?.includes("/"));
+
+        let newCidr = "10.0.0.0/24";
+        if (existingCidrs.length > 0) {
+          for (let i = existingCidrs.length - 1; i >= 0; i--) {
+            const match = /^(\d+\.\d+\.)(\d+)(\.0\/\d+)$/.exec(existingCidrs[i]);
+            if (match) {
+              let octet3 = Number.parseInt(match[2], 10) + 1;
+              while (existingCidrs.includes(`${match[1]}${octet3}${match[3]}`)) octet3++;
+              newCidr = `${match[1]}${octet3}${match[3]}`;
+              break;
+            }
+          }
+        }
+
+  return newCidr;
+}
+function dropNetwork({ item, id, position, nextName }: DropContext): Node | undefined {
+
+        // Limit to one gateway per project
+        if (item.type === "gateway") {
+          const hasGateway = useCanvasStore.getState().nodes.some(
+            (n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "gateway"
+          );
+          if (hasGateway) return;
+        }
+
+        const prefix = item.type === "network" ? "network" : item.type;
+        const name = nextName(prefix);
+
+        const newCidr = nextNetworkCidr();
+
+        const newNode: Node = {
+          id,
+          type: "networkNode",
+          position,
+          data: {
+            label: name,
+            name,
+            subtype: item.type as "network" | "router" | "gateway" | "dhcp" | "dns",
+            cidr: (item.type === "gateway" || item.type === "router") ? "" : newCidr,
+            dhcp: item.type === "dhcp" || item.type === "network",
+            dns: item.type === "dns",
+            dnsDomain: item.type === "dns" ? "lab.local" : "",
+            // Match ocp-sno.yaml gateway defaults so canvas-built OCP installs
+            // can pull images / sync time without a manual properties pass.
+            ...(item.type === "gateway"
+              ? {
+                  outboundPolicy: "restrict",
+                  outboundPorts: "53,80/tcp,443/tcp,123/udp",
+                }
+              : {}),
+          },
+        };
+
+        return newNode;
+
+}
+
+function dropLoadBalancer({ id, position, nextName }: DropContext): Node | undefined {
+
+        const name = nextName("lb");
+        const newNode: Node = {
+          id,
+          type: "networkNode",
+          position,
+          data: {
+            label: name,
+            name,
+            subtype: "loadbalancer",
+            networkType: "loadbalancer",
+            frontends: [
+              { name: "https", bindPort: 443, mode: "tcp", backendPort: 443 },
+              { name: "http", bindPort: 80, mode: "tcp", backendPort: 80 },
+            ],
+            lbIp: "",
+            external: false,
+            dnsRecords: [],
+            dnsTtl: 30,
+          },
+        };
+
+        return newNode;
+
+}
+
+function dropStorage({ item, id, position, nextName }: DropContext): Node | undefined {
+
+        const prefix = item.type === "iso" ? "boot" : "disk";
+        const name = nextName(prefix);
+        const newNode: Node = {
+          id,
+          type: "storageNode",
+          position,
+          data: {
+            label: name,
+            name,
+            size: item.type === "iso" ? 4 : 20,
+            format: item.type === "iso" ? "iso" : "qcow2",
+            icon: item.type === "iso" ? "💿" : "🛢",
+          },
+        };
+
+        return newNode;
+
+}
+
+function dropContainer({ id, position, nextName }: DropContext): Node | undefined {
+
+        const name = nextName("ctr");
+        const newNode: Node = {
+          id,
+          type: "containerNode",
+          position,
+          data: {
+            label: name,
+            name,
+            image: "",
+            registryCredentialId: null,
+            cpus: 1,
+            memory: 512,
+            status: "stopped" as const,
+            icon: "📦",
+            nics: [
+              {
+                id: generateNicId(),
+                name: "eth0",
+                mac: generateMac(),
+                model: "virtio",
+              },
+            ],
+            envVars: [],
+            ports: [],
+            command: null,
+            restartPolicy: "always" as const,
+            privileged: false,
+            mounts: [],
+          },
+        };
+
+        return newNode;
+
+}
+
+function dropPod({ id, position, nextName }: DropContext): Node | undefined {
+
+        const name = nextName("pod");
+        const newNode: Node = {
+          id,
+          type: "containerNode",
+          position,
+          data: {
+            label: name,
+            name,
+            image: "",
+            registryCredentialId: null,
+            cpus: 1,
+            memory: 512,
+            status: "stopped" as const,
+            icon: "🫛",
+            isPod: true,
+            nics: [
+              {
+                id: generateNicId(),
+                name: "eth0",
+                mac: generateMac(),
+                model: "virtio",
+              },
+            ],
+            envVars: [],
+            ports: [],
+            command: null,
+            restartPolicy: "always" as const,
+            privileged: false,
+            mounts: [],
+            initContainers: [],
+            podContainers: [
+              {
+                name: "main",
+                image: "",
+                cpus: 1,
+                memory: 512,
+                envVars: [],
+                ports: [],
+                command: null,
+                mounts: [],
+              },
+            ],
+          },
+        };
+
+        return newNode;
+
+}
+
+function dropCeph({ id, position }: DropContext): Node | undefined {
+
+        const state = useCanvasStore.getState();
+        if (state.nodes.some((n) => n.type === "cephClusterNode")) return;
+        const name = "Ceph Storage";
+        const net = state.nodes.find(isCephStorageNetworkNode);
+        const cidr = (net?.data as Record<string, unknown>)?.cidr as string | undefined;
+        let labIp = "";
+        if (cidr?.includes("/")) {
+          const octets = cidr.split("/")[0].split(".");
+          octets[3] = "3";
+          labIp = octets.join(".");
+        }
+        const newNode: Node = {
+          id,
+          type: "cephClusterNode",
+          position,
+          data: {
+            label: name,
+            name,
+            networkRef: net?.id || "",
+            labIp,
+            capacityGi: 300,
+            osdCount: 3,
+            linkedClusters: [] as string[],
+            storageClassName: "troshka-ceph-rbd",
+          },
+        };
+        const laidOut = layoutCephBetweenClusters([...state.nodes, newNode]);
+        useCanvasStore.setState({ nodes: laidOut });
+
+}
+
+function dropShowroom({ position }: DropContext): Node | undefined {
+
+        if (hasShowroomNode(useCanvasStore.getState().nodes)) return;
+        useCanvasStore.getState().addShowroomScaffold(position);
+
+}
+
+function dropSnapshot({ item, position }: DropContext): Node | undefined {
+
+        const snapshotId = (item.defaults as Record<string, unknown>)?.snapshotId as string;
+        if (!snapshotId) return;
+        const projectId = useCanvasStore.getState().currentProjectId;
+        if (!projectId) return;
+        fetch(`/api/v1/projects/${projectId}/import-vm`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ snapshot_id: snapshotId, position_x: position.x, position_y: position.y }),
+        })
+          .then((r) => r.ok ? r.json() : null)
+          .then((data) => {
+            if (data?.topology) {
+              useCanvasStore.getState().loadProject(projectId);
+            }
+          })
+          .catch(() => {});
+
+}
+
+function dropCluster({ position }: DropContext): undefined {
+  const { addNode, addCluster, updateCluster } = useCanvasStore.getState();
+
+        // Unique cluster name: ocp, then ocp-2, ocp-3, … (the name is the DNS
+        // subdomain, so it must be unique across clusters).
+        const existingClusterNames = new Set(
+          useCanvasStore.getState().clusters.map((c) => c.name),
+        );
+        let clusterName = "ocp";
+        let suffix = 2;
+        while (existingClusterNames.has(clusterName)) {
+          clusterName = `ocp-${suffix++}`;
+        }
+        const { node, cluster } = makeCluster(clusterName, position);
+        addNode(node);
+        addCluster(cluster);
+        const { nodes: withMembers, edges: diskEdges } = materializeClusterInto(
+          cluster,
+          useCanvasStore.getState().nodes,
+        );
+        const currentEdges = useCanvasStore.getState().edges;
+        const edgeMap = new Map(currentEdges.map((e) => [e.id, e]));
+        diskEdges.forEach((e) => edgeMap.set(e.id, e));
+        const mergedEdges = Array.from(edgeMap.values());
+        const synced = syncClusterCanvasState(cluster, withMembers, mergedEdges);
+        updateCluster(synced.cluster.id, synced.cluster);
+        useCanvasStore.setState({ nodes: synced.nodes, edges: mergedEdges });
+
+}
+
+function dropPaletteItem(item: DropItem, position: { x: number; y: number }) {
+      const id = generateNodeId();
+      const allNames = new Set(useCanvasStore.getState().nodes.map(
+        (n) => (n.data as Record<string, unknown>).name as string
+      ).filter(Boolean));
+
+      const nextName = (prefix: string) => {
+        let num = 0;
+        while (allNames.has(`${prefix}-${String(num).padStart(2, "0")}`)) num++;
+        return `${prefix}-${String(num).padStart(2, "0")}`;
+      };
+
+
+  const context = { item, id, position, nextName };
+  const handlers: Record<string, (context: DropContext) => Node | undefined> = {
+    "vm-linux": dropVm, "vm-windows": dropVm,
+    network: dropNetwork, router: dropNetwork, gateway: dropNetwork, dhcp: dropNetwork, dns: dropNetwork,
+    loadbalancer: dropLoadBalancer, disk: dropStorage, iso: dropStorage,
+    container: dropContainer, pod: dropPod, "project-ceph": dropCeph,
+    showroom: dropShowroom, snapshot: dropSnapshot, cluster: dropCluster,
+  };
+  const handler = item.type.startsWith("template-") ? dropVm : handlers[item.type];
+  const newNode = handler?.(context);
+  if (newNode) useCanvasStore.getState().addNode(newNode);
+}
+
+function isPlainNetwork(node: Node): boolean {
+  return node.type === "networkNode" && !["router", "gateway"].includes(node.data.subtype as string) && !isLoadBalancerNode(node);
+}
+function isVmNetworkHandle(handle: string): boolean {
+  return handle.startsWith("nic-") || handle === "top" || handle === "bottom";
+}
+function validShowroomLink(other: Node, handle: string, otherHandle: string): boolean {
+  if (other.type === "storageNode") return isContainerMountLeftHandle(handle);
+  if (!isGatewayNode(other)) return false;
+  return handle === SHOWROOM_GATEWAY_SOURCE_HANDLE && otherHandle === SHOWROOM_GATEWAY_TARGET_HANDLE;
+}
+function validPodLink(other: Node, handle: string, otherHandle: string): boolean {
+  if (other.type === "storageNode") return isContainerMountLeftHandle(handle);
+  if (isLoadBalancerNode(other)) return isLbEdgeHandle(otherHandle) && isLbWorkloadNicHandle(handle);
+  return other.type === "networkNode";
+}
+function validLbLink(other: Node, handle: string, otherHandle: string): boolean {
+  return isLbBackendNode(other) && isLbEdgeHandle(handle) && isLbWorkloadNicHandle(otherHandle);
+}
+function validEndpointHandle(node: Node, other: Node, handle: string): boolean {
+  if (node.type === "vmNode") {
+    if (other.type === "storageNode" && !isVmDiskLeftHandle(handle)) return false;
+    if (isPlainNetwork(other) && !isVmNetworkHandle(handle)) return false;
+  }
+  if (node.type === "storageNode" && !isStorageSourceHandle(handle)) return false;
+  if (isPlainNetwork(node) && other.type === "vmNode" && !isVmNetworkHandle(handle)) return false;
+  return true;
+}
+function validInfrastructureHandle(node: Node, other: Node, handle: string, otherHandle: string): boolean {
+  if (node.type !== "networkNode" || !isPlainNetwork(other)) return true;
+  if (node.data.subtype === "router") return otherHandle === "left" || otherHandle === "right";
+  if (node.data.subtype === "gateway") return handle === GATEWAY_NETWORK_SOURCE_HANDLE && otherHandle === GATEWAY_NETWORK_TARGET_HANDLE;
+  return true;
+}
+function validCephLink(other: Node, handle: string, otherHandle: string): boolean {
+  if (other.type !== "clusterNode") return false;
+  return (handle === "right" && otherHandle === "ceph-left") || (handle === "left" && otherHandle === "ceph-right");
+}
+function specialCanvasConnection(source: Node, target: Node, sHandle: string, tHandle: string): boolean | undefined {
+  if (isShowroomContainer(source)) return validShowroomLink(target, sHandle, tHandle);
+  if (isShowroomContainer(target)) return validShowroomLink(source, tHandle, sHandle);
+  if (isPodContainer(source)) return validPodLink(target, sHandle, tHandle);
+  if (isPodContainer(target)) return validPodLink(source, tHandle, sHandle);
+  if (isLoadBalancerNode(source)) return validLbLink(target, sHandle, tHandle);
+  if (isLoadBalancerNode(target)) return validLbLink(source, tHandle, sHandle);
+  return undefined;
+}
+function validCanvasConnection(connection: Connection | Edge, nodes: Node[]): boolean {
+  if (!connection.source || !connection.target) return false;
+  const source = nodes.find((node) => node.id === connection.source);
+  const target = nodes.find((node) => node.id === connection.target);
+  if (!source || !target) return false;
+  const sHandle = connection.sourceHandle || "";
+  const tHandle = connection.targetHandle || "";
+  const special = specialCanvasConnection(source, target, sHandle, tHandle);
+  if (special !== undefined) return special;
+  if (!validEndpointHandle(source, target, sHandle) || !validEndpointHandle(target, source, tHandle)) return false;
+  if (!validInfrastructureHandle(source, target, sHandle, tHandle) || !validInfrastructureHandle(target, source, tHandle, sHandle)) return false;
+  return validClusterConnection(source, target, sHandle, tHandle);
+}
+function validClusterConnection(source: Node, target: Node, sHandle: string, tHandle: string): boolean {
+  if (source.type === "cephClusterNode") return validCephLink(target, sHandle, tHandle);
+  if (target.type === "cephClusterNode") return validCephLink(source, tHandle, sHandle);
+  if (source.type === "clusterNode" && tHandle.startsWith("cluster-net-")) return isPlainNetwork(source);
+  if (target.type === "clusterNode" && sHandle.startsWith("cluster-net-")) return isPlainNetwork(target);
+  return true;
+}
+
+function SelectionToolbar({ selectedNodes, setSelectedNodes }: Readonly<{ selectedNodes: Node[]; setSelectedNodes: (nodes: Node[]) => void }>) {
+  const { deployedVmIds, currentProjectId, duplicateNode, deleteNode, supportsHibernate } = useCanvasStore();
+        const selectedVmNodes = selectedNodes.filter(
+          (n) => n.type === "vmNode" && deployedVmIds.has(n.id),
+        );
+        const runOnSelectedVms = (action: "start" | "unpause" | "stop" | "pause" | "hibernate") => {
+          selectedVmNodes.forEach((n) => {
+            fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
+          });
+        };
+        return (
+          <div className="selection-toolbar">
+            <span className="selection-count">{selectedNodes.length} selected</span>
+            <button type="button"
+              title="Duplicate All"
+              onClick={() => selectedNodes.forEach((n) => duplicateNode(n.id))}
+            >
+              ⧉ Duplicate
+            </button>
+            {selectedVmNodes.length > 0 && (
+              <>
+                <button type="button"
+                  title="Start/Resume VMs"
+                  onClick={() => {
+                    selectedVmNodes.forEach((n) => {
+                      const status = (n.data as Record<string, unknown>).status as string | undefined;
+                      const action = status === "paused" ? "unpause" : "start";
+                      fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
+                    });
+                  }}
+                >
+                  ▶ Start VMs
+                </button>
+                <button type="button"
+                  title="Graceful Shutdown VMs"
+                  onClick={async () => {
+                    if (!(await appConfirm({ message: `Shut down ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Shut down" }))) return;
+                    runOnSelectedVms("stop");
+                  }}
+                >
+                  ■ Stop VMs
+                </button>
+                <button type="button"
+                  title="Pause VMs"
+                  onClick={async () => {
+                    if (!(await confirmPowerWarn("pause", { title: `Pause ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Pause" }))) return;
+                    runOnSelectedVms("pause");
+                  }}
+                >
+                  ⏸ Pause VMs
+                </button>
+                <button type="button"
+                  title={supportsHibernate ? "Hibernate VMs" : "Not supported on this host type"}
+                  disabled={!supportsHibernate}
+                  style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
+                  onClick={async () => {
+                    if (!supportsHibernate) return;
+                    if (!(await confirmPowerWarn("hibernate", { title: `Hibernate ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Hibernate" }))) return;
+                    runOnSelectedVms("hibernate");
+                  }}
+                >
+                  💤 Hibernate VMs
+                </button>
+              </>
+            )}
+            <button type="button"
+              className="danger"
+              title="Delete All"
+              onClick={() => {
+                selectedNodes.forEach((n) => deleteNode(n.id));
+                setSelectedNodes([]);
+              }}
+            >
+              ✕ Delete
+            </button>
+          </div>
+        );
+
+}
+export default function Canvas({ onSnapshotVM, onRunWorkload }: Readonly<CanvasProps>) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const isDark = useIsDarkTheme();
@@ -127,7 +634,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
       if (!src || !srcCluster) return;
       // Unique name based on the source (ocp -> ocp-2, ocp-3, …).
       const existing = new Set(st.clusters.map((c) => c.name));
-      const m = srcCluster.name.match(/^(.*?)-(\d+)$/);
+      const m = /^(.*?)-(\d+)$/.exec(srcCluster.name);
       const base = m ? m[1] : srcCluster.name;
       let n = m ? Number.parseInt(m[2], 10) + 1 : 2;
       while (existing.has(`${base}-${n}`)) n++;
@@ -177,8 +684,8 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           vmDefaults: merged.vmDefaults,
         },
       };
-      addNode(boundaryNode);
-      addCluster(merged);
+      st.addNode(boundaryNode);
+      st.addCluster(merged);
       const { nodes: withMembers, edges: memberEdges } = materializeClusterInto(
         merged,
         useCanvasStore.getState().nodes,
@@ -264,20 +771,11 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
   const clusters = useCanvasStore((s) => s.clusters);
   const updateCluster = useCanvasStore((s) => s.updateCluster);
   const setSelectedNode = useCanvasStore((s) => s.setSelectedNode);
-  const addNode = useCanvasStore((s) => s.addNode);
-  const addCluster = useCanvasStore((s) => s.addCluster);
-  const addShowroomScaffold = useCanvasStore((s) => s.addShowroomScaffold);
-  const deleteNode = useCanvasStore((s) => s.deleteNode);
-  const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
-  const hideNode = useCanvasStore((s) => s.hideNode);
   const unhideNode = useCanvasStore((s) => s.unhideNode);
   const unhideAll = useCanvasStore((s) => s.unhideAll);
   const showMinimap = useCanvasStore((s) => s.showMinimap);
   const panMode = useCanvasStore((s) => s.panMode);
-  const currentProjectId = useCanvasStore((s) => s.currentProjectId);
-  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
-  const supportsHibernate = useCanvasStore((s) => s.supportsHibernate);
 
   // Wrapper for onConnect to handle cluster network anchors
   const onConnect = useCallback(
@@ -291,11 +789,9 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         targetNode.type === "clusterNode" &&
         (connection.targetHandle?.startsWith("cluster-net-") ?? false)
       ) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
+        const sSub = (sourceNode.data as Record<string, unknown>).subtype as string | undefined;
         const sIsNetwork = sourceNode.type === "networkNode" && sSub === "network";
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const isBmc = sourceNode.type === "networkNode" && (sourceNode.data as Record<string, any>).networkType === "bmc";
+        const isBmc = sourceNode.type === "networkNode" && (sourceNode.data as Record<string, unknown>).networkType === "bmc";
         if (!sIsNetwork || isBmc) {
           return; // Reject non-network, non-network subtypes, and BMC networks
         }
@@ -342,45 +838,16 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
     [allNodes, clusters, updateCluster, storeOnConnect],
   );
 
-  // Wrapper for onEdgesChange to handle cluster network anchor deletion
+  // Keep cluster membership changes inside the store's confirmed removal transaction.
   const onEdgesChange = useCallback(
-    (changes: Parameters<typeof storeOnEdgesChange>[0]) => {
-      // Check if any removed edges are cluster network anchors
-      const removedClusterNetEdges = changes
-        .filter((c) => c.type === "remove")
-        .map((c) => {
-          const edge = allEdges.find((e) => e.id === c.id);
-          return edge && edge.targetHandle?.startsWith("cluster-net-") ? edge : null;
-        })
-        .filter((e) => e !== null) as typeof allEdges;
-
-      if (removedClusterNetEdges.length > 0) {
-        // For each removed anchor edge, remove the network from the cluster
-        for (const edge of removedClusterNetEdges) {
-          const targetNode = allNodes.find((n) => n.id === edge.target);
-          if (targetNode?.type === "clusterNode") {
-            const clusterId = targetNode.id;
-            const networkId = edge.source;
-            const cluster = clusters.find((c) => c.nodeId === clusterId);
-            if (cluster) {
-              const newNetworkIds = (cluster.networkIds ?? []).filter((id) => id !== networkId);
-              const updated = { ...cluster, networkIds: newNetworkIds };
-              updateCluster(cluster.id, { networkIds: newNetworkIds });
-              const { nodes: nextNodes, edges: nextEdges } = applyClusterNetworks(
-                updated,
-                useCanvasStore.getState().nodes,
-                useCanvasStore.getState().edges,
-              );
-              useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
-            }
-          }
-        }
+    (changes: Parameters<typeof storeOnEdgesChange>[0]) => storeOnEdgesChange(changes, () => {
+      for (const change of changes) {
+        if (change.type !== "remove") continue;
+        const edge = useCanvasStore.getState().edges.find((candidate) => candidate.id === change.id);
+        if (edge?.targetHandle?.startsWith("cluster-net-")) removeClusterNetworkAnchor(edge);
       }
-
-      // Fall back to store onEdgesChange for all other changes
-      storeOnEdgesChange(changes);
-    },
-    [allNodes, allEdges, clusters, updateCluster, storeOnEdgesChange],
+    }),
+    [storeOnEdgesChange],
   );
 
   const onNodeClick = useCallback(
@@ -518,474 +985,27 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         y: event.clientY,
       });
 
-      const id = generateNodeId();
-      const allNames = useCanvasStore.getState().nodes.map(
-        (n) => (n.data as Record<string, any>).name as string
-      ).filter(Boolean);
-
-      const nextName = (prefix: string) => {
-        let num = 0;
-        while (allNames.includes(`${prefix}-${String(num).padStart(2, "0")}`)) num++;
-        return `${prefix}-${String(num).padStart(2, "0")}`;
-      };
-
-      let newNode: Node;
-
-      if (
-        item.type === "vm-linux" ||
-        item.type === "vm-windows" ||
-        item.type.startsWith("template-")
-      ) {
-        const defaults = item.defaults || {};
-        const name = nextName("vm");
-        newNode = {
-          id,
-          type: "vmNode",
-          position,
-          data: {
-            label: name,
-            name,
-            vcpus: (defaults.vcpus as number) || 2,
-            ram: (defaults.ram as number) || 4,
-            os: (defaults.os as string) || "rhel10",
-            status: "stopped" as const,
-            bootOrder: undefined,
-            bootMethod: "disk",
-            cloudInit: true,
-            icon: "🖥",
-            nics: [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }],
-            diskControllers: [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }],
-          },
-        };
-      } else if (
-        item.type === "network" ||
-        item.type === "router" ||
-        item.type === "gateway" ||
-        item.type === "dhcp" ||
-        item.type === "dns"
-      ) {
-        // Limit to one gateway per project
-        if (item.type === "gateway") {
-          const hasGateway = useCanvasStore.getState().nodes.some(
-            (n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "gateway"
-          );
-          if (hasGateway) return;
-        }
-
-        const prefix = item.type === "network" ? "network" : item.type;
-        const name = nextName(prefix);
-
-        const existingCidrs = useCanvasStore.getState().nodes
-          .filter((n) => n.type === "networkNode")
-          .map((n) => (n.data as Record<string, any>).cidr as string)
-          .filter((c) => c && c.includes("/"));
-
-        let newCidr = "10.0.0.0/24";
-        if (existingCidrs.length > 0) {
-          for (let i = existingCidrs.length - 1; i >= 0; i--) {
-            const match = existingCidrs[i].match(/^(\d+\.\d+\.)(\d+)(\.0\/\d+)$/);
-            if (match) {
-              let octet3 = parseInt(match[2], 10) + 1;
-              while (existingCidrs.includes(`${match[1]}${octet3}${match[3]}`)) octet3++;
-              newCidr = `${match[1]}${octet3}${match[3]}`;
-              break;
-            }
-          }
-        }
-
-        newNode = {
-          id,
-          type: "networkNode",
-          position,
-          data: {
-            label: name,
-            name,
-            subtype: item.type as "network" | "router" | "gateway" | "dhcp" | "dns",
-            cidr: (item.type === "gateway" || item.type === "router") ? "" : newCidr,
-            dhcp: item.type === "dhcp" || item.type === "network",
-            dns: item.type === "dns",
-            dnsDomain: item.type === "dns" ? "lab.local" : "",
-            // Match ocp-sno.yaml gateway defaults so canvas-built OCP installs
-            // can pull images / sync time without a manual properties pass.
-            ...(item.type === "gateway"
-              ? {
-                  outboundPolicy: "restrict",
-                  outboundPorts: "53,80/tcp,443/tcp,123/udp",
-                }
-              : {}),
-          },
-        };
-      } else if (item.type === "loadbalancer") {
-        const name = nextName("lb");
-        newNode = {
-          id,
-          type: "networkNode",
-          position,
-          data: {
-            label: name,
-            name,
-            subtype: "loadbalancer",
-            networkType: "loadbalancer",
-            frontends: [
-              { name: "https", bindPort: 443, mode: "tcp", backendPort: 443 },
-              { name: "http", bindPort: 80, mode: "tcp", backendPort: 80 },
-            ],
-            lbIp: "",
-            external: false,
-            dnsRecords: [],
-            dnsTtl: 30,
-          },
-        };
-      } else if (item.type === "disk" || item.type === "iso") {
-        const prefix = item.type === "iso" ? "boot" : "disk";
-        const name = nextName(prefix);
-        newNode = {
-          id,
-          type: "storageNode",
-          position,
-          data: {
-            label: name,
-            name,
-            size: item.type === "iso" ? 4 : 20,
-            format: item.type === "iso" ? "iso" : "qcow2",
-            icon: item.type === "iso" ? "💿" : "🛢",
-          },
-        };
-      } else if (item.type === "container") {
-        const name = nextName("ctr");
-        newNode = {
-          id,
-          type: "containerNode",
-          position,
-          data: {
-            label: name,
-            name,
-            image: "",
-            registryCredentialId: null,
-            cpus: 1,
-            memory: 512,
-            status: "stopped" as const,
-            icon: "📦",
-            nics: [
-              {
-                id: generateNicId(),
-                name: "eth0",
-                mac: generateMac(),
-                model: "virtio",
-              },
-            ],
-            envVars: [],
-            ports: [],
-            command: null,
-            restartPolicy: "always" as const,
-            privileged: false,
-            mounts: [],
-          },
-        };
-      } else if (item.type === "pod") {
-        const name = nextName("pod");
-        newNode = {
-          id,
-          type: "containerNode",
-          position,
-          data: {
-            label: name,
-            name,
-            image: "",
-            registryCredentialId: null,
-            cpus: 1,
-            memory: 512,
-            status: "stopped" as const,
-            icon: "🫛",
-            isPod: true,
-            nics: [
-              {
-                id: generateNicId(),
-                name: "eth0",
-                mac: generateMac(),
-                model: "virtio",
-              },
-            ],
-            envVars: [],
-            ports: [],
-            command: null,
-            restartPolicy: "always" as const,
-            privileged: false,
-            mounts: [],
-            initContainers: [],
-            podContainers: [
-              {
-                name: "main",
-                image: "",
-                cpus: 1,
-                memory: 512,
-                envVars: [],
-                ports: [],
-                command: null,
-                mounts: [],
-              },
-            ],
-          },
-        };
-      } else if (item.type === "project-ceph") {
-        const state = useCanvasStore.getState();
-        if (state.nodes.some((n) => n.type === "cephClusterNode")) return;
-        const name = "Ceph Storage";
-        const networks = state.nodes.filter((n) => isCephStorageNetworkNode(n));
-        const net = networks[0];
-        const cidr = (net?.data as Record<string, unknown>)?.cidr as string | undefined;
-        let labIp = "";
-        if (cidr && cidr.includes("/")) {
-          const octets = cidr.split("/")[0].split(".");
-          octets[3] = "3";
-          labIp = octets.join(".");
-        }
-        newNode = {
-          id,
-          type: "cephClusterNode",
-          position,
-          data: {
-            label: name,
-            name,
-            networkRef: net?.id || "",
-            labIp,
-            capacityGi: 300,
-            osdCount: 3,
-            linkedClusters: [] as string[],
-            storageClassName: "troshka-ceph-rbd",
-          },
-        };
-        const laidOut = layoutCephBetweenClusters([...state.nodes, newNode]);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (useCanvasStore as any).setState({ nodes: laidOut });
-        return;
-      } else if (item.type === "showroom") {
-        if (hasShowroomNode(useCanvasStore.getState().nodes)) return;
-        addShowroomScaffold(position);
-        return;
-      } else if (item.type === "snapshot") {
-        const snapshotId = (item.defaults as Record<string, any>)?.snapshotId as string;
-        if (!snapshotId) return;
-        const projectId = useCanvasStore.getState().currentProjectId;
-        if (!projectId) return;
-        fetch(`/api/v1/projects/${projectId}/import-vm`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ snapshot_id: snapshotId, position_x: position.x, position_y: position.y }),
-        })
-          .then((r) => r.ok ? r.json() : null)
-          .then((data) => {
-            if (data?.topology) {
-              useCanvasStore.getState().loadProject(projectId);
-            }
-          })
-          .catch(() => {});
-        return; // Don't call addNode — the server handles topology updates
-      } else if (item.type === "cluster") {
-        // Unique cluster name: ocp, then ocp-2, ocp-3, … (the name is the DNS
-        // subdomain, so it must be unique across clusters).
-        const existingClusterNames = new Set(
-          useCanvasStore.getState().clusters.map((c) => c.name),
-        );
-        let clusterName = "ocp";
-        let suffix = 2;
-        while (existingClusterNames.has(clusterName)) {
-          clusterName = `ocp-${suffix++}`;
-        }
-        const { node, cluster } = makeCluster(clusterName, position);
-        addNode(node);
-        addCluster(cluster);
-        const { nodes: withMembers, edges: diskEdges } = materializeClusterInto(
-          cluster,
-          useCanvasStore.getState().nodes,
-        );
-        const currentEdges = useCanvasStore.getState().edges;
-        const edgeMap = new Map(currentEdges.map((e) => [e.id, e]));
-        diskEdges.forEach((e) => edgeMap.set(e.id, e));
-        const mergedEdges = Array.from(edgeMap.values());
-        const synced = syncClusterCanvasState(cluster, withMembers, mergedEdges);
-        updateCluster(synced.cluster.id, synced.cluster);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (useCanvasStore as any).setState({ nodes: synced.nodes, edges: mergedEdges });
-        return; // node + cluster added together; skip the trailing addNode
-      } else {
-        return;
-      }
-
-      addNode(newNode);
+      dropPaletteItem(item, position);
     },
-    [addNode, addCluster, updateCluster, addShowroomScaffold],
+    [screenToFlowPosition],
   );
 
   const stableNodeTypes = useMemo(() => nodeTypes, []);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isValidConnection = useCallback(
-    (connection: any) => {
-      if (!connection.source || !connection.target) return false;
-      const sourceNode = allNodes.find((n) => n.id === connection.source);
-      const targetNode = allNodes.find((n) => n.id === connection.target);
-      if (!sourceNode || !targetNode) return false;
-
-      const sHandle = connection.sourceHandle || "";
-      const tHandle = connection.targetHandle || "";
-
-      const isNicHandle = (h: string) => h.startsWith("nic-") || h === "top" || h === "bottom";
-      const isRouterHandle = (h: string) => h === "left" || h === "right";
-      const isVmNetHandle = (h: string) => h.startsWith("nic-") || h === "top" || h === "bottom";
-
-      const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
-      const tSub = (targetNode.data as Record<string, any>).subtype as string | undefined;
-      const sIsRouter = sourceNode.type === "networkNode" && sSub === "router";
-      const tIsRouter = targetNode.type === "networkNode" && tSub === "router";
-      const sIsGateway = sourceNode.type === "networkNode" && sSub === "gateway";
-      const tIsGateway = targetNode.type === "networkNode" && tSub === "gateway";
-      const sIsLoadBalancer = isLoadBalancerNode(sourceNode);
-      const tIsLoadBalancer = isLoadBalancerNode(targetNode);
-      const sIsNetwork =
-        sourceNode.type === "networkNode" && !sIsRouter && !sIsGateway && !sIsLoadBalancer;
-      const tIsNetwork =
-        targetNode.type === "networkNode" && !tIsRouter && !tIsGateway && !tIsLoadBalancer;
-      const sIsShowroom = isShowroomContainer(sourceNode);
-      const tIsShowroom = isShowroomContainer(targetNode);
-      const sIsPod = isPodContainer(sourceNode);
-      const tIsPod = isPodContainer(targetNode);
-
-      if (
-        (sIsShowroom && isLabNetworkNode(targetNode)) ||
-        (tIsShowroom && isLabNetworkNode(sourceNode))
-      ) {
-        return false;
-      }
-
-      if (sIsShowroom || tIsShowroom) {
-        const showroom = sIsShowroom ? sourceNode : targetNode;
-        const other = sIsShowroom ? targetNode : sourceNode;
-        if (other.type === "storageNode") {
-          const showroomHandle = sIsShowroom ? sHandle : tHandle;
-          return (
-            showroomHandle.startsWith("mnt-") && showroomHandle.endsWith("-left")
-          );
-        }
-        if (isGatewayNode(other)) {
-          const srcHandle = connection.sourceHandle || "";
-          const tgtHandle = connection.targetHandle || "";
-          return (
-            (connection.source === showroom.id &&
-              srcHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
-              tgtHandle === SHOWROOM_GATEWAY_TARGET_HANDLE) ||
-            (connection.target === showroom.id &&
-              tgtHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
-              srcHandle === SHOWROOM_GATEWAY_TARGET_HANDLE)
-          );
-        }
-        return false;
-      }
-
-      if (sIsPod || tIsPod) {
-        const pod = sIsPod ? sourceNode : targetNode;
-        const other = sIsPod ? targetNode : sourceNode;
-        if (other.type === "storageNode") {
-          const podHandle = sIsPod ? sHandle : tHandle;
-          return isContainerMountLeftHandle(podHandle);
-        }
-        if (isLoadBalancerNode(other)) {
-          const lbHandle = sIsPod ? tHandle : sHandle;
-          const podHandle = sIsPod ? sHandle : tHandle;
-          return isLbEdgeHandle(lbHandle) && isLbWorkloadNicHandle(podHandle);
-        }
-        return other.type === "networkNode";
-      }
-
-      if (sIsLoadBalancer || tIsLoadBalancer) {
-        const lb = sIsLoadBalancer ? sourceNode : targetNode;
-        const other = sIsLoadBalancer ? targetNode : sourceNode;
-        if (!isLbBackendNode(other)) return false;
-        const lbHandle = sIsLoadBalancer ? sHandle : tHandle;
-        const workloadHandle = sIsLoadBalancer ? tHandle : sHandle;
-        return isLbEdgeHandle(lbHandle) && isLbWorkloadNicHandle(workloadHandle);
-      }
-
-      // VM handles: NIC (top/bottom) for networks, disk controller left for storage
-      if (sourceNode.type === "vmNode") {
-        if (targetNode.type === "storageNode" && !isVmDiskLeftHandle(sHandle)) return false;
-        if (tIsNetwork && !isNicHandle(sHandle)) return false;
-      }
-      if (targetNode.type === "vmNode") {
-        if (sourceNode.type === "storageNode" && !isVmDiskLeftHandle(tHandle)) return false;
-        if (sIsNetwork && !isVmNetHandle(tHandle)) return false;
-      }
-      if (sourceNode.type === "storageNode" && !isStorageSourceHandle(sHandle)) return false;
-      if (targetNode.type === "storageNode" && !isStorageSourceHandle(tHandle)) return false;
-
-      // Routers use network left/right; gateway uses bottom → network top
-      if (sIsRouter && tIsNetwork && !isRouterHandle(tHandle)) return false;
-      if (tIsRouter && sIsNetwork && !isRouterHandle(sHandle)) return false;
-      if (
-        sIsGateway &&
-        tIsNetwork &&
-        (sHandle !== GATEWAY_NETWORK_SOURCE_HANDLE ||
-          tHandle !== GATEWAY_NETWORK_TARGET_HANDLE)
-      ) {
-        return false;
-      }
-      if (
-        tIsGateway &&
-        sIsNetwork &&
-        (tHandle !== GATEWAY_NETWORK_SOURCE_HANDLE ||
-          sHandle !== GATEWAY_NETWORK_TARGET_HANDLE)
-      ) {
-        return false;
-      }
-
-      // Network top/bottom handles only for VMs
-      if (sIsNetwork && targetNode.type === "vmNode" && !isVmNetHandle(sHandle)) return false;
-      if (tIsNetwork && sourceNode.type === "vmNode" && !isVmNetHandle(tHandle)) return false;
-
-      const sIsCeph = sourceNode.type === "cephClusterNode";
-      const tIsCeph = targetNode.type === "cephClusterNode";
-
-      if (sIsCeph || tIsCeph) {
-        const cluster = sIsCeph ? targetNode : sourceNode;
-        if (cluster.type !== "clusterNode") return false;
-        const cephHandle = sIsCeph ? sHandle : tHandle;
-        const clusterHandle = sIsCeph ? tHandle : sHandle;
-        return (
-          (cephHandle === "right" && clusterHandle === "ceph-left") ||
-          (cephHandle === "left" && clusterHandle === "ceph-right")
-        );
-      }
-
-      // Cluster network anchor handles: source must be network, target must be clusterNode with cluster-net handle
-      if (sourceNode.type === "clusterNode" && tHandle?.startsWith("cluster-net-")) {
-        return sIsNetwork;
-      }
-      if (targetNode.type === "clusterNode" && sHandle?.startsWith("cluster-net-")) {
-        return tIsNetwork;
-      }
-
-      return true;
-    },
+    (connection: Connection | Edge) => validCanvasConnection(connection, allNodes),
     [allNodes],
   );
 
   return (
     <div className="canvas-wrapper" ref={reactFlowWrapper}>
       <ReactFlow
+        {...(canvasLocked ? {} : { onNodesChange, onEdgesChange, onConnect, onNodeDoubleClick, onNodeContextMenu, onNodeDragStop, onEdgeContextMenu, onDragOver, onDrop })}
         nodes={visibleNodes}
         edges={visibleEdges}
-        onNodesChange={canvasLocked ? undefined : onNodesChange}
-        onEdgesChange={canvasLocked ? undefined : onEdgesChange}
-        onConnect={canvasLocked ? undefined : onConnect}
         isValidConnection={canvasLocked ? () => false : isValidConnection}
         onNodeClick={onNodeClick}
-        onNodeDoubleClick={canvasLocked ? undefined : onNodeDoubleClick}
-        onNodeContextMenu={canvasLocked ? undefined : onNodeContextMenu}
-        onNodeDragStop={canvasLocked ? undefined : onNodeDragStop}
-        onEdgeContextMenu={canvasLocked ? undefined : onEdgeContextMenu}
         onPaneClick={onPaneClick}
-        onDragOver={canvasLocked ? undefined : onDragOver}
-        onDrop={canvasLocked ? undefined : onDrop}
         nodeTypes={stableNodeTypes}
         edgeTypes={edgeTypes}
         onSelectionChange={onSelectionChange}
@@ -1024,97 +1044,22 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         )}
       </ReactFlow>
       <ClusterInstallLogModal />
-      {selectedNodes.length > 1 && (() => {
-        const selectedVmNodes = selectedNodes.filter(
-          (n) => n.type === "vmNode" && deployedVmIds.has(n.id),
-        );
-        const runOnSelectedVms = (action: "start" | "unpause" | "stop" | "pause" | "hibernate") => {
-          selectedVmNodes.forEach((n) => {
-            fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
-          });
-        };
-        return (
-          <div className="selection-toolbar">
-            <span className="selection-count">{selectedNodes.length} selected</span>
-            <button
-              title="Duplicate All"
-              onClick={() => selectedNodes.forEach((n) => duplicateNode(n.id))}
-            >
-              ⧉ Duplicate
-            </button>
-            {selectedVmNodes.length > 0 && (
-              <>
-                <button type="button"
-                  title="Start/Resume VMs"
-                  onClick={() => {
-                    selectedVmNodes.forEach((n) => {
-                      const status = (n.data as Record<string, unknown>).status as string | undefined;
-                      const action = status === "paused" ? "unpause" : "start";
-                      fetch(`/api/v1/projects/${currentProjectId}/vms/${n.id}/${action}`, { method: "POST" }).catch(() => {});
-                    });
-                  }}
-                >
-                  ▶ Start VMs
-                </button>
-                <button type="button"
-                  title="Graceful Shutdown VMs"
-                  onClick={async () => {
-                    if (!(await appConfirm({ message: `Shut down ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Shut down" }))) return;
-                    runOnSelectedVms("stop");
-                  }}
-                >
-                  ■ Stop VMs
-                </button>
-                <button type="button"
-                  title="Pause VMs"
-                  onClick={async () => {
-                    if (!(await confirmPowerWarn("pause", { title: `Pause ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Pause" }))) return;
-                    runOnSelectedVms("pause");
-                  }}
-                >
-                  ⏸ Pause VMs
-                </button>
-                <button type="button"
-                  title={supportsHibernate ? "Hibernate VMs" : "Not supported on this host type"}
-                  disabled={!supportsHibernate}
-                  style={supportsHibernate ? undefined : { opacity: 0.4, cursor: "not-allowed" }}
-                  onClick={async () => {
-                    if (!supportsHibernate) return;
-                    if (!(await confirmPowerWarn("hibernate", { title: `Hibernate ${selectedVmNodes.length} VM(s)?`, confirmLabel: "Hibernate" }))) return;
-                    runOnSelectedVms("hibernate");
-                  }}
-                >
-                  💤 Hibernate VMs
-                </button>
-              </>
-            )}
-            <button
-              className="danger"
-              title="Delete All"
-              onClick={() => {
-                selectedNodes.forEach((n) => deleteNode(n.id));
-                setSelectedNodes([]);
-              }}
-            >
-              ✕ Delete
-            </button>
-          </div>
-        );
-      })()}
+      {selectedNodes.length > 1 && <SelectionToolbar selectedNodes={selectedNodes} setSelectedNodes={setSelectedNodes} />}
+
       {hiddenNodeIds.length > 0 && (
         <div className="hidden-items-bar">
           <span className="hidden-items-count">👁 {hiddenNodeIds.length} hidden</span>
           {hiddenNodeIds.map((nid) => {
             const n = nodes.find((node) => node.id === nid);
             if (!n) return null;
-            const name = (n.data as Record<string, any>).name as string || nid;
+            const name = (n.data as Record<string, unknown>).name as string || nid;
             return (
-              <button key={nid} onClick={() => unhideNode(nid)} title={`Show ${name}`}>
+              <button type="button" key={nid} onClick={() => unhideNode(nid)} title={`Show ${name}`}>
                 {name}
               </button>
             );
           })}
-          <button className="show-all" onClick={unhideAll}>Show All</button>
+          <button type="button" className="show-all" onClick={unhideAll}>Show All</button>
         </div>
       )}
       {contextMenu && (
@@ -1130,7 +1075,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
       )}
       {duplicateVmId && (() => {
         const vmNode = allNodes.find((n) => n.id === duplicateVmId);
-        const vmData = (vmNode?.data ?? {}) as Record<string, any>;
+        const vmData = (vmNode?.data ?? {}) as Record<string, unknown>;
         return (
           <DuplicateVMModal
             vmName={vmData.name as string || "VM"}

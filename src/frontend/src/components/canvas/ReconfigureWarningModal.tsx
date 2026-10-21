@@ -37,7 +37,7 @@ const KIND_COLORS: Record<string, string> = {
   modified: "#fbbf24",
 };
 
-function DiffEntryRow({ entry }: { entry: TopologyDiffEntry }) {
+function DiffEntryRow({ entry }: Readonly<{ entry: TopologyDiffEntry }>) {
   return (
     <div style={{ padding: "8px 0", fontSize: 13, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -76,7 +76,7 @@ function DiffEntryRow({ entry }: { entry: TopologyDiffEntry }) {
   );
 }
 
-export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCancel }: Props) {
+export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCancel }: Readonly<Props>) {
   const isoChanges = changes.filter((c) => c.type === "iso");
   const diskChanges = changes.filter((c) => c.type === "disk");
   const [restartVmIds, setRestartVmIds] = useState<Set<string>>(new Set());
@@ -97,7 +97,7 @@ export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCa
       <div className="start-order-modal" style={{ maxWidth: 560 }} >
         <div className="start-order-header">
           <span>Apply Changes</span>
-          <button onClick={onCancel}>&#x2715;</button>
+          <button type="button" onClick={onCancel}>&#x2715;</button>
         </div>
         <div className="start-order-body" style={{ padding: 16, maxHeight: "60vh", overflowY: "auto" }}>
           {diff.length > 0 && (
@@ -148,8 +148,8 @@ export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCa
           )}
         </div>
         <div className="start-order-footer">
-          <button className="start-order-btn cancel" onClick={onCancel}>Cancel</button>
-          <button className="start-order-btn save" onClick={() => {
+          <button type="button" className="start-order-btn cancel" onClick={onCancel}>Cancel</button>
+          <button type="button" className="start-order-btn save" onClick={() => {
             const allRestartIds = new Set(restartVmIds);
             for (const c of diskChanges) allRestartIds.add(c.vmId);
             onConfirm(Array.from(allRestartIds));

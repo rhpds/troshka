@@ -105,7 +105,7 @@ function KeyboardPage() {
     if (button in funcKeysyms) {
       keysym = funcKeysyms[button];
     } else if (button.length === 1) {
-      keysym = button.charCodeAt(0);
+      keysym = button.codePointAt(0)!;
     } else {
       return;
     }
@@ -144,7 +144,6 @@ function KeyboardPage() {
 
   return (
     <div
-      onMouseDown={(e) => e.preventDefault()}
       style={{ background: "#0d0d1a", height: "100vh", padding: "8px", boxSizing: "border-box", overflow: "hidden" }}
     >
       <div style={{ fontSize: 11, color: "#555", padding: "0 4px 4px", userSelect: "none" }}>{vmName}</div>

@@ -11,11 +11,10 @@ export function isClusterAnchorEdge(edge: Edge): boolean {
 export function clusterAnchorSide(
   edge: Pick<Edge, "sourceHandle" | "targetHandle">,
 ): "top" | "bottom" | null {
+  const sourceHandle = edge.sourceHandle?.startsWith("cluster-net-") ? edge.sourceHandle : null;
   const handle = edge.targetHandle?.startsWith("cluster-net-")
     ? edge.targetHandle
-    : edge.sourceHandle?.startsWith("cluster-net-")
-      ? edge.sourceHandle
-      : null;
+    : sourceHandle;
   if (!handle) return null;
   if (handle.includes("bottom")) return "bottom";
   if (handle.includes("top")) return "top";

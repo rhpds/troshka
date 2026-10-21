@@ -3368,12 +3368,12 @@ def _detect_vnc_state(ocr_text):
     if not text or len(text) < 3:
         return "unknown"
     last_lines = "\n".join(text.split("\n")[-5:])
-    if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
+    if re.search(r"[Pp]ass[wvu]ord(?:\s*:)?\s*$", last_lines, re.MULTILINE):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
     if re.search(
-        r"\blogin\s*:?\s*[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE
+        r"\blogin(?:\s*:)?\s*[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE
     ):
         return "login_submit"
     if re.search(r"\blogin\s*:?", last_lines, re.IGNORECASE | re.MULTILINE):

@@ -7,13 +7,13 @@ export interface PatternCentralSync {
   total_disks?: number;
 }
 
-export function PatternAvailability({ sync }: { sync?: PatternCentralSync | null }) {
+export function PatternAvailability({ sync }: Readonly<{ sync?: PatternCentralSync | null }>) {
   if (sync?.state === "error") return <Label color="red">central copy failed</Label>;
   if (sync && sync.state !== "synced") return <Label color="orange">copying to central…</Label>;
   return <Label color="green">ready</Label>;
 }
 
-export default function PatternSyncNotice({ sync }: { sync?: PatternCentralSync | null }) {
+export default function PatternSyncNotice({ sync }: Readonly<{ sync?: PatternCentralSync | null }>) {
   if (sync?.state !== "error") return null;
   return (
     <div role="alert" style={{ marginBottom: 12, color: "var(--pf-t--global--text--color--status--danger--default)" }}>

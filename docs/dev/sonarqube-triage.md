@@ -1,5 +1,16 @@
 # Reviewed SonarQube security findings
 
+## Mutation-safe dictionary snapshots, 2026-10-20
+
+Two `python:S7504` findings are false positives. These `list()` calls are
+snapshots required because the loop body removes entries from the dictionary.
+Iterating the dictionaries directly would raise `RuntimeError` after mutation.
+
+| Finding | Call site | Evidence |
+| --- | --- | --- |
+| `c9a6fcc6-b915-4121-b63d-a9c72ed89ad8` | `ops_pod_heal._strip_ops_pod_cni_status_annotations` | The loop calls `annotations.pop`. `test_ops_pod_heal.py` verifies removal of stale OVN/CNI annotations while preserving requested networks. |
+| `d598e43f-77a4-464e-a295-80830096dab2` | `MultiplexSession._shutdown` | `_close_stream` pops entries from `_streams`. `test_tunnel_session_paths.py::test_shutdown_closes_every_stream_while_removing_registry_entries` verifies that multiple registered streams close and both registries empty. |
+
 These decisions apply to the specific call sites below, not to the rules
 globally. Revisit them if the authentication or source-selection behavior changes.
 
@@ -64,6 +75,19 @@ review. These decisions do not disable their rules.
 | `5c6d740a-e312-4021-9610-e5735576bb4c` | S2245 | `canvasStore.ts`: random suffix identifies a duplicated topology edge; authorization does not depend on its unpredictability. |
 | `71e9582c-f7c6-4773-a052-39ba57acdb7a` | S2245 | `canvasStore.ts`: random suffix identifies another duplicated topology edge; it is not a credential. |
 
+### Additional individual reviews
+
+| Finding | Decision | Evidence |
+| --- | --- | --- |
+| `d7fa1f4c-2809-4436-ba25-83e9c9d234df`, `f10a2577-0eab-4733-b6c5-8b495ca3a985` (after extraction) | Accepted, S7758 | Showroom `shortHash` deliberately hashes UTF-16 code units with signed 32-bit overflow to preserve existing public route names. Replacing `charCodeAt` with code-point iteration changes identifiers for astral characters and can break previously generated URLs. Compatibility vectors cover ASCII, overflow, accented text, and astral text. This acceptance is specific to the persisted route-name algorithm, not general text processing. |
+| `b1fa0327-8f2b-4d10-a2ee-486b0c72fd75` | False positive, S2245 | The extracted `duplicatedEdge` helper uses a random suffix only to distinguish canvas edge IDs. It creates no credential, authorization token, or security boundary. This is the same reviewed topology-ID use after extraction into a helper. |
+| `ffaad1f4-7664-4b02-a349-1b133e51b2df` | False positive, S1313 | The DNS-provider input's `10.0.0.53` is placeholder text; its value and submission come from the separately controlled `nsServer` state. No request is sent to the placeholder. |
+| `8a7439a8-08c4-4541-8d7a-f5293244591c` | False positive, S5332 | The iPXE URL is an input placeholder. The control uses `data.ipxeScriptUrl` and writes the user's entered value; the placeholder is not a default or network request. |
+| `76dfe9aa-12d4-4fac-abfc-1c0d1d587e44` | False positive, S5332 | The UEFI boot URL is an input placeholder. The control uses `data.uefiBootUrl` and writes the user's entered value; the placeholder is not a default or network request. |
+| `849a901d-c790-4115-8ae6-514441cc9173` | False positive, S3516 | `_ensure_cpu_host_model` deep-copies Kopf's immutable event body, then conditionally mutates the copied `spec.cpuHostModel` from the project's status. Returning the same local variable on early and normal exits does not return the same value: its content depends on the input and API response. Keeping the detached body also prevents changes to Kopf's event snapshot. |
+| `881a4249-18f3-415b-b977-d006726bb9c0` | Accepted, S5778 | `test_scoped_key_cannot_open_websocket` deliberately observes rejection during either the WebSocket handshake or the first receive. Both are valid times for the server's authorization close to surface through TestClient. The assertion checks the exact authorization close code 4003, so an unrelated disconnect cannot satisfy this test. Setup remains outside the exception block. |
+| `b5a4611f-485e-4c32-abb0-109c0bc564ed` | Accepted, Docker S6505 | The terminal image installs version-pinned Wetty 2.5.0 with native node-pty dependencies. Its install scripts compile required native modules; disabling them produces a terminal that fails at startup. The Dockerfile explicitly documents this requirement and removes build compilers afterward. Running dependency lifecycle scripts remains a build supply-chain risk, so this is an intentional acceptance rather than a false positive. Revisit when a vetted prebuilt terminal artifact replaces the native build. |
+
 ### Findings retained for remediation
 
 - The projects-page password generator used `Math.random` for a real console/BMC
@@ -80,6 +104,8 @@ review. These decisions do not disable their rules.
   Choosing to tolerate them would be an acceptance decision, not a false positive.
 - Test exception reports need per-call inspection; setup helpers inside a
   `pytest.raises` block can fail before the operation under test.
-- The S3 probe's fixed signing region remains open: support for arbitrary AWS
-  source regions needs investigation rather than dismissal based solely on
-  compatibility with non-AWS endpoints.
+- The S3 probe's fixed signing region was removed. Its client now honors the
+  SDK's configured region rather than overriding it with `us-east-1`.
+  Regression tests construct real SDK clients for two configured regions while
+  mocking the metadata request; custom endpoint and credential handling remain
+  unchanged.

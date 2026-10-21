@@ -10,7 +10,7 @@ interface EdgeContextMenuProps {
   onClose: () => void;
 }
 
-export default function EdgeContextMenu({ edgeId, x, y, onClose }: EdgeContextMenuProps) {
+export default function EdgeContextMenu({ edgeId, x, y, onClose }: Readonly<EdgeContextMenuProps>) {
   const deleteEdge = useCanvasStore((s) => s.deleteEdge);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -28,7 +28,7 @@ export default function EdgeContextMenu({ edgeId, x, y, onClose }: EdgeContextMe
       className="node-context-menu"
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
-      <button onClick={() => { deleteEdge(edgeId); onClose(); }} className="danger">
+      <button type="button" onClick={() => { deleteEdge(edgeId); onClose(); }} className="danger">
         ✕ Delete Connection
       </button>
     </div>

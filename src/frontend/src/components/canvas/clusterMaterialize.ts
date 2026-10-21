@@ -1,7 +1,8 @@
 import type { Node, Edge } from "@xyflow/react";
-import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
-import { coerceDiskSpecs, useCanvasStore } from "@/stores/canvasStore";
-import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
+import {
+  type ClusterConfig, type VMDiskController, type DiskSpec, type VMNic,
+  coerceDiskSpecs, useCanvasStore, generateDiskControllerId, generateNicId, generateMac,
+} from "@/stores/canvasStore";
 import {
   collectUsedIps,
   listCidrHosts,
@@ -38,8 +39,6 @@ const HEADER_H = 48;
 /** Min cluster width so header badges + Status button fit with padding (SNO grid is narrower). */
 export const CLUSTER_HEADER_MIN_W = 360;
 const COLS_MAX = 4;
-const CARD_W = 180; // VM card width (from .vm-node-card)
-const CARD_H = 205; // VM card height (approximate with all content)
 
 // Legacy constants (used in roleSpecs for backward compat)
 const CP_ROW_Y = 70;
@@ -116,16 +115,19 @@ export function memberRole(
     if (group.includes("controllers")) return "control-plane";
     if (group.includes("workers")) return "worker";
   }
-  const label = String(d?.name || n.id || "");
+  const label = memberName(n);
   if (/(?:^|-)cp-\d+$/.test(label)) return "control-plane";
   if (/(?:^|-)worker-\d+$/.test(label)) return "worker";
   return null;
 }
 
+function memberName(n: Node): string {
+  const name = n.data?.name;
+  return typeof name === "string" && name ? name : n.id || "";
+}
+
 function memberIndex(n: Node): number {
-  const m = String((n.data as Record<string, unknown>).name || n.id || "").match(
-    /-(\d+)$/,
-  );
+  const m = /-(\d+)$/.exec(memberName(n));
   return m ? Number.parseInt(m[1], 10) : 0;
 }
 
@@ -163,7 +165,7 @@ export function assignmentDataPatch(
       | Record<string, unknown>
       | undefined;
     patch.clusterRole = "worker";
-    patch.tags = { ...(existingTags || {}), AnsibleGroup: "workers" };
+    patch.tags = { ...(existingTags), AnsibleGroup: "workers" };
   }
   return patch;
 }
@@ -391,7 +393,7 @@ function makeMemberNode(
       clusterId: cluster.id,
       clusterRole: spec.role,
       generated: true,
-      tags: { AnsibleGroup: spec.ansibleGroup, ...((cluster.vmDefaults?.tags as Record<string, string> | undefined) ?? {}) },
+      tags: { AnsibleGroup: spec.ansibleGroup, ...((cluster.vmDefaults?.tags as Record<string, string> | undefined)) },
     },
   } as Node;
 
@@ -433,8 +435,7 @@ function addMembers(
     const gridRow = Math.floor(memberIndex / COLS_MAX);
 
     const { node, extraNodes, extraEdges } = makeMemberNode(cluster, spec, name, gridCol, gridRow);
-    addedNodes.push(node);
-    addedNodes.push(...extraNodes);
+    addedNodes.push(node, ...extraNodes);
     addedEdges.push(...extraEdges);
   }
   return { nodes: [...nodes, ...addedNodes], edges: addedEdges };
@@ -727,6 +728,46 @@ export function assignMissingClusterMemberNicIps(
  * and preserves MACs (critical for OCP BMH boot). Adding/removing a network only
  * affects that network's NIC + edge; existing NICs keep their ids and MACs.
  */
+function existingMemberNetworkNics(member: Node, edges: Edge[]): Map<string, VMNic> {
+  const currentNics = (member.data.nics as VMNic[]) || [];
+  const networkNics = new Map<string, VMNic>();
+  for (const edge of edges) {
+    if (edge.target !== member.id) continue;
+    const match = /^nic-(.+)-(top|bottom)$/.exec(edge.targetHandle ?? "");
+    if (!match) continue;
+    const nic = currentNics.find((candidate) => candidate.id === match[1]);
+    if (nic) networkNics.set(edge.source, nic);
+  }
+  return networkNics;
+}
+
+function reconcileMemberNics(member: Node, networkIds: string[], edges: Edge[]): VMNic[] {
+  const existing = existingMemberNetworkNics(member, edges);
+  return networkIds.map((networkId, i) => {
+    const nic = existing.get(networkId);
+    if (nic) return { ...nic, name: `eth${i}` };
+    return { id: generateNicId(), name: `eth${i}`, mac: generateMac(), model: "virtio" };
+  });
+}
+
+function memberNicEdges(memberId: string, networkIds: string[], nics: VMNic[]): Edge[] {
+  return nics.map((nic, i) => {
+    const netId = networkIds[i];
+    const vmHandle = i === 0 ? "top" : "bottom";
+    return {
+      id: `edge-${netId}-to-${memberId}-nic`,
+      source: netId,
+      target: memberId,
+      sourceHandle: i === 0 ? "bottom" : "top",
+      targetHandle: `nic-${nic.id}-${vmHandle}`,
+      type: "smoothstep",
+      animated: true,
+      hidden: true,
+      style: { stroke: "rgba(34,211,238,0.5)", strokeWidth: 2, strokeDasharray: "6 4" },
+    };
+  });
+}
+
 export function applyClusterNetworks(
   cluster: ClusterConfig,
   nodes: Node[],
@@ -745,52 +786,8 @@ export function applyClusterNetworks(
 
   // For each member, diff-apply networks to preserve existing NIC ids/MACs
   for (const member of allMembers) {
-    const memberData = member.data as Record<string, unknown>;
-    const currentNics = (memberData.nics as VMNic[]) || [];
-
-    // Extract existing network→NIC mapping from current nic edges.
-    // For each nic edge where target===memberId, match the targetHandle's nicId to a NIC in currentNics.
-    const existingNetworkToNic = new Map<string, VMNic>();
-    for (const edge of edges) {
-      if (
-        edge.target === member.id &&
-        (edge.targetHandle?.startsWith("nic-") ?? false)
-      ) {
-        // targetHandle is "nic-<nicId>-top" or "nic-<nicId>-bottom"
-        // Extract nicId by removing "nic-" prefix and last suffix (-top/-bottom)
-        const match = edge.targetHandle!.match(/^nic-(.+)-(top|bottom)$/);
-        if (match) {
-          const nicId = match[1];
-          const nic = currentNics.find((n) => n.id === nicId);
-          if (nic) {
-            existingNetworkToNic.set(edge.source, nic);
-          }
-        }
-      }
-    }
-
     const targetNetworkIds = cluster.networkIds ?? [];
-    const newNics: VMNic[] = [];
-
-    // For each network in the target list, reuse existing NIC or create new
-    for (let i = 0; i < targetNetworkIds.length; i += 1) {
-      const netId = targetNetworkIds[i];
-      const existingNic = existingNetworkToNic.get(netId);
-
-      if (existingNic) {
-        // Reuse: update name to reflect new position (eth0, eth1, ...)
-        newNics.push({ ...existingNic, name: `eth${i}` });
-      } else {
-        // Create new NIC for this network
-        const nic: VMNic = {
-          id: generateNicId(),
-          name: `eth${i}`,
-          mac: generateMac(),
-          model: "virtio",
-        };
-        newNics.push(nic);
-      }
-    }
+    const newNics = reconcileMemberNics(member, targetNetworkIds, edges);
 
     // Update the member node's nics
     resultNodes = resultNodes.map((n) =>
@@ -808,32 +805,7 @@ export function applyClusterNetworks(
     // Add fresh NIC edges with stable ids (not positional)
     // Hidden: the cluster→network anchor edge is the visible representation;
     // per-member NIC edges kept in topology data for deploy but not rendered
-    const nicEdges: Edge[] = [];
-    for (let i = 0; i < newNics.length; i += 1) {
-      const nic = newNics[i];
-      const netId = targetNetworkIds[i];
-      const isFirstNic = i === 0;
-      const vmHandle = isFirstNic ? "top" : "bottom";
-      const sourceHandle = isFirstNic ? "bottom" : "top";
-
-      nicEdges.push({
-        id: `edge-${netId}-to-${member.id}-nic`,
-        source: netId,
-        target: member.id,
-        sourceHandle,
-        targetHandle: `nic-${nic.id}-${vmHandle}`,
-        type: "smoothstep",
-        animated: true,
-        hidden: true,
-        style: {
-          stroke: "rgba(34,211,238,0.5)",
-          strokeWidth: 2,
-          strokeDasharray: "6 4",
-        },
-      } as Edge);
-    }
-
-    resultEdges = [...resultEdges, ...nicEdges];
+    resultEdges = [...resultEdges, ...memberNicEdges(member.id, targetNetworkIds, newNics)];
   }
 
   resultNodes = assignMissingClusterMemberNicIps(cluster, resultNodes);
@@ -951,7 +923,7 @@ function memberRoleDiskBindings(
   const existingDiskEdges = new Map<number, Edge>();
   // Imported templates use UUID storage IDs, so follow controller attachments.
   for (const dc of controllers) {
-    const index = dc.name.match(/^disk(\d+)$/)?.[1];
+    const index = /^disk(\d+)$/.exec(dc.name)?.[1];
     if (index === undefined) continue;
     const edge = edges.find(e => e.target === member.id && e.targetHandle === `dp-${dc.id}-left`);
     const disk = edge && nodes.find(n => n.id === edge.source && n.type === "storageNode" && n.data.format !== "iso");
@@ -962,7 +934,7 @@ function memberRoleDiskBindings(
   // Tolerate incomplete draft topology whose generated disks have no edges yet.
   nodes.filter(n => n.type === "storageNode" && n.id.startsWith(`${member.id}-disk-`))
     .forEach(node => {
-      const index = node.id.match(/disk-(\d+)$/)?.[1];
+      const index = /disk-(\d+)$/.exec(node.id)?.[1];
       if (index !== undefined && !existingDiskNodes.has(Number(index))) {
         existingDiskNodes.set(Number(index), node);
       }
@@ -1146,20 +1118,31 @@ export function suggestClusterVips(
   }
 
   // Multi-node: suggest two distinct high unused IPs (api + ingress).
-  let apiVipCandidate: string | null = null;
-  let ingressVipCandidate: string | null = null;
+  const candidates = hosts.filter((ip) => !usedIps.has(ip));
+  return { apiVip: candidates.at(-1) ?? null, ingressVip: candidates.at(-2) ?? null };
+}
 
-  for (let i = hosts.length - 1; i >= 0 && (!apiVipCandidate || !ingressVipCandidate); i -= 1) {
-    const ip = hosts[i];
-    if (usedIps.has(ip)) continue;
-    if (!apiVipCandidate) apiVipCandidate = ip;
-    else if (!ingressVipCandidate) {
-      ingressVipCandidate = ip;
-      break;
+function excludeClusterMemberIps(usedIps: Set<string>, clusterId: string, nodes: Node[]): void {
+  for (const node of nodes) {
+    if (node.type !== "vmNode" || node.data.clusterId !== clusterId) continue;
+    const nics = (node.data.nics as Array<{ ip?: string }> | undefined) ?? [];
+    for (const nic of nics) {
+      if (nic.ip) usedIps.delete(nic.ip);
     }
   }
+}
 
-  return { apiVip: apiVipCandidate, ingressVip: ingressVipCandidate };
+function clusterGatewayIp(cluster: ClusterConfig, nodes: Node[]): string | undefined {
+  const netId = cluster.networkIds?.[0];
+  if (!netId) return undefined;
+  const net = nodes.find((node) => node.id === netId && node.type === "networkNode");
+  const cidr = net?.data.cidr as string | undefined;
+  return cidr ? listCidrHosts(cidr)[0] : undefined;
+}
+
+function matchesOtherClusterVip(ip: string, ownBoundaryId: string, nodes: Node[]): boolean {
+  return nodes.some((node) => node.type === "clusterNode" && node.id !== ownBoundaryId &&
+    (ip === node.data.apiVip || ip === node.data.ingressVip));
 }
 
 /**
@@ -1171,7 +1154,7 @@ export function vipCollision(
   cluster: ClusterConfig,
   nodes: Node[],
 ): boolean {
-  if (!ip || !ip.trim()) return false;
+  if (!ip?.trim()) return false;
 
   // Identify THIS cluster's own boundary node (clusterNode data carries no
   // clusterId) by id — `cluster-<id>`, mirrored by cluster.nodeId.
@@ -1194,13 +1177,7 @@ export function vipCollision(
   // is legitimate. Gating on workers === 0 wrongly flagged SNO-with-workers.
   const pureSno = cluster.type === "sno";
   if (pureSno) {
-    for (const n of nodes) {
-      const d = n.data as Record<string, unknown>;
-      if (n.type !== "vmNode" || d.clusterId !== cluster.id) continue;
-      for (const nic of (d.nics as Array<{ ip?: string }> | undefined) ?? []) {
-        if (nic.ip) usedIps.delete(nic.ip);
-      }
-    }
+    excludeClusterMemberIps(usedIps, cluster.id, nodes);
   }
 
   // A multi-node cluster's two VIPs must differ from each other (they are
@@ -1213,30 +1190,8 @@ export function vipCollision(
   }
 
   // Also check OTHER clusters' VIPs (our own boundary is excluded by id above).
-  const otherClusters = nodes
-    .filter((n) => n.type === "clusterNode" && n.id !== ownBoundaryId)
-    .map((n) => n.data as Record<string, string | undefined>);
-
-  for (const other of otherClusters) {
-    if (ip === other.apiVip) return true;
-    if (ip === other.ingressVip) return true;
-  }
-
-  // Check gateway
-  const netId = (cluster.networkIds ?? [])[0];
-  if (netId) {
-    const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
-    if (netNode) {
-      const netNodeData = netNode.data as Record<string, string | undefined>;
-      const cidr = netNodeData.cidr;
-      if (cidr) {
-        const hosts = listCidrHosts(cidr);
-        if (hosts.length > 0 && ip === hosts[0]) return true; // gateway
-      }
-    }
-  }
-
-  return usedIps.has(ip);
+  return matchesOtherClusterVip(ip, ownBoundaryId, nodes) ||
+    ip === clusterGatewayIp(cluster, nodes) || usedIps.has(ip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1302,8 +1257,10 @@ export function buildClusterDnsRecords(cluster: ClusterConfig, nodes?: Node[]): 
   }
   const records: ClusterDnsRecord[] = [];
   if (apiVip) {
-    records.push({ name: `api.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true });
-    records.push({ name: `api-int.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true });
+    records.push(
+      { name: `api.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true },
+      { name: `api-int.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true },
+    );
   }
   if (ingressVip) {
     records.push({ name: `.apps.${name}.${baseDomain}`, ip: ingressVip, type: "A", clusterId: cluster.id, managed: true });
@@ -1395,12 +1352,13 @@ export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
 function gatewayAllowsOutbound(gwData: Record<string, unknown>): boolean {
   const policy = (gwData.outboundPolicy as string) || "allow-all";
   if (policy !== "restrict") return true;
-  const rules = String(gwData.outboundPorts || "")
+  const outboundPorts = typeof gwData.outboundPorts === "string" ? gwData.outboundPorts : "";
+  const rules = new Set(outboundPorts
     .split(",")
     .map((p) => p.trim())
-    .filter(Boolean);
+    .filter(Boolean));
   const allows = (port: number, proto: string) =>
-    rules.includes(String(port)) || rules.includes(`${port}/${proto}`);
+    rules.has(String(port)) || rules.has(`${port}/${proto}`);
   return allows(80, "tcp") && allows(443, "tcp") && allows(123, "udp");
 }
 
@@ -1461,6 +1419,14 @@ export function clusterPrereqIssues(cluster: ClusterConfig, nodes: Node[]): Clus
     }
   }
 
+  issues.push(...clusterInstallAddressIssues(cluster, nodes));
+  return issues;
+}
+
+/** Address requirements apply only to clusters installed during deployment. */
+function clusterInstallAddressIssues(cluster: ClusterConfig, nodes: Node[]): ClusterPrereqIssue[] {
+  const issues: ClusterPrereqIssue[] = [];
+  const netIds = cluster.networkIds ?? [];
   const members = nodes.filter((n) => isClusterMemberVm(n, cluster));
   const isSno =
     cluster.type === "sno" ||

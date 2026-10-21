@@ -23,6 +23,7 @@ import ClusterNode from "./nodes/ClusterNode";
 import CephClusterNode from "./nodes/CephClusterNode";
 import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import ReadOnlyPropertiesPanel from "./ReadOnlyPropertiesPanel";
+import ModalBackdrop from "@/components/ModalBackdrop";
 import { CanvasDisplayProvider } from "@/components/canvas/CanvasDisplayContext";
 import { useIsDarkTheme } from "@/hooks/useIsDarkTheme";
 import {
@@ -68,7 +69,7 @@ function normalizePreviewEdges(edges: Edge[]): Edge[] {
   });
 }
 
-function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; initialEdges: Edge[] }) {
+function PreviewCanvas({ initialNodes, initialEdges }: Readonly<{ initialNodes: Node[]; initialEdges: Edge[] }>) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
   const stableEdgeTypes = useMemo(() => edgeTypes, []);
   const isDark = useIsDarkTheme();
@@ -130,7 +131,7 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
   );
 }
 
-export default function PatternPreviewModal({ patternId, patternName, onClose }: PatternPreviewModalProps) {
+export default function PatternPreviewModal({ patternId, patternName, onClose }: Readonly<PatternPreviewModalProps>) {
   const [topology, setTopology] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -150,11 +151,11 @@ export default function PatternPreviewModal({ patternId, patternName, onClose }:
   }, [patternId]);
 
   return (
-    <div style={{
+    <ModalBackdrop label={`${patternName} preview`} onClose={onClose} style={{
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 0, width: "80vw", height: "70vh", maxWidth: 1200,
@@ -168,7 +169,7 @@ export default function PatternPreviewModal({ patternId, patternName, onClose }:
           display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>{patternName}</h2>
-          <button
+          <button type="button"
             onClick={onClose}
             style={{
               background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)",
@@ -179,23 +180,19 @@ export default function PatternPreviewModal({ patternId, patternName, onClose }:
           </button>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
-          {loading ? (
+          {loading || !topology ? (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
-              Loading topology...
+              {loading ? "Loading topology..." : "No topology data"}
             </div>
-          ) : topology ? (
+          ) : (
             <ReactFlowProvider>
               <CanvasDisplayProvider isPreview>
                 <PreviewCanvas initialNodes={topology.nodes} initialEdges={topology.edges} />
               </CanvasDisplayProvider>
             </ReactFlowProvider>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
-              No topology data
-            </div>
           )}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

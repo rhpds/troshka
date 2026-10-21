@@ -1,5 +1,8 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
+import LabeledField from "@/components/LabeledField";
 import React, { useState, useMemo, useEffect } from "react";
 
 interface BulkDeployModalProps {
@@ -8,7 +11,7 @@ interface BulkDeployModalProps {
   onDeployed: (count: number) => void;
 }
 
-export default function BulkDeployModal({ patternId, onClose, onDeployed }: BulkDeployModalProps) {
+export default function BulkDeployModal({ patternId, onClose, onDeployed }: Readonly<BulkDeployModalProps>) {
   const [count, setCount] = useState<number | "">(5);
   const [nameTemplate, setNameTemplate] = useState("lab-{n}");
   const [autoDeploy, setAutoDeploy] = useState(false);
@@ -41,7 +44,7 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
     const c = count || 0;
     const limit = Math.min(c, 3);
     for (let i = 1; i <= limit; i++) {
-      names.push(nameTemplate.replace(/\{n\}/g, String(i)));
+      names.push(nameTemplate.replaceAll("{n}", String(i)));
     }
     if (c > 3) names.push("...");
     return names;
@@ -78,11 +81,11 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
   };
 
   return (
-    <div style={{
+    <ModalBackdrop label="Bulk deploy" style={{
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    }} onClose={onClose}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: 460, maxWidth: "90vw",
@@ -93,7 +96,7 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Number of Projects</label>
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Number of Projects</>}>
             <input
               style={inputStyle}
               type="number"
@@ -103,23 +106,23 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "") { setCount(""); return; }
-                const n = parseInt(v);
-                if (!isNaN(n)) setCount(Math.min(500, n));
+                const n = Number.parseInt(v);
+                if (!Number.isNaN(n)) setCount(Math.min(500, n));
               }}
               onBlur={() => { if (count === "" || count < 1) setCount(1); }}
-            />
+            /></LabeledField>
           </div>
           <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-              Naming Template
-              <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"} = sequence number</span>
-            </label>
+            <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>
+              {"Naming Template"}
+              <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"}{" = sequence number"}</span>
+            </>}>
             <input
               style={inputStyle}
               value={nameTemplate}
               onChange={(e) => setNameTemplate(e.target.value)}
               placeholder="lab-{n}"
-            />
+            /></LabeledField>
           </div>
           <div>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -128,7 +131,7 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
                 checked={autoDeploy}
                 onChange={(e) => setAutoDeploy(e.target.checked)}
               />
-              Auto-deploy after creation
+              {"Auto-deploy after creation"}
             </label>
           </div>
 
@@ -137,23 +140,23 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
               <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                    GUID Template
-                    <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"} = seq</span>
-                  </label>
-                  <input style={inputStyle} value={guidTemplate} onChange={(e) => setGuidTemplate(e.target.value)} placeholder="lab-{n}" />
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>
+                    {"GUID Template"}
+                    <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"}{" = seq"}</span>
+                  </>}>
+                  <input style={inputStyle} value={guidTemplate} onChange={(e) => setGuidTemplate(e.target.value)} placeholder="lab-{n}" /></LabeledField>
                 </div>
                 <div style={{ flex: 2 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
-                  <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>Domain</>}>
+                  <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" /></LabeledField>
                 </div>
               </div>
               <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
+                <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>DNS Provider</>}>
                 <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
                   <option value="">None</option>
                   {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                </select></LabeledField>
               </div>
             </div>
           )}
@@ -173,13 +176,13 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button
+            <button type="button"
               onClick={onClose}
               style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}
             >
               Cancel
             </button>
-            <button
+            <button type="button"
               onClick={handleDeploy}
               disabled={deploying}
               style={{
@@ -188,11 +191,15 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
                 borderColor: "#4ade80", color: "#4ade80", opacity: deploying ? 0.6 : 1,
               }}
             >
-              {deploying ? "Creating..." : `Create ${count} Project${count !== 1 ? "s" : ""}`}
+              {deploying ? "Creating..." : createProjectsLabel(count)}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
+}
+
+function createProjectsLabel(count: number | ""): string {
+  return `Create ${count} Project${count !== 1 ? "s" : ""}`;
 }

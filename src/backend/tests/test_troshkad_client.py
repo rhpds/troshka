@@ -85,8 +85,9 @@ class TestTroshkadClient(unittest.TestCase):
         self.assertEqual(job["status"], "completed")
 
     def test_missing_fingerprint_raises(self):
+        exception_host = NoFingerprintHost()
         with self.assertRaises(TroshkadError) as ctx:
-            _get_pool(NoFingerprintHost())
+            _get_pool(exception_host)
         self.assertIn("No cert fingerprint", str(ctx.exception))
 
     @patch("app.services.troshkad_client._get_pool")
@@ -128,8 +129,9 @@ class TestTroshkadClient(unittest.TestCase):
         pool.urlopen.side_effect = SSLError("fingerprint mismatch")
         mock_get_pool.return_value = pool
 
+        exception_host = FakeHost()
         with self.assertRaises(TroshkadError) as ctx:
-            troshkad_request(FakeHost(), "GET", "/health")
+            troshkad_request(exception_host, "GET", "/health")
         self.assertIn("Certificate", str(ctx.exception))
 
     @patch("app.services.troshkad_client._get_pool")

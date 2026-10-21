@@ -831,8 +831,9 @@ class TestApplyCrds:
         crds_dir = tmp_path / "crds"
         self._write_crds(crds_dir)
 
+        exception_value = str(tmp_path)
         with pytest.raises(ApiException):
-            _apply_crds(ext_api, str(tmp_path))
+            _apply_crds(ext_api, exception_value)
 
 
 # ---------------------------------------------------------------------------

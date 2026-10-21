@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import { useEffect, useState } from "react";
 import {
   PageSection,
@@ -152,7 +153,6 @@ export default function AdminUsersPage() {
   };
 
   return (
-    <>
       <PageSection>
         <div
           style={{
@@ -192,37 +192,37 @@ export default function AdminUsersPage() {
                 }}
               >
                 <div>
-                  <label
+                  <LabeledField
                     style={{ fontSize: 12, display: "block", marginBottom: 4 }}
-                  >
+                   label={<>
                     Email
-                  </label>
+                  </>}>
                   <input
                     style={inputStyle}
                     value={newEmail}
                     onChange={(e) => setNewEmail(e.target.value)}
                     placeholder="user@redhat.com"
-                  />
+                  /></LabeledField>
                 </div>
                 <div>
-                  <label
+                  <LabeledField
                     style={{ fontSize: 12, display: "block", marginBottom: 4 }}
-                  >
+                   label={<>
                     Display Name (optional)
-                  </label>
+                  </>}>
                   <input
                     style={inputStyle}
                     value={newDisplayName}
                     onChange={(e) => setNewDisplayName(e.target.value)}
                     placeholder="Jane Doe"
-                  />
+                  /></LabeledField>
                 </div>
                 <div>
-                  <label
+                  <LabeledField
                     style={{ fontSize: 12, display: "block", marginBottom: 4 }}
-                  >
+                   label={<>
                     Role
-                  </label>
+                  </>}>
                   <select
                     style={inputStyle}
                     value={newRole}
@@ -231,7 +231,7 @@ export default function AdminUsersPage() {
                     <option value="user">User</option>
                     <option value="operator">Operator</option>
                     <option value="admin">Admin</option>
-                  </select>
+                  </select></LabeledField>
                 </div>
                 <Button
                   variant="primary"
@@ -357,6 +357,5 @@ export default function AdminUsersPage() {
           ))}
         </div>
       </PageSection>
-    </>
   );
 }

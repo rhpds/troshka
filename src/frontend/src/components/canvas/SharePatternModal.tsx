@@ -22,7 +22,7 @@ export default function SharePatternModal({
   isOwner,
   onClose,
   onChanged,
-}: SharePatternModalProps) {
+}: Readonly<SharePatternModalProps>) {
   const [isPublic, setIsPublic] = useState(visibility === "public");
   const [savingPublic, setSavingPublic] = useState(false);
   const [shares, setShares] = useState<string[]>([]);
@@ -150,6 +150,7 @@ export default function SharePatternModal({
 
         {/* Public toggle */}
         <label
+          aria-label="Visible to everyone"
           style={{
             fontSize: 13,
             display: "flex",

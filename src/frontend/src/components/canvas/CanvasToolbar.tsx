@@ -19,7 +19,7 @@ export default function CanvasToolbar() {
 
   return (
     <div className="canvas-toolbar">
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={undo}
         disabled={!canUndo}
@@ -28,7 +28,7 @@ export default function CanvasToolbar() {
       >
         ↶
       </button>
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={redo}
         disabled={!canRedo}
@@ -40,14 +40,14 @@ export default function CanvasToolbar() {
 
       <span className="tool-sep" />
 
-      <button
+      <button type="button"
         className={`tool-btn ${panMode ? "active" : ""}`}
         onClick={() => useCanvasStore.setState({ panMode: true })}
         title="Pan (drag to move canvas)"
       >
         ✋
       </button>
-      <button
+      <button type="button"
         className={`tool-btn ${!panMode ? "active" : ""}`}
         onClick={() => useCanvasStore.setState({ panMode: false })}
         title="Select (drag to select area)"
@@ -57,7 +57,7 @@ export default function CanvasToolbar() {
 
       <span className="tool-sep" />
 
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={() => zoomOut()}
         title="Zoom Out"
@@ -65,7 +65,7 @@ export default function CanvasToolbar() {
         −
       </button>
       <span className="zoom-display">{zoomPercent}%</span>
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={() => zoomIn()}
         title="Zoom In"
@@ -75,7 +75,7 @@ export default function CanvasToolbar() {
 
       <span className="tool-sep" />
 
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={() => fitView({ padding: 0.2 })}
         title="Fit View"
@@ -85,7 +85,7 @@ export default function CanvasToolbar() {
 
       <span className="tool-sep" />
 
-      <button
+      <button type="button"
         className="tool-btn"
         onClick={async () => { await autoLayout(); setTimeout(() => fitView({ padding: 0.2 }), 50); }}
         title="Auto Layout"
@@ -95,7 +95,7 @@ export default function CanvasToolbar() {
 
       <span className="tool-sep" />
 
-      <button
+      <button type="button"
         className={`tool-btn ${showMinimap ? "active" : ""}`}
         onClick={toggleMinimap}
         title="Toggle Minimap"

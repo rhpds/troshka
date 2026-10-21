@@ -16,6 +16,7 @@ from helpers.ovn_nested_macs import ensure_nested_mac_port_security
 logger = logging.getLogger(__name__)
 
 _DNSMASQ_CONF = "dnsmasq.conf"
+_NETWORK_ATTACHMENT_GROUP = "k8s.cni.cncf.io"
 
 
 def _modify_scc_users(custom_api, scc_name, sa_ref, action):
@@ -145,7 +146,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     nad = build_nad(body)
     try:
         custom_api.create_namespaced_custom_object(
-            group="k8s.cni.cncf.io",
+            group=_NETWORK_ATTACHMENT_GROUP,
             version="v1",
             namespace=namespace,
             plural="network-attachment-definitions",
@@ -212,7 +213,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
     nad_name = nad["metadata"]["name"]
     try:
         custom_api.patch_namespaced_custom_object(
-            group="k8s.cni.cncf.io",
+            group=_NETWORK_ATTACHMENT_GROUP,
             version="v1",
             namespace=namespace,
             plural="network-attachment-definitions",
@@ -337,7 +338,7 @@ async def network_delete(spec, meta, namespace, name, **_):
     nad_name = f"{name}-nad"
     try:
         custom_api.delete_namespaced_custom_object(
-            group="k8s.cni.cncf.io",
+            group=_NETWORK_ATTACHMENT_GROUP,
             version="v1",
             namespace=namespace,
             plural="network-attachment-definitions",

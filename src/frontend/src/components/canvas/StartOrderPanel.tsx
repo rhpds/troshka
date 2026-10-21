@@ -1,5 +1,8 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
+import LabeledField from "@/components/LabeledField";
 import React, { useEffect, useState } from "react";
 import { useCanvasStore, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import type { StartOrderEntry, VMNodeData, ContainerNodeData } from "@/stores/canvasStore";
@@ -8,7 +11,7 @@ interface Props {
   onClose: () => void;
 }
 
-export default function StartOrderPanel({ onClose }: Props) {
+export default function StartOrderPanel({ onClose }: Readonly<Props>) {
   const nodes = useCanvasStore((s) => s.nodes);
   const startOrder = useCanvasStore((s) => s.startOrder);
   const setStartOrder = useCanvasStore((s) => s.setStartOrder);
@@ -108,11 +111,11 @@ export default function StartOrderPanel({ onClose }: Props) {
       ? "No VMs or containers in this project yet."
       : "All VMs and containers have auto-start disabled. Enable auto-start to configure start order.";
     return (
-      <div className="start-order-overlay" onClick={onClose}>
-        <div className="start-order-modal" onClick={(e) => e.stopPropagation()}>
+      <ModalBackdrop label="VM Start Order" className="start-order-overlay" onClose={onClose}>
+        <div className="start-order-modal">
           <div className="start-order-header">
             <span>VM Start Order</span>
-            <button onClick={onClose}>✕</button>
+            <button type="button" onClick={onClose}>✕</button>
           </div>
           <div className="start-order-body">
             <p style={{ color: "var(--troshka-text-dim)", textAlign: "center", padding: 20 }}>
@@ -120,16 +123,16 @@ export default function StartOrderPanel({ onClose }: Props) {
             </p>
           </div>
         </div>
-      </div>
+      </ModalBackdrop>
     );
   }
 
   return (
-    <div className="start-order-overlay" onClick={onClose}>
-      <div className="start-order-modal" onClick={(e) => e.stopPropagation()}>
+    <ModalBackdrop label="VM Start Order" className="start-order-overlay" onClose={onClose}>
+      <div className="start-order-modal">
         <div className="start-order-header">
           <span>VM Start Order</span>
-          <button onClick={onClose}>✕</button>
+          <button type="button" onClick={onClose}>✕</button>
         </div>
         <div className="start-order-body">
           <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", marginBottom: 12 }}>
@@ -143,15 +146,15 @@ export default function StartOrderPanel({ onClose }: Props) {
                   {entry.entryType === "container" ? "📦" : "🖥"} {getNodeName(entry.containerId || entry.vmId)}
                 </span>
                 <div className="start-order-arrows">
-                  <button onClick={() => moveUp(i)} title="Move up" disabled={i === 0}>↑</button>
-                  <button onClick={() => moveDown(i)} title="Move down" disabled={i === order.length - 1}>↓</button>
+                  <button type="button" onClick={() => moveUp(i)} title="Move up" disabled={i === 0}>↑</button>
+                  <button type="button" onClick={() => moveDown(i)} title="Move down" disabled={i === order.length - 1}>↓</button>
                 </div>
               </div>
               {i > 0 && (
                 <div className="start-order-prereqs">
                   <div className="start-order-prereq-row">
                     <div className="start-order-prereq-field">
-                      <label>Wait for VM</label>
+                      <LabeledField label={<>Wait for VM</>}>
                       <select
                         value={entry.waitForVm || ""}
                         onChange={(e) => updateEntry(i, { waitForVm: e.target.value || null })}
@@ -162,13 +165,13 @@ export default function StartOrderPanel({ onClose }: Props) {
                             {getNodeName(prev.containerId || prev.vmId)}
                           </option>
                         ))}
-                      </select>
+                      </select></LabeledField>
                     </div>
                   </div>
                   {entry.waitForVm && (
                     <div className="start-order-prereq-row">
                       <div className="start-order-prereq-field">
-                        <label>Wait for service</label>
+                        <LabeledField label={<>Wait for service</>}>
                         <select
                           value={entry.waitForService || "none"}
                           onChange={(e) => updateEntry(i, { waitForService: e.target.value })}
@@ -177,34 +180,32 @@ export default function StartOrderPanel({ onClose }: Props) {
                           <option value="tcp">TCP port</option>
                           <option value="http">HTTP endpoint</option>
                           <option value="ping">Ping (ICMP)</option>
-                        </select>
+                        </select></LabeledField>
                       </div>
                       {(entry.waitForService === "tcp" || entry.waitForService === "http") && (
                         <div className="start-order-prereq-field">
-                          <label>{entry.waitForService === "tcp" ? "Port" : "URL"}</label>
+                          <LabeledField label={entry.waitForService === "tcp" ? "Port" : "URL"}>
                           <input
                             value={entry.waitForPort}
                             onChange={(e) => updateEntry(i, { waitForPort: e.target.value })}
                             placeholder={entry.waitForService === "tcp" ? "e.g. 3306" : "e.g. http://10.0.1.10:8080/health"}
                             style={{ fontFamily: "monospace" }}
-                          />
+                          /></LabeledField>
                         </div>
                       )}
                     </div>
                   )}
                   <div className="start-order-prereq-row">
                     <div className="start-order-prereq-field" style={{ maxWidth: 160 }}>
-                      <label>Additional delay</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <LabeledField label={<>Additional delay</>} controlWrapper={<div style={{ display: "flex", alignItems: "center", gap: 4 }} />} afterControl={<span style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>seconds</span>}>
                         <input
                           type="number"
                           min={0}
                           value={entry.delaySeconds}
-                          onChange={(e) => updateEntry(i, { delaySeconds: parseInt(e.target.value) || 0 })}
+                          onChange={(e) => updateEntry(i, { delaySeconds: Number.parseInt(e.target.value) || 0 })}
                           style={{ width: 60 }}
                         />
-                        <span style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>seconds</span>
-                      </div>
+                      </LabeledField>
                     </div>
                   </div>
                 </div>
@@ -218,10 +219,10 @@ export default function StartOrderPanel({ onClose }: Props) {
           ))}
         </div>
         <div className="start-order-footer">
-          <button className="start-order-btn cancel" onClick={onClose}>Cancel</button>
-          <button className="start-order-btn save" onClick={save}>Save Order</button>
+          <button type="button" className="start-order-btn cancel" onClick={onClose}>Cancel</button>
+          <button type="button" className="start-order-btn save" onClick={save}>Save Order</button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

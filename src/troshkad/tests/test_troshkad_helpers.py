@@ -953,12 +953,13 @@ class TestLoadConfig(unittest.TestCase):
             troshkad.load_config("/nonexistent/config.json")
 
     def test_raises_on_invalid_json(self):
+        import json
         import tempfile
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             f.write("not json")
             f.flush()
-        with self.assertRaises(Exception):
+        with self.assertRaises(json.JSONDecodeError):
             troshkad.load_config(f.name)
         os.unlink(f.name)
 
@@ -8126,9 +8127,10 @@ class TestS3UploadWithCache(unittest.TestCase):
         proc.pid = 12345
         proc.returncode = 1
         mock_popen.return_value = proc
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._s3_upload_with_cache(
-                self._make_job(),
+                exception_job,
                 "/tmp/file",
                 1024,
                 "s3://b/k",
@@ -8242,8 +8244,9 @@ class TestS3Download(unittest.TestCase):
         proc.poll.return_value = 1
         proc.returncode = 1
         mock_popen.return_value = proc
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
-            troshkad._s3_download(self._make_job(), "s3://b/k", "/tmp/out.qcow2")
+            troshkad._s3_download(exception_job, "s3://b/k", "/tmp/out.qcow2")
         self.assertIn("S3 download failed", str(ctx.exception))
 
     @patch("troshkad.os.makedirs")
@@ -8699,16 +8702,18 @@ class TestExtractPxeBootFiles(unittest.TestCase):
     @patch("troshkad.os.listdir", return_value=["EFI", "images"])
     @patch("troshkad.os.path.isfile", return_value=False)
     def test_no_match_raises(self, _isfile, _listdir):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
-            troshkad._extract_pxe_boot_files(self._make_job(), "/mnt/iso", "/tftp")
+            troshkad._extract_pxe_boot_files(exception_job, "/mnt/iso", "/tftp")
         self.assertIn("unsupported distro", str(ctx.exception))
 
     @patch("troshkad.os.listdir", side_effect=OSError("not a directory"))
     @patch("troshkad.os.path.isfile", return_value=False)
     def test_no_match_listdir_fails(self, _isfile, _listdir):
         """When os.listdir fails for debugging, still raises RuntimeError."""
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError):
-            troshkad._extract_pxe_boot_files(self._make_job(), "/mnt/iso", "/tftp")
+            troshkad._extract_pxe_boot_files(exception_job, "/mnt/iso", "/tftp")
 
 
 # ── _try_uefi_bootloader ──
@@ -8892,17 +8897,19 @@ class TestHandlePxeSetup(unittest.TestCase):
         return {"job_id": "j1", "output": [], "_cancelled": False}
 
     def test_missing_project_id(self):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_pxe_setup(
-                self._make_job(), {"vni": "100", "iso_path": "/x"}
+                exception_job, {"vni": "100", "iso_path": "/x"}
             )
         self.assertIn("project_id", str(ctx.exception))
 
     @patch("troshkad.os.path.exists", return_value=False)
     def test_iso_not_found(self, _exists):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_pxe_setup(
-                self._make_job(),
+                exception_job,
                 {
                     "project_id": "aabbccdd-1122-3344-5566-778899001122",
                     "vni": "100",
@@ -9286,9 +9293,10 @@ class TestMountRhcosDisk(unittest.TestCase):
     @patch("troshkad.os.path.exists", return_value=False)
     @patch("troshkad._run_cmd")
     def test_partition_not_found_raises(self, _rcmd, _exists, _mkdirs):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._mount_rhcos_disk(
-                self._make_job(), "/dev/nbd0", "/disk.qcow2", "/mnt/disk"
+                exception_job, "/dev/nbd0", "/disk.qcow2", "/mnt/disk"
             )
         self.assertIn("not found", str(ctx.exception))
 
@@ -10202,9 +10210,10 @@ class TestHandleVmConsoleExec(unittest.TestCase):
         return {"job_id": "j1", "output": [], "_cancelled": False}
 
     def test_no_command(self):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError):
             troshkad._handle_vm_console_exec(
-                self._make_job(),
+                exception_job,
                 {
                     "domain_name": "troshka-aabbccdd-11223344",
                     "command": "",
@@ -10213,9 +10222,10 @@ class TestHandleVmConsoleExec(unittest.TestCase):
             )
 
     def test_no_password(self):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError):
             troshkad._handle_vm_console_exec(
-                self._make_job(),
+                exception_job,
                 {
                     "domain_name": "troshka-aabbccdd-11223344",
                     "command": "whoami",
@@ -10226,9 +10236,10 @@ class TestHandleVmConsoleExec(unittest.TestCase):
     @patch("troshkad.subprocess.run")
     def test_tesseract_missing(self, mock_subrun):
         mock_subrun.return_value = MagicMock(returncode=1)
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_vm_console_exec(
-                self._make_job(),
+                exception_job,
                 {
                     "domain_name": "troshka-aabbccdd-11223344",
                     "command": "whoami",
@@ -10243,9 +10254,10 @@ class TestHandleVmConsoleExec(unittest.TestCase):
             MagicMock(returncode=0),  # which tesseract
             MagicMock(returncode=0, stdout="shut off\n"),  # domstate
         ]
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_vm_console_exec(
-                self._make_job(),
+                exception_job,
                 {
                     "domain_name": "troshka-aabbccdd-11223344",
                     "command": "whoami",
@@ -10406,9 +10418,10 @@ class TestHandleVmSerialExec(unittest.TestCase):
         return {"job_id": "j1", "output": [], "_cancelled": False}
 
     def test_no_command(self):
+        exception_job = self._make_job()
         with self.assertRaises(RuntimeError):
             troshkad._handle_vm_serial_exec(
-                self._make_job(),
+                exception_job,
                 {
                     "domain_name": "troshka-aabbccdd-11223344",
                 },

@@ -106,16 +106,21 @@ export function getVmNicIpOnNetwork(
   }>;
   for (const nic of nics) {
     const handles = [`nic-${nic.id}-top`, `nic-${nic.id}-bottom`];
-    for (const edge of edges) {
-      const onVm =
-        (edge.source === vmId && handles.includes(edge.sourceHandle || "")) ||
-        (edge.target === vmId && handles.includes(edge.targetHandle || ""));
-      if (!onVm) continue;
-      const otherId = edge.source === vmId ? edge.target : edge.source;
-      if (otherId === networkId && nic.ip) return nic.ip;
-    }
+    if (nic.ip && edges.some((edge) => connectsNicToNetwork(edge, vmId, handles, networkId))) return nic.ip;
   }
   return "";
+}
+
+function connectsNicToNetwork(edge: Edge, vmId: string, handles: string[], networkId: string): boolean {
+  return (edge.source === vmId && edge.target === networkId && handles.includes(edge.sourceHandle || "")) ||
+    (edge.target === vmId && edge.source === networkId && handles.includes(edge.targetHandle || ""));
+}
+
+function independentProxy(tab: ShowroomTab): ResolvedShowroomTab | undefined {
+  if (tab.type !== "proxy") return undefined;
+  if (tab.proxyHosts?.length) return { tab, appProxyHosts: tab.proxyHosts };
+  if (tab.proxyHost) return resolveNameBasedProxy(tab);
+  return undefined;
 }
 
 function resolveNameBasedProxy(tab: ShowroomTab): ResolvedShowroomTab {
@@ -148,15 +153,10 @@ export function resolveShowroomTabs(
 
     // App-proxy: embed an OAuth-protected app (console/oauth) at deterministic
     // public hosts. Served by deploy-time server blocks, not an inline location.
-    if (tab.type === "proxy" && tab.proxyHosts && tab.proxyHosts.length > 0) {
-      return { tab, appProxyHosts: tab.proxyHosts };
-    }
-
     // Name-based proxy: target a hostname resolved via the showroom's internal
     // DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
-    if (tab.type === "proxy" && tab.proxyHost) {
-      return resolveNameBasedProxy(tab);
-    }
+    const proxy = independentProxy(tab);
+    if (proxy) return proxy;
 
     // Cluster terminal: a bastionless LOCAL oc shell (all deployed clusters'
     // kubeconfigs) served from a container — no VM, no network, no SSH.
@@ -165,7 +165,7 @@ export function resolveShowroomTabs(
     }
 
     const vm = tab.vmId ? nodesById.get(tab.vmId) : undefined;
-    if (!vm || vm.type !== "vmNode") {
+    if (vm?.type !== "vmNode") {
       return { tab, warning: "Select a VM for this tab" };
     }
 
@@ -212,39 +212,34 @@ function yamlName(name: string): string {
 
 /** Browser-facing port for showroom tabs (gateway ext port → showroom IP). */
 export function getShowroomExternalPort(nodes: Node[], showroomIp: string): number {
-  for (const n of nodes) {
-    const d = n.data as Record<string, unknown>;
-    if (d.subtype !== "gateway") continue;
-    for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intIp?: string }>) {
+  const forwards = gatewayPortForwards(nodes);
+  for (const pf of forwards) {
       if (showroomIp && pf.intIp === showroomIp && pf.extPort) {
         const port = Number.parseInt(String(pf.extPort), 10);
         if (port > 0) return port;
       }
-    }
   }
-  for (const n of nodes) {
-    const d = n.data as Record<string, unknown>;
-    if (d.subtype !== "gateway") continue;
-    for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intPort?: string }>) {
+  for (const pf of forwards) {
       if (String(pf.intPort) === "80" && pf.extPort) {
         const port = Number.parseInt(String(pf.extPort), 10);
         if (port === 80 || port === 443) return port;
       }
-    }
   }
   return 443;
 }
 
+type GatewayPortForward = { extPort?: string; intPort?: string; intIp?: string };
+
+function gatewayPortForwards(nodes: Node[]): GatewayPortForward[] {
+  return nodes.flatMap((node) => {
+    const data = node.data as Record<string, unknown>;
+    return data.subtype === "gateway" ? (data.portForwards || []) as GatewayPortForward[] : [];
+  });
+}
+
 /** Port on the showroom pod the gateway forwards to (nginx :80). */
 export function getShowroomGatewayTargetPort(nodes: Node[], showroomIp: string): number {
-  for (const n of nodes) {
-    const d = n.data as Record<string, unknown>;
-    if (d.subtype !== "gateway") continue;
-    for (const pf of (d.portForwards || []) as Array<{
-      intPort?: string;
-      intIp?: string;
-      extPort?: string;
-    }>) {
+  for (const pf of gatewayPortForwards(nodes)) {
       const intPort = Number.parseInt(String(pf.intPort || ""), 10);
       if (intPort <= 0) continue;
       if (showroomIp && pf.intIp === showroomIp) return intPort;
@@ -255,7 +250,6 @@ export function getShowroomGatewayTargetPort(nodes: Node[], showroomIp: string):
       ) {
         return intPort;
       }
-    }
   }
   return 80;
 }
@@ -306,20 +300,15 @@ export function buildUiConfigYaml(
 
   for (const item of resolved) {
     if (item.tab.type === "external") {
-      lines.push(`  - name: ${yamlName(item.tab.name)}`);
-      lines.push(`    url: ${item.tab.url || ""}`);
-      lines.push("    external: true");
+      lines.push(`  - name: ${yamlName(item.tab.name)}`, `    url: ${item.tab.url || ""}`, "    external: true");
       continue;
     }
     if (item.tab.type === "terminal" && item.wettyPath) {
-      lines.push(`  - name: ${yamlName(item.tab.name)}`);
-      lines.push(`    path: ${item.wettyPath}`);
-      lines.push(`    port: ${externalPort}`);
+      lines.push(`  - name: ${yamlName(item.tab.name)}`, `    path: ${item.wettyPath}`, `    port: ${externalPort}`);
       continue;
     }
     if (item.tab.type === "proxy" && item.proxyPath) {
-      lines.push(`  - name: ${yamlName(item.tab.name)}`);
-      lines.push(`    url: '${item.proxyPath}'`);
+      lines.push(`  - name: ${yamlName(item.tab.name)}`, `    url: '${item.proxyPath}'`);
     }
   }
 
@@ -373,20 +362,22 @@ export function buildNginxConfig(resolved: ResolvedShowroomTab[]): string {
         `      proxy_set_header Host ${hostValue};`,
         "      proxy_read_timeout 86400;",
       );
-      if (item.proxyTls) {
-        blocks.push("      proxy_ssl_verify off;");
-        // Send SNI matching the backend vhost so a router can route it.
-        if (item.proxyHost) {
-          blocks.push("      proxy_ssl_server_name on;");
-          blocks.push(`      proxy_ssl_name ${item.proxyHost};`);
-        }
-      }
+      appendProxyTls(blocks, item);
       blocks.push("    }");
     }
   }
 
   blocks.push("  }", "}");
   return `${blocks.join("\n")}\n`;
+}
+
+function appendProxyTls(blocks: string[], item: ResolvedShowroomTab): void {
+  if (!item.proxyTls) return;
+  blocks.push("      proxy_ssl_verify off;");
+  // Send SNI matching the backend vhost so a router can route it.
+  if (item.proxyHost) {
+    blocks.push("      proxy_ssl_server_name on;", `      proxy_ssl_name ${item.proxyHost};`);
+  }
 }
 
 type PodContainer = {

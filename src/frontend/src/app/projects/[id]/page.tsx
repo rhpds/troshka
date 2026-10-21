@@ -1,5 +1,6 @@
 "use client";
 
+import LabeledField from "@/components/LabeledField";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -10,7 +11,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, resetClustersForOcpRedeploy, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, resetClustersForOcpRedeploy, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import { reconcileDeployedClusters } from "@/components/canvas/clusterNetworkBackfill";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
@@ -59,6 +60,162 @@ function formatRunningElapsed(totalSeconds: number): string {
   return parts.join(" ");
 }
 
+type OffAction = "stop" | "pause" | "hibernate";
+type CanvasState = ReturnType<typeof useCanvasStore.getState>;
+
+function disruptiveButtonStyle(disabled: boolean): React.CSSProperties {
+  return disabled ? { opacity: 0.4, cursor: "not-allowed" } : { opacity: 0.85 };
+}
+
+function actionDisabledTitle(inflight: boolean, ocpBusy: boolean): string | undefined {
+  if (inflight) return "Wait for workloads to finish or fail";
+  return ocpBusy ? "Wait for OpenShift install to finish or fail" : undefined;
+}
+
+function runningSeconds(spend: { running_seconds?: number; running_since?: string | null } | null, paused: boolean, now: number, fetchedAt: number): number {
+  const additional = paused || !spend?.running_since ? 0 : Math.max(0, (now - fetchedAt) / 1000);
+  return (spend?.running_seconds || 0) + additional;
+}
+
+function isSpendPaused(state: string, until?: string | null): boolean {
+  return ["stopped", "stopping", "error"].includes(state) || Boolean(until);
+}
+
+function runningLabel(state: string, paused: boolean): string {
+  if (state === "error") return "Paused";
+  return paused ? "Stopped" : "Running";
+}
+
+function ocpPhaseStatus(phase: string): string {
+  if (phase === "complete") return "ready";
+  return ["failed", "cancelled", "timeout"].includes(phase) ? "error" : "monitoring";
+}
+
+function timerUrgencyFor(seconds: number): "critical" | "warning" | "normal" {
+  if (seconds <= 300) return "critical";
+  return seconds <= 900 ? "warning" : "normal";
+}
+
+function statusBadgeStyle(status: string): React.CSSProperties {
+  if (status === "ready") return { background: "rgba(74,222,128,0.15)", color: "#4ade80" };
+  if (status === "error") return { background: "rgba(248,113,113,0.15)", color: "#f87171" };
+  return { background: "rgba(251,191,36,0.15)", color: "#fbbf24" };
+}
+
+function spendBadgeStyle(stopped: boolean, warned: boolean): React.CSSProperties {
+  if (stopped) return { color: "#ef4444", background: "rgba(239,68,68,0.12)" };
+  if (warned) return { color: "#fbbf24", background: "rgba(251,191,36,0.12)" };
+  return { color: "#86efac", background: "rgba(34,197,94,0.12)" };
+}
+
+function timerBadgeStyle(urgency: string): React.CSSProperties {
+  if (urgency === "critical") return { color: "#ef4444", background: "rgba(239,68,68,0.12)" };
+  if (urgency === "warning") return { color: "#fbbf24", background: "rgba(251,191,36,0.12)" };
+  return { color: "#94a3b8", background: "rgba(148,163,184,0.08)" };
+}
+
+function fallbackOcpHealth(status: string | null, elapsed: number | null) {
+  const duration = elapsed == null ? "" : " (" + Math.floor(elapsed / 60) + "m " + (elapsed % 60).toString().padStart(2, "0") + "s)";
+  if (status === "ready") return { phase: "ready", detail: "cluster ready" + duration };
+  if (status === "error") return { phase: "error", detail: "install failed" };
+  if (status === "warning") return { phase: "warning", detail: "cluster issues" + duration };
+  if (status === "monitoring") return { phase: "ssh", detail: "monitoring..." };
+  return null;
+}
+
+function activeDeploymentHosts(hosts: any[], providers: { id: string; name: string }[]) {
+  const names = new Map(providers.map((provider) => [provider.id, provider.name]));
+  return hosts.filter((host) => host.state === "active" && host.agent_status === "connected" && host.host_type !== "pattern_buffer" && host.accepting_work !== false)
+    .map((host) => ({ ...host, provider_name: names.get(host.provider_id) || null }));
+}
+
+type StorageChange = { type: "iso" | "disk"; storageName: string; vmName: string; vmId: string };
+
+function storageVmId(nodeId: string, edges: CanvasState["edges"]): string | null {
+  const edge = edges.find((edge) => edge.source === nodeId || edge.target === nodeId);
+  if (!edge) return null;
+  return edge.source === nodeId ? edge.target : edge.source;
+}
+
+function storageChange(node: CanvasState["nodes"][number], current: CanvasState, deployed: Record<string, Record<string, any>>, running: Set<string>): StorageChange | null {
+  if (node.type !== "storageNode") return null;
+  const data = node.data as Record<string, any>;
+  const previous = deployed[node.id];
+  if (!previous || (data.libraryItemId || null) === (previous.libraryItemId || null)) return null;
+  const vmId = storageVmId(node.id, current.edges);
+  if (!vmId) return null;
+  if (data.format === "iso" && !running.has(vmId)) return null;
+  const vm = current.nodes.find((node) => node.id === vmId && node.type === "vmNode");
+  return {
+    type: data.format === "iso" ? "iso" : "disk",
+    storageName: data.name,
+    vmName: vm ? String(vm.data.name) : "a VM", vmId,
+  };
+}
+
+function storageChanges(current: CanvasState, deployedNodes: CanvasState["nodes"]): StorageChange[] {
+  const deployed: Record<string, Record<string, any>> = {};
+  for (const node of deployedNodes) {
+    if (node.type === "storageNode") deployed[node.id] = node.data;
+  }
+  const running = new Set(current.nodes.filter((node) => node.type === "vmNode" && node.data.status === "running").map((node) => node.id));
+  return current.nodes.map((node) => storageChange(node, current, deployed, running)).filter((change): change is StorageChange => change !== null);
+}
+
+function mergeGatewayNodes(current: CanvasState["nodes"], incoming: CanvasState["nodes"]) {
+  const endpoints = new Map<string, unknown[]>();
+  for (const node of current) {
+    const data = node.data as Record<string, unknown>;
+    const external = data.externalEndpoints as unknown[] | undefined;
+    if (node.type === "networkNode" && data.subtype === "gateway" && external?.length) endpoints.set(node.id, external);
+  }
+  return incoming.map((node) => {
+    const data = node.data || {};
+    if (data.subtype !== "gateway") return node;
+    const external = data.externalEndpoints as unknown[] | undefined;
+    const preserved = endpoints.get(node.id);
+    if (external?.length || !preserved?.length) return node;
+    return { ...node, data: { ...data, externalEndpoints: preserved } };
+  });
+}
+
+function refreshRepublishClusters(store: CanvasState, serverClusters: CanvasState["clusters"], status?: string) {
+  const byId = new Map(serverClusters.filter((cluster) => cluster?.id).map((cluster) => [String(cluster.id), cluster]));
+  const base = store.clusters.length > 0 ? store.clusters : serverClusters;
+  const clusters = base.map((cluster) => {
+    const server = byId.get(String(cluster.id));
+    let next = server?.ocpInstallStatus ? { ...cluster, ocpInstallStatus: server.ocpInstallStatus } : cluster;
+    if (status === "ready" && next.ocpInstallStatus !== "error") next = { ...next, ocpInstallStatus: "ready" };
+    return next;
+  });
+  const phases = { ...store.clusterOcpPhases };
+  for (const cluster of clusters) {
+    const key = cluster.id || cluster.name;
+    if (!key) continue;
+    if (cluster.ocpInstallStatus === "ready") phases[key] = "complete";
+    else if (cluster.ocpInstallStatus === "error") phases[key] = "failed";
+  }
+  useCanvasStore.setState({
+    clusters, clusterOcpPhases: phases,
+    deployedClusterRows: serverClusters.map((cluster) => {
+      const row = { ...cluster } as Record<string, unknown>;
+      delete row._generatedInstallConfig;
+      delete row._generatedAgentConfig;
+      return row as unknown as CanvasState["deployedClusterRows"][number];
+    }),
+  });
+  return clusters;
+}
+
+async function parseCanvasImportYaml(content: string): Promise<Record<string, unknown>> {
+  try {
+    const yaml = await import("js-yaml");
+    return yaml.load(content) as Record<string, unknown>;
+  } catch {
+    throw new Error("Invalid YAML syntax");
+  }
+}
+
 export default function ProjectCanvasPage() {
   const params = useParams();
   const router = useRouter();
@@ -100,7 +257,7 @@ export default function ProjectCanvasPage() {
   const [projectState, setProjectState] = useState("");
   const [openingShowroom, setOpeningShowroom] = useState(false);
   const [projectHostId, setProjectHostId] = useState("");
-  const [offAction, setOffAction] = useState<"stop" | "pause" | "hibernate">("stop");
+  const [offAction, setOffAction] = useState<OffAction>("stop");
   const [powerWarnDismissed, setPowerWarnDismissed] = useState(false);
   const [supportsHibernate, setSupportsHibernate] = useState(true);
   const [showOffMenu, setShowOffMenu] = useState(false);
@@ -179,7 +336,7 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
-        setOffAction((data.off_action as "stop" | "pause" | "hibernate") || "stop");
+        setOffAction((data.off_action as OffAction) || "stop");
         setPowerWarnDismissed(!!data.power_warn_dismissed);
         setSupportsHibernate(data.supports_hibernate !== false);
         setOwnerEmail(data.owner_email || null);
@@ -269,12 +426,7 @@ export default function ProjectCanvasPage() {
           fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
           fetch("/api/v1/providers/").then(r => r.ok ? r.json() : []),
         ]).then(([hosts, providers]) => {
-          const provMap = new Map<string, string>();
-          for (const p of providers) provMap.set(p.id, p.name);
-          const active = hosts
-            .filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false)
-            .map((h: any) => ({ ...h, provider_name: provMap.get(h.provider_id) || null }));
-          setAvailableHosts(active);
+          setAvailableHosts(activeDeploymentHosts(hosts, providers));
         });
       }
     });
@@ -426,14 +578,8 @@ export default function ProjectCanvasPage() {
     !!ocpStatus &&
     !["ready", "error", "warning", "none", "complete"].includes(ocpStatus);
   const disruptiveActionsDisabled = !!inflightWorkload || ocpBusy;
-  const disruptiveDisabledTitle = inflightWorkload
-    ? "Wait for workloads to finish or fail"
-    : ocpBusy
-      ? "Wait for OpenShift install to finish or fail"
-      : undefined;
-  const disruptiveBtnStyle = disruptiveActionsDisabled
-    ? { opacity: 0.4, cursor: "not-allowed" as const }
-    : { opacity: 0.85 };
+  const disruptiveDisabledTitle = actionDisabledTitle(!!inflightWorkload, ocpBusy);
+  const disruptiveBtnStyle = disruptiveButtonStyle(disruptiveActionsDisabled);
 
   // Project stays "active" while individual VMs are paused/hibernated (off_action
   // keeps the project up) — surface a toolbar Start so the user isn't limited to
@@ -462,7 +608,7 @@ export default function ProjectCanvasPage() {
     }
   };
 
-  const OFF_ACTION_LABEL: Record<"stop" | "pause" | "hibernate", string> = {
+  const OFF_ACTION_LABEL: Record<OffAction, string> = {
     stop: "■ Stop",
     pause: "⏸ Pause",
     hibernate: "💤 Hibernate",
@@ -478,7 +624,7 @@ export default function ProjectCanvasPage() {
     return () => document.removeEventListener("mousedown", handler);
   }, [showOffMenu]);
 
-  const handleSetOffAction = async (action: "stop" | "pause" | "hibernate") => {
+  const handleSetOffAction = async (action: OffAction) => {
     setShowOffMenu(false);
     if (action === "hibernate" && !supportsHibernate) return;
     const previous = offAction;
@@ -507,7 +653,7 @@ export default function ProjectCanvasPage() {
         confirmLabel: "Stop",
       });
       if (!confirmed) return;
-    } else if ((offAction === "pause" || offAction === "hibernate") && !powerWarnDismissed) {
+    } else if (!powerWarnDismissed) {
       const checkboxRef = { current: false };
       const message =
         offAction === "hibernate" ? POWER_WARN_MESSAGE + HIBERNATE_WARN_SUFFIX : POWER_WARN_MESSAGE;
@@ -585,25 +731,7 @@ export default function ProjectCanvasPage() {
     const topo = update.topology || update;
     const store = useCanvasStore.getState();
     if (topo.nodes && topo.edges) {
-      const preservedEndpoints = new Map<string, unknown[]>();
-      for (const n of store.nodes) {
-        const data = (n.data || {}) as Record<string, unknown>;
-        const eps = data.externalEndpoints as unknown[] | undefined;
-        if (n.type === "networkNode" && data.subtype === "gateway" && eps?.length) {
-          preservedEndpoints.set(n.id, eps);
-        }
-      }
-      const mergedNodes = topo.nodes.map((n: { id: string; data?: Record<string, unknown> }) => {
-        const data = n.data || {};
-        if (data.subtype !== "gateway") return n;
-        const incoming = data.externalEndpoints as unknown[] | undefined;
-        const preserved = preservedEndpoints.get(n.id);
-        if (incoming?.length) return n;
-        if (preserved?.length) {
-          return { ...n, data: { ...data, externalEndpoints: preserved } };
-        }
-        return n;
-      });
+      const mergedNodes = mergeGatewayNodes(store.nodes, topo.nodes);
       const healed = healClusterTopology({
         nodes: mergedNodes as typeof store.nodes,
         edges: topo.edges,
@@ -709,28 +837,7 @@ export default function ProjectCanvasPage() {
   }, [ocpStatus, storeClusters]);
 
   const resolvedOcpHealth = useMemo(() => {
-    const fallback =
-      ocpStatus === "ready"
-        ? {
-            phase: "ready",
-            detail:
-              ocpInstallElapsed != null
-                ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)`
-                : "cluster ready",
-          }
-        : ocpStatus === "error"
-          ? { phase: "error", detail: "install failed" }
-          : ocpStatus === "warning"
-            ? {
-                phase: "warning",
-                detail:
-                  ocpInstallElapsed != null
-                    ? `cluster issues (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)`
-                    : "cluster issues",
-              }
-            : ocpStatus === "monitoring"
-              ? { phase: "ssh", detail: "monitoring..." }
-              : null;
+    const fallback = fallbackOcpHealth(ocpStatus, ocpInstallElapsed);
 
     if (!ws.ocpHealth) return fallback;
     return ws.ocpHealth;
@@ -750,11 +857,7 @@ export default function ProjectCanvasPage() {
       const phase = phases[key] || (c.id && phases[c.id]) || (c.name && phases[c.name]);
       if (!phase) return c;
       const status =
-        phase === "complete"
-          ? "ready"
-          : phase === "failed" || phase === "cancelled" || phase === "timeout"
-            ? "error"
-            : "monitoring";
+        ocpPhaseStatus(phase);
       // While a new deploy/redeploy is running, in-progress frames must replace
       // a leftover Ready. Only protect ready→monitoring once the project is idle
       // (finalize stamped ready while a late waiting frame can still arrive).
@@ -803,7 +906,7 @@ export default function ProjectCanvasPage() {
       const s = totalSecs % 60;
       const pad = (n: number) => String(n).padStart(2, "0");
       setTimerCountdown(h > 0 ? `${h}h ${pad(m)}m ${pad(s)}s` : `${m}m ${pad(s)}s`);
-      setTimerUrgency(totalSecs <= 300 ? "critical" : totalSecs <= 900 ? "warning" : "normal");
+      setTimerUrgency(timerUrgencyFor(totalSecs));
     };
     tick();
     id = setInterval(tick, 1000);
@@ -835,15 +938,11 @@ export default function ProjectCanvasPage() {
     useCanvasStore.setState({ projectState });
   }, [projectState]);
 
-  // WebSocket → VM states into canvas store
-  const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
-
   // VM states driven by REST polling (below), not WS — WS is unreliable in dev mode
   useEffect(() => {
     if (!Object.keys(ws.vmStates).length) return;
     setLatestVmStates(ws.vmStates);
     const ids = new Set<string>(Object.keys(ws.vmStates));
-    setDeployedVmIds(ids);
     useCanvasStore.setState({ deployedVmIds: ids });
   }, [ws.vmStates]);
 
@@ -874,7 +973,6 @@ export default function ProjectCanvasPage() {
           ...Object.keys(data.container_states || {}),
         ]);
         if (allIds.size > 0) {
-          setDeployedVmIds(allIds);
           useCanvasStore.setState({ deployedVmIds: allIds });
         }
       } catch { /* ignore */ }
@@ -924,33 +1022,7 @@ export default function ProjectCanvasPage() {
     const projData = await projResp.json();
     const deployed = projData?.deployed_topology || {};
     const cur = useCanvasStore.getState();
-    const depStorageMap: Record<string, Record<string, unknown>> = {};
-    for (const n of (deployed.nodes || [])) {
-      if (n.type === "storageNode") depStorageMap[n.id] = n.data;
-    }
-    const changes: { type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] = [];
-    const runningVmIds = new Set<string>();
-    for (const n of cur.nodes) {
-      if (n.type === "vmNode" && (n.data as Record<string, any>).status === "running") runningVmIds.add(n.id);
-    }
-    for (const n of cur.nodes) {
-      if (n.type !== "storageNode") continue;
-      const curData = n.data as Record<string, any>;
-      const depData = depStorageMap[n.id];
-      if (!depData) continue;
-      if ((curData.libraryItemId as string || null) === (depData.libraryItemId as string || null)) continue;
-      const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
-      const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
-      const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
-      const vmName = vmNode ? (vmNode.data as Record<string, any>).name as string : "a VM";
-      if (curData.format === "iso") {
-        if (vmId && runningVmIds.has(vmId)) {
-          changes.push({ type: "iso", storageName: curData.name as string, vmName, vmId });
-        }
-      } else {
-        if (vmId) changes.push({ type: "disk", storageName: curData.name as string, vmName, vmId: vmId });
-      }
-    }
+    const changes = storageChanges(cur, deployed.nodes || []);
     // Semantic diff of everything that will be applied (same source of truth as
     // the Apply Changes dirty state), shown in the review modal alongside any
     // ISO/disk data-loss warnings.
@@ -1088,18 +1160,10 @@ export default function ProjectCanvasPage() {
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
-  const spendPaused =
-    projectState === "stopped" ||
-    projectState === "stopping" ||
-    projectState === "error" ||
-    Boolean(liveSpend?.running_until);
-  const spendElapsedSec =
-    (liveSpend?.running_seconds || 0) +
-    (spendPaused || !liveSpend?.running_since
-      ? 0
-      : Math.max(0, (spendNowMs - spendFetchedAt) / 1000));
+  const spendPaused = isSpendPaused(projectState, liveSpend?.running_until);
+  const spendElapsedSec = runningSeconds(liveSpend, spendPaused, spendNowMs, spendFetchedAt);
   const spendLabel =
-    projectState === "error" ? "Paused" : spendPaused ? "Stopped" : "Running";
+    runningLabel(projectState, spendPaused);
   const showroomUrl = useMemo(() => {
     const deployed =
       typeof window !== "undefined"
@@ -1124,29 +1188,7 @@ export default function ProjectCanvasPage() {
   const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network").length;
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
 
-  const handlePublish = async () => {
-    // Host list is only fetched for admins; non-admins rely on backend placement.
-    if (isAdmin && requiresKubevirt && deployHosts.length === 0) {
-      setAlertMsg(
-        "No KubeVirt cluster host is available — this project requires kubevirt-cluster placement.",
-      );
-      return;
-    }
-    if (vmCount === 0 && containerCount === 0) {
-      setAlertMsg("Add at least one VM or container before publishing.");
-      return;
-    }
-    const parts = [];
-    if (vmCount > 0) parts.push(`${vmCount} VM${vmCount !== 1 ? "s" : ""}`);
-    if (containerCount > 0) parts.push(`${containerCount} container${containerCount !== 1 ? "s" : ""}`);
-    parts.push(`${netCount} network${netCount !== 1 ? "s" : ""}`);
-    parts.push(`${diskCount} disk${diskCount !== 1 ? "s" : ""}`);
-    if (!(await appConfirm({
-      title: "Deploy Environment",
-      message: `Deploy this environment?\n\n${parts.join(", ")}\n\nThis will provision real infrastructure.`,
-      confirmLabel: "Deploy",
-    }))) return;
-
+  const publishTopology = async () => {
     try {
       await saveTopology();
       setProjectState("deploying");
@@ -1169,7 +1211,8 @@ export default function ProjectCanvasPage() {
         if (data.multi_host) {
           showToast(`Deploying across ${data.host_count} hosts`);
         } else {
-          showToast(`Deploying ${data.requirements?.vm_count || ""} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
+          const destination = isAdmin ? " to " + data.host_ip : "";
+          showToast(`Deploying ${data.requirements?.vm_count || ""} VM(s)${destination}`);
         }
       } else {
         setProjectState("draft");
@@ -1179,6 +1222,31 @@ export default function ProjectCanvasPage() {
       setProjectState("draft");
       setAlertMsg("Failed to connect to server");
     }
+  };
+
+  const handlePublish = async () => {
+    // Host list is only fetched for admins; non-admins rely on backend placement.
+    if (isAdmin && requiresKubevirt && deployHosts.length === 0) {
+      setAlertMsg(
+        "No KubeVirt cluster host is available — this project requires kubevirt-cluster placement.",
+      );
+      return;
+    }
+    if (vmCount === 0 && containerCount === 0) {
+      setAlertMsg("Add at least one VM or container before publishing.");
+      return;
+    }
+    const parts = [];
+    if (vmCount > 0) parts.push(`${vmCount} VM${vmCount !== 1 ? "s" : ""}`);
+    if (containerCount > 0) parts.push(`${containerCount} container${containerCount !== 1 ? "s" : ""}`);
+    parts.push(`${netCount} network${netCount !== 1 ? "s" : ""}`, `${diskCount} disk${diskCount !== 1 ? "s" : ""}`);
+    if (!(await appConfirm({
+      title: "Deploy Environment",
+      message: `Deploy this environment?\n\n${parts.join(", ")}\n\nThis will provision real infrastructure.`,
+      confirmLabel: "Deploy",
+    }))) return;
+
+    await publishTopology();
   };
 
   const doRedeploy = async (ocpMode?: OcpRedeployMode) => {
@@ -1219,43 +1287,7 @@ export default function ProjectCanvasPage() {
           (data.topology?.clusters as typeof store.clusters | undefined) ||
           [];
         if (serverClusters.length > 0) {
-          const byId = new Map(
-            serverClusters.filter((c) => c?.id).map((c) => [String(c.id), c]),
-          );
-          const base =
-            store.clusters.length > 0
-              ? store.clusters
-              : (serverClusters as typeof store.clusters);
-          clustersForModal = base.map((c) => {
-            const srv = byId.get(String(c.id));
-            if (!srv?.ocpInstallStatus) return c;
-            return { ...c, ocpInstallStatus: srv.ocpInstallStatus };
-          });
-          // Project-level ready is authoritative when every cluster should clear.
-          if (data.ocp_status === "ready") {
-            clustersForModal = clustersForModal.map((c) =>
-              c.ocpInstallStatus === "error"
-                ? c
-                : { ...c, ocpInstallStatus: "ready" },
-            );
-          }
-          const phases = { ...store.clusterOcpPhases };
-          for (const c of clustersForModal) {
-            const key = c.id || c.name;
-            if (!key) continue;
-            if (c.ocpInstallStatus === "ready") phases[key] = "complete";
-            else if (c.ocpInstallStatus === "error") phases[key] = "failed";
-          }
-          useCanvasStore.setState({
-            clusters: clustersForModal,
-            clusterOcpPhases: phases,
-            deployedClusterRows: serverClusters.map((c) => {
-              const row = { ...c } as Record<string, unknown>;
-              delete row._generatedInstallConfig;
-              delete row._generatedAgentConfig;
-              return row as unknown as (typeof store.clusters)[number];
-            }),
-          });
+          clustersForModal = refreshRepublishClusters(store, serverClusters, data.ocp_status);
           if (data.ocp_status) setOcpStatus(data.ocp_status);
           if (data.ocp_status_detail) setOcpStatusDetail(data.ocp_status_detail);
         }
@@ -1296,55 +1328,16 @@ export default function ProjectCanvasPage() {
     deleting: "#f87171",
   };
 
-  return (
-    <ReactFlowProvider>
-      {timerToast && (
-        <div style={{
-          position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-          background: timerToast.timer === "auto_delete" ? "rgba(239,68,68,0.95)" : "rgba(251,191,36,0.95)",
-          color: "#fff", padding: "10px 20px", borderRadius: 8,
-          display: "flex", alignItems: "center", gap: 12, fontSize: 13, fontWeight: 500,
-          boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
-        }}>
-          <span>
-            {timerToast.timer === "auto_stop" ? "⏱ Auto-stop" : "🗑 Auto-delete"} in {timerToast.minutes} minute{timerToast.minutes !== 1 ? "s" : ""}
-          </span>
-          <button
-            onClick={() => {
-              fetch(`/api/v1/projects/${projectId}/extend-timer`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ timer: timerToast.timer, add_minutes: 60 }),
-              }).then(r => r.json()).then(data => {
-                setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
-                setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
-              });
-              setTimerToast(null);
-            }}
-            style={{
-              padding: "4px 12px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.4)",
-              background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer", fontSize: 12,
-            }}
-          >Extend 1h</button>
-          <button
-            onClick={() => setTimerToast(null)}
-            style={{
-              padding: "4px 8px", borderRadius: 4, border: "none",
-              background: "transparent", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 14,
-            }}
-          >✕</button>
-        </div>
-      )}
-      <div className="project-action-bar">
-        <div className="project-action-bar-top">
+  const renderProjectHeader = () => (
+<div className="project-action-bar-top">
         <div className="project-action-bar-left">
-          <button className="project-back-btn" onClick={() => router.push("/projects")} title="Back to projects">←</button>
-          <span
-            className="project-action-name"
+          <button type="button" className="project-back-btn" onClick={() => router.push("/projects")} title="Back to projects">←</button>
+          <button type="button"
+            className="plain-button project-action-name"
             style={{ cursor: "pointer", borderBottom: "1px dashed rgba(255,255,255,0.2)" }}
             onClick={() => {
               const newName = window.prompt("Rename project:", projectName);
-              if (newName && newName.trim() && newName !== projectName) {
+              if (newName?.trim() && newName !== projectName) {
                 fetch(`/api/v1/projects/${projectId}`, {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
@@ -1355,7 +1348,7 @@ export default function ProjectCanvasPage() {
               }
             }}
             title="Click to rename"
-          >{projectName || "Untitled"}</span>
+          >{projectName || "Untitled"}</button>
           <span
             title={ownerEmail ? `Owned by ${ownerEmail}` : "System"}
             style={{
@@ -1377,7 +1370,7 @@ export default function ProjectCanvasPage() {
         </div>
         <div className="project-action-bar-center">
           <span className="project-action-stats">
-            {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 ? ` · ${containerCount} container${containerCount !== 1 ? "s" : ""}` : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
+            {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 && <> · {containerCount} container{containerCount !== 1 ? "s" : ""}</>} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
             {hostPlacement.provider && <> · ({hostPlacement.provider})</>}
           </span>
         </div>
@@ -1393,18 +1386,7 @@ export default function ProjectCanvasPage() {
                 borderRadius: 4,
                 flexShrink: 0,
                 whiteSpace: "nowrap",
-                background:
-                  ocpStatus === "ready"
-                    ? "rgba(74,222,128,0.15)"
-                    : ocpStatus === "error"
-                      ? "rgba(248,113,113,0.15)"
-                      : "rgba(251,191,36,0.15)",
-                color:
-                  ocpStatus === "ready"
-                    ? "#4ade80"
-                    : ocpStatus === "error"
-                      ? "#f87171"
-                      : "#fbbf24",
+                ...statusBadgeStyle(ocpStatus),
               }}
             >
               {resolvedOcpHealth?.detail || ocpStatusDetail || `OCP ${ocpStatus}`}
@@ -1415,13 +1397,12 @@ export default function ProjectCanvasPage() {
               className="plain-button project-timer-badge"
               style={{
                 fontSize: 11, padding: "2px 8px", borderRadius: 10,
-                color: liveSpend.budget_stopped ? "#ef4444" : liveSpend.budget_warned ? "#fbbf24" : "#86efac",
-                background: liveSpend.budget_stopped ? "rgba(239,68,68,0.12)" : liveSpend.budget_warned ? "rgba(251,191,36,0.12)" : "rgba(34,197,94,0.12)",
+                ...spendBadgeStyle(liveSpend.budget_stopped, liveSpend.budget_warned),
                 cursor: "pointer",
                 flexShrink: 0,
                 whiteSpace: "nowrap",
               }}
-              title={`$${liveSpend.total_usd.toFixed(8).replace(/\.?0+$/, "") || "0"} — click to set budget`}
+              title={`$${String(Number(liveSpend.total_usd.toFixed(8)))} — click to set budget`}
               onClick={() => {
                 setBudgetModalDraft(budgetUsd == null ? "" : String(budgetUsd));
                 setShowBudgetModal(true);
@@ -1438,8 +1419,7 @@ export default function ProjectCanvasPage() {
               className={"plain-button " + (`project-timer-badge ${timerUrgency}`)}
               style={{
                 fontSize: 11, padding: "2px 8px", borderRadius: 10,
-                color: timerUrgency === "critical" ? "#ef4444" : timerUrgency === "warning" ? "#fbbf24" : "#94a3b8",
-                background: timerUrgency === "critical" ? "rgba(239,68,68,0.12)" : timerUrgency === "warning" ? "rgba(251,191,36,0.12)" : "rgba(148,163,184,0.08)",
+                ...timerBadgeStyle(timerUrgency),
                 animation: timerUrgency === "critical" ? "pulse 1s infinite" : "none",
                 flexShrink: 0,
                 whiteSpace: "nowrap",
@@ -1453,169 +1433,10 @@ export default function ProjectCanvasPage() {
           )}
         </div>
         </div>
-        <div className="project-action-bar-actions">
-          {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (
-            <button
-              className="project-publish-btn"
-              onClick={() => window.open(`/console/monitor?project=${projectId}`, "_blank")}
-              style={{ opacity: 0.85 }}
-            >
-              MegaConsole
-            </button>
-          )}
-          {showroomUrl && (projectState === "active" || projectState === "stopped") && (
-            <button
-              type="button"
-              className="project-publish-btn"
-              disabled={openingShowroom}
-              onClick={async () => {
-                setOpeningShowroom(true);
-                try {
-                  await openShowroom(projectId);
-                } catch (error) {
-                  setToast(error instanceof Error ? error.message : "Could not open Showroom.");
-                } finally {
-                  setOpeningShowroom(false);
-                }
-              }}
-              style={{ opacity: 0.85 }}
-              title="Open Showroom using the latest access URL"
-            >
-              {openingShowroom ? "Opening Showroom…" : "Open Showroom"}
-            </button>
-          )}
-          {(projectState === "active" || projectState === "stopped") && (
-            <button type="button"
-              className="project-publish-btn"
-              disabled={disruptiveActionsDisabled}
-              title={disruptiveDisabledTitle}
-              onClick={() => {
-                if (disruptiveActionsDisabled) return;
-                setShowPatternModal(true);
-              }}
-              style={disruptiveBtnStyle}
-            >
-              Save as Pattern
-            </button>
-          )}
-          {projectState === "active" && workloadChipLabel && chipWorkload && (
-            <WorkloadStatusChip
-              headline={workloadChipLabel.headline}
-              detail={workloadChipLabel.detail}
-              variant={failedChainWorkload ? "failed" : "inflight"}
-              onClick={() => setOpenRunId(chipWorkload.id)}
-              onRetry={failedChainWorkload ? resumeWorkloadChain : undefined}
-              onCancel={inflightWorkload ? cancelInflightWorkload : undefined}
-              retrying={chainRetrying}
-              cancelling={chainCancelling}
-            />
-          )}
-          {projectState === "active" && (
-            <button type="button"
-              className="project-publish-btn"
-              disabled={disruptiveActionsDisabled}
-              title={disruptiveDisabledTitle}
-              onClick={() => {
-                if (disruptiveActionsDisabled) return;
-                setShowWorkloadModal(true);
-              }}
-              style={disruptiveBtnStyle}
-            >
-              Run Workload
-            </button>
-          )}
-          {projectState === "active" && (
-            <button type="button"
-              className="project-publish-btn"
-              onClick={() => setShowWorkloadRuns(true)}
-              style={{ opacity: 0.85 }}
-            >
-              Workloads
-              {inflightWorkload && (
-                <span
-                  title="Workload running"
-                  style={{
-                    display: "inline-block",
-                    width: 8,
-                    height: 8,
-                    marginLeft: 6,
-                    borderRadius: "50%",
-                    background: "var(--pf-t--global--color--status--info--default, #39a5dc)",
-                    verticalAlign: "middle",
-                  }}
-                />
-              )}
-            </button>
-          )}
-          {nodes.length > 0 && (
-            <button
-              className="project-publish-btn"
-              style={{ opacity: 0.85 }}
-              onClick={() => setShowExportModal(true)}
-            >
-              Export Template
-            </button>
-          )}
-          {projectState !== "deleting" && (
-            <button type="button"
-              className="project-stop-btn"
-              style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
-              onClick={() => setShowDeleteModal(true)}
-            >
-              Delete
-            </button>
-          )}
-          {projectState === "draft" && (
-            <>
-              {isAdmin && deployHosts.length > 0 && (
-                <select style={{
-                  padding: "6px 10px", borderRadius: 6, fontSize: 12,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--primary--default)",
-                  color: "var(--pf-t--global--text--color--regular)",
-                }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}
-                  title={requiresKubevirt ? "This project requires a KubeVirt cluster host" : undefined}
-                >
-                  <option value="">Auto (best host)</option>
-                  {(() => {
-                    const providers = new Map<string, {id: string; name: string; type: string}>();
-                    for (const h of deployHosts) {
-                      if (h.provider_id && h.provider_name && !providers.has(h.provider_id)) {
-                        providers.set(h.provider_id, {id: h.provider_id, name: h.provider_name, type: h.provider_type || ""});
-                      }
-                    }
-                    return Array.from(providers.values()).map((p) => (
-                      <option key={`provider:${p.id}`} value={`provider:${p.id}`}>Auto ({p.name})</option>
-                    ));
-                  })()}
-                  {deployHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
-                </select>
-              )}
-              {isAdmin && requiresKubevirt && deployHosts.length === 0 && (
-                <span style={{ fontSize: 11, color: "#f59e0b", maxWidth: 220 }}>
-                  Needs a KubeVirt cluster host
-                </span>
-              )}
-              <button type="button"
-                className="project-publish-btn"
-                onClick={handlePublish}
-                disabled={isAdmin && requiresKubevirt && deployHosts.length === 0}
-                title={
-                  isAdmin && requiresKubevirt && deployHosts.length === 0
-                    ? "This project requires a KubeVirt cluster host"
-                    : undefined
-                }
-                style={
-                  isAdmin && requiresKubevirt && deployHosts.length === 0
-                    ? { opacity: 0.4, cursor: "not-allowed" }
-                    : undefined
-                }
-              >
-                ⚡ Deploy
-              </button>
-            </>
-          )}
-          {projectState === "active" && (
+  );
+
+  const renderActiveActions = () => (
+projectState === "active" && (
             <>
               {resumableVmNodes.length > 0 && (
                 <button type="button"
@@ -1709,7 +1530,7 @@ export default function ProjectCanvasPage() {
                   Migrate
                 </button>
               )}
-              <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
+              <button type="button" className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
               <button type="button"
@@ -1725,21 +1546,19 @@ export default function ProjectCanvasPage() {
                 ↻ Republish
               </button>
             </>
-          )}
-          {projectState === "stopping" && (
-            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> Stopping...
-            </button>
-          )}
-          {projectState === "stopped" && (
+          )
+  );
+
+  const renderStoppedActions = () => (
+projectState === "stopped" && (
             <>
-              <button className="project-publish-btn" onClick={() => {
+              <button type="button" className="project-publish-btn" onClick={() => {
                 fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
                   .then(() => setProjectState("starting"));
               }}>
                 ▶ Start
               </button>
-              <button className="project-publish-btn" onClick={async () => {
+              <button type="button" className="project-publish-btn" onClick={async () => {
                 setDeployError(null);
                 const s = useCanvasStore.getState();
                 await fetch(`/api/v1/projects/${projectId}`, {
@@ -1773,28 +1592,31 @@ export default function ProjectCanvasPage() {
                 Undeploy
               </button>
             </>
-          )}
-          {projectState === "starting" && (
-            <button className="project-publish-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> Starting...
-            </button>
-          )}
-          {projectState === "error" && (
+          )
+  );
+
+  const retryStart = async () => {
+    const response = await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
+    if (response.ok) {
+      setProjectState("starting");
+      setDeployError(null);
+      return;
+    }
+    const data = await response.json();
+    setAlertMsg(data.detail || "Start failed");
+  };
+
+  const renderErrorActions = () => (
+projectState === "error" && (
             <>
-              <button className="project-stop-btn" onClick={() => {
+              <button type="button" className="project-stop-btn" onClick={() => {
                 fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
                   .then(() => { setProjectState("draft"); setDeployError(null); });
               }}>
                 Reset to Draft
               </button>
               {hasDeployedTopology && (
-                <button className="project-publish-btn" onClick={() => {
-                  fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
-                    .then((r) => {
-                      if (r.ok) { setProjectState("starting"); setDeployError(null); }
-                      else r.json().then((d) => setAlertMsg(d.detail || "Start failed"));
-                    });
-                }}>
+                <button type="button" className="project-publish-btn" onClick={retryStart}>
                   ▶ Retry Start
                 </button>
               )}
@@ -1802,18 +1624,11 @@ export default function ProjectCanvasPage() {
                 ↻ Republish
               </button>
             </>
-          )}
-        </div>
-      </div>
-      {projectState === "deleting" && (
-        <div style={{ position: "absolute", bottom: 24, right: 24, background: "var(--pf-t--global--background--color--primary--default)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 8, padding: 16, minWidth: 200, zIndex: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="project-btn-spinner" style={{ width: 16, height: 16 }} />
-            <strong>Deleting...</strong>
-          </div>
-        </div>
-      )}
-      {(projectState === "deploying" || projectState === "reconfiguring" || (projectState === "error" && deployError)) && (
+          )
+  );
+
+  const renderDeployProgress = () => (
+(projectState === "deploying" || projectState === "reconfiguring" || (projectState === "error" && deployError)) && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 100,
           display: "flex", alignItems: "center", justifyContent: "center",
@@ -1858,19 +1673,461 @@ export default function ProjectCanvasPage() {
             {projectState === "error" && (
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
                 {deployError && (
-                  <button onClick={() => navigator.clipboard.writeText(deployError)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--subtle)", cursor: "pointer", fontSize: 12 }}>
+                  <button type="button" onClick={() => navigator.clipboard.writeText(deployError)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--subtle)", cursor: "pointer", fontSize: 12 }}>
                     Copy Error
                   </button>
                 )}
-                <button onClick={() => setDeployError(null)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                <button type="button" onClick={() => setDeployError(null)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
                   Dismiss
                 </button>
               </div>
             )}
           </div>
         </div>
-      )}
-      <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
+      )
+  );
+
+  const renderMigrationDialog = () => (
+showMigrate && (
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClose={() => { setShowMigrate(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 16 }}>Migrate Project</div>
+            {migrateSourceHost && (
+              <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12,
+                padding: "8px 12px", borderRadius: 6, background: "rgba(255,255,255,0.05)",
+                border: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <strong>Source:</strong> {migrateSourceHost.ip_address} ({migrateSourceHost.instance_id})
+              </div>
+            )}
+            {availableHosts.length === 0 ? (
+              <p style={{ color: "var(--pf-t--global--text--color--subtle)" }}>No available hosts in the same storage pool.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <LabeledField style={{ fontSize: 12 }} label={<>Destination:</>}>
+                <select style={{
+                  width: "100%", padding: "6px 10px", borderRadius: 6,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)", fontSize: 13,
+                }} value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}>
+                  <option value="">Select host...</option>
+                  {availableHosts.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.instance_id} — {h.ip_address} (CPU: {h.used_vcpus}/{h.total_vcpus}, RAM: {Math.round(h.used_ram_mb/1024)}/{Math.round(h.total_ram_mb/1024)} GB)
+                    </option>
+                  ))}
+                </select></LabeledField>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="project-stop-btn" onClick={() => setShowMigrate(false)}>Cancel</button>
+                  <button type="button" className="project-publish-btn" onClick={handleMigrate} disabled={!migrateTarget || migrating}
+                          style={(!migrateTarget || migrating) ? { opacity: 0.4 } : {}}>
+                    {migrating ? <><span className="project-btn-spinner" /> Migrating...</> : "Migrate"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </ModalBackdrop>
+      )
+  );
+
+  const renderImportDialog = () => (
+showImportModal && (
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClose={() => { setShowImportModal(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 600, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Import Template YAML</div>
+            <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12 }}>
+              Paste an infra_template.yaml to generate the canvas topology.
+            </div>
+            <textarea
+              value={importYaml}
+              onChange={(e) => { setImportYaml(e.target.value); setImportError(""); }}
+              placeholder={TEMPLATE_YAML_EXAMPLE}
+              style={{
+                width: "100%", height: 300, fontFamily: "monospace", fontSize: 12,
+                padding: 12, borderRadius: 8, resize: "vertical",
+                background: "var(--pf-t--global--background--color--secondary--default)",
+                color: "var(--pf-t--global--text--color--regular)",
+                border: "1px solid var(--pf-t--global--border--color--default)",
+              }}
+            />
+            <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                Cloud-init credentials (applied when the template enables cloud-init and omits them)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>SSH Key</>}>
+                  <select
+                    style={{
+                      width: "100%", padding: "6px 10px", borderRadius: 6, fontSize: 13,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--primary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                    }}
+                    value={importSshKeyId}
+                    onChange={(e) => setImportSshKeyId(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    {importSshKeys.map((k) => (
+                      <option key={k.id} value={k.id}>{k.name}</option>
+                    ))}
+                  </select></LabeledField>
+                </div>
+                <div>
+                  <LabeledField style={{ fontSize: 12, display: "block", marginBottom: 4 }} label={<>
+                    Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
+                  </>} controlWrapper={<div style={{ display: "flex", gap: 4 }} />} afterControl={
+                    <button
+                      type="button"
+                      style={{
+                        padding: "4px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }}
+                      onClick={() => { navigator.clipboard.writeText(importPassword); }}
+                      title="Copy password"
+                    >Copy</button>
+                  }>
+                    <input
+                      style={{
+                        flex: "1 1 0", minWidth: 0, padding: "6px 10px", borderRadius: 6, fontSize: 13,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }}
+                      value={importPassword}
+                      onChange={(e) => setImportPassword(e.target.value)}
+                      placeholder="Used for console login"
+                    />
+                  </LabeledField>
+                  {!importPassword.trim() && (
+                    <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
+                      No password set — cloud images may have no console login until you set one on the VM.
+                    </div>
+                  )}
+                </div>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
+                  <input type="checkbox" checked={importAutoDeploy} onChange={(e) => setImportAutoDeploy(e.target.checked)} />
+                  {"Deploy immediately after import"}
+                </label>
+              </div>
+            </div>
+            {importError && (
+              <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
+                {importError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+              <button type="button" onClick={() => setShowImportModal(false)}
+                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <label style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", display: "inline-block" }}>
+                {"Upload File"}
+                <input type="file" accept=".yaml,.yml" style={{ display: "none" }} onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    file.text().then((text) => { setImportYaml(text); setImportError(""); });
+                  }
+                  e.target.value = "";
+                }} />
+              </label>
+              <button type="button"
+                disabled={!importYaml.trim() || importing}
+                onClick={async () => {
+                  setImporting(true);
+                  setImportError("");
+                  try {
+                    const parsed = await parseCanvasImportYaml(importYaml);
+                    const sectionError = templateImportError(parsed);
+                    if (sectionError) {
+                      setImportError(sectionError);
+                      setImporting(false);
+                      return;
+                    }
+                    const importBody: Record<string, unknown> = { template_yaml: parsed };
+                    if (importPassword) importBody.common_password = importPassword;
+                    if (importSshKeyId) importBody.bastion_ssh_key_id = importSshKeyId;
+                    const resp = await fetch(`/api/v1/projects/${projectId}/import-template`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(importBody),
+                    });
+                    if (!resp.ok) {
+                      const err = await resp.json().catch(() => ({ detail: "Import failed" }));
+                      setImportError(formatApiDetail(err.detail, "Import failed"));
+                      setImporting(false);
+                      return;
+                    }
+                    const okData = await resp.json().catch(() => ({}));
+                    const warnings: string[] = okData?.warnings || [];
+                    if (warnings.length > 0) {
+                      // Non-blocking: the import succeeded, but some template IPs
+                      // overlap Troshka's reserved infra IPs (gateway .1 /
+                      // dnsmasq .2) and will conflict at deploy time.
+                      window.alert(
+                        "Imported with warnings:\n\n" + warnings.join("\n"),
+                      );
+                    }
+                    setShowImportModal(false);
+                    await loadProject(projectId);
+                    if (importAutoDeploy) {
+                      const deployResp = await fetch(`/api/v1/projects/${projectId}/deploy`, { method: "POST" });
+                      if (!deployResp.ok) {
+                        const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+                        setAlertMsg(typeof err.detail === "string" ? err.detail : "Deploy failed");
+                      } else {
+                        // Refresh state so the toolbar reflects deploying.
+                        loadProject(projectId);
+                      }
+                    }
+                  } catch (err: unknown) {
+                    setImportError(err instanceof Error ? err.message : "Import failed");
+                  } finally {
+                    setImporting(false);
+                  }
+                }}
+                style={{
+                  padding: "8px 20px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: importing ? "var(--pf-t--global--background--color--disabled--default)" : "var(--pf-t--global--background--color--primary--default)",
+                  color: "#fff", cursor: importing ? "not-allowed" : "pointer", fontWeight: 500,
+                }}
+              >
+                {importing ? "Importing..." : "Import"}
+              </button>
+            </div>
+          </div>
+        </ModalBackdrop>
+      )
+  );
+
+  const renderExportDialog = () => (
+showExportModal && (
+        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClose={() => { setShowExportModal(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Export Template</div>
+            <div style={{
+              fontSize: 13, padding: "12px 16px", borderRadius: 8, marginBottom: 16,
+              background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+              color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
+            }}>
+              This exports the infrastructure topology (VMs, networks, gateway config, disk sizes) as a YAML template. Disks reference their <strong>source library items</strong> (not snapshots) — on import, those library items must exist. To capture a fully built environment including disk contents, use <strong>Save as Pattern</strong> instead.
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Passwords</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "current"} onChange={() => setExportPasswordMode("current")} />
+                  {"Include current passwords (plain text)"}
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "custom"} onChange={() => setExportPasswordMode("custom")} />
+                  {"Set a single password for all"}
+                </label>
+                {exportPasswordMode === "custom" && (
+                  <input
+                    className="props-input"
+                    value={exportCustomPassword}
+                    onChange={(e) => setExportCustomPassword(e.target.value)}
+                    placeholder="Enter password"
+                    style={{ marginLeft: 24, width: 200, fontSize: 13 }}
+                  />
+                )}
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "none"} onChange={() => setExportPasswordMode("none")} />
+                  {"Omit all passwords"}
+                </label>
+              </div>
+              {exportPasswordMode === "current" && (
+                <div style={{
+                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
+                  background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
+                  color: "var(--pf-t--global--text--color--subtle)",
+                }}>
+                  Passwords will be stored in plain text. Do not share the file if it contains sensitive credentials.
+                </div>
+              )}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={exportIncludeIds} onChange={(e) => setExportIncludeIds(e.target.checked)} />
+                {"Include library item IDs"}
+              </label>
+              {exportIncludeIds && (
+                <div style={{
+                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
+                  background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+                  color: "var(--pf-t--global--text--color--subtle)",
+                }}>
+                  IDs are instance-specific. Templates with IDs may fail to import on other Troshka instances. Leave off for portable templates — items will be resolved by name.
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" onClick={() => setShowExportModal(false)}
+                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button type="button"
+                disabled={exportPasswordMode === "custom" && !exportCustomPassword}
+                onClick={async () => {
+                  const exportBody: Record<string, string | boolean> = { password_mode: exportPasswordMode, include_ids: exportIncludeIds };
+                  if (exportPasswordMode === "custom" && exportCustomPassword) exportBody.custom_password = exportCustomPassword;
+                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(exportBody),
+                  });
+                  if (!resp.ok) return;
+                  const yaml = await resp.text();
+                  const blob = new Blob([yaml], { type: "text/yaml" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${projectName || "project"}-template.yaml`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setShowExportModal(false);
+                }}
+                style={{
+                  padding: "8px 20px", borderRadius: 6,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "#fff", cursor: "pointer", fontWeight: 500,
+                }}
+              >
+                Download YAML
+              </button>
+            </div>
+          </div>
+        </ModalBackdrop>
+      )
+  );
+
+  const renderBudgetDialog = () => (
+showBudgetModal && (
+        <ModalBackdrop label="Project settings" className="start-order-overlay" onClose={() => { setShowBudgetModal(false); }}>
+          <div className="start-order-modal" style={{ maxWidth: 400 }} >
+            <div className="start-order-header">
+              <span>Budget</span>
+              <button type="button" onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
+            </div>
+            <div className="start-order-body" style={{ padding: 16 }}>
+              <LabeledField style={{ fontSize: 13, display: "block", marginBottom: 6 }} label={<>
+                Stop the project at this spend (USD)
+              </>}>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                autoFocus
+                placeholder="None"
+                value={budgetModalDraft}
+                onChange={(e) => setBudgetModalDraft(e.target.value)}
+                style={{
+                  width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }}
+              /></LabeledField>
+              {liveSpend && (
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                  Spend so far ${liveSpend.total_usd < 0.01 && liveSpend.total_usd > 0
+                    ? liveSpend.total_usd.toFixed(4)
+                    : liveSpend.total_usd.toFixed(2)}
+                </div>
+              )}
+            </div>
+            <div className="start-order-footer" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="start-order-btn" onClick={() => setShowBudgetModal(false)}>Cancel</button>
+              <button type="button"
+                className="start-order-btn save"
+                onClick={() => {
+                  const raw = budgetModalDraft.trim();
+                  const next = raw === "" ? null : Number(raw);
+                  if (next != null && (Number.isNaN(next) || next < 0)) return;
+                  setBudgetUsd(next);
+                  setShowBudgetModal(false);
+                  fetch(`/api/v1/projects/${projectId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ budget_usd: next }),
+                  }).then((r) => (r.ok ? r.json() : null)).then((data) => {
+                    if (data) setBudgetUsd(data.budget_usd ?? null);
+                  });
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </ModalBackdrop>
+      )
+  );
+
+  const renderTimerToast = () => (
+timerToast && (
+        <div style={{
+          position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
+          background: timerToast.timer === "auto_delete" ? "rgba(239,68,68,0.95)" : "rgba(251,191,36,0.95)",
+          color: "#fff", padding: "10px 20px", borderRadius: 8,
+          display: "flex", alignItems: "center", gap: 12, fontSize: 13, fontWeight: 500,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+        }}>
+          <span>
+            {timerToast.timer === "auto_stop" ? "⏱ Auto-stop" : "🗑 Auto-delete"} in {timerToast.minutes} minute{timerToast.minutes !== 1 ? "s" : ""}
+          </span>
+          <button type="button"
+            onClick={() => {
+              fetch(`/api/v1/projects/${projectId}/extend-timer`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ timer: timerToast.timer, add_minutes: 60 }),
+              }).then(r => r.json()).then(data => {
+                setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
+                setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
+              });
+              setTimerToast(null);
+            }}
+            style={{
+              padding: "4px 12px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.4)",
+              background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer", fontSize: 12,
+            }}
+          >Extend 1h</button>
+          <button type="button"
+            onClick={() => setTimerToast(null)}
+            style={{
+              padding: "4px 8px", borderRadius: 4, border: "none",
+              background: "transparent", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 14,
+            }}
+          >✕</button>
+        </div>
+      )
+  );
+
+  const renderCanvas = () => (
+<div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
         {nodes.length === 0 && !projectName && (
           <div style={{
             position: "absolute", inset: 0, zIndex: 20,
@@ -1947,8 +2204,7 @@ export default function ProjectCanvasPage() {
             body: JSON.stringify({ clock_target: v }),
           }).then(r => {
             if (r.ok && v !== null && projectState === "active") {
-              setToast("Clock updated — VMs syncing");
-              setTimeout(() => setToast(null), 3000);
+              showToast("Clock updated — VMs syncing", 3000);
             }
           });
         }} guestExecEnabled={guestExecEnabled} onGuestExecChange={(v: boolean) => {
@@ -1968,12 +2224,12 @@ export default function ProjectCanvasPage() {
             if (data) setBudgetUsd(data.budget_usd ?? null);
           });
         }} />}
-        <button
+        <button type="button"
           onClick={() => setShowPalette(!showPalette)}
           title={showPalette ? "Hide palette" : "Show palette"}
           style={{
             position: "absolute", left: showPalette ? 220 : 0, top: "50%", transform: "translateY(-50%)",
-            zIndex: 10, width: 20, height: 48, borderRadius: showPalette ? "0 6px 6px 0" : "0 6px 6px 0",
+            zIndex: 10, width: 20, height: 48, borderRadius: "0 6px 6px 0",
             background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderLeft: "none",
             cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
             color: "var(--troshka-text-dim)", fontSize: 11, transition: "left 0.2s",
@@ -1986,12 +2242,12 @@ export default function ProjectCanvasPage() {
             setShowWorkloadModal(true);
           }}
         />
-        <button
+        <button type="button"
           onClick={() => setShowProperties(!showProperties)}
           title={showProperties ? "Hide properties" : "Show properties"}
           style={{
             position: "absolute", right: showProperties ? 280 : 0, top: "50%", transform: "translateY(-50%)",
-            zIndex: 10, width: 20, height: 48, borderRadius: showProperties ? "6px 0 0 6px" : "6px 0 0 6px",
+            zIndex: 10, width: 20, height: 48, borderRadius: "6px 0 0 6px",
             background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderRight: "none",
             cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
             color: "var(--troshka-text-dim)", fontSize: 11, transition: "right 0.2s",
@@ -2012,17 +2268,10 @@ export default function ProjectCanvasPage() {
           </div>
         )}
       </div>
-      {showStartOrder && <StartOrderPanel onClose={() => setShowStartOrder(false)} />}
-      {showExternalIps && <ExternalIpsPanel projectId={projectId} onClose={() => setShowExternalIps(false)} />}
-      {reconfigWarnings && (
-        <ReconfigureWarningModal
-          changes={reconfigWarnings}
-          diff={reconfigDiff}
-          onConfirm={(restartVmIds) => doReconfigure(restartVmIds)}
-          onCancel={() => { setReconfigWarnings(null); setReconfigDiff([]); }}
-        />
-      )}
-      {showPatternModal && (
+  );
+
+  const renderPatternDialog = () => (
+showPatternModal && (
         <SavePatternModal
           projectId={projectId}
           projectName={projectName}
@@ -2034,8 +2283,11 @@ export default function ProjectCanvasPage() {
           }}
           onClose={() => setShowPatternModal(false)}
         />
-      )}
-      {showWorkloadModal && (
+      )
+  );
+
+  const renderWorkloadDialog = () => (
+showWorkloadModal && (
         <RunWorkloadModal
           projectId={projectId}
           initialMode={runWorkloadTarget?.mode}
@@ -2055,7 +2307,223 @@ export default function ProjectCanvasPage() {
             }
           }}
         />
+      )
+  );
+
+  const renderAuxiliaryPanels = () => (<>
+      {showStartOrder && <StartOrderPanel onClose={() => setShowStartOrder(false)} />}
+      {showExternalIps && <ExternalIpsPanel projectId={projectId} onClose={() => setShowExternalIps(false)} />}
+  </>);
+
+  return (
+    <ReactFlowProvider>
+      {renderTimerToast()}
+      <div className="project-action-bar">
+        {renderProjectHeader()}
+        <div className="project-action-bar-actions">
+          {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (
+            <button type="button"
+              className="project-publish-btn"
+              onClick={() => window.open(`/console/monitor?project=${projectId}`, "_blank")}
+              style={{ opacity: 0.85 }}
+            >
+              MegaConsole
+            </button>
+          )}
+          {showroomUrl && (projectState === "active" || projectState === "stopped") && (
+            <button
+              type="button"
+              className="project-publish-btn"
+              disabled={openingShowroom}
+              onClick={async () => {
+                setOpeningShowroom(true);
+                try {
+                  await openShowroom(projectId);
+                } catch (error) {
+                  setToast(error instanceof Error ? error.message : "Could not open Showroom.");
+                } finally {
+                  setOpeningShowroom(false);
+                }
+              }}
+              style={{ opacity: 0.85 }}
+              title="Open Showroom using the latest access URL"
+            >
+              {openingShowroom ? "Opening Showroom…" : "Open Showroom"}
+            </button>
+          )}
+          {(projectState === "active" || projectState === "stopped") && (
+            <button type="button"
+              className="project-publish-btn"
+              disabled={disruptiveActionsDisabled}
+              title={disruptiveDisabledTitle}
+              onClick={() => {
+                if (disruptiveActionsDisabled) return;
+                setShowPatternModal(true);
+              }}
+              style={disruptiveBtnStyle}
+            >
+              Save as Pattern
+            </button>
+          )}
+          {projectState === "active" && workloadChipLabel && chipWorkload && (
+            <WorkloadStatusChip
+              headline={workloadChipLabel.headline}
+              detail={workloadChipLabel.detail}
+              variant={failedChainWorkload ? "failed" : "inflight"}
+              onClick={() => setOpenRunId(chipWorkload.id)}
+              onRetry={failedChainWorkload ? resumeWorkloadChain : undefined}
+              onCancel={inflightWorkload ? cancelInflightWorkload : undefined}
+              retrying={chainRetrying}
+              cancelling={chainCancelling}
+            />
+          )}
+          {projectState === "active" && (
+            <button type="button"
+              className="project-publish-btn"
+              disabled={disruptiveActionsDisabled}
+              title={disruptiveDisabledTitle}
+              onClick={() => {
+                if (disruptiveActionsDisabled) return;
+                setShowWorkloadModal(true);
+              }}
+              style={disruptiveBtnStyle}
+            >
+              Run Workload
+            </button>
+          )}
+          {projectState === "active" && (
+            <button type="button"
+              className="project-publish-btn"
+              onClick={() => setShowWorkloadRuns(true)}
+              style={{ opacity: 0.85 }}
+            >
+              Workloads
+              {inflightWorkload && (
+                <span
+                  title="Workload running"
+                  style={{
+                    display: "inline-block",
+                    width: 8,
+                    height: 8,
+                    marginLeft: 6,
+                    borderRadius: "50%",
+                    background: "var(--pf-t--global--color--status--info--default, #39a5dc)",
+                    verticalAlign: "middle",
+                  }}
+                />
+              )}
+            </button>
+          )}
+          {nodes.length > 0 && (
+            <button type="button"
+              className="project-publish-btn"
+              style={{ opacity: 0.85 }}
+              onClick={() => setShowExportModal(true)}
+            >
+              Export Template
+            </button>
+          )}
+          {projectState !== "deleting" && (
+            <button type="button"
+              className="project-stop-btn"
+              style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
+              onClick={() => setShowDeleteModal(true)}
+            >
+              Delete
+            </button>
+          )}
+          {projectState === "draft" && (
+            <>
+              {isAdmin && deployHosts.length > 0 && (
+                <select style={{
+                  padding: "6px 10px", borderRadius: 6, fontSize: 12,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}
+                  title={requiresKubevirt ? "This project requires a KubeVirt cluster host" : undefined}
+                >
+                  <option value="">Auto (best host)</option>
+                  {(() => {
+                    const providers = new Map<string, {id: string; name: string; type: string}>();
+                    for (const h of deployHosts) {
+                      if (h.provider_id && h.provider_name && !providers.has(h.provider_id)) {
+                        providers.set(h.provider_id, {id: h.provider_id, name: h.provider_name, type: h.provider_type || ""});
+                      }
+                    }
+                    return Array.from(providers.values()).map((p) => (
+                      <option key={`provider:${p.id}`} value={`provider:${p.id}`}>Auto ({p.name})</option>
+                    ));
+                  })()}
+                  {deployHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
+                </select>
+              )}
+              {isAdmin && requiresKubevirt && deployHosts.length === 0 && (
+                <span style={{ fontSize: 11, color: "#f59e0b", maxWidth: 220 }}>
+                  Needs a KubeVirt cluster host
+                </span>
+              )}
+              <button type="button"
+                className="project-publish-btn"
+                onClick={handlePublish}
+                disabled={isAdmin && requiresKubevirt && deployHosts.length === 0}
+                title={
+                  isAdmin && requiresKubevirt && deployHosts.length === 0
+                    ? "This project requires a KubeVirt cluster host"
+                    : undefined
+                }
+                style={
+                  isAdmin && requiresKubevirt && deployHosts.length === 0
+                    ? { opacity: 0.4, cursor: "not-allowed" }
+                    : undefined
+                }
+              >
+                ⚡ Deploy
+              </button>
+            </>
+          )}
+          {renderActiveActions()}
+          {projectState === "stopping" && (
+            <button type="button" className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> Stopping...
+            </button>
+          )}
+          {renderStoppedActions()}
+          {projectState === "starting" && (
+            <button type="button" className="project-publish-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> Starting...
+            </button>
+          )}
+          {renderErrorActions()}
+        </div>
+      </div>
+      {deployError && projectState === "active" && (
+        <div role="alert" style={{ padding: 12, color: "var(--pf-t--global--text--color--status--danger--default)", display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ whiteSpace: "pre-wrap", flex: 1 }}>{deployError}</span>
+          <button type="button" onClick={() => setDeployError(null)}>Dismiss</button>
+        </div>
       )}
+      {projectState === "deleting" && (
+        <div style={{ position: "absolute", bottom: 24, right: 24, background: "var(--pf-t--global--background--color--primary--default)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 8, padding: 16, minWidth: 200, zIndex: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="project-btn-spinner" style={{ width: 16, height: 16 }} />
+            <strong>Deleting...</strong>
+          </div>
+        </div>
+      )}
+      {renderDeployProgress()}
+      {renderCanvas()}
+      {renderAuxiliaryPanels()}
+      {reconfigWarnings && (
+        <ReconfigureWarningModal
+          changes={reconfigWarnings}
+          diff={reconfigDiff}
+          onConfirm={(restartVmIds) => doReconfigure(restartVmIds)}
+          onCancel={() => { setReconfigWarnings(null); setReconfigDiff([]); }}
+        />
+      )}
+      {renderPatternDialog()}
+      {renderWorkloadDialog()}
       {showWorkloadRuns && (
         <WorkloadRunsModal
           projectId={projectId}
@@ -2090,342 +2558,9 @@ export default function ProjectCanvasPage() {
           }}
         />
       )}
-      {showMigrate && (
-        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
-          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClose={() => { setShowMigrate(false); }}>
-          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
-            borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-            border: "1px solid var(--pf-t--global--border--color--default)" }}>
-            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 16 }}>Migrate Project</div>
-            {migrateSourceHost && (
-              <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12,
-                padding: "8px 12px", borderRadius: 6, background: "rgba(255,255,255,0.05)",
-                border: "1px solid var(--pf-t--global--border--color--default)" }}>
-                <strong>Source:</strong> {migrateSourceHost.ip_address} ({migrateSourceHost.instance_id})
-              </div>
-            )}
-            {availableHosts.length === 0 ? (
-              <p style={{ color: "var(--pf-t--global--text--color--subtle)" }}>No available hosts in the same storage pool.</p>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <label style={{ fontSize: 12 }}>Destination:</label>
-                <select style={{
-                  width: "100%", padding: "6px 10px", borderRadius: 6,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--primary--default)",
-                  color: "var(--pf-t--global--text--color--regular)", fontSize: 13,
-                }} value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}>
-                  <option value="">Select host...</option>
-                  {availableHosts.map((h) => (
-                    <option key={h.id} value={h.id}>
-                      {h.instance_id} — {h.ip_address} (CPU: {h.used_vcpus}/{h.total_vcpus}, RAM: {Math.round(h.used_ram_mb/1024)}/{Math.round(h.total_ram_mb/1024)} GB)
-                    </option>
-                  ))}
-                </select>
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button className="project-stop-btn" onClick={() => setShowMigrate(false)}>Cancel</button>
-                  <button className="project-publish-btn" onClick={handleMigrate} disabled={!migrateTarget || migrating}
-                          style={(!migrateTarget || migrating) ? { opacity: 0.4 } : {}}>
-                    {migrating ? <><span className="project-btn-spinner" /> Migrating...</> : "Migrate"}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </ModalBackdrop>
-      )}
-      {showImportModal && (
-        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
-          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClose={() => { setShowImportModal(false); }}>
-          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
-            borderRadius: 12, padding: 24, width: 600, maxWidth: "90vw",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-            border: "1px solid var(--pf-t--global--border--color--default)" }}>
-            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Import Template YAML</div>
-            <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12 }}>
-              Paste an infra_template.yaml to generate the canvas topology.
-            </div>
-            <textarea
-              value={importYaml}
-              onChange={(e) => { setImportYaml(e.target.value); setImportError(""); }}
-              placeholder={TEMPLATE_YAML_EXAMPLE}
-              style={{
-                width: "100%", height: 300, fontFamily: "monospace", fontSize: 12,
-                padding: 12, borderRadius: 8, resize: "vertical",
-                background: "var(--pf-t--global--background--color--secondary--default)",
-                color: "var(--pf-t--global--text--color--regular)",
-                border: "1px solid var(--pf-t--global--border--color--default)",
-              }}
-            />
-            <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
-              <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
-                Cloud-init credentials (applied when the template enables cloud-init and omits them)
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
-                  <select
-                    style={{
-                      width: "100%", padding: "6px 10px", borderRadius: 6, fontSize: 13,
-                      border: "1px solid var(--pf-t--global--border--color--default)",
-                      background: "var(--pf-t--global--background--color--primary--default)",
-                      color: "var(--pf-t--global--text--color--regular)",
-                    }}
-                    value={importSshKeyId}
-                    onChange={(e) => setImportSshKeyId(e.target.value)}
-                  >
-                    <option value="">None</option>
-                    {importSshKeys.map((k) => (
-                      <option key={k.id} value={k.id}>{k.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                    Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
-                  </label>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    <input
-                      style={{
-                        flex: "1 1 0", minWidth: 0, padding: "6px 10px", borderRadius: 6, fontSize: 13,
-                        border: "1px solid var(--pf-t--global--border--color--default)",
-                        background: "var(--pf-t--global--background--color--primary--default)",
-                        color: "var(--pf-t--global--text--color--regular)",
-                      }}
-                      value={importPassword}
-                      onChange={(e) => setImportPassword(e.target.value)}
-                      placeholder="Used for console login"
-                    />
-                    <button
-                      type="button"
-                      style={{
-                        padding: "4px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
-                        border: "1px solid var(--pf-t--global--border--color--default)",
-                        background: "var(--pf-t--global--background--color--primary--default)",
-                        color: "var(--pf-t--global--text--color--regular)",
-                      }}
-                      onClick={() => { navigator.clipboard.writeText(importPassword); }}
-                      title="Copy password"
-                    >Copy</button>
-                  </div>
-                  {!importPassword.trim() && (
-                    <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
-                      No password set — cloud images may have no console login until you set one on the VM.
-                    </div>
-                  )}
-                </div>
-                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
-                  <input type="checkbox" checked={importAutoDeploy} onChange={(e) => setImportAutoDeploy(e.target.checked)} />
-                  Deploy immediately after import
-                </label>
-              </div>
-            </div>
-            {importError && (
-              <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
-                {importError}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-              <button onClick={() => setShowImportModal(false)}
-                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
-                Cancel
-              </button>
-              <label style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
-                background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", display: "inline-block" }}>
-                Upload File
-                <input type="file" accept=".yaml,.yml" style={{ display: "none" }} onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    file.text().then((text) => { setImportYaml(text); setImportError(""); });
-                  }
-                  e.target.value = "";
-                }} />
-              </label>
-              <button type="button"
-                disabled={!importYaml.trim() || importing}
-                onClick={async () => {
-                  setImporting(true);
-                  setImportError("");
-                  try {
-                    let parsed: Record<string, unknown>;
-                    try {
-                      const jsYaml = await import("js-yaml");
-                      parsed = jsYaml.load(importYaml) as Record<string, unknown>;
-                    } catch {
-                      setImportError("Invalid YAML syntax");
-                      setImporting(false);
-                      return;
-                    }
-                    const sectionError = templateImportError(parsed);
-                    if (sectionError) {
-                      setImportError(sectionError);
-                      setImporting(false);
-                      return;
-                    }
-                    const importBody: Record<string, unknown> = { template_yaml: parsed };
-                    if (importPassword) importBody.common_password = importPassword;
-                    if (importSshKeyId) importBody.bastion_ssh_key_id = importSshKeyId;
-                    const resp = await fetch(`/api/v1/projects/${projectId}/import-template`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(importBody),
-                    });
-                    if (!resp.ok) {
-                      const err = await resp.json().catch(() => ({ detail: "Import failed" }));
-                      setImportError(formatApiDetail(err.detail, "Import failed"));
-                      setImporting(false);
-                      return;
-                    }
-                    const okData = await resp.json().catch(() => ({}));
-                    const warnings: string[] = okData?.warnings || [];
-                    if (warnings.length > 0) {
-                      // Non-blocking: the import succeeded, but some template IPs
-                      // overlap Troshka's reserved infra IPs (gateway .1 /
-                      // dnsmasq .2) and will conflict at deploy time.
-                      window.alert(
-                        "Imported with warnings:\n\n" + warnings.join("\n"),
-                      );
-                    }
-                    setShowImportModal(false);
-                    await loadProject(projectId);
-                    if (importAutoDeploy) {
-                      const deployResp = await fetch(`/api/v1/projects/${projectId}/deploy`, { method: "POST" });
-                      if (!deployResp.ok) {
-                        const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-                        setAlertMsg(typeof err.detail === "string" ? err.detail : "Deploy failed");
-                      } else {
-                        // Refresh state so the toolbar reflects deploying.
-                        loadProject(projectId);
-                      }
-                    }
-                  } catch (err: unknown) {
-                    setImportError(err instanceof Error ? err.message : "Import failed");
-                  } finally {
-                    setImporting(false);
-                  }
-                }}
-                style={{
-                  padding: "8px 20px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: importing ? "var(--pf-t--global--background--color--disabled--default)" : "var(--pf-t--global--background--color--primary--default)",
-                  color: "#fff", cursor: importing ? "not-allowed" : "pointer", fontWeight: 500,
-                }}
-              >
-                {importing ? "Importing..." : "Import"}
-              </button>
-            </div>
-          </div>
-        </ModalBackdrop>
-      )}
-      {showExportModal && (
-        <ModalBackdrop label="Project settings" style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
-          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
-          onClose={() => { setShowExportModal(false); }}>
-          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
-            borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-            border: "1px solid var(--pf-t--global--border--color--default)" }}>
-            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Export Template</div>
-            <div style={{
-              fontSize: 13, padding: "12px 16px", borderRadius: 8, marginBottom: 16,
-              background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
-              color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
-            }}>
-              This exports the infrastructure topology (VMs, networks, gateway config, disk sizes) as a YAML template. Disks reference their <strong>source library items</strong> (not snapshots) — on import, those library items must exist. To capture a fully built environment including disk contents, use <strong>Save as Pattern</strong> instead.
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Passwords</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="radio" name="exportPw" checked={exportPasswordMode === "current"} onChange={() => setExportPasswordMode("current")} />
-                  Include current passwords (plain text)
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="radio" name="exportPw" checked={exportPasswordMode === "custom"} onChange={() => setExportPasswordMode("custom")} />
-                  Set a single password for all
-                </label>
-                {exportPasswordMode === "custom" && (
-                  <input
-                    className="props-input"
-                    value={exportCustomPassword}
-                    onChange={(e) => setExportCustomPassword(e.target.value)}
-                    placeholder="Enter password"
-                    style={{ marginLeft: 24, width: 200, fontSize: 13 }}
-                  />
-                )}
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="radio" name="exportPw" checked={exportPasswordMode === "none"} onChange={() => setExportPasswordMode("none")} />
-                  Omit all passwords
-                </label>
-              </div>
-              {exportPasswordMode === "current" && (
-                <div style={{
-                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
-                  background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
-                  color: "var(--pf-t--global--text--color--subtle)",
-                }}>
-                  Passwords will be stored in plain text. Do not share the file if it contains sensitive credentials.
-                </div>
-              )}
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-                <input type="checkbox" checked={exportIncludeIds} onChange={(e) => setExportIncludeIds(e.target.checked)} />
-                Include library item IDs
-              </label>
-              {exportIncludeIds && (
-                <div style={{
-                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
-                  background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
-                  color: "var(--pf-t--global--text--color--subtle)",
-                }}>
-                  IDs are instance-specific. Templates with IDs may fail to import on other Troshka instances. Leave off for portable templates — items will be resolved by name.
-                </div>
-              )}
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowExportModal(false)}
-                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
-                Cancel
-              </button>
-              <button
-                disabled={exportPasswordMode === "custom" && !exportCustomPassword}
-                onClick={async () => {
-                  const exportBody: Record<string, string | boolean> = { password_mode: exportPasswordMode, include_ids: exportIncludeIds };
-                  if (exportPasswordMode === "custom" && exportCustomPassword) exportBody.custom_password = exportCustomPassword;
-                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(exportBody),
-                  });
-                  if (!resp.ok) return;
-                  const yaml = await resp.text();
-                  const blob = new Blob([yaml], { type: "text/yaml" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `${projectName || "project"}-template.yaml`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                  setShowExportModal(false);
-                }}
-                style={{
-                  padding: "8px 20px", borderRadius: 6,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--primary--default)",
-                  color: "#fff", cursor: "pointer", fontWeight: 500,
-                }}
-              >
-                Download YAML
-              </button>
-            </div>
-          </div>
-        </ModalBackdrop>
-      )}
+      {renderMigrationDialog()}
+      {renderImportDialog()}
+      {renderExportDialog()}
       {redeployOcpModal && (
         <RedeployOcpModal
           clusters={redeployOcpModal.clusters}
@@ -2438,65 +2573,7 @@ export default function ProjectCanvasPage() {
         />
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
-      {showBudgetModal && (
-        <ModalBackdrop label="Project settings" className="start-order-overlay" onClose={() => { setShowBudgetModal(false); }}>
-          <div className="start-order-modal" style={{ maxWidth: 400 }} >
-            <div className="start-order-header">
-              <span>Budget</span>
-              <button type="button" onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
-            </div>
-            <div className="start-order-body" style={{ padding: 16 }}>
-              <label style={{ fontSize: 13, display: "block", marginBottom: 6 }}>
-                Stop the project at this spend (USD)
-              </label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                autoFocus
-                placeholder="None"
-                value={budgetModalDraft}
-                onChange={(e) => setBudgetModalDraft(e.target.value)}
-                style={{
-                  width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--primary--default)",
-                  color: "var(--pf-t--global--text--color--regular)",
-                }}
-              />
-              {liveSpend && (
-                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-                  Spend so far ${liveSpend.total_usd < 0.01 && liveSpend.total_usd > 0
-                    ? liveSpend.total_usd.toFixed(4)
-                    : liveSpend.total_usd.toFixed(2)}
-                </div>
-              )}
-            </div>
-            <div className="start-order-footer" style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button type="button" className="start-order-btn" onClick={() => setShowBudgetModal(false)}>Cancel</button>
-              <button type="button"
-                className="start-order-btn save"
-                onClick={() => {
-                  const raw = budgetModalDraft.trim();
-                  const next = raw === "" ? null : Number(raw);
-                  if (next != null && (Number.isNaN(next) || next < 0)) return;
-                  setBudgetUsd(next);
-                  setShowBudgetModal(false);
-                  fetch(`/api/v1/projects/${projectId}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ budget_usd: next }),
-                  }).then((r) => (r.ok ? r.json() : null)).then((data) => {
-                    if (data) setBudgetUsd(data.budget_usd ?? null);
-                  });
-                }}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </ModalBackdrop>
-      )}
+      {renderBudgetDialog()}
       {showDeleteModal && (
         <ConfirmModal
           title="Delete Project"

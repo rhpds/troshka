@@ -1,5 +1,7 @@
 "use client";
 
+import ModalBackdrop from "@/components/ModalBackdrop";
+
 import React, { useEffect, useState } from "react";
 
 interface LibraryItem {
@@ -19,7 +21,7 @@ interface LibraryPickerProps {
   onClose: () => void;
 }
 
-export default function LibraryPicker({ type, onSelect, onClose }: LibraryPickerProps) {
+export default function LibraryPicker({ type, onSelect, onClose }: Readonly<LibraryPickerProps>) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -49,23 +51,23 @@ export default function LibraryPicker({ type, onSelect, onClose }: LibraryPicker
   };
 
   return (
-    <div style={{
+    <ModalBackdrop label="Select library item" style={{
       position: "fixed", inset: 0, zIndex: 2000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={onClose}>
+    }} onClose={onClose}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         border: "1px solid var(--pf-t--global--border--color--default)",
         borderRadius: 12, width: 500, maxHeight: "70vh",
         display: "flex", flexDirection: "column",
         boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-      }} onClick={(e) => e.stopPropagation()}>
+      }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--pf-t--global--border--color--default)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontWeight: 600, fontSize: 15 }}>
             Select {type === "iso" ? "ISO" : "Disk Image"}
           </span>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", fontSize: 18, cursor: "pointer" }}>✕</button>
+          <button type="button" onClick={onClose} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", fontSize: 18, cursor: "pointer" }}>✕</button>
         </div>
 
         <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
@@ -90,12 +92,12 @@ export default function LibraryPicker({ type, onSelect, onClose }: LibraryPicker
             </p>
           )}
           {items.map((item) => (
-            <div
+            <button type="button"
               key={item.id}
               style={{
                 padding: "10px 12px", borderRadius: 8, cursor: "pointer",
                 display: "flex", justifyContent: "space-between", alignItems: "center",
-                marginBottom: 4,
+                marginBottom: 4, width: "100%", textAlign: "left", border: 0, background: "transparent", color: "inherit",
               }}
               className="library-picker-item"
               onClick={() => {
@@ -120,10 +122,10 @@ export default function LibraryPicker({ type, onSelect, onClose }: LibraryPicker
                 </div>
               </div>
               <span style={{ fontSize: 11, color: "var(--pf-t--global--color--brand--default)" }}>Select</span>
-            </div>
+            </button>
           ))}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

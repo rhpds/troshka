@@ -9,7 +9,7 @@ interface ReadOnlyPropertiesPanelProps {
   onClose: () => void;
 }
 
-function PropRow({ label, value }: { label: string; value: React.ReactNode }) {
+function PropRow({ label, value }: Readonly<{ label: string; value: React.ReactNode }>) {
   if (value === undefined || value === null || value === "") return null;
   return (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13 }}>
@@ -19,7 +19,7 @@ function PropRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: Readonly<{ title: string; children: React.ReactNode }>) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", opacity: 0.5, marginBottom: 6 }}>{title}</div>
@@ -28,7 +28,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function VMProperties({ data }: { data: Record<string, any> }) {
+function diskRotationLabel(bus: string, rotationRate?: number): string {
+  if (rotationRate === undefined || !["scsi", "sata", "ide"].includes(bus)) return "";
+  return rotationRate === 1 ? " — SSD" : ` — ${rotationRate} RPM`;
+}
+
+function VMProperties({ data }: Readonly<{ data: Record<string, any> }>) {
   const nics = (data.nics as Array<Record<string, string>>) || [];
   const dcs = (data.diskControllers as Array<{id: string; name: string; bus: string; rotationRate?: number}>) || [];
 
@@ -67,7 +72,7 @@ function VMProperties({ data }: { data: Record<string, any> }) {
         <Section title={`Disk Controllers (${dcs.length})`}>
           {dcs.map((dc, i) => (
             <div key={dc.id || i} style={{ fontSize: 12, padding: "2px 0" }}>
-              {dc.name} ({dc.bus}){dc.rotationRate !== undefined && ["scsi", "sata", "ide"].includes(dc.bus) ? ` — ${dc.rotationRate === 1 ? "SSD" : `${dc.rotationRate} RPM`}` : ""}
+              {dc.name} ({dc.bus}){diskRotationLabel(dc.bus, dc.rotationRate)}
             </div>
           ))}
         </Section>
@@ -88,7 +93,7 @@ function VMProperties({ data }: { data: Record<string, any> }) {
   );
 }
 
-function NetworkProperties({ data }: { data: Record<string, any> }) {
+function NetworkProperties({ data }: Readonly<{ data: Record<string, any> }>) {
   return (
     <>
       <Section title="Network">
@@ -114,7 +119,7 @@ function NetworkProperties({ data }: { data: Record<string, any> }) {
   );
 }
 
-function StorageProperties({ data }: { data: Record<string, any> }) {
+function StorageProperties({ data }: Readonly<{ data: Record<string, any> }>) {
   return (
     <Section title="Disk">
       <PropRow label="Size" value={`${data.size} GB`} />
@@ -125,21 +130,25 @@ function StorageProperties({ data }: { data: Record<string, any> }) {
   );
 }
 
-export default function ReadOnlyPropertiesPanel({ node, onClose }: ReadOnlyPropertiesPanelProps) {
+function nodeIcon(node: Node): string {
+  if (node.type === "vmNode") return (node.data.icon as string) || "🖥";
+  if (node.type === "networkNode") return "🔌";
+  return node.data.format === "iso" ? "💿" : "🛢";
+}
+
+function nodeSubtitle(node: Node): string {
+  if (node.type === "vmNode") return "Virtual Machine";
+  if (node.type !== "networkNode") return "Storage";
+  if (node.data.subtype === "router") return "Router";
+  return node.data.subtype === "gateway" ? "Gateway" : "Network";
+}
+
+export default function ReadOnlyPropertiesPanel({ node, onClose }: Readonly<ReadOnlyPropertiesPanelProps>) {
   const data = node.data as Record<string, any>;
   const nodeType = node.type;
 
-  const icon = nodeType === "vmNode"
-    ? (data.icon as string || "🖥")
-    : nodeType === "networkNode"
-      ? "🔌"
-      : (data.format === "iso" ? "💿" : "🛢");
-
-  const subtitle = nodeType === "vmNode"
-    ? "Virtual Machine"
-    : nodeType === "networkNode"
-      ? (data.subtype === "router" ? "Router" : data.subtype === "gateway" ? "Gateway" : "Network")
-      : "Storage";
+  const icon = nodeIcon(node);
+  const subtitle = nodeSubtitle(node);
 
   return (
     <div style={{
@@ -156,7 +165,7 @@ export default function ReadOnlyPropertiesPanel({ node, onClose }: ReadOnlyPrope
             <div style={{ fontSize: 11, opacity: 0.5 }}>{subtitle}</div>
           </div>
         </div>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 16 }}>✕</button>
+        <button type="button" onClick={onClose} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 16 }}>✕</button>
       </div>
 
       <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12 }}>

@@ -1,4 +1,5 @@
 /** Deterministic showroom app-proxy public hosts (mirrors backend showroom_scaffold). */
+import { trimEdgeCharacter } from "./textBoundaries";
 
 const APP_PROXY_CODES: Record<string, string> = {
   "console-openshift-console": "con",
@@ -8,14 +9,15 @@ const APP_PROXY_CODES: Record<string, string> = {
 function appsClusterSlug(internalHost: string): string {
   const parts = (internalHost || "").trim().toLowerCase().split(".");
   if (parts.length < 3 || parts[1] !== "apps") return "";
-  return parts[2].replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 16);
+  return trimEdgeCharacter(parts[2].replaceAll(/[^a-z0-9-]+/g, "-"), "-").slice(0, 16);
 }
 
 /** Stable short suffix for unknown hosts — not a secret. */
 function shortHash(host: string): string {
   let h = 0;
   for (let i = 0; i < host.length; i++) {
-    h = (Math.imul(31, h) + host.charCodeAt(i)) | 0;
+    // Route names use the existing UTF-16 code-unit hash and signed 32-bit overflow.
+    h = Math.imul(1, Math.imul(31, h) + host.charCodeAt(i));
   }
   return (h >>> 0).toString(16).padStart(8, "0").slice(0, 6);
 }
@@ -28,7 +30,7 @@ export function appProxyRouteCode(internalHost: string): string {
     const base = APP_PROXY_CODES[label];
     return cluster ? `${base}-${cluster}` : base;
   }
-  const slug = label.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 8).replace(/^-+|-+$/g, "");
+  const slug = trimEdgeCharacter(trimEdgeCharacter(label.replaceAll(/[^a-z0-9]+/g, "-"), "-").slice(0, 8), "-");
   const generic = slug ? `${slug}-${shortHash(host)}` : shortHash(host);
   return cluster ? `${generic}-${cluster}` : generic;
 }
@@ -55,11 +57,10 @@ export function appProxyEipPublicHost(
   return `${appProxyRouteName(projectId, internalHost)}-${namespace}.${eip}.sslip.io`;
 }
 
-export function deriveAppsDomain(routeHostname: string): string {
-  const host = routeHostname || "";
-  const i = host.indexOf(".");
+export function deriveAppsDomain(routeHostname = ""): string {
+  const i = routeHostname.indexOf(".");
   // Mirror Python split(".", 1)[1] — keep everything after the first label.
-  return i < 0 ? "" : host.slice(i + 1);
+  return i < 0 ? "" : routeHostname.slice(i + 1);
 }
 
 /** Extract project namespace from showroom route auto-generated host (mirrors deploy_service). */
@@ -67,18 +68,18 @@ export function nsFromShowroomHostname(hostname: string): string {
   const firstLabel = (hostname || "").split(".", 1)[0];
   if (!firstLabel) return "";
 
-  let m = firstLabel.match(/^showroom-(.+)$/);
+  let m = /^showroom-(.+)$/.exec(firstLabel);
   if (m && !/^showroom-\d+-/.test(firstLabel)) return m[1];
 
-  m = firstLabel.match(/^troshka-pf-[a-f0-9]+-showroom-(.+)$/);
+  m = /^troshka-pf-[a-f0-9]+-showroom-(.+)$/.exec(firstLabel);
   if (m && !/^troshka-pf-[a-f0-9]+-showroom-\d+-/.test(firstLabel)) return m[1];
 
-  m = firstLabel.match(/-\d+-/);
+  m = /-\d+-/.exec(firstLabel);
   return m ? firstLabel.slice(m.index! + m[0].length) : "";
 }
 
 export function eipFromSslipHost(hostnameOrUrl: string): string | null {
-  const m = (hostnameOrUrl || "").match(/(\d+\.\d+\.\d+\.\d+)\.sslip\.io/i);
+  const m = /(?<!\d)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.sslip\.io/i.exec(hostnameOrUrl || "");
   return m?.[1] || null;
 }
 

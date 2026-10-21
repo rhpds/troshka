@@ -28,7 +28,7 @@ export default function NodeContextMenu({
   onSnapshotVM,
   onDuplicateVM,
   onRunWorkload,
-}: NodeContextMenuProps) {
+}: Readonly<NodeContextMenuProps>) {
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const hideNode = useCanvasStore((s) => s.hideNode);
@@ -99,7 +99,7 @@ export default function NodeContextMenu({
       )}
       {isDeployed && isRunning && !isRedeploying && !isNotFound && (
         <>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
+          <button type="button" onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
           </button>
           <button type="button" onClick={() => {
@@ -126,10 +126,10 @@ export default function NodeContextMenu({
           >
             💤 Hibernate
           </button>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/forcestop`, { method: "POST" }); onClose(); }}>
+          <button type="button" onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/forcestop`, { method: "POST" }); onClose(); }}>
             ⏻ Force Power Off
           </button>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/restart`, { method: "POST" }); onClose(); }}>
+          <button type="button" onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/restart`, { method: "POST" }); onClose(); }}>
             ↻ Restart
           </button>
         </>
@@ -140,20 +140,20 @@ export default function NodeContextMenu({
         </button>
       )}
       {isDeployed && !isRunning && !isPaused && !isTransitioning && !isRedeploying && !isNotFound && (
-        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
+        <button type="button" onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>
       )}
       {isDeployed && !isNotFound && (
-        <button onClick={() => {
-          window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${(projectId ?? "").replace(/-/g, "")}_${nodeId.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
+        <button type="button" onClick={() => {
+          window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${(projectId ?? "").replaceAll("-", "")}_${nodeId.replaceAll("-", "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
           onClose();
         }}>
           🖥 Console
         </button>
       )}
       {isVm && isDeployed && !isNotFound && onSnapshotVM && (
-        <button onClick={() => { onSnapshotVM(nodeId, vmName, isRunning); onClose(); }}>
+        <button type="button" onClick={() => { onSnapshotVM(nodeId, vmName, isRunning); onClose(); }}>
           📸 Save VM Snapshot
         </button>
       )}
@@ -198,13 +198,13 @@ export default function NodeContextMenu({
           }}>
             ⧉ Duplicate
           </button>
-          <button onClick={() => { hideNode(nodeId); onClose(); }}>
+          <button type="button" onClick={() => { hideNode(nodeId); onClose(); }}>
             👁 Hide
           </button>
         </>
       )}
       {isDeployed && isRedeploying && (
-        <button className="danger" onClick={async () => {
+        <button type="button" className="danger" onClick={async () => {
           await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/cancel-redeploy`, { method: "POST" });
           const updateNodeData = useCanvasStore.getState().updateNodeData;
           updateNodeData(nodeId, { status: "stopped", redeployStep: null, redeployDetail: null });
@@ -239,7 +239,7 @@ export default function NodeContextMenu({
         </button>
       )}
       {!isClusterMember && (
-        <button onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
+        <button type="button" onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
           ✕ Delete
         </button>
       )}

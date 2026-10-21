@@ -220,8 +220,9 @@ class TestPullThroughHelpers:
     def test_assert_probe_ok(self):
         ok = SimpleNamespace(status=200)
         _assert_probe_ok(ok, "https://reg")
+        exception_host = SimpleNamespace(status=500)
         with pytest.raises(PullThroughRegistryError):
-            _assert_probe_ok(SimpleNamespace(status=500), "https://reg")
+            _assert_probe_ok(exception_host, "https://reg")
         assert "credentials invalid" in _auth_failure_message("https://r", 401, "nope")
 
 

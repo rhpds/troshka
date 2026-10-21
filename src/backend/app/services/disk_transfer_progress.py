@@ -68,7 +68,6 @@ def _object_size(core_api, source, namespace):
     client = boto3.client(
         "s3",
         endpoint_url=endpoint,
-        region_name="us-east-1",
         config=config,
         **credentials,
     )

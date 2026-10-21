@@ -52,7 +52,7 @@ export function isContainerMountLeftHandle(handle: string | null | undefined): b
 }
 
 export function isPodContainer(node: Node | undefined): boolean {
-  if (!node || node.type !== "containerNode") return false;
+  if (node?.type !== "containerNode") return false;
   const d = node.data as Record<string, unknown>;
   return !!d.isPod && !d.isShowroom && d.name !== "showroom";
 }
@@ -102,7 +102,8 @@ export function normalizePodMountEdges(nodes: Node[], edges: Edge[]): Edge[] {
     const target = nodes.find((n) => n.id === edge.target);
     if (!source || !target) return edge;
 
-    const pod = isPodContainer(source) ? source : isPodContainer(target) ? target : undefined;
+    const targetPod = isPodContainer(target) ? target : undefined;
+    const pod = isPodContainer(source) ? source : targetPod;
     if (!pod) return edge;
 
     if (source.id === pod.id) {

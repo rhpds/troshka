@@ -16,7 +16,7 @@ export default function RedeployOcpModal({
   allReady,
   onChoose,
   onCancel,
-}: RedeployOcpModalProps) {
+}: Readonly<RedeployOcpModalProps>) {
   const statusLines = clusters
     .map((c) => `• ${c.name}: ${c.status || "unknown"}`)
     .join("\n");
