@@ -15,13 +15,56 @@ SPEC.loader.exec_module(sonar)
 
 
 class SonarPushTests(unittest.TestCase):
-    def test_unreachable_server_skips_before_credentials_or_tests(self):
+    def test_unreachable_server_runs_backend_fallback_without_coverage(self):
         with (
             patch.object(sonar, "api_json", side_effect=URLError("offline")),
             patch.object(sonar, "run_coverage") as coverage,
+            patch.object(sonar, "run_offline_backend") as backend,
         ):
             self.assertEqual(sonar.check({}), 0)
             coverage.assert_not_called()
+            backend.assert_called_once_with({})
+
+    def test_offline_backend_failure_blocks_push(self):
+        with (
+            patch.object(sonar, "api_json", side_effect=TimeoutError),
+            patch.object(sonar, "run_offline_backend", side_effect=sonar.CheckFailure("tests failed")),
+        ):
+            with self.assertRaisesRegex(sonar.CheckFailure, "tests failed"):
+                sonar.check({})
+
+    def test_offline_backend_skips_push_without_backend_changes(self):
+        with patch.object(sonar, "git", side_effect=["/repo", ""]), patch.object(sonar, "run_command") as run:
+            sonar.run_offline_backend({"PRE_COMMIT_FROM_REF": "old", "PRE_COMMIT_TO_REF": "new"})
+        run.assert_not_called()
+
+    def test_offline_backend_runs_once_without_sonar_token(self):
+        with (
+            patch.object(sonar, "git", side_effect=["/repo", "src/backend/app/main.py"]),
+            patch.object(sonar, "test_python", return_value="python3"),
+            patch.object(sonar, "run_command") as run,
+        ):
+            sonar.run_offline_backend({"PRE_COMMIT_FROM_REF": "old", "PRE_COMMIT_TO_REF": "new", "SONAR_TOKEN": "test-value"})
+        run.assert_called_once()
+        self.assertNotIn("SONAR_TOKEN", run.call_args.args[2])
+        self.assertEqual(run.call_args.args[1], Path("/repo/src/backend"))
+
+    def test_successful_online_check_does_not_run_offline_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(sonar, "api_json", return_value={"status": "UP"}),
+                patch.object(sonar.shutil, "which", return_value="scanner"),
+                patch.object(sonar, "git", return_value=tmp),
+                patch.object(sonar, "target_revision", return_value="abc"),
+                patch.object(sonar, "require_clean_sources"),
+                patch.object(sonar, "run_coverage") as coverage,
+                patch.object(sonar, "run_scanner"),
+                patch.object(sonar, "verify_analysis"),
+                patch.object(sonar, "run_offline_backend") as backend,
+            ):
+                self.assertEqual(sonar.check({"SONAR_TOKEN": "test-value"}), 0)
+                coverage.assert_called_once()
+                backend.assert_not_called()
 
     def test_reachable_server_without_token_blocks(self):
         with patch.object(sonar, "api_json", return_value={"status": "UP"}):

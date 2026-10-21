@@ -226,6 +226,24 @@ def print_findings(env):
         print("  Unable to retrieve findings: " + type(exc).__name__)
 
 
+def run_offline_backend(env):
+    """Preserve the existing backend pre-push check when Sonar cannot run."""
+    root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+    before, after = env.get("PRE_COMMIT_FROM_REF"), env.get("PRE_COMMIT_TO_REF")
+    if before and after and not git(root, "diff", "--name-only", before, after, "--", "src/backend"):
+        print("No backend changes; offline backend tests skipped.")
+        return
+    test_env = {key: value for key, value in env.items() if key != "SONAR_TOKEN"}
+    with tempfile.TemporaryDirectory(prefix="troshka-push-db-") as database_dir:
+        test_env["TROSHKA_TEST_DB_DIR"] = str(Path(database_dir).resolve())
+        run_command(
+            [test_python(root, "backend"), "-m", "pytest", "tests/", "-q", "--tb=short"],
+            root / "src/backend",
+            test_env,
+            int(env.get("SONAR_TEST_TIMEOUT", "1800")),
+        )
+
+
 def check(env):
     try:
         status = api_json("system/status", env)
@@ -237,9 +255,11 @@ def check(env):
         if isinstance(exc.reason, ssl.SSLError):
             raise CheckFailure("Sonar TLS verification failed; push blocked.") from exc
         print("Sonar API unreachable (VPN unavailable); skipping Sonar pre-push check.")
+        run_offline_backend(env)
         return 0
     except (TimeoutError, ConnectionError):
         print("Sonar API unreachable (VPN unavailable); skipping Sonar pre-push check.")
+        run_offline_backend(env)
         return 0
     if status.get("status") != "UP":
         raise CheckFailure(

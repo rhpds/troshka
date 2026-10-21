@@ -8,7 +8,9 @@ pre-commit install --hook-type pre-commit --hook-type pre-push
 
 The `sonarqube-push` hook runs for every push through the existing pre-commit
 configuration. It probes the internal Sonar API with an eight-second timeout.
-If the API cannot be reached, it reports a skip so work can be pushed off VPN.
+If the API cannot be reached, it skips Sonar and runs the backend tests once
+when the pushed range contains backend changes. Manual runs without a push
+range also run backend tests. This preserves the existing offline test check.
 An HTTP error or an unhealthy server blocks the push.
 
 When the API is reachable, export `SONAR_TOKEN` in the calling shell and have
@@ -25,6 +27,10 @@ to the backend venv when a component has none. The operator environment needs
 its pinned runtime dependencies, including `kopf`, plus pytest/pytest-cov.
 Frontend coverage uses two workers. Test failures, missing dependencies,
 scanner errors, timeouts, and failed gates all block the push.
+
+The coverage run supplies the backend pre-push test result when Sonar is
+reachable. There is no separate backend hook to repeat that suite, saving
+roughly a minute per connected push. No cached pass result is reused.
 
 Reports are generated in a temporary directory under the Git directory and
 removed when the hook exits. The scanner receives only these fresh reports,
