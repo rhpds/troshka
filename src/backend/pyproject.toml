@@ -18,7 +18,7 @@ dependencies = [
     "boto3>=1.34",
     "cryptography>=43.0",
     # v37 removes ApiClient.request and validates dict bodies as typed models.
-    "kubernetes>=29.0,<37",
+    "kubernetes>=29.0,<38",
     "jwcrypto>=1.5",
     "redis>=5.0",
     "rq>=1.16",
