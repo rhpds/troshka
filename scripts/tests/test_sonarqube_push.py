@@ -21,9 +21,10 @@ class SonarPushTests(unittest.TestCase):
             patch.object(sonar, "run_coverage") as coverage,
             patch.object(sonar, "run_offline_backend") as backend,
         ):
-            self.assertEqual(sonar.check({}), 0)
+            env = {"SONAR_TOKEN": "test-value"}
+            self.assertEqual(sonar.check(env), 0)
             coverage.assert_not_called()
-            backend.assert_called_once_with({})
+            backend.assert_called_once_with(env)
 
     def test_offline_backend_failure_blocks_push(self):
         with (
@@ -31,7 +32,7 @@ class SonarPushTests(unittest.TestCase):
             patch.object(sonar, "run_offline_backend", side_effect=sonar.CheckFailure("tests failed")),
         ):
             with self.assertRaisesRegex(sonar.CheckFailure, "tests failed"):
-                sonar.check({})
+                sonar.check({"SONAR_TOKEN": "test-value"})
 
     def test_offline_backend_skips_push_without_backend_changes(self):
         with patch.object(sonar, "git", side_effect=["/repo", ""]), patch.object(sonar, "run_command") as run:
@@ -66,27 +67,40 @@ class SonarPushTests(unittest.TestCase):
                 coverage.assert_called_once()
                 backend.assert_not_called()
 
-    def test_reachable_server_without_token_blocks(self):
-        with patch.object(sonar, "api_json", return_value={"status": "UP"}):
-            with self.assertRaisesRegex(sonar.CheckFailure, "SONAR_TOKEN"):
+    def test_missing_token_skips_sonar_and_runs_backend(self):
+        with (
+            patch.object(sonar, "api_json") as api,
+            patch.object(sonar, "run_coverage") as coverage,
+            patch.object(sonar, "run_offline_backend") as backend,
+        ):
+            self.assertEqual(sonar.check({}), 0)
+            api.assert_not_called()
+            coverage.assert_not_called()
+            backend.assert_called_once_with({})
+
+    def test_missing_token_backend_failure_blocks_push(self):
+        with patch.object(
+            sonar, "run_offline_backend", side_effect=sonar.CheckFailure("tests failed")
+        ):
+            with self.assertRaisesRegex(sonar.CheckFailure, "tests failed"):
                 sonar.check({})
 
     def test_http_error_is_not_treated_as_offline(self):
         error = HTTPError("https://sonar.example", 403, "Forbidden", {}, None)
         with patch.object(sonar, "api_json", side_effect=error):
             with self.assertRaisesRegex(sonar.CheckFailure, "403"):
-                sonar.check({})
+                sonar.check({"SONAR_TOKEN": "test-value"})
 
     def test_unhealthy_server_blocks(self):
         with patch.object(sonar, "api_json", return_value={"status": "DOWN"}):
             with self.assertRaisesRegex(sonar.CheckFailure, "DOWN"):
-                sonar.check({})
+                sonar.check({"SONAR_TOKEN": "test-value"})
 
     def test_tls_verification_failure_blocks(self):
         error = URLError(sonar.ssl.SSLCertVerificationError("untrusted certificate"))
         with patch.object(sonar, "api_json", side_effect=error):
             with self.assertRaisesRegex(sonar.CheckFailure, "TLS"):
-                sonar.check({})
+                sonar.check({"SONAR_TOKEN": "test-value"})
 
     def test_non_head_push_blocks(self):
         with patch.object(sonar, "git", return_value="abc"):

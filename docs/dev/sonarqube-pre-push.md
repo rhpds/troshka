@@ -7,13 +7,15 @@ pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 The `sonarqube-push` hook runs for every push through the existing pre-commit
-configuration. It probes the internal Sonar API with an eight-second timeout.
-If the API cannot be reached, it skips Sonar and runs the backend tests once
+configuration. Sonar is optional: it runs only when `SONAR_TOKEN` is exported
+and the internal Sonar API is reachable through the VPN. Without a token, it
+skips Sonar without probing the API. With a token, it probes the API with an
+eight-second timeout. If either prerequisite is missing, it runs the backend tests once
 when the pushed range contains backend changes. Manual runs without a push
 range also run backend tests. This preserves the existing offline test check.
-An HTTP error or an unhealthy server blocks the push.
+With a token set, an HTTP error or an unhealthy server blocks the push.
 
-When the API is reachable, export `SONAR_TOKEN` in the calling shell and have
+To opt into Sonar while connected to the VPN, export `SONAR_TOKEN` in the calling shell and have
 `sonar-scanner`, Node/npm, frontend dependencies, and repository Python test
 environments installed. The token is passed through the scanner environment,
 not command-line arguments. The script does not read shell startup files or
