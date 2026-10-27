@@ -1316,6 +1316,43 @@ def test_net_automation_workshop_showroom_import():
     terminal_tabs = [t for t in showroom["showroomTabs"] if t.get("type") == "terminal"]
     assert len(terminal_tabs) == 2
     assert all(t.get("sshPort") == 22 for t in terminal_tabs)
+    # AAP uses root-relative assets and APIs; it needs its own public vhost.
+    from app.services.showroom_scaffold import (
+        app_proxy_internal_hosts,
+        build_nginx_config,
+        build_ui_config_yaml,
+        resolve_showroom_tabs,
+    )
+
+    tabs = showroom["showroomTabs"]
+    assert app_proxy_internal_hosts(tabs) == ["control.workshop.local"]
+    vm_ids = {
+        n["data"]["name"]: n["id"] for n in topo["nodes"] if n["type"] == "vmNode"
+    }
+    resolved = resolve_showroom_tabs(tabs, tmpl["vms"], vm_ids)
+    nginx = build_nginx_config(
+        resolved, resolver_ips=["10.0.0.2"], access_token="test-token"
+    )
+    assert "location /aap/" not in nginx
+    assert 'set $troshka_up_0 "control.workshop.local";' in nginx
+    assert "proxy_pass https://$troshka_up_0;" in nginx
+    assert "__TROSHKA_APP_PROXY__control.workshop.local__" in build_ui_config_yaml(
+        resolved
+    )
+
+    # The plain RHEL guest must receive a runnable editor installer at boot.
+    from app.services.cloud_init import generate_userdata
+
+    userdata = yaml.safe_load(generate_userdata(vms_by_name["vscode"]))
+    installer = next(
+        entry
+        for entry in userdata.get("write_files", [])
+        if entry["path"] == "/usr/local/sbin/setup-workshop-code-server"
+    )
+    assert ["bash", installer["path"]] in userdata["runcmd"]
+    import subprocess
+
+    subprocess.run(["bash", "-n"], input=installer["content"], text=True, check=True)
     assert topo["showroom"]["enabled"] is True
     assert len(topo["startOrder"]) == 7
     showroom_node = pods[0]

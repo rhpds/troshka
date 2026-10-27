@@ -37,6 +37,36 @@ def test_shipped_templates_validate(path: Path):
     assert isinstance(prepared.get("networks"), dict)
 
 
+@pytest.mark.parametrize(
+    "host", ["control.workshop.local", "console-openshift-console.apps.ocp.ocp.local"]
+)
+def test_showroom_app_proxy_hosts_validate(host):
+    doc = yaml.safe_load(
+        (_EXAMPLE_TEMPLATES / "net-automation-workshop.yaml").read_text()
+    )
+    doc["showroom"]["tabs"] = [{"name": "App", "type": "proxy", "proxy_hosts": [host]}]
+    assert validate_template_document(doc) == doc
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        [],
+        [""],
+        ["https://control.workshop.local"],
+        ["control; include /tmp/config;"],
+        ["control..local"],
+    ],
+)
+def test_showroom_app_proxy_hosts_reject_invalid_hosts(hosts):
+    doc = yaml.safe_load(
+        (_EXAMPLE_TEMPLATES / "net-automation-workshop.yaml").read_text()
+    )
+    doc["showroom"]["tabs"] = [{"name": "App", "type": "proxy", "proxy_hosts": hosts}]
+    with pytest.raises(TemplateSchemaError):
+        validate_template_document(doc)
+
+
 def test_ocp_nodes_and_shared_behavior_validate_without_top_level_vms():
     doc = {
         "networks": {"cluster": {"cidr": "10.0.0.0/24"}},

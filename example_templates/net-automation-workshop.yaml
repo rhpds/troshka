@@ -85,9 +85,42 @@ vms:
     login_user: rhel
     cloud_user_password: ansible123!  # pragma: allowlist secret
     user_data: |
+      write_files:
+        - path: /usr/local/sbin/setup-workshop-code-server
+          permissions: '0755'
+          content: |
+            #!/bin/bash
+            set -euo pipefail
+            # rhel-9.6 is a base image, not the prepared devtools image.
+            # Install a pinned RPM without requiring RHSM repositories.
+            version=4.143.1
+            checksum=7cf56a3bb6a9ef6238d9b2c8f0f6e022180fcd782dd4ff0f5b5055b86c05139d
+            if [[ "$(rpm -q --qf '%{VERSION}' code-server 2>/dev/null)" != "$version" ]]; then
+              package=$(mktemp /var/tmp/workshop-code-server.XXXXXX.rpm)
+              trap 'rm -f "$package"' EXIT
+              curl --fail --location --silent --show-error --retry 3 \
+                --connect-timeout 10 --max-time 180 \
+                "https://github.com/coder/code-server/releases/download/v${version}/code-server-${version}-amd64.rpm" \
+                --output "$package"
+              echo "$checksum  $package" | sha256sum --check
+              rpm -Uvh "$package"
+            fi
+            install -d -o rhel -g rhel /home/rhel/.config/code-server
+            chown rhel:rhel /home/rhel
+            systemctl enable --now code-server@rhel
+            curl --fail --silent --show-error --retry 15 --retry-connrefused \
+              --retry-delay 2 --max-time 5 http://127.0.0.1:8080/healthz
+        - path: /home/rhel/.config/code-server/config.yaml
+          owner: rhel:rhel
+          permissions: '0600'
+          content: |
+            bind-addr: 0.0.0.0:8080
+            auth: none
+            cert: false
       runcmd:
         - echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-cloud-init.conf
         - systemctl reload sshd
+        - [bash, /usr/local/sbin/setup-workshop-code-server]
     tags:
       AnsibleGroup: workshop_vscode
     disks:
@@ -227,9 +260,10 @@ showroom:
       proxy_port: 8080
     - name: Ansible Automation Platform
       type: proxy
-      vm: control
-      network: mgmt
-      proxy_path: /aap/
+      # AAP's /assets and /api URLs require a dedicated hostname, not /aap/.
+      # Resolved by the mgmt DNS record above; Troshka creates the public route.
+      proxy_hosts:
+        - control.workshop.local
       proxy_port: 443
       proxy_tls: true       # HTTPS upstream (self-signed OK)
     # App-proxy (proxy_hosts): embed an OAuth-protected cluster app (e.g. the

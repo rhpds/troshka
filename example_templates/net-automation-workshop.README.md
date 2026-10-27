@@ -9,6 +9,26 @@ live in **demo_workloads**:
 - Role: `~/demo_workloads/roles/troshka_workload_net_automation_workshop/`
 - Docs: `~/demo_workloads/playbooks/net-automation-workshop/PATTERN-BUILD.md`
 
+## Student web services
+
+The template uses the plain `rhel-9.6` image for `vscode`. Its cloud-init now
+installs code-server **4.143.1** from the named upstream release, verifies the RPM's
+SHA-256, and enables `code-server@rhel` on port 8080. The install does not require
+RHEL package repositories; it does require HTTPS access to GitHub release assets.
+The service's own login is disabled because the Showroom proxy enforces the lab
+access token. Do not expose port 8080 directly. This provisions the editor only;
+the `demo_workloads` bootstrap is still required for workshop files, Ansible
+tooling, router access, and the rest of the lab setup.
+
+AAP uses `proxy_hosts: [control.workshop.local]`, backed by the template's mgmt
+DNS record. Troshka's existing app proxy creates a dedicated public hostname,
+preserves the lab access-token gate, and fills the Showroom tab URL at deploy.
+Do not change this back to `proxy_path: /aap/`: AAP requests `/assets/...` and
+`/api/...` from the hostname root, which sends them to Showroom on a path proxy.
+
+These changes apply to newly imported templates. Existing projects and saved
+patterns retain their previous configuration and need updating or rebuilding.
+
 ## Building bootstrap ISOs
 
 Source configs live in `example_templates/net-automation-workshop/bootstrap/`.
