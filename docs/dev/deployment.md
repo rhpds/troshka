@@ -4,6 +4,37 @@
 
 ## Deployment
 
+### Full production release
+
+From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a
+UTC release tag (`vYYYY.MM.DD-HHMMSS`), atomically pushes HEAD to `main` and the
+tag, waits for the tag's full image build, and promotes that release to the
+existing `production` image tags. `main` remains the integration branch;
+Argo CD Image Updater still deploys `production` digests.
+
+Use `--tag vNAME` to choose a release name. To resume a failed or interrupted
+deployment, check out that release and run
+`./scripts/deploy-full.sh --skip-push --tag vNAME`. If GitHub has not registered
+the build when queried, the script reports this resume command without promoting
+anything. Never move a published release tag.
+
+The script preflights all ten images and cluster access, requires idle RQ queues,
+promotes and verifies every destination digest, applies CRDs and RBAC without
+overwriting SCC membership, and rolls operators and persistent project services
+across the seven configured clusters. It checks every running replica, including
+all workers and tunnels, then compares the runtime template schema with the
+release checkout and checks backend HTTP health. Transient ops-pod and terminal
+images are promoted for subsequent jobs; active jobs are not forcibly restarted.
+
+A failed cluster or unhealthy deployment makes the command fail, even if that
+failure predates the release. Inspect its errors before resuming. The existing
+`--skip-operators`, `--skip-project-pods`, and `--sync-ns-rbac` options remain
+available for deliberately narrower runs. Standalone promotion now requires an
+explicit source: `./scripts/promote-to-production.sh vNAME`; it never defaults
+to `latest`.
+
+### Installation methods
+
 Three deployment methods — all produce equivalent results:
 ### Helm Chart (`deploy/helm/`)
 ```bash
