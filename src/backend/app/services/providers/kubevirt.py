@@ -719,6 +719,117 @@ def _strip_rook_crs(custom_api, namespace: str) -> None:
         )
 
 
+def _network_dependencies_remain(custom_api, core_api, apps_api, namespace):
+    """Fail closed on API errors; never release network cleanup over live users."""
+    for list_fn in (
+        core_api.list_namespaced_pod,
+        core_api.list_namespaced_persistent_volume_claim,
+        core_api.list_namespaced_config_map,
+        core_api.list_namespaced_service,
+        apps_api.list_namespaced_deployment,
+    ):
+        if list_fn(namespace=namespace).items:
+            return True
+    for group, version, plural in (
+        (CRD_GROUP, CRD_VERSION, "troshkaprojects"),
+        ("kubevirt.io", "v1", "virtualmachines"),
+        ("kubevirt.io", "v1", "virtualmachineinstances"),
+        ("cdi.kubevirt.io", "v1beta1", "datavolumes"),
+        ("k8s.cni.cncf.io", "v1", "network-attachment-definitions"),
+    ):
+        if custom_api.list_namespaced_custom_object(
+            group=group, version=version, plural=plural, namespace=namespace
+        )["items"]:
+            return True
+    return False
+
+
+def _remove_network_scc_users(custom_api, namespace):
+    """Finish the network handler's cluster-scoped cleanup with optimistic locking."""
+    from kubernetes.client.exceptions import ApiException
+
+    sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
+    for name in ("troshka-network-pods", "troshka-gateway"):
+        args = dict(
+            group="security.openshift.io",
+            version="v1",
+            plural="securitycontextconstraints",
+            name=name,
+        )
+        try:
+            scc = custom_api.get_cluster_custom_object(**args)
+        except ApiException as exc:
+            if exc.status == 404:
+                continue
+            raise
+        users = scc.get("users") or []
+        if sa_ref in users:
+            custom_api.patch_cluster_custom_object(
+                **args,
+                body={
+                    "metadata": {"resourceVersion": scc["metadata"]["resourceVersion"]},
+                    "users": [user for user in users if user != sa_ref],
+                },
+            )
+
+
+def _retry_network_cleanup(provider, project_id) -> bool:
+    """Recover orphaned network finalizers only after all dependencies are gone.
+
+    The caller bounds retries. Errors (including conflicts) leave finalizers in
+    place for the next attempt; unrelated finalizers are always preserved.
+    """
+    from typing import Any, cast
+
+    from kubernetes import client
+
+    custom_api, core_api, api_client = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    ns = cast(client.V1Namespace, core_api.read_namespace(name=namespace))
+    if ns.metadata is None or not ns.metadata.deletion_timestamp:
+        return False
+    networks = cast(
+        dict[str, Any],
+        custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            plural="troshkanetworks",
+            namespace=namespace,
+        ),
+    )["items"]
+    pending = [
+        n["metadata"]
+        for n in networks
+        if n["metadata"].get("deletionTimestamp")
+        and "troshka.redhat.com/finalizer" in n["metadata"].get("finalizers", [])
+    ]
+    if not pending or _network_dependencies_remain(
+        custom_api, core_api, client.AppsV1Api(api_client), namespace
+    ):
+        return False
+    _remove_network_scc_users(custom_api, namespace)
+    for meta in pending:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            plural="troshkanetworks",
+            namespace=namespace,
+            name=meta["name"],
+            body={
+                "metadata": {
+                    "resourceVersion": meta["resourceVersion"],
+                    "finalizers": [
+                        f
+                        for f in meta["finalizers"]
+                        if f != "troshka.redhat.com/finalizer"
+                    ],
+                }
+            },
+        )
+        logger.info("Recovered network cleanup for %s/%s", namespace, meta["name"])
+    return True
+
+
 def _force_clear_rook_finalizers(provider, project_id) -> None:
     """Strip Rook / snapshot / PVC finalizers that leave namespaces Terminating.
 

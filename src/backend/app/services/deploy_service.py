@@ -14088,6 +14088,15 @@ def _namespace_deletion_timeout(core_api, ns_name: str, project_id: str) -> bool
     return False
 
 
+def _try_retry_network_cleanup(provider, project_id):
+    from app.services.providers.kubevirt import _retry_network_cleanup
+
+    try:
+        _retry_network_cleanup(provider, project_id)
+    except Exception:
+        logger.exception("Destroy %s: network cleanup retry failed", project_id[:8])
+
+
 def _wait_for_namespace_deletion(provider, project_id) -> bool:
     """Poll until the project namespace is gone. Returns True only when the
     namespace is confirmed terminated (404); False if it is still present after
@@ -14107,6 +14116,8 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
     for i in range(60):
         try:
             core_api.read_namespace(name=ns_name)
+            if i in (12, 36):
+                _try_retry_network_cleanup(provider, project_id)
             if not cleared and i == 12:
                 cleared = _try_clear_rook_finalizers(
                     provider, project_id, "rook finalizer clear failed"

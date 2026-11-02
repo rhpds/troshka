@@ -20,6 +20,11 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "create", "delete", "patch", "list"]
+  # Complete orphaned network cleanup after namespace dependencies are gone.
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["troshka-network-pods", "troshka-gateway"]
+    verbs: ["get", "patch"]
   # Nodes — NodePort / placement
   - apiGroups: [""]
     resources: ["nodes"]

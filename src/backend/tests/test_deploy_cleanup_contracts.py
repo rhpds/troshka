@@ -21,6 +21,9 @@ def namespace_clients(monkeypatch):
         "app.services.providers.kubevirt._project_ns", lambda *_: "project-ns"
     )
     monkeypatch.setattr("time.sleep", Mock())
+    monkeypatch.setattr(
+        "app.services.providers.kubevirt._retry_network_cleanup", Mock()
+    )
     cleanup = Mock()
     finalizers = Mock()
     monkeypatch.setattr(
@@ -69,6 +72,29 @@ def test_confirmed_namespace_deletion_survives_pv_cleanup_error(namespace_client
     core.read_namespace.side_effect = ApiException(status=404)
     cleanup.side_effect = RuntimeError("PV API unavailable")
     assert deploy._wait_for_namespace_deletion(Mock(), "project") is True
+
+
+def test_network_recovery_is_bounded_and_failure_does_not_stop_polling(
+    namespace_clients, monkeypatch
+):
+    retry = Mock(side_effect=RuntimeError("SCC conflict"))
+    monkeypatch.setattr("app.services.providers.kubevirt._retry_network_cleanup", retry)
+    assert deploy._wait_for_namespace_deletion(Mock(), "project") is False
+    assert retry.call_count == 2
+
+
+def test_second_network_recovery_can_complete_deletion(namespace_clients, monkeypatch):
+    _, core, _, _ = namespace_clients
+
+    def recover(*_):
+        if retry.call_count == 1:
+            raise RuntimeError("SCC conflict")
+        core.read_namespace.side_effect = ApiException(status=404)
+
+    retry = Mock(side_effect=recover)
+    monkeypatch.setattr("app.services.providers.kubevirt._retry_network_cleanup", retry)
+    assert deploy._wait_for_namespace_deletion(Mock(), "project") is True
+    assert retry.call_count == 2
 
 
 @pytest.mark.parametrize(
