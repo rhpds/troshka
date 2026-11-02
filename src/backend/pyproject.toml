@@ -21,7 +21,8 @@ dependencies = [
     "kubernetes>=29.0,<37",
     "jwcrypto>=1.5",
     "redis>=5.0",
-    "rq>=1.16",
+    # Worker overrides target this API; keep aligned with requirements.txt.
+    "rq==2.12.0",
     "websockets>=12.0",
     "pyyaml>=6.0",
     "jsonschema>=4.23.0",
