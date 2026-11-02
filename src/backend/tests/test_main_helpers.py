@@ -1,6 +1,5 @@
 """Tests for startup helpers and admin endpoints in app.main."""
 
-import json
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -1311,34 +1310,33 @@ class TestFailedJobEndpoints:
 
 class TestOcpVersionsEndpoint:
     def test_ocp_versions_returns_channels(self):
-        mock_data = {
-            "nodes": [
-                {"version": "4.18.1"},
-                {"version": "4.18.2"},
-            ]
-        }
-
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mock_data).encode()
-            mock_resp.__enter__ = lambda s: s
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_resp
-
+        versions = [
+            {"name": "5.0.0-ec.6", "support": "Dev Preview"},
+            {"name": "4.22.10", "support": "Full Support"},
+        ]
+        with patch(
+            "app.api.ocp_versions._cache", {"at": float("inf"), "versions": versions}
+        ):
             resp = client.get("/api/v1/ocp/versions")
             assert resp.status_code == 200
             data = resp.json()
-            assert isinstance(data, list)
+            assert [v["minor"] for v in data] == ["5.0.0-ec.6", "4.22.10"]
+            assert data[0]["channel"] == "dev-preview"
+            assert data[1]["channel"] == "stable-4.22"
+            assert client.get("/api/v1/ocp-versions").json()["versions"] == versions
 
     def test_ocp_versions_handles_errors(self):
-        with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
-            with patch(
-                "app.services.ocp.client_mirror.preview_version_entries",
+        with (
+            patch("app.api.ocp_versions._cache", {}),
+            patch("app.api.ocp_versions.httpx.get", side_effect=OSError("timeout")),
+            patch(
+                "app.services.ocp.client_mirror.available_mirror_versions",
                 return_value=[],
-            ):
-                resp = client.get("/api/v1/ocp/versions")
-                assert resp.status_code == 200
-                assert resp.json() == []
+            ),
+        ):
+            resp = client.get("/api/v1/ocp/versions")
+            assert resp.status_code == 200
+            assert resp.json() == []
 
 
 # ── _startup_resume_storage_pools tests ──

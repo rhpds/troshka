@@ -2,9 +2,10 @@
 
 The frontend cluster editor offers a dropdown of OCP versions. Rather than
 hardcode a list that goes stale, we read Red Hat's public Product Life Cycle
-API and expose the non-EOL 4.x minor versions. Fetched server-side (avoids
-browser CORS), cached in-memory across requests, with a static fallback so
-the dropdown still works when the upstream API is unreachable.
+API and list available mirror releases in non-EOL 4.x minors, plus GA 5.x
+releases. Fetched server-side (avoids browser CORS) and cached in-memory.
+An unavailable lifecycle API uses fallback minor support labels; an unavailable
+mirror uses previously discovered releases and never invents release names.
 
 When ``ocp.preview_versions_enabled`` is set (or dev mode with OAuth off),
 OCP 5 dev-preview is appended to the list.
@@ -20,15 +21,13 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user
-from app.services.ocp.client_mirror import preview_version_entries
+from app.services.ocp import client_mirror
+from app.services.ocp.client_mirror import preview_version_entries, release_sort_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ocp-versions", tags=["ocp-versions"])
 
-_LIFECYCLE_URL = (
-    "https://access.redhat.com/product-life-cycles/api/v1/products"
-    "?name=Openshift%20Container%20Platform%204"
-)
+_LIFECYCLE_URL = "https://access.redhat.com/product-life-cycles/api/v1/products?name=Openshift%20Container%20Platform%204"
 # Clean "major.minor" names (skips the "3", "4.6 EUS" style rows).
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
 _CACHE_TTL_SECONDS = 6 * 60 * 60
@@ -55,9 +54,14 @@ class OcpVersionsResponse(BaseModel):
     source: str  # "live" | "cache" | "fallback"
 
 
-def _version_key(name: str) -> tuple[int, int]:
-    major, minor = name.split(".")
-    return (int(major), int(minor))
+def _available_supported_releases(minors: list[dict[str, str]]) -> list[dict[str, str]]:
+    support = {v["name"]: v["support"] for v in minors}
+    return [
+        {"name": version, "support": support.get(minor, "General Availability")}
+        for version in client_mirror.available_mirror_versions(False)
+        if (minor := ".".join(version.split(".")[:2])) in support
+        or client_mirror.parse_ocp_version(version)[0] >= 5
+    ]
 
 
 def _merge_preview_versions(versions: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -67,7 +71,7 @@ def _merge_preview_versions(versions: list[dict[str, str]]) -> list[dict[str, st
     for entry in preview_version_entries():
         if entry["name"] not in existing:
             merged.append(entry)
-    merged.sort(key=lambda item: _version_key(item["name"]), reverse=True)
+    merged.sort(key=lambda item: release_sort_key(item["name"]), reverse=True)
     return merged
 
 
@@ -75,15 +79,14 @@ def _parse_versions(payload: dict[str, Any]) -> list[dict[str, str]]:
     """Extract non-EOL 4.x versions from the lifecycle API payload, newest first."""
     data = payload.get("data") or []
     if not data:
-        return _merge_preview_versions([])
+        raise ValueError("Lifecycle API returned no product data")
     out: list[dict[str, str]] = []
     for v in data[0].get("versions") or []:
         name = str(v.get("name", "")).strip()
         support = str(v.get("type", "")).strip()
         if _VERSION_RE.match(name) and support.lower() != "end of life":
             out.append({"name": name, "support": support})
-    out.sort(key=lambda item: _version_key(item["name"]), reverse=True)
-    return _merge_preview_versions(out)
+    return _merge_preview_versions(_available_supported_releases(out))
 
 
 def _fetch_versions() -> list[dict[str, str]]:
@@ -115,4 +118,7 @@ def list_ocp_versions() -> OcpVersionsResponse:
     # Serve stale cache if we have any, else the static fallback.
     if cached:
         return _response(cached, "cache")
-    return _response(_merge_preview_versions(_FALLBACK_VERSIONS), "fallback")
+    return _response(
+        _merge_preview_versions(_available_supported_releases(_FALLBACK_VERSIONS)),
+        "fallback",
+    )

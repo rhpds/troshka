@@ -72,7 +72,7 @@ const LIBRARY = [
 
 let lastFromTemplateBody: Record<string, unknown> | null = null;
 
-function installFetchMock() {
+function installFetchMock(versions = [{ minor: "4.20.1", latest: "4.20.1" }]) {
   lastFromTemplateBody = null;
   const okJson = (data: unknown) =>
     Promise.resolve({ ok: true, json: () => Promise.resolve(data) } as Response);
@@ -83,7 +83,7 @@ function installFetchMock() {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/projects/templates")) return okJson([OCP_TEMPLATE]);
       if (url.includes("/ocp/versions"))
-        return okJson([{ minor: "4.20", latest: "4.20.1" }]);
+        return okJson(versions);
       if (url.includes("/library/")) return okJson(LIBRARY);
       if (url.includes("/auth/ssh-keys")) return okJson([]);
       if (url.includes("/auth/ocp-pull-secret")) return okJson({ has_secret: true });
@@ -163,13 +163,29 @@ describe("create-project OCP form", () => {
       template_id: "ocp-sno",
       auto_install_ocp: true,
       external_access: true,
-      ocp_version: "4.20",
+      ocp_version: "4.20.1",
       // Back-compat: from-template still seeds the legacy single cluster with
       // its default name/domain so existing single-cluster deploys keep working.
       cluster_name: "ocp",
       base_domain: "ocp.local",
     });
     expect(random).toHaveBeenCalled();
+  });
+
+  it("submits the full release selected through the version filter", async () => {
+    installFetchMock([
+      { minor: "5.1.0-ec.1", latest: "5.1.0-ec.1" },
+      { minor: "5.0.0", latest: "5.0.0" },
+      { minor: "5.0.0-ec.6", latest: "5.0.0-ec.6" },
+    ]);
+    await navigateToOcpTemplateForm();
+    const input = screen.getByRole("combobox", { name: "OCP Version" });
+    fireEvent.change(input, { target: { value: "5.0" } });
+    expect(screen.queryByRole("option", { name: /5.1/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "5.0.0-ec.6 (dev preview)" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /create/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    await waitFor(() => expect(lastFromTemplateBody?.ocp_version).toBe("5.0.0-ec.6"));
   });
 
   it("defaults to the pod install method and posts install_via: pod", async () => {

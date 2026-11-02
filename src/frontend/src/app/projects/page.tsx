@@ -1,6 +1,7 @@
 "use client";
 
 import LabeledField from "@/components/LabeledField";
+import OcpVersionSelect from "@/components/OcpVersionSelect";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
 import React, { useEffect, useState } from "react";
@@ -14,6 +15,8 @@ import { summarizeDeployProgress } from "@/lib/deployProgress";
 import {
   formatTemplateVersionLabel,
   pickDefaultOcpVersion,
+  templateVersionChoices,
+  OCP_VERSION_PATTERN,
 } from "@/lib/ocpVersion";
 import TagEditor from "@/components/TagEditor";
 import OwnershipFilter, {
@@ -415,6 +418,10 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
 
   const handleCreate = async () => {
     if (!name.trim()) return;
+    if (mode === "template" && templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && !ocpVersion) {
+      setCreateError("Select an available OpenShift release before creating the project.");
+      return;
+    }
     if (userRole === "admin" && mode === "template" && requiresKubevirt && deployHosts.length === 0) {
       setCreateError("This template requires a KubeVirt cluster host — none are currently available.");
       return;
@@ -435,7 +442,8 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   };
 
   const selectedTemplateInfo = templates.find((template) => template.id === selectedTemplate);
-  const createDisabled = creating || !name.trim() || isProjectCreationBlocked({
+  const createDisabled = creating || !name.trim() ||
+    (mode === "template" && selectedTemplateInfo?.category === "openshift" && !ocpVersion) || isProjectCreationBlocked({
     mode, yamlContent, selectedPattern, selectedTemplate,
     template: selectedTemplateInfo, requiresHost: userRole === "admin",
     hasHost: deployHosts.length > 0, commonPassword, hasPullSecret,
@@ -675,15 +683,10 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   }}
                   onClick={() => {
                     setSelectedTemplate(t.id);
-                    const tmplVers = t.versions?.length
-                      ? t.versions
-                      : ocpVersions.map((v) => v.minor);
-                    const ver = tmplVers.length
-                      ? pickDefaultOcpVersion(tmplVers)
-                      : ocpVersion;
-                    if (t.versions?.length) {
-                      setOcpVersion(ver);
-                    }
+                    const tmplVers = templateVersionChoices(t.versions, ocpVersions.map((v) => v.minor), t.distribution === "okd-scos");
+                    const ver = pickDefaultOcpVersion(tmplVers);
+                    setOcpVersion(ver);
+                    setCustomVersion(false);
                     setName(versionedName(t.name, ver));
                     setNameAutoSet(true);
                     setMode("template");
@@ -748,9 +751,8 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               const _isOcp = _selTmpl?.category === "openshift";
               const _needsPullSecret = _isOcp && _selTmpl?.requires_pull_secret !== false;
               const _isOkd = _selTmpl?.distribution === "okd-scos";
-              const _versionChoices = _selTmpl?.versions?.length
-                ? _selTmpl.versions.map((v) => ({ minor: v, latest: v }))
-                : ocpVersions;
+              const _versionChoices = templateVersionChoices(_selTmpl?.versions,
+                ocpVersions.map((v) => v.minor), !!_isOkd).map((v) => ({ minor: v, latest: v }));
               return (
               <>
                 <div style={{
@@ -771,24 +773,23 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       </div>
                     ) : null}
                     {(!loadingVersions || !!_selTmpl?.versions?.length) && customVersion && (
-                      <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
-                        const v = e.target.value.replaceAll(/[^\d.]/g, ""); setCustomVersionText(v);
-                        if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
-                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(pickDefaultOcpVersion(_versionChoices.map((v) => v.minor)) || "4.20"); } }} />
+                      <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.22.10 or 5.0.0-ec.6" onChange={(e) => {
+                        const v = e.target.value.trim(); setCustomVersionText(v);
+                        setOcpVersion(OCP_VERSION_PATTERN.test(v) ? v : "");
+                        if (OCP_VERSION_PATTERN.test(v) && nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); }
+                      }} onBlur={() => { if (!OCP_VERSION_PATTERN.test(customVersionText)) { setCustomVersion(false); setOcpVersion(pickDefaultOcpVersion(_versionChoices.map((v) => v.minor))); } }} />
                     )}
                     {(!loadingVersions || !!_selTmpl?.versions?.length) && !customVersion && (
-                      <select style={inputStyle} value={ocpVersion} onChange={(e) => {
-                        if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
+                      <OcpVersionSelect style={inputStyle} value={ocpVersion} label={_isOkd ? "OKD Version" : "OCP Version"} onChange={(version) => {
+                        if (version === "__other__") { setCustomVersion(true); setCustomVersionText(""); setOcpVersion(""); }
                         else {
-                          setOcpVersion(e.target.value);
-                          if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, e.target.value)); }
+                          setOcpVersion(version);
+                          if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, version)); }
                         }
-                      }}>
-                        {_versionChoices.map((v) => (
-                          <option key={v.minor} value={v.minor}>{formatTemplateVersionLabel(v.minor, !!_isOkd, v.latest)}</option>
-                        ))}
-                        <option value="__other__">Other...</option>
-                      </select>
+                      }} options={[
+                        ..._versionChoices.map((v) => ({ value: v.minor, label: formatTemplateVersionLabel(v.minor, !!_isOkd, v.latest) })),
+                        { value: "__other__", label: "Other..." },
+                      ]} />
                     )}
                   </div>
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginTop: 6 }}>

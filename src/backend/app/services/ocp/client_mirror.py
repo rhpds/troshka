@@ -4,8 +4,8 @@ Troshka downloads ``openshift-install`` and ``oc`` from either:
 
 - **OCP** (default): mirror.openshift.com
   - 4.x GA: ``openshift-v4/x86_64/clients/ocp/stable-4.NN/...``
-  - 5.x dev-preview: ``openshift-v4/clients/ocp-dev-preview/latest/...``
-  - 5.x GA (future): ``openshift-v5/x86_64/clients/ocp/stable-5.N/...``
+  - Exact GA releases: ``openshift-v4/x86_64/clients/ocp/<release>/...``
+  - 5.x dev-preview: ``openshift-v4/clients/ocp-dev-preview/<release>/...``
 - **OKD/SCOS**: GitHub ``okd-project/okd`` release assets
   (``openshift-install-linux-{tag}.tar.gz``), no Red Hat pull secret required.
 """
@@ -15,14 +15,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.request
 from functools import lru_cache
+from html.parser import HTMLParser
 
 _MIRROR_ROOT = "https://mirror.openshift.com/pub"
 _OKD_GITHUB_API = "https://api.github.com/repos/okd-project/okd/releases"
 _OKD_DOWNLOAD = "https://github.com/okd-project/okd/releases/download"
-_PREVIEW_VERSION = "5.0"
-_VERSION_RE = re.compile(r"^(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+(?:-(?:ec|rc)\.\d+)?)?$")
+_RELEASE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(ec|rc)\.(\d+))?$")
+_GA_MIRROR = f"{_MIRROR_ROOT}/openshift-v4/x86_64/clients/ocp"
+_PREVIEW_MIRROR = f"{_MIRROR_ROOT}/openshift-v4/clients/ocp-dev-preview"
+_mirror_cache: dict[bool, tuple[float, list[str]]] = {}
+_CATALOG_TTL = 6 * 60 * 60
 _OKD_TAG_RE = re.compile(r"^(\d+)\.(\d+)\.\d+-okd-scos(?:\.ec)?\.(\d+)$")
 
 DIST_OCP = "ocp"
@@ -43,6 +49,76 @@ def parse_ocp_version(ocp_version: str) -> tuple[int, int]:
     if not match:
         return (4, 22)
     return int(match.group(1)), int(match.group(2))
+
+
+def release_sort_key(version: str) -> tuple[int, int, int, int, int]:
+    """Numeric ordering, with GA newer than RC and engineering candidates."""
+    match = _RELEASE_RE.fullmatch(version)
+    if not match:
+        return (*parse_ocp_version(version), 0, 2, 0)
+    major, minor, patch, stage, build = match.groups()
+    return (
+        int(major),
+        int(minor),
+        int(patch),
+        {"ec": 0, "rc": 1, None: 2}[stage],
+        int(build or 0),
+    )
+
+
+class _ReleaseLinks(HTMLParser):
+    """Accept only versioned child directories, never floating or external URLs."""
+
+    def __init__(self):
+        super().__init__()
+        self.versions: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "a":
+            return
+        href = dict(attrs).get("href") or ""
+        if href.endswith("/") and _RELEASE_RE.fullmatch(href[:-1]):
+            self.versions.add(href[:-1])
+
+
+def available_mirror_versions(preview: bool) -> list[str]:
+    """Discover named releases; retain known releases during mirror outages."""
+    now = time.monotonic()
+    at, cached = _mirror_cache.get(preview, (0.0, []))
+    if cached and now - at < _CATALOG_TTL:
+        return list(cached)
+    base = _PREVIEW_MIRROR if preview else _GA_MIRROR
+    try:
+        with urllib.request.urlopen(base + "/", timeout=15) as response:
+            parser = _ReleaseLinks()
+            parser.feed(response.read().decode("utf-8"))
+        versions = [
+            v
+            for v in parser.versions
+            if (parse_ocp_version(v)[0] >= 5 if preview else "-" not in v)
+        ]
+        if not versions:
+            raise ValueError("Mirror returned no versioned release directories")
+        versions.sort(key=release_sort_key, reverse=True)
+        _mirror_cache[preview] = (now, versions)
+        return list(versions)
+    except (OSError, ValueError) as exc:
+        logger.warning("OCP release catalog lookup failed for %s: %s", base, exc)
+        return list(cached)
+
+
+def resolve_preview_version(version: str) -> str:
+    """Legacy minor selections stay within their minor; never use global latest."""
+    if _RELEASE_RE.fullmatch(version):
+        return version
+    candidates = [
+        v for v in available_mirror_versions(True) if v.startswith(version + ".")
+    ]
+    if not candidates:
+        raise ValueError(
+            f"No available OCP preview release for {version}; select a concrete release"
+        )
+    return max(candidates, key=release_sort_key)
 
 
 def normalize_distribution(distribution: str | None) -> str:
@@ -78,27 +154,30 @@ def preview_versions_enabled() -> bool:
 
 def uses_dev_preview_mirror(ocp_version: str) -> bool:
     """True when client downloads should use the ocp-dev-preview tree."""
+    if _RELEASE_RE.fullmatch(ocp_version):
+        return "-" in ocp_version
     major, _minor = parse_ocp_version(ocp_version)
     return major >= 5
 
 
 def client_mirror_paths(ocp_version: str) -> tuple[str, str]:
     """Return ``(mirror_base, version_segment)`` for client tarballs."""
-    major, minor = parse_ocp_version(ocp_version)
+    version = str(ocp_version or "").strip()
+    if not _VERSION_RE.fullmatch(version):
+        raise ValueError(f"Invalid OCP version: {version!r}")
+    major, minor = parse_ocp_version(version)
+    if _RELEASE_RE.fullmatch(version):
+        return (_PREVIEW_MIRROR if "-" in version else _GA_MIRROR), version
     if major >= 5:
-        if uses_dev_preview_mirror(ocp_version):
-            return (
-                f"{_MIRROR_ROOT}/openshift-v4/clients/ocp-dev-preview",
-                "latest",
-            )
-        return (
-            f"{_MIRROR_ROOT}/openshift-v5/x86_64/clients/ocp",
-            f"stable-{major}.{minor}",
-        )
-    return (
-        f"{_MIRROR_ROOT}/openshift-v4/x86_64/clients/ocp",
-        f"stable-{major}.{minor}",
-    )
+        stable = [
+            v
+            for v in available_mirror_versions(False)
+            if v.startswith(version + ".") and "-" not in v
+        ]
+        if stable:
+            return _GA_MIRROR, max(stable, key=release_sort_key)
+        return _PREVIEW_MIRROR, resolve_preview_version(version)
+    return _GA_MIRROR, f"stable-{major}.{minor}"
 
 
 def _okd_tag_sort_key(tag: str) -> tuple[int, int]:
@@ -188,11 +267,31 @@ def installer_tarball_url(
     return f"{base}/{segment}/{tarball}"
 
 
+def installer_version_check_cmd(
+    ocp_version: str, installer: str = "openshift-install"
+) -> str:
+    """Stop installation if a cached or downloaded binary differs from the selection."""
+    version = str(ocp_version).strip()
+    if not _VERSION_RE.fullmatch(version):
+        raise ValueError(f"Invalid OCP version: {version!r}")
+    pattern = version if _RELEASE_RE.fullmatch(version) else version + ".*"
+    return (
+        f"installed_version=$({installer} version | awk 'NR == 1 {{print $2}}')\n"
+        'case "$installed_version" in\n'
+        f"  {pattern}) ;;\n"
+        f'  *) echo "ERROR: Requested OCP {version}, installer is $installed_version" >&2; exit 1 ;;\n'
+        "esac\n"
+    )
+
+
 def preview_version_entries() -> list[dict[str, str]]:
     """Dropdown entries for dev-preview OCP versions (when enabled)."""
     if not preview_versions_enabled():
         return []
-    return [{"name": _PREVIEW_VERSION, "support": "Dev Preview"}]
+    return [
+        {"name": version, "support": "Dev Preview"}
+        for version in available_mirror_versions(True)
+    ]
 
 
 def default_pull_secret_for_distribution(distribution: str | None) -> str:

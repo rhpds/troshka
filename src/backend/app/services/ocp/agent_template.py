@@ -2464,6 +2464,9 @@ def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
 from app.services.ocp.client_mirror import (
     installer_tarball_url as _installer_tarball_url,
 )
+from app.services.ocp.client_mirror import (
+    installer_version_check_cmd,
+)
 
 
 def _openshift_install_log_awk_pipe() -> str:
@@ -2860,15 +2863,21 @@ def _build_install_script(
         "    # Download openshift-install and oc if not present\n"
         "    if [ ! -f openshift-install ]; then\n"
         '      echo "Downloading openshift-install $OCP_VERSION..."\n'
-        f"      curl -L -o /tmp/openshift-install.tar.gz {oi_url}\n"
+        f"      curl -fL -o /tmp/openshift-install.tar.gz {oi_url} || exit 1\n"
         "      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n"
         '      echo "Downloading oc client..."\n'
-        f"      curl -L -o /tmp/openshift-client.tar.gz {oc_url}\n"
+        f"      curl -fL -o /tmp/openshift-client.tar.gz {oc_url} || exit 1\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
         "      sudo mv oc kubectl /usr/bin/\n"
         '      echo "Downloaded openshift-install and oc"\n'
         "    fi\n"
-        "    \n"
+        + "".join(
+            "    " + line + "\n"
+            for line in installer_version_check_cmd(
+                ocp_version, "./openshift-install"
+            ).splitlines()
+        )
+        + "    \n"
         "    echo ''\n"
         "    echo '================================================'\n"
         "    echo 'OCP Agent-Based Installer Ready'\n"

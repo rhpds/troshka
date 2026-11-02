@@ -1,5 +1,7 @@
 "use client";
 
+import OcpVersionSelect from "@/components/OcpVersionSelect";
+
 import LabeledField from "@/components/LabeledField";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
@@ -1045,26 +1047,13 @@ function ClusterNetworkFields({ availableNetworks, cluster, onNetworksChange, on
         label={<>
           OCP Version {ocpVersionLocked && "🔒"}
         </>}>
-        <select
-          aria-label="OCP Version"
+        <OcpVersionSelect
           className="props-select"
           value={cluster.ocpVersion || ""}
           disabled={ocpVersionLocked}
-          onChange={(e) => onPatch({ ocpVersion: e.target.value })}
-        >
-          <option value="">Select version…</option>
-          {/* Preserve a previously-set value even if it is no longer in the
-                supported list (e.g. an already-deployed cluster). */}
-          {cluster.ocpVersion &&
-            !ocpVersions.some((v) => v.name === cluster.ocpVersion) && (
-              <option value={cluster.ocpVersion}>{cluster.ocpVersion}</option>
-            )}
-          {ocpVersions.map((v) => (
-            <option key={v.name} value={v.name}>
-              {v.name} — {v.support}
-            </option>
-          ))}
-        </select></LabeledField>
+          onChange={(version) => onPatch({ ocpVersion: version })}
+          options={ocpVersions.map((v) => ({ value: v.name, label: `${v.name} — ${v.support}` }))}
+        /></LabeledField>
     </div>
   </div>);
 }

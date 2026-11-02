@@ -495,16 +495,12 @@ def _ensure_ptr_registries_cmd(pull_through_registry: dict | None) -> str:
 def _ensure_installers_cmd(ocp_version: str, distribution: str | None = None) -> str:
     """Ensure ``oc``/``openshift-install`` on PATH, downloading if absent.
 
-    Uses the same client mirror URL the bastion installer uses (shared via
-    :func:`client_mirror.installer_tarball_url`); a no-op when the tools are
-    already baked into the ops-pod execution environment image.
-
-    Dev-preview (5.x) and OKD/SCOS always re-download: the EE image ships GA
-    OCP 4.x clients and ``command -v openshift-install`` would skip the right
-    tarball.
+    Always replace the EE image's tools with the selected release. Presence
+    on PATH does not establish that a baked-in installer matches the selection.
     """
     from app.services.ocp.client_mirror import (
         installer_tarball_url,
+        installer_version_check_cmd,
         is_okd_scos,
         uses_dev_preview_mirror,
     )
@@ -515,34 +511,32 @@ def _ensure_installers_cmd(ocp_version: str, distribution: str | None = None) ->
     oc_url = installer_tarball_url(
         ocp_version, "openshift-client-linux.tar.gz", distribution
     )
-    force_redownload = uses_dev_preview_mirror(ocp_version) or is_okd_scos(distribution)
-    if force_redownload:
-        oi_guard = "true"
-        oc_guard = "true"
-        if is_okd_scos(distribution):
-            preview_note = "# OKD/SCOS: EE image ships OCP clients — always replace.\n"
-        else:
-            preview_note = (
-                "# Dev-preview: EE image ships GA 4.x clients — always replace.\n"
-            )
+    oi_guard = "true"
+    oc_guard = "true"
+    if is_okd_scos(distribution):
+        preview_note = "# OKD/SCOS: EE image ships OCP clients — always replace.\n"
+    elif uses_dev_preview_mirror(ocp_version):
+        preview_note = (
+            "# Dev-preview: EE image ships GA 4.x clients — always replace.\n"
+        )
     else:
-        oi_guard = "! command -v openshift-install >/dev/null 2>&1"
-        oc_guard = "! command -v oc >/dev/null 2>&1"
-        preview_note = ""
+        preview_note = "# Replace baked-in clients with the selected OCP release.\n"
     return (
         preview_note
         + "# Ensure oc / openshift-install present (baked into the EE image, else\n"
         + "# download from the same client mirror the bastion installer uses).\n"
         + f"if {oi_guard}; then\n"
         f'  echo "Downloading openshift-install {ocp_version}..."\n'
-        f"  curl -L -o /tmp/openshift-install.tar.gz {oi_url}\n"
-        "  tar xzf /tmp/openshift-install.tar.gz -C /usr/local/bin openshift-install && rm -f /tmp/openshift-install.tar.gz\n"
+        f"  curl -fL -o /tmp/openshift-install.tar.gz {oi_url} || exit 1\n"
+        "  tar xzf /tmp/openshift-install.tar.gz -C /usr/local/bin openshift-install || exit 1\n"
+        "  rm -f /tmp/openshift-install.tar.gz\n"
         "fi\n"
         f"if {oc_guard}; then\n"
         '  echo "Downloading oc client..."\n'
-        f"  curl -L -o /tmp/openshift-client.tar.gz {oc_url}\n"
-        "  tar xzf /tmp/openshift-client.tar.gz -C /usr/local/bin oc kubectl && rm -f /tmp/openshift-client.tar.gz\n"
-        "fi\n"
+        f"  curl -fL -o /tmp/openshift-client.tar.gz {oc_url} || exit 1\n"
+        "  tar xzf /tmp/openshift-client.tar.gz -C /usr/local/bin oc kubectl || exit 1\n"
+        "  rm -f /tmp/openshift-client.tar.gz\n"
+        "fi\n" + installer_version_check_cmd(ocp_version)
     )
 
 
