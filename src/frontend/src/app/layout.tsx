@@ -132,10 +132,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     const titleMap: Record<string, string> = {
       "/projects": "Projects",
       "/metering": "Metering",
+      "/team-billing": "Team Usage & Billing",
       "/library/images": "Images",
       "/library/patterns": "Patterns",
       "/settings": "Settings",
       "/admin/users": "Users",
+      "/admin/groups": "Groups",
       "/admin/providers": "Providers",
       "/admin/hosts": "Hosts",
       "/admin/storage-pools": "Storage Pools",
@@ -364,11 +366,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     { label: "Images", path: "/library/images" },
     { label: "Patterns", path: "/library/patterns" },
     { label: "Metering", path: "/metering" },
+    { label: "Team Usage & Billing", path: "/team-billing" },
     { label: "Settings", path: "/settings" },
   ];
 
   const adminItems = [
     { label: "Users", path: "/admin/users" },
+    { label: "Groups", path: "/admin/groups" },
     { label: "Providers", path: "/admin/providers" },
     { label: "Hosts", path: "/admin/hosts" },
     { label: "Storage Pools", path: "/admin/storage-pools" },

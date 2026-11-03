@@ -554,6 +554,7 @@ function MeteringPageInner() {
   const [sortByTab, setSortByTab] = useState(DEFAULT_SORT);
   const [exporting, setExporting] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [authLoaded, setAuthLoaded] = useState(false);
   const sort = sortByTab[tab];
   const setSortCol = (col: string) => {
     setSortByTab((prev) => {
@@ -578,11 +579,13 @@ function MeteringPageInner() {
     fetch("/api/v1/auth/me")
       .then((r) => (r.ok ? r.json() : {}))
       .then((d: { role?: string }) => setIsAdmin(d.role === "admin"))
-      .catch(() => setIsAdmin(false));
+      .catch(() => setIsAdmin(false))
+      .finally(() => setAuthLoaded(true));
   }, []);
 
   useEffect(() => {
-    fetch("/api/v1/metering/statements")
+    if (!authLoaded) return;
+    fetch(`/api/v1/metering/statements${isAdmin ? "" : "?own_only=true"}`)
       .then((r) => {
         if (r.status === 404) {
           setDisabled(true);
@@ -592,15 +595,15 @@ function MeteringPageInner() {
       })
       .then((data) => setStatements(Array.isArray(data) ? data : []))
       .catch(() => setError("Failed to load invoices"));
-  }, []);
+  }, [authLoaded, isAdmin]);
 
   useEffect(() => {
-    if (disabled) return;
-    fetch("/api/v1/metering/invoices")
+    if (disabled || !authLoaded) return;
+    fetch(`/api/v1/metering/invoices${isAdmin ? "" : "?own_only=true"}`)
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => setInvoices(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, [disabled]);
+  }, [disabled, authLoaded, isAdmin]);
 
   useEffect(() => {
     if (tab !== "active" || disabled) return;

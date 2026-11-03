@@ -103,3 +103,36 @@
 - Canvas auto-save omits them; backend `_preserve_topology_import_metadata` and the frontend store round-trip keep them.
 - After all OCP clusters reach install-complete, `maybe_enqueue_template_workloads` starts the next unfinished role (targets cluster named `source` when present). Continues on each role success.
 - Gate: `ocp_control_plane_usable_at` **or** `ocp_status=ready` (install-complete also backfills the milestone if the log marker was missed).
+# Managed groups and team billing
+
+Admins manage database-backed groups at **Admin → Groups**, including metadata,
+membership and deletion. Managers and members are independent assignments;
+managing a group does not include the manager's costs unless they are a member.
+Group creation and administration work even when metering is disabled.
+
+**Team Usage & Billing** lists all groups for admins and only managed groups for
+other users. Managers can delegate using an existing user's exact email without
+access to the global user directory. Removing any manager requires confirmation;
+the API rejects removal of the last manager with 409, including user deletion.
+Only admins can assign members or edit/delete groups. Team reporting grants no
+project control, console, credential, rate-editing or finalization permissions.
+
+Reports use current members and their available history, including usage before
+assignment. This is not historical departmental chargeback. Removed assignments
+revoke access on subsequent requests; existing downloaded files cannot be revoked.
+Scope changes clear document details and exports. Refresh rechecks group access.
+Personal metering requests `own_only=true` for non-admin document lists.
+
+The month selector uses UTC. Monthly usage labels provisional/final/unavailable
+member totals and prominently flags incomplete totals. Active project lifetime
+spend, project invoices and monthly statements are separate overlapping views;
+never sum these views. Invoice selection includes lifetime periods overlapping the
+selected month; their totals remain full-period totals. Final statements are the
+authoritative monthly totals.
+
+Monthly and expanded document CSV downloads include group/owner IDs and names,
+UTC periods, currency, resource units, quantity-hours, rates and costs. The
+`row_type` field distinguishes `usage_line`, `member_total` and `document_total`;
+line costs and totals occupy separate columns to avoid accidental double counting.
+Unavailable totals are blank. User-controlled formula-like text is escaped,
+including formulas preceded by whitespace or control characters.

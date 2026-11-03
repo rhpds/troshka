@@ -207,6 +207,21 @@ describe("monthly invoices", () => {
 });
 
 describe("metering availability", () => {
+  it("waits for authentication before requesting personal documents", async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    let finishAuth: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input, options) => {
+      if (String(input) === "/api/v1/auth/me") return new Promise(resolve => { finishAuth = resolve; });
+      return original(input, options);
+    });
+    routes["/api/v1/metering/invoices?own_only=true"] = response(invoices);
+    routes["/api/v1/metering/statements?own_only=true"] = response(statements);
+    render(<MeteringPage />);
+    await screen.findByRole("button", { name: "Alpha" });
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).startsWith("/api/v1/metering/"))).toBe(false);
+    finishAuth!(response({ role: "user" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/metering/statements?own_only=true"));
+  });
   it("explains when metering is disabled", async () => {
     routes["/api/v1/metering/statements"] = response({}, 404);
     render(<MeteringPage />);
@@ -222,9 +237,14 @@ describe("metering availability", () => {
   });
   it("hides the administrator user filter for ordinary users", async () => {
     routes["/api/v1/auth/me"] = response({ role: "user" });
+    routes["/api/v1/metering/invoices?own_only=true"] = response(invoices);
+    routes["/api/v1/metering/statements?own_only=true"] = response(statements);
     render(<MeteringPage />);
     await screen.findByRole("button", { name: "Alpha" });
     expect(screen.queryByLabelText("User")).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: /Owner/ })).not.toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/metering/statements?own_only=true"));
+    expect(fetch).toHaveBeenCalledWith("/api/v1/metering/invoices?own_only=true");
+    expect(fetch).not.toHaveBeenCalledWith("/api/v1/metering/statements");
   });
 });
