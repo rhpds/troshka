@@ -141,7 +141,7 @@ def group_report(
                 "state": project.state,
                 "owner_id": project.owner_id,
                 "owner_email": emails[project.owner_id],
-                "total_usd": total,
+                "total_usd": total if intervals[project.id] else None,
                 "line_items": {"by_kind": lines},
             }
         )

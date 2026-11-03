@@ -237,3 +237,39 @@ def test_closed_intervals_quantity_units_and_zero_replacement(actors):
         )
         assert later["total_usd"] == 0
         assert later["members"][0]["by_project"] == []
+
+
+def test_active_spend_distinguishes_missing_intervals_from_recorded_zero(actors):
+    admin, manager, member, _, _ = actors
+    gid = make_group(admin, manager, member)
+    with TestSession() as db:
+        missing = Project(
+            name="No interval evidence", owner_id=member.id, state="active"
+        )
+        free = Project(name="Recorded free usage", owner_id=member.id, state="active")
+        db.add_all([missing, free])
+        db.flush()
+        db.add(
+            MeteringInterval(
+                project_id=free.id,
+                kind="vcpu",
+                resource_id="free-vcpu",
+                qty=2,
+                unit_rate=0,
+                started_at=START,
+            )
+        )
+        db.commit()
+        result = group_report(
+            db,
+            db.get(ManagedGroup, gid),
+            [db.get(type(member), member.id)],
+            2026,
+            11,
+            NOW,
+        )
+        active = {project["id"]: project for project in result["active_projects"]}
+        assert active[missing.id]["total_usd"] is None
+        assert active[missing.id]["line_items"]["by_kind"] == []
+        assert active[free.id]["total_usd"] == 0
+        assert active[free.id]["line_items"]["by_kind"][0]["qty_hours"] == 4
