@@ -1,10 +1,11 @@
 "use client";
 import { useState } from "react";
 import { Alert, Button } from "@patternfly/react-core";
-import { api, ApiError, GroupDetail, jsonBody } from "@/lib/group-billing";
+import { api, ApiError, GroupDetail, jsonBody, Person } from "@/lib/group-billing";
 import { appConfirm } from "@/lib/confirm";
+import UserPicker from "./UserPicker";
 
-export default function ManagerControls({ group, onChange, onDenied }: { group: GroupDetail; onChange: (group: GroupDetail) => void; onDenied: () => void }) {
+export default function ManagerControls({ group, users, onChange, onDenied }: { group: GroupDetail; users?: Person[]; onChange: (group: GroupDetail) => void; onDenied: () => void }) {
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,8 +33,10 @@ export default function ManagerControls({ group, onChange, onDenied }: { group: 
     <ul>{group.managers.map(person => <li key={person.id}>{person.email} <Button variant="link" isDisabled={busy} onClick={async () => {
       if (await appConfirm({ title: "Remove manager", message: `Remove ${person.email} as a manager?`, variant: "danger" })) await mutate(`/${person.id}`, { method: "DELETE" });
     }}>Remove manager {person.email}</Button></li>)}</ul>
-    <form onSubmit={e => { e.preventDefault(); void mutate("", jsonBody("POST", { email: email.trim() })); }}>
-      <label>Existing user’s exact email <input aria-label="Manager email" type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label>{" "}
+    <form onSubmit={e => { e.preventDefault(); if (!busy && email.trim()) void mutate("", jsonBody("POST", { email: email.trim() })); }}>
+      {users ? <UserPicker label="Manager to add" users={users.filter(person => !group.managers.some(manager => manager.id === person.id))}
+        value={users.find(person => person.email === email)?.id || ""} onChange={person => setEmail(person?.email || "")} disabled={busy} />
+        : <label>Existing user’s exact email <input aria-label="Manager email" type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label>}{" "}
       <Button type="submit" isDisabled={busy || !email.trim()}>Add manager</Button>
     </form>
   </section>;

@@ -4,6 +4,7 @@ import GroupsPage from "./page";
 import { appConfirm } from "@/lib/confirm";
 vi.mock("@/lib/confirm", () => ({ appConfirm: vi.fn(async () => true) }));
 const person = { id: "u", email: "User@example.com", display_name: "User" };
+const other = { id: "v", email: "Alice@example.com", display_name: "Alice Smith" };
 const initial = { id: "g", name: "Engineering", description: "Group", members: [], managers: [person] };
 let current: { id: string; name: string; description: string; members: typeof person[]; managers: typeof person[] };
 let role: string;
@@ -14,7 +15,7 @@ beforeEach(() => {
   vi.mocked(appConfirm).mockResolvedValue(true);
   vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
     if (url.endsWith("/auth/me")) return response({ role });
-    if (url.endsWith("/users/")) return response([person]);
+    if (url.endsWith("/users/")) return response([person, other]);
     if (url === "/api/v1/groups" && options?.method === "POST") { if (fail) return response({ detail: "Group name already exists" }, 409); current = { ...current, ...JSON.parse(options.body as string) }; return response(current, 201); }
     if (url === "/api/v1/groups") return response([current]);
     if (url.endsWith("/members/u")) current = { ...current, members: options?.method === "PUT" ? [person] : [] };
@@ -38,7 +39,8 @@ describe("group administration", () => {
     fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Save group" }));
     await waitFor(() => expect(current.name).toBe("Renamed"));
-    fireEvent.change(screen.getByLabelText("Member to add"), { target: { value: "u" } });
+    fireEvent.change(screen.getByLabelText("Member to add"), { target: { value: "user@" } });
+    fireEvent.click(screen.getByRole("option", { name: "User — User@example.com" }));
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
     fireEvent.click(await screen.findByRole("button", { name: "Remove member User@example.com" }));
     await waitFor(() => expect(current.members).toEqual([]));
@@ -48,6 +50,26 @@ describe("group administration", () => {
     await selected(); fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/g", { method: "DELETE" }));
     expect(screen.queryByRole("button", { name: "Save group" })).not.toBeInTheDocument();
+  });
+  it("finds managers by display name and submits their exact stored email", async () => {
+    await selected();
+    fireEvent.change(screen.getByLabelText("Manager to add"), { target: { value: "SMITH" } });
+    expect(screen.getByRole("button", { name: "Add manager" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("option", { name: "Alice Smith — Alice@example.com" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/g/managers", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ email: "Alice@example.com" }),
+    })));
+  });
+  it("supports keyboard selection and clears selection when the search changes", async () => {
+    await selected();
+    const input = screen.getByLabelText("Member to add");
+    fireEvent.change(input, { target: { value: "smith" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Add member" })).toBeEnabled();
+    fireEvent.change(input, { target: { value: "nobody-matches" } });
+    expect(screen.getByRole("button", { name: "Add member" })).toBeDisabled();
+    expect(screen.getByText("No matching users")).toBeInTheDocument();
   });
   it("respects a canceled deletion", async () => {
     vi.mocked(appConfirm).mockResolvedValue(false);

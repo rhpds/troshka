@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Alert, Button, Card, CardBody } from "@patternfly/react-core";
 import { api, ApiError, GroupDetail, jsonBody, Person } from "@/lib/group-billing";
 import ManagerControls from "./ManagerControls";
+import UserPicker from "./UserPicker";
 import { appConfirm } from "@/lib/confirm";
 
 export default function GroupEditor({ initial, users, onDeleted, onUpdated, onDenied }: { initial: GroupDetail; users: Person[]; onDeleted: () => void; onUpdated: () => void; onDenied: () => void }) {
@@ -16,7 +17,7 @@ export default function GroupEditor({ initial, users, onDeleted, onUpdated, onDe
     setBusy(true); setError("");
     try {
       const result = await api<GroupDetail | undefined>(`/groups/${group.id}${path}`, options);
-      if (result) { setGroup(result); onUpdated(); } else onDeleted();
+      if (result) { setGroup(result); setMember(""); onUpdated(); } else onDeleted();
     } catch (e) {
       if (e instanceof ApiError && [403, 404].includes(e.status)) onDenied();
       setError((e as Error).message);
@@ -36,8 +37,8 @@ export default function GroupEditor({ initial, users, onDeleted, onUpdated, onDe
     <ul>{group.members.map(person => <li key={person.id}>{person.email} <Button variant="link" isDisabled={busy} onClick={async () => {
       if (await appConfirm({ message: `Remove ${person.email} from ${group.name}?`, variant: "danger" })) await mutate(`/members/${person.id}`, { method: "DELETE" });
     }}>Remove member {person.email}</Button></li>)}</ul>
-    <label>Existing user <select aria-label="Member to add" value={member} onChange={e => setMember(e.target.value)}><option value="">Select user</option>{users.filter(user => !group.members.some(p => p.id === user.id)).map(user => <option key={user.id} value={user.id}>{user.email}</option>)}</select></label>{" "}
+    <UserPicker label="Member to add" users={users.filter(user => !group.members.some(p => p.id === user.id))} value={member} onChange={person => setMember(person?.id || "")} disabled={busy} />{" "}
     <Button isDisabled={busy || !member} onClick={() => void mutate(`/members/${member}`, { method: "PUT" })}>Add member</Button>
-    <ManagerControls group={group} onChange={updated => { setGroup(updated); onUpdated(); }} onDenied={onDenied} />
+    <ManagerControls group={group} users={users} onChange={updated => { setGroup(updated); onUpdated(); }} onDenied={onDenied} />
   </CardBody></Card>;
 }
