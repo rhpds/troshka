@@ -45,23 +45,23 @@
 - Service policy functions: billing_owner_ids(db,user) returns a set including self for non-admin, None for admin; require_managed_group(db,user,group_id,lock=False) returns authorized group or 404. Implementations may add small helpers but preserve these contracts.
 - Existing invoice/statement list endpoints accept own_only: bool=False; when true filter to caller even when caller can manage other users. This preserves personal billing presentation.
 
-- [ ] Write access tests first using TestSession and get_current_user dependency overrides. Core checks:
+- [x] Write access tests first using TestSession and get_current_user dependency overrides. Core checks:
 ```python
 assert manager_client.get(f"/api/v1/groups/{other_group_id}").status_code == 404
 assert manager_client.delete(f"/api/v1/groups/{group_id}/managers/{sole_manager_id}").status_code == 409
 assert member_client.get(f"/api/v1/metering/invoices/{peer_invoice_id}").status_code == 403
 ```
 Use actual existing TestClient override patterns rather than introducing three permanent clients. Include multiple managers, overlapping groups, revocation, ownerless documents, both project-metering paths, forbidden controls, admin-only membership, unknown email, duplicate assignments, user deletion invariant.
-- [ ] Run new tests and confirm failure on missing feature.
-- [ ] Implement additive models/migration, router registration, mutation locking, policy extension. Lock all affected groups in a consistent order during user deletion; reject sole-manager deletion. For report calculations batch load scoped projects/intervals/statements, preserve deleted-project draft contributions and replace living project entries by ID; prefer frozen final statements.
+- [x] Run new tests and confirm failure on missing feature.
+- [x] Implement additive models/migration, router registration, mutation locking, policy extension. Lock all affected groups in a consistent order during user deletion; reject sole-manager deletion. For report calculations batch load scoped projects/intervals/statements, preserve deleted-project draft contributions and replace living project entries by ID; prefer frozen final statements.
 ```python
 if statement is not None and statement.status == "final":
     # Frozen totals and lines are authoritative, even if interval data remains.
     return statement.total_usd, statement.line_items
 ```
-- [ ] Validate accounting tests for monthly clipping, open intervals, provisional drafts, final precedence, correct quantity units, empty/no data cases, duplicate suppression. Include a two-session PostgreSQL concurrency check when a disposable database is available; otherwise document static lock reasoning and the validation limitation.
-- [ ] Test this migration upgrade/downgrade using a disposable SQLite connection and PostgreSQL DDL compilation; do not run the full historical migration chain on development DB.
-- [ ] Run relevant backend tests, formatting/lint/type checks for changed files. Commit only task-owned files with absolute git paths. Report exact test commands/results and API contract deviations.
+- [x] Validate accounting tests for monthly clipping, open intervals, provisional drafts, final precedence, correct quantity units, empty/no data cases, duplicate suppression. Include a two-session PostgreSQL concurrency check when a disposable database is available; otherwise document static lock reasoning and the validation limitation.
+- [x] Test this migration upgrade/downgrade using a disposable SQLite connection and PostgreSQL DDL compilation; do not run the full historical migration chain on development DB.
+- [x] Run relevant backend tests, formatting/lint/type checks for changed files. Commit only task-owned files with absolute git paths. Report exact test commands/results and API contract deviations.
 
 ### Task 2: Group administration and team usage UI
 
@@ -73,14 +73,38 @@ if statement is not None and statement.status == "final":
 
 **Interfaces:** Consume Task 1 routes/shapes above. Personal metering remains intact. Add Groups under admin navigation and Team Usage & Billing for signed-in users; the latter handles no managed groups explicitly and provides manager controls in the selected group.
 
-- [ ] Read frontend AGENTS.md and local Next.js docs for client components before editing.
-- [ ] Write UI tests for group switching, errors, selection filters, exports, and manager assignment/removal including 409 errors. Add a pure CSV test:
+- [x] Read frontend AGENTS.md and local Next.js docs for client components before editing.
+- [x] Write UI tests for group switching, errors, selection filters, exports, and manager assignment/removal including 409 errors. Add a pure CSV test:
 ```typescript
 expect(csvCell('=SUM(A1)')).toBe("'=SUM(A1)");
 expect(csvCell('a,b')).toBe('"a,b"');
 ```
-- [ ] Implement admin create/edit/delete, membership selection from /users, manager exact-email add/remove. Keep ordinary managers on scoped group detail with no global user directory. Require confirmation for deletion/removal and show API error messages.
-- [ ] Implement group/month/member selectors, current-members/history notice, provisional/final status, per-user/project/resource monthly usage, separate active lifetime spend, separate invoice and statement tables, detail expansion, and CSV downloads. Exports include owner/group/period/currency/unit/qty_hours/rate/cost. Separate document totals and line subtotals to prevent misleading summed CSV totals. Formula-escape user-controlled text, including leading whitespace/control characters before formula prefixes.
-- [ ] Cancel/ignore stale fetches when scope changes; clear old details and exports immediately. On 403/404 discard unauthorized content. Surface incomplete data explicitly. Backend month is UTC; initialize default month from UTC time.
-- [ ] Run new tests and existing metering tests, TypeScript check and changed-file ESLint. Fix relevant failures. Update operational docs with permission boundaries, last-manager behavior, current-members history semantics, and export format.
-- [ ] Commit task-owned files and report test evidence. Whole-branch review follows both tasks; resolve findings before final report.
+- [x] Implement admin create/edit/delete, membership selection from /users, manager exact-email add/remove. Keep ordinary managers on scoped group detail with no global user directory. Require confirmation for deletion/removal and show API error messages.
+- [x] Implement group/month/member selectors, current-members/history notice, provisional/final status, per-user/project/resource monthly usage, separate active lifetime spend, separate invoice and statement tables, detail expansion, and CSV downloads. Exports include owner/group/period/currency/unit/qty_hours/rate/cost. Separate document totals and line subtotals to prevent misleading summed CSV totals. Formula-escape user-controlled text, including leading whitespace/control characters before formula prefixes.
+- [x] Cancel/ignore stale fetches when scope changes; clear old details and exports immediately. On 403/404 discard unauthorized content. Surface incomplete data explicitly. Backend month is UTC; initialize default month from UTC time.
+- [x] Run new tests and existing metering tests, TypeScript check and changed-file ESLint. Fix relevant failures. Update operational docs with permission boundaries, last-manager behavior, current-members history semantics, and export format.
+- [x] Commit task-owned files and report test evidence. Whole-branch review follows both tasks; resolve findings before final report.
+
+## Implementation and validation record
+
+Completed on November 3, 2026 on `codex/managed-group-billing`. Independent task
+reviews and whole-branch review completed with no outstanding actionable findings.
+Review fixes preserve exact SSO email identity, exclude invoices ending exactly at
+a UTC month boundary, and report unavailable active spend as null rather than zero.
+
+- Backend: 65 focused tests passed across groups, group reports, migration,
+  existing metering API/service/math, and users API.
+- Frontend: 61 focused tests passed across group admin, team billing, CSV, and
+  existing personal metering. TypeScript and new/changed-code ESLint passed.
+- Commit hooks passed, including backend Pyright, Vulture, lint, and secret checks.
+- Migration tested in isolated SQLite and compiled for PostgreSQL; no application
+  database was changed. No real group assignments, push, or deployment performed.
+- Live PostgreSQL concurrency testing was unavailable. Parent-row serialization,
+  post-lock authorization, and consistent user/group lock ordering were reviewed.
+- Existing shared-layout ESLint errors/warnings remain outside the changed
+  navigation entries. Browser smoke was blocked by the existing dev server:
+  both the new page and unchanged metering page remained unhydrated with HMR
+  connection errors. Only synthetic API fixtures were used; no visual pass claimed.
+
+Backend test execution redirected the existing crash reporter's cache path into
+`/private/tmp` for the filesystem sandbox; application behavior was unchanged.
