@@ -186,3 +186,30 @@ def test_admin_crud_duplicates_and_unmanaged_discovery(actors):
     assert client.delete(f"/api/v1/groups/{gid}").status_code == 204
     _as_user(manager)
     assert client.get(f"/api/v1/groups/{gid}").status_code == 404
+
+
+def test_manager_assignment_preserves_exact_email_identity(actors):
+    admin, manager, member, _, _ = actors
+    gid = make_group(admin, manager, member)
+    suffix = uuid.uuid4().hex
+    mixed = _add_user(f"Alice-{suffix}@example.com")
+    lowercase = _add_user(mixed.email.lower())
+    with TestSession() as db:
+        db.query(type(mixed)).filter_by(id=mixed.id).update(
+            {"auth_source": "openshift"}
+        )
+        db.commit()
+    _as_user(manager)
+    assigned = client.post(
+        f"/api/v1/groups/{gid}/managers", json={"email": f"  {mixed.email}  "}
+    )
+    assert assigned.status_code == 200
+    ids = {row["id"] for row in assigned.json()["managers"]}
+    assert mixed.id in ids
+    assert lowercase.id not in ids
+    assigned = client.post(
+        f"/api/v1/groups/{gid}/managers", json={"email": lowercase.email}
+    )
+    assert assigned.status_code == 200
+    ids = {row["id"] for row in assigned.json()["managers"]}
+    assert {mixed.id, lowercase.id}.issubset(ids)

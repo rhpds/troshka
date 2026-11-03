@@ -152,7 +152,7 @@ def add_manager(
     require_managed_group(db, user, group_id)
     target = (
         db.query(User)
-        .filter_by(email=body.email.strip().lower())
+        .filter_by(email=body.email.strip())
         .with_for_update()
         .populate_existing()
         .first()
