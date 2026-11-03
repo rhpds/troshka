@@ -1,6 +1,7 @@
 "use client";
 import { Button, Card, CardBody } from "@patternfly/react-core";
 import { downloadCsv, money, ProjectLine, reportCsv, TeamReport, unit, UsageLine } from "@/lib/group-billing";
+import styles from "@/components/groups/management.module.css";
 
 export function ResourceUsage({ lines }: { lines: UsageLine[] }) {
   if (!lines.length) return <p>No resource usage available.</p>;
@@ -13,16 +14,16 @@ export default function TeamUsage({ report }: { report: TeamReport }) {
   const incomplete = report.members.some(member => member.status === "unavailable");
   return <>
     <Card><CardBody><h2>Monthly usage — {report.currency}</h2>
-      <p>UTC period: {report.period_start} to {report.period_end}. As of {report.as_of}.</p>
       <p><strong>{incomplete ? "Incomplete monthly total (available data only)" : "Monthly total"}: {money(report.total_usd)}</strong></p>
       {incomplete && <p role="alert">Some members’ usage is unavailable. This total excludes their missing costs and must not be treated as a complete group total.</p>}
       <Button variant="secondary" onClick={() => downloadCsv("team-monthly-usage.csv", reportCsv(report))}>Download monthly CSV</Button>
+      <details className={styles.expandable}><summary>Reporting period and update time</summary><p className={styles.muted}>UTC period: {report.period_start} to {report.period_end}. As of {report.as_of}.</p></details>
       {!report.members.length && <p>No current members.</p>}
-      {report.members.map(member => <section key={member.owner_id}><h3>{member.display_name || member.owner_email} ({member.owner_email}) — {member.status} — {money(member.total_usd)}</h3><ProjectUsage projects={member.by_project} /></section>)}
+      {report.members.map(member => <details className={styles.expandable} key={member.owner_id}><summary>{member.owner_email} — {money(member.total_usd)}{member.status !== "unavailable" && <span className={styles.muted}> · {member.status}</span>}</summary><ProjectUsage projects={member.by_project} /></details>)}
     </CardBody></Card>
-    <Card><CardBody><h2>Active project lifetime spend</h2><p>Lifetime values are separate from monthly usage and documents. They are never added to the monthly total.</p>
+    <details className={styles.expandable}><summary>Active project lifetime spend ({report.active_projects.length})</summary><Card><CardBody><p>Lifetime values are separate from monthly usage and documents. They are never added to the monthly total.</p>
       {!report.active_projects.length && <p>No active projects.</p>}
       {report.active_projects.map(project => <details key={project.id}><summary>{project.name} — {project.owner_email} — {project.state} — {money(project.total_usd)}</summary><ResourceUsage lines={project.line_items?.by_kind || []} /></details>)}
-    </CardBody></Card>
+    </CardBody></Card></details>
   </>;
 }

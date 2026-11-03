@@ -1,0 +1,13 @@
+.page { display: grid; gap: 1.5rem; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: end; gap: 1rem; flex-wrap: wrap; margin-block: 1rem; }
+.field { display: grid; gap: .5rem; }
+.field input, .field select, .toolbar input[role="combobox"] { padding: .5rem .75rem; border: 1px solid var(--pf-t--global--border--color--default); border-radius: .25rem; background: var(--pf-t--global--background--color--primary--default); color: inherit; min-height: 2.25rem; }
+.panel { padding-block: 1.5rem; display: grid; gap: 1rem; }
+.people { list-style: none; padding: 0; margin-block: 1rem; max-width: 52rem; }
+.person { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 0; border-bottom: 1px solid var(--pf-t--global--border--color--default); }
+.person span { overflow-wrap: anywhere; }
+.muted { color: var(--pf-t--global--text--color--subtle); }
+.expandable { padding-block: .75rem; border-bottom: 1px solid var(--pf-t--global--border--color--default); }
+.expandable summary { cursor: pointer; padding-block: .25rem; }
+.table { overflow-x: auto; }

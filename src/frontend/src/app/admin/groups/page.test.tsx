@@ -27,18 +27,33 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 async function selected() {
   render(<GroupsPage />);
-  fireEvent.change(await screen.findByLabelText("Group"), { target: { value: "g" } });
-  await screen.findByRole("button", { name: "Save group" });
+  fireEvent.click(await screen.findByRole("button", { name: "Engineering" }));
+  await screen.findByRole("tab", { name: "Members (0)" });
 }
 describe("group administration", () => {
+  it("starts with the group list and opens focused management tabs", async () => {
+    render(<GroupsPage />);
+    expect(await screen.findByRole("table", { name: "Groups" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("New group name")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Engineering" }));
+    expect(await screen.findByRole("tab", { name: "Members (0)", selected: true })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save group" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Managers (1)" }));
+    const remove = screen.getByRole("button", { name: "Remove manager User@example.com" });
+    expect(remove.textContent).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: /Back to groups/ }));
+    expect(screen.getByRole("table", { name: "Groups" })).toBeInTheDocument();
+  });
   it("creates and edits a group, assigns and removes existing members", async () => {
     render(<GroupsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New group" }));
     fireEvent.change(await screen.findByLabelText("New group name"), { target: { value: "New group" } });
     fireEvent.click(screen.getByRole("button", { name: "Create group" }));
-    await screen.findByRole("button", { name: "Save group" });
+    fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
     fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Save group" }));
     await waitFor(() => expect(current.name).toBe("Renamed"));
+    fireEvent.click(screen.getByRole("tab", { name: "Members (0)" }));
     fireEvent.change(screen.getByLabelText("Member to add"), { target: { value: "user@" } });
     fireEvent.click(screen.getByRole("option", { name: "User — User@example.com" }));
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
@@ -47,12 +62,13 @@ describe("group administration", () => {
     expect(appConfirm).toHaveBeenCalled();
   });
   it("confirms deletion and clears the editor", async () => {
-    await selected(); fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
+    await selected(); fireEvent.click(screen.getByRole("tab", { name: "Settings" })); fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/g", { method: "DELETE" }));
     expect(screen.queryByRole("button", { name: "Save group" })).not.toBeInTheDocument();
   });
   it("finds managers by display name and submits their exact stored email", async () => {
     await selected();
+    fireEvent.click(screen.getByRole("tab", { name: "Managers (1)" }));
     fireEvent.change(screen.getByLabelText("Manager to add"), { target: { value: "SMITH" } });
     expect(screen.getByRole("button", { name: "Add manager" })).toBeDisabled();
     fireEvent.click(screen.getByRole("option", { name: "Alice Smith — Alice@example.com" }));
@@ -73,12 +89,13 @@ describe("group administration", () => {
   });
   it("respects a canceled deletion", async () => {
     vi.mocked(appConfirm).mockResolvedValue(false);
-    await selected(); fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
+    await selected(); fireEvent.click(screen.getByRole("tab", { name: "Settings" })); fireEvent.click(screen.getByRole("button", { name: "Delete group" }));
     await waitFor(() => expect(appConfirm).toHaveBeenCalled());
     expect(fetch).not.toHaveBeenCalledWith("/api/v1/groups/g", { method: "DELETE" });
   });
   it("shows server mutation errors", async () => {
     fail = true; render(<GroupsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "New group" }));
     fireEvent.change(await screen.findByLabelText("New group name"), { target: { value: "Duplicate" } });
     fireEvent.click(screen.getByRole("button", { name: "Create group" }));
     await screen.findByText("Group name already exists");

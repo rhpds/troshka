@@ -36,8 +36,18 @@ async function loaded() {
   await screen.findByRole("button", { name: "Download monthly CSV" });
 }
 describe("team billing", () => {
+  it("starts with compact usage and separates invoices and statements", async () => {
+    await loaded();
+    expect(screen.getByRole("tab", { name: "Usage", selected: true })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View invoice i" })).not.toBeInTheDocument();
+    expect(screen.getByText("Manage group managers (1)").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("tab", { name: "Statements" }));
+    expect(screen.getByText("No statements for this selection.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
+  });
   it("switches groups, clears details/exports immediately, and never loads the user directory", async () => {
     await loaded();
+    fireEvent.click(screen.getByRole("tab", { name: "Invoices" }));
     fireEvent.click(screen.getByRole("button", { name: "View invoice i" }));
     await screen.findByRole("button", { name: "Download document CSV" });
     fireEvent.change(screen.getByLabelText("Group"), { target: { value: "b" } });
@@ -52,6 +62,7 @@ describe("team billing", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/metering/groups/a/report?year=2026&month=11&owner_id=u", undefined));
     fireEvent.click(await screen.findByRole("button", { name: "Download monthly CSV" }));
     expect(download).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("tab", { name: "Invoices" }));
     fireEvent.click(screen.getByRole("button", { name: "View invoice i" }));
     fireEvent.click(await screen.findByRole("button", { name: "Download document CSV" }));
     expect(download).toHaveBeenCalledTimes(2);
@@ -86,7 +97,7 @@ describe("team billing", () => {
   });
   it("discards all group data on document access denial", async () => {
     overrides["/api/v1/metering/invoices/i"] = { detail: "Access revoked" }; statuses["/api/v1/metering/invoices/i"] = 403;
-    await loaded(); fireEvent.click(screen.getByRole("button", { name: "View invoice i" }));
+    await loaded(); fireEvent.click(screen.getByRole("tab", { name: "Invoices" })); fireEvent.click(screen.getByRole("button", { name: "View invoice i" }));
     await screen.findByText("Access revoked");
     expect(screen.queryByText("Active project lifetime spend")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
@@ -99,6 +110,7 @@ describe("team billing", () => {
   });
   it("adds manager with exact email and reports last-manager conflict after confirmation", async () => {
     await loaded();
+    fireEvent.click(screen.getByText("Manage group managers (1)"));
     fireEvent.change(screen.getByLabelText("Manager email"), { target: { value: "Exact.Case@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/a/managers", expect.objectContaining({ body: '{"email":"Exact.Case@example.com"}', method: "POST" })));
@@ -109,6 +121,7 @@ describe("team billing", () => {
   });
   it("clears billing when removing oneself loses group access", async () => {
     await loaded();
+    fireEvent.click(screen.getByText("Manage group managers (1)"));
     overrides["/api/v1/groups/a"] = { detail: "Group not found" }; statuses["/api/v1/groups/a"] = 404;
     fireEvent.click(screen.getByRole("button", { name: `Remove manager ${manager.email}` }));
     await screen.findByText("Group access is no longer available.");
@@ -116,6 +129,7 @@ describe("team billing", () => {
   });
   it("keeps authorized billing for an unknown exact email", async () => {
     await loaded();
+    fireEvent.click(screen.getByText("Manage group managers (1)"));
     overrides["/api/v1/groups/a/managers"] = { detail: "User not found" }; statuses["/api/v1/groups/a/managers"] = 404;
     fireEvent.change(screen.getByLabelText("Manager email"), { target: { value: "Unknown@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
