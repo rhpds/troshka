@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.metering import MeteringRateDefault, MonthlyStatement, ProjectInvoice
 from app.models.project import Project
 from app.models.user import User
+from app.services.group_access import billing_owner_ids, require_billing_owner
 from app.services.metering_math import RATE_KEYS
 from app.services.metering_service import (
     finalize_month,
@@ -68,10 +69,11 @@ def put_rates(body: RatesBody, user: AdminUser, db: DbSession):
     return merge_rate_maps(load_type_rates(db))
 
 
-def _owner_scope(query, model, user: User):
-    if user.role == "admin":
+def _owner_scope(query, model, user: User, db: Session):
+    scope = billing_owner_ids(db, user)
+    if scope is None:
         return query
-    return query.filter(model.owner_id == user.id)
+    return query.filter(model.owner_id.in_(scope))
 
 
 def _owner_emails(db: Session, owner_ids) -> dict[str, str]:
@@ -86,9 +88,12 @@ def _owner_emails(db: Session, owner_ids) -> dict[str, str]:
 def list_invoices(
     user: CurrentUser,
     db: DbSession,
+    own_only: bool = False,
 ):
     _require_enabled()
-    q = _owner_scope(db.query(ProjectInvoice), ProjectInvoice, user)
+    q = _owner_scope(db.query(ProjectInvoice), ProjectInvoice, user, db)
+    if own_only:
+        q = q.filter(ProjectInvoice.owner_id == user.id)
     rows = q.order_by(ProjectInvoice.finalized_at.desc()).all()
     emails = _owner_emails(db, (r.owner_id for r in rows))
     return [
@@ -109,8 +114,7 @@ def get_invoice(invoice_id: str, user: CurrentUser, db: DbSession):
     row = db.get(ProjectInvoice, invoice_id)
     if not row:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    if row.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
+    require_billing_owner(db, user, row.owner_id)
     emails = _owner_emails(db, [row.owner_id])
     return _invoice_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
@@ -140,13 +144,17 @@ def _invoice_detail(row: ProjectInvoice, owner_email: str | None = None) -> dict
 def list_statements(
     user: CurrentUser,
     db: DbSession,
+    own_only: bool = False,
 ):
     _require_enabled()
     q = _owner_scope(
         db.query(MonthlyStatement).filter(MonthlyStatement.status == "final"),
         MonthlyStatement,
         user,
+        db,
     )
+    if own_only:
+        q = q.filter(MonthlyStatement.owner_id == user.id)
     rows = q.order_by(MonthlyStatement.period_start.desc()).all()
     emails = _owner_emails(db, (r.owner_id for r in rows))
     return [
@@ -167,8 +175,7 @@ def get_statement(statement_id: str, user: CurrentUser, db: DbSession):
     row = db.get(MonthlyStatement, statement_id)
     if not row:
         raise HTTPException(status_code=404, detail="Statement not found")
-    if row.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
+    require_billing_owner(db, user, row.owner_id)
     emails = _owner_emails(db, [row.owner_id])
     return _statement_detail(row, emails.get(row.owner_id) if row.owner_id else None)
 
@@ -227,9 +234,11 @@ def _project_metering(project_id: str, user: User, db: Session) -> dict:
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=ACCESS_DENIED)
-    reconcile_project(db, project)
-    db.commit()
-    db.refresh(project)
+    require_billing_owner(db, user, project.owner_id)
+    # Delegated billing access must never trigger reconciliation's budget-stop
+    # side effects. The regular meter poll still refreshes these persisted rows.
+    if project.owner_id == user.id or user.role == "admin":
+        reconcile_project(db, project)
+        db.commit()
+        db.refresh(project)
     return live_spend(db, project)

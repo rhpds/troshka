@@ -10,6 +10,11 @@ from app.models.library import (
     LibraryItemDisk,
     LibraryShare,
 )
+from app.models.managed_group import (
+    ManagedGroup,
+    ManagedGroupManager,
+    ManagedGroupMember,
+)
 from app.models.mesh_peer import ProjectMeshPeer
 from app.models.metering import (
     MeteringInterval,
@@ -31,6 +36,9 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "ManagedGroup",
+    "ManagedGroupManager",
+    "ManagedGroupMember",
     "User",
     "Provider",
     "Host",

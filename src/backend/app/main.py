@@ -676,6 +676,8 @@ from app.api import auth as auth_routes  # noqa: E402
 from app.api import disks as disk_routes  # noqa: E402
 from app.api import dns_providers as dns_provider_routes  # noqa: E402
 from app.api import eips as eip_routes  # noqa: E402
+from app.api import group_metering as group_metering_routes  # noqa: E402
+from app.api import groups as group_routes  # noqa: E402
 from app.api import hosts as host_routes  # noqa: E402
 from app.api import library as library_routes  # noqa: E402
 from app.api import metering as metering_routes  # noqa: E402
@@ -711,6 +713,8 @@ app.include_router(host_routes.router, prefix=_API_PREFIX)
 app.include_router(provider_routes.router, prefix=_API_PREFIX)
 app.include_router(library_routes.router, prefix=_API_PREFIX)
 app.include_router(metering_routes.router, prefix=_API_PREFIX)
+app.include_router(group_routes.router, prefix=_API_PREFIX)
+app.include_router(group_metering_routes.router, prefix=_API_PREFIX)
 app.include_router(pattern_routes.router, prefix=_API_PREFIX)
 app.include_router(eip_routes.router, prefix=_API_PREFIX)
 app.include_router(workload_routes.router, prefix=_API_PREFIX)

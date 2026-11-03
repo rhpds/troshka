@@ -5,9 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
 from app.core.database import get_db
+from app.models.managed_group import ManagedGroupManager, ManagedGroupMember
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.services.group_access import protect_manager_user_deletion
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -109,6 +111,11 @@ def delete_user(
         raise HTTPException(
             409,
             f"User has {project_count} project(s) — reassign or delete them first",
+        )
+    protect_manager_user_deletion(db, user_id)
+    for association in (ManagedGroupMember, ManagedGroupManager):
+        db.query(association).filter_by(user_id=user_id).delete(
+            synchronize_session=False
         )
     db.delete(user)
     db.commit()
