@@ -43,6 +43,7 @@
 - GET /metering/groups/{id}/report?year=2026&month=11&owner_id=optional returns {group:{id,name},as_of,period_start,period_end,currency:"USD",total_usd,members:[{owner_id,owner_email,display_name,status:"final"|"provisional"|"unavailable",total_usd,by_project:[{project_id,project_name,subtotal,by_kind:[{kind,hours,qty_hours,unit_rate,subtotal}]}]}],active_projects:[{id,name,state,owner_id,owner_email,total_usd,line_items:{by_kind:[]}}]}.
 - GET /metering/groups/{id}/invoices?owner_id=optional and /statements?owner_id=optional return existing summary shapes with all history for current members. UI filters dates locally on these bounded group documents. Invoice and statement detail use existing metering endpoints with the shared policy.
 - Service policy functions: billing_owner_ids(db,user) returns a set including self for non-admin, None for admin; require_managed_group(db,user,group_id,lock=False) returns authorized group or 404. Implementations may add small helpers but preserve these contracts.
+- Existing invoice/statement list endpoints accept own_only: bool=False; when true filter to caller even when caller can manage other users. This preserves personal billing presentation.
 
 - [ ] Write access tests first using TestSession and get_current_user dependency overrides. Core checks:
 ```python
@@ -68,6 +69,7 @@ if statement is not None and statement.status == "final":
 - Create src/frontend/src/app/admin/groups/page.tsx and src/frontend/src/app/team-billing/page.tsx with small supporting components under src/frontend/src/components/groups/ and billing/ as needed.
 - Create src/frontend/src/lib/group-billing.ts and focused .test.ts/.test.tsx files for new logic/pages.
 - Modify src/frontend/src/app/layout.tsx for navigation and page labels; update docs/dev/subsystems.md.
+- Modify src/frontend/src/app/metering/page.tsx to request own_only=true invoice/statement lists for non-admins after auth is known, preserving admin all-owner behavior. Update its existing tests for these URLs.
 
 **Interfaces:** Consume Task 1 routes/shapes above. Personal metering remains intact. Add Groups under admin navigation and Team Usage & Billing for signed-in users; the latter handles no managed groups explicitly and provides manager controls in the selected group.
 
