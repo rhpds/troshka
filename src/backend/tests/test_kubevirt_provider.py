@@ -111,6 +111,7 @@ def test_destroy_project_deletes_cr_and_namespace():
     ):
         mock_custom = MagicMock()
         mock_core = MagicMock()
+        mock_core.read_namespace.return_value.metadata.deletion_timestamp = None
         mock_custom.list_namespaced_custom_object.return_value = {"items": []}
         empty_list = MagicMock()
         empty_list.items = []
@@ -145,6 +146,7 @@ def test_destroy_project_refuses_namespace_delete_while_cr_lingers():
     ):
         mock_custom = MagicMock()
         mock_core = MagicMock()
+        mock_core.read_namespace.return_value.metadata.deletion_timestamp = None
         mock_custom.list_namespaced_custom_object.return_value = {"items": []}
         empty_list = MagicMock()
         empty_list.items = []

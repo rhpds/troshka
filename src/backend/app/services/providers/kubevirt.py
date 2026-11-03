@@ -453,6 +453,39 @@ def _wait_for_project_cr_gone(custom_api, namespace: str, cr_name: str) -> bool:
     return not _project_cr_still_present(custom_api, namespace, cr_name)
 
 
+def _namespace_deleting_or_gone(core_api, namespace: str) -> bool:
+    """Resume namespace recovery without depending on deleted RoleBindings."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        ns = core_api.read_namespace(name=namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return True
+        raise
+    return bool(ns.metadata and ns.metadata.deletion_timestamp)
+
+
+def _wait_for_network_crs_gone(custom_api, namespace: str) -> bool:
+    """Keep namespace RBAC alive until child network finalizers finish.
+
+    The project handler requests network deletion but does not wait for it.
+    API failures must propagate: an unreadable list is not an empty list.
+    """
+    for attempt in range(_PROJECT_CR_GONE_ATTEMPTS + 1):
+        networks = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkanetworks",
+        )["items"]
+        if not networks:
+            return True
+        if attempt < _PROJECT_CR_GONE_ATTEMPTS:
+            time.sleep(_PROJECT_CR_GONE_SLEEP_S)
+    return False
+
+
 def _list_ns_service_names(core_api, namespace: str) -> list[str]:
     try:
         listed = core_api.list_namespaced_service(namespace=namespace)
@@ -2615,6 +2648,11 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
+        if _namespace_deleting_or_gone(core_api, namespace):
+            # The caller polls namespace deletion and runs guarded recovery.
+            # Namespace-local permissions may already have been garbage collected.
+            return
+
         _stop_vms_gracefully(custom_api, namespace)
         _wait_for_vmis_terminated(custom_api, namespace)
         _force_delete_vmis(custom_api, namespace)
@@ -2652,6 +2690,12 @@ class KubeVirtDriver(ProviderDriver):
             raise RuntimeError(
                 f"TroshkaProject {cr_name} still present after cleanup wait; "
                 "refusing to delete namespace (would orphan Services / OVN risk)"
+            )
+
+        if not _wait_for_network_crs_gone(custom_api, namespace):
+            raise RuntimeError(
+                f"TroshkaNetworks still present in {namespace} after cleanup wait; "
+                "refusing to delete namespace while network finalizers need its RBAC"
             )
 
         # Belt-and-suspenders: clear any leftover Services before NS delete.

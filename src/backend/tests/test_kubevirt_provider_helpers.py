@@ -669,6 +669,8 @@ class TestKubeVirtDriverDestroyProject:
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         # get returns 404 (project CR already gone) to skip wait loop
+        mock_core.read_namespace.return_value.metadata.deletion_timestamp = None
+        mock_custom.list_namespaced_custom_object.return_value = {"items": []}
         mock_custom.get_namespaced_custom_object.side_effect = Exception("NotFound")
         empty_list = MagicMock()
         empty_list.items = []

@@ -10,7 +10,8 @@ metadata:
   namespace: troshka
 ---
 # Cluster-scoped + cluster-wide READ for the provider SA.
-# Namespaced MUTATE lives in troshka-provider-namespaced (RoleBinding per NS).
+# Namespaced MUTATE lives in troshka-provider-namespaced (RoleBinding per NS),
+# except guarded orphaned TroshkaNetwork finalizer recovery below.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -25,6 +26,32 @@ rules:
     resources: ["securitycontextconstraints"]
     resourceNames: ["troshka-network-pods", "troshka-gateway"]
     verbs: ["get", "patch"]
+  # Namespace GC removes RoleBindings before all child finalizers complete.
+  # These permissions survive GC so recovery can verify dependencies are gone
+  # before patching a network. RBAC cannot restrict these to a namespace prefix:
+  # list reads and TroshkaNetwork patch apply cluster-wide. Do not grant the
+  # general namespaced mutate role through a ClusterRoleBinding.
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims", "configmaps"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list"]
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects"]
+    verbs: ["list"]
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkanetworks"]
+    verbs: ["list", "patch"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["list"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["list"]
+  - apiGroups: ["k8s.cni.cncf.io"]
+    resources: ["network-attachment-definitions"]
+    verbs: ["list"]
   # Nodes — NodePort / placement
   - apiGroups: [""]
     resources: ["nodes"]
