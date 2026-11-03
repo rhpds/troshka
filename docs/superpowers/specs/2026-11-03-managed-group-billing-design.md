@@ -7,8 +7,8 @@ managers. A group supports multiple managers; users may belong to or manage
 multiple groups. Managers can inspect member usage, costs, project invoices, and
 monthly statements, and download billing data without gaining environment control.
 
-The user approved the managed-group direction on November 3, 2026. The detailed
-semantics below are proposed for review before implementation.
+The user approved this design for implementation on November 3, 2026, then
+authorized group managers to add/remove other managers with last-manager protection.
 
 ## Approach
 
@@ -32,6 +32,14 @@ existing user records, including invited users. Membership and management are
 independent: managers' own costs enter a group report only if they are members.
 Deleting a group removes assignments but preserves users and billing records.
 Groups with no members or managers are valid during setup.
+
+Current group managers can add/remove managers within their own group, but cannot
+remove the last manager (including themselves). Site admins follow this same
+last-manager rule; they can delete an unneeded group instead. Serialize assignment
+changes by locking the parent group row before checking authorization/counts.
+Managers add another existing user by exact email, without directory browsing.
+Member assignment and group metadata/deletion remain site-admin-only. User deletion
+must also reject removal of a sole manager to preserve this invariant.
 
 ## Authorization and history
 
