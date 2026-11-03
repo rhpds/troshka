@@ -17,4 +17,9 @@ describe("group billing CSV", () => {
     const doc = { period_start: "2026-10-20T00:00:00Z", period_end: "2026-11-02T00:00:00Z" } as Parameters<typeof inMonth>[0];
     expect(inMonth(doc, "2026-11")).toBe(false); expect(inMonth(doc, "2026-11", true)).toBe(true); expect(inMonth(doc, "2026-12", true)).toBe(false);
   });
+  it("excludes invoices ending exactly at the UTC month boundary", () => {
+    const doc = { period_start: "2026-10-20T00:00:00Z", period_end: "2026-11-01T00:00:00Z" } as Parameters<typeof inMonth>[0];
+    expect(inMonth(doc, "2026-11", true)).toBe(false);
+    expect(inMonth({ ...doc, period_end: "2026-11-01T00:00:00.001Z" }, "2026-11", true)).toBe(true);
+  });
 });

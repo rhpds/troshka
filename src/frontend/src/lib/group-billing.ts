@@ -56,7 +56,7 @@ export function inMonth(doc: BillingDocument, month: string, invoice = false): b
   if (!invoice) return doc.period_start.slice(0, 7) === month;
   const start = new Date(`${month}-01T00:00:00Z`);
   const end = new Date(start); end.setUTCMonth(end.getUTCMonth() + 1);
-  return new Date(doc.period_start) < end && new Date(doc.period_end || doc.finalized_at || doc.period_start) >= start;
+  return new Date(doc.period_start) < end && new Date(doc.period_end || doc.finalized_at || doc.period_start) > start;
 }
 export function downloadCsv(name: string, content: string) {
   const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
