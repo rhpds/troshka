@@ -14,13 +14,13 @@ from app.models.provider import Provider
 from app.models.quota import QuotaPolicy, QuotaReadiness, QuotaReservation
 from app.models.user import User
 from app.services import quota_accounting
-from tests.conftest import TestSession
+from tests import conftest
 
 
 @pytest.fixture
-def environment(monkeypatch):
+def environment(monkeypatch, isolated_quota_database):
     monkeypatch.setattr(quota_accounting, "quotas_enabled", lambda: True)
-    db = TestSession()
+    db = conftest.TestSession()
     existing = db.get(QuotaReadiness, "baseline")
     readiness_before = (
         {

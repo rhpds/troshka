@@ -56,6 +56,29 @@ def get_test_db():
 import pytest  # noqa: E402
 
 
+@pytest.fixture
+def isolated_quota_database(tmp_path, monkeypatch):
+    """Keep a rollout's complete inventory separate from legacy retained rows.
+
+    API requests and background workers must share this file-backed database,
+    including independently committed sessions. Production readiness checks still
+    inspect every project in this inventory without any scope filtering.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core import database
+    from tests import conftest as test_config
+
+    isolated_engine = create_engine(f"sqlite:///{tmp_path / 'quota.db'}")
+    Base.metadata.create_all(isolated_engine)
+    sessions = sessionmaker(bind=isolated_engine)
+    monkeypatch.setattr(database, "SessionLocal", sessions)
+    monkeypatch.setattr(test_config, "TestSession", sessions)
+    yield sessions
+    isolated_engine.dispose()
+
+
 @pytest.fixture(autouse=True)
 def isolated_quota_observation_transport(monkeypatch):
     """Quota tests never read/write an application's Redis observation namespace."""

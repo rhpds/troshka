@@ -2325,7 +2325,7 @@ class TestProjectResponseDict:
         assert "bmc" not in result
         assert "provider_type" not in result
 
-    @patch("app.services.ws_pubsub.get_cached_vm_states")
+    @patch("app.services.ws_pubsub.get_display_vm_states")
     @patch("app.api.projects._resolve_provider_type", return_value="ec2")
     @patch("app.api.projects._resolve_deploy_progress")
     def test_with_bmc_and_provider(self, mock_dp, mock_prov, mock_states):

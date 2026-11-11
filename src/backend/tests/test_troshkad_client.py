@@ -19,6 +19,7 @@ FAKE_FINGERPRINT = hashlib.sha256(FAKE_CERT_DER).hexdigest().upper()
 
 
 class FakeHost:
+    id = "test-host"
     ip_address = "10.0.0.1"
     agent_token = "a" * 64
     agent_cert_fingerprint = FAKE_FINGERPRINT

@@ -20,17 +20,17 @@ from app.schemas.quota import Resources
 from app.services import quota_accounting as accounting
 from app.services import quota_admission as admission
 from app.services import quota_enforcement as enforcement
-from tests.conftest import TestSession
+from tests import conftest
 
 NOW = datetime(2026, 11, 30, 23, 59, tzinfo=UTC)
 REAL_SPEND = accounting.spend
 
 
 @pytest.fixture
-def ledger(monkeypatch):
+def ledger(monkeypatch, isolated_quota_database):
     monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     monkeypatch.setattr(enforcement, "_now", lambda: NOW)
-    with TestSession() as db:
+    with conftest.TestSession() as db:
         baseline = db.get(QuotaReadiness, "baseline")
         previous = (
             {
@@ -636,7 +636,7 @@ def test_periodic_delivery_is_durable_async_and_preserves_deploy_job_reference(
 
     def enqueue(function, action_id, **kwargs):
         assert "project_id" not in kwargs  # Never overwrite in-flight deploy tracking.
-        with TestSession() as observer:
+        with conftest.TestSession() as observer:
             assert observer.get(QuotaAction, action_id).kind == "stop_run"
         queued.append((function, action_id))
 
@@ -692,7 +692,7 @@ def test_budget_control_fences_growth_before_occupied_queue_runs(ledger, monkeyp
     notification_fences = []
 
     def notification(pid, message):
-        with TestSession() as observer:
+        with conftest.TestSession() as observer:
             current = observer.get(QuotaReservation, row.id)
             notification_fences.append(
                 current.dispatch_metadata.get("cancelled", False)
@@ -702,7 +702,7 @@ def test_budget_control_fences_growth_before_occupied_queue_runs(ledger, monkeyp
     enforcement.run_once()  # The lifecycle queue is occupied: no delivered worker executes.
     assert queued
     assert notification_fences and all(notification_fences)
-    with TestSession() as provider:
+    with conftest.TestSession() as provider:
         current = provider.get(QuotaReservation, row.id)
         assert current.dispatch_metadata["cancelled"] is True
         with pytest.raises(accounting.AccountingUnavailable, match="cancelled"):
@@ -760,7 +760,7 @@ def test_rq_cache_boundary_supports_fresh_accounting_and_confirmed_off(
         monkeypatch.setattr(ws_pubsub, "_last_states", {})  # A separate RQ process.
 
     source(NOW, "running")
-    with TestSession() as worker:
+    with conftest.TestSession() as worker:
         assert REAL_SPEND(worker, "project", project.id, NOW) == 0
         with pytest.raises(accounting.AccountingUnavailable, match="Fresh metering"):
             REAL_SPEND(worker, "project", project.id, NOW + timedelta(minutes=3))

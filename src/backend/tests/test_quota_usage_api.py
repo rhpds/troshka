@@ -26,13 +26,16 @@ from app.models.user import User
 from app.services import quota_accounting
 from tests.conftest import TestSession
 from tests.test_metering_api import _as_user, client
-from tests.test_quota_permissions import quota_case as usage_case
+from tests.test_quota_permissions import quota_case as usage_case_fixture
+
+usage_case = usage_case_fixture
 
 
 @pytest.fixture
-def quota_case():
-    setup = usage_case.__wrapped__()
-    case = next(setup)
+def quota_case(usage_case):
+    # Let pytest resume the parent fixture after our cleanup. Closing its yield
+    # generator manually skips the authentication override teardown after yield.
+    case = usage_case
     try:
         yield case
     finally:
@@ -77,7 +80,6 @@ def quota_case():
                 synchronize_session=False
             )
             db.commit()
-        setup.close()
 
 
 def usage(scope, identity):
