@@ -3,6 +3,16 @@ from app.models.disk import Disk
 from app.models.dns_provider import DnsProvider
 from app.models.elastic_ip import ElasticIp
 from app.models.host import Host, HostAssignment
+from app.models.kubevirt_storage import (
+    NativeCollectionDomain,
+    NativeEnrollment,
+    NativeEnrollmentRequest,
+    NativePoolClaim,
+    NativeProjectRoot,
+    NativeReportingTarget,
+    NativeRetainedBinding,
+    NativeStorageSnapshot,
+)
 from app.models.library import (
     ImageCache,
     Library,
@@ -45,6 +55,14 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "NativeReportingTarget",
+    "NativeEnrollmentRequest",
+    "NativeEnrollment",
+    "NativeCollectionDomain",
+    "NativePoolClaim",
+    "NativeProjectRoot",
+    "NativeRetainedBinding",
+    "NativeStorageSnapshot",
     "QuotaPolicy",
     "QuotaReservation",
     "QuotaAllocation",

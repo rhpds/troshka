@@ -399,6 +399,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         cache_bindings=inventory.cache_bindings,
         retained_bindings=inventory.retained_bindings,
         snapshot_evidence=inventory.snapshot_evidence,
+        inventory_blockers=inventory.blockers,
         images=images,
         collection_errors=errors,
     )

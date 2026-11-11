@@ -1,0 +1,131 @@
+# Native RBD reporting (operator evidence only)
+
+The native-storage GET reports `rbd_allocated_extent_bytes`: allocated image and
+snapshot extents excluding replication. Provisioned capacity is a separate field.
+Missing, unsupported, ambiguous or stale measurements have a null authoritative
+total. `known_allocated_bytes` is a measured subset, never a capacity estimate.
+Every response has `enforcement_eligible: false`. This workflow does not change
+quota readiness, reservations, allocations, charges or `quotas.enabled`.
+
+The local CLI is a privileged operator boundary. Anyone holding its DB credentials
+is trusted to submit collector evidence. Operator-owned files and collector IDs
+are not cryptographic signatures; there is no public report ingestion endpoint.
+Do not build an enrollment manifest from an uploaded collector report.
+
+## Explicit target and independent enrollment
+
+Apply the reporting Alembic migration through the normal reviewed release process
+before using the CLI. The commands below do not create or migrate a database.
+Set `TROSHKA_NATIVE_REPORT_DATABASE_URL` securely to the chosen target database.
+The CLI never falls back to the application database URL. Prefer the dedicated
+environment variable over a credential-bearing command-line URL. Every command
+also requires the target's stable UUID, independent of its database name or DSN.
+
+```sh
+# One-time reporting metadata configuration; target UUID cannot be overwritten.
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> configure-target
+
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> prepare --project-id <full-project-uuid> \
+  --output enrollment-request.json
+```
+
+Prepare exports only the requested projects and their current owner/organization,
+host and effective native provider tuples. Native placement uses
+`Host.provider_id`; a contradictory `Project.provider_id` blocks enrollment.
+The request is also recorded in the target DB. A fabricated request without that
+independent preparation is rejected.
+
+Create a separate pins document matching `VerificationPins` in
+`app/schemas/kubevirt_storage_enrollment.py`. It contains a domain UUID, collector
+allowlist, provider-to-cluster-UID aliases, exact project namespace/CR UIDs,
+trusted cache namespace UIDs, and physical Ceph FSID/pool IDs. The domain must
+cover every enrolled namespace/cluster alias sharing these physical pools. One
+domain owns each physical pool, including pools shared by multiple Kubernetes
+clusters. No second domain can enroll an overlapping pool.
+
+Create an operator-owned backend configuration JSON array. Each object has
+`ceph_fsid`, `pools` (the collector's `PoolConfig` schema), `ceph_conf` and
+`ceph_keyring` paths. The keyring is an independently provisioned read-only
+identity; this workflow does not provision credentials.
+
+```sh
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> verify --request enrollment-request.json \
+  --pins enrollment-pins.json --backend-config backend-identities.json \
+  --output verified-enrollment.json
+
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> enroll --enrollment verified-enrollment.json
+```
+
+Verify performs bounded Kubernetes GET/list requests using the target provider's
+configured API identity: kube-system UID, namespace UID, exact TroshkaProject UID
+and full `spec.projectId`. An eight-character prefix never establishes ownership.
+It independently checks configured Ceph FSIDs and pool IDs through read-only
+transport. Verify never reads a collector report. Enrollment then locks current
+user → organization → project identities, rechecks the prepared tuples and
+`updated_at`, and persists the immutable enrollment digest/version and roots.
+Changes while preparing/verifying require fresh preparation. Ordinary report
+imports do not compare project `updated_at`; display/topology writes do not alter
+immutable namespace ownership.
+
+## Import and read behavior
+
+After separately collecting evidence with the enrolled domain/collector identity:
+
+```sh
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> import --report native-report.json \
+  --enrollment-id <enrollment-uuid> --enrollment-digest <verified-digest>
+```
+
+Inputs must be bounded regular files owned by the operator, without group/other
+write permission; symlinks are refused. Failures sanitize credentials and DSNs.
+Import invokes no collector or cluster clients. It reconstructs normalized graph
+attribution instead of trusting report aggregate amounts or ownership claims.
+New bindings must belong to an enrolled namespace and complete original discovery.
+Old immutable root and PVC/backend identities survive live object deletion.
+
+Every accepted attempt remains append-only. Changed same-ID replay is rejected;
+identical replay preserves original timestamps. A domain's newest **source start**
+selects one coherent graph. A later partial attempt or omitted root invalidates
+older complete totals. Late imports of older scans cannot revive them. Conflicting
+reports with the same source start make the domain unavailable until an explicitly
+later report. Unknown/conflicting roots or backend pools remain stored for admin
+inspection, without ownership promotion or complete current usage.
+
+`inventory_blockers` preserves the original inventory digest separately from
+measurement/final-check errors. All errors still block complete usage. Legacy
+reports without that field are accepted only when their digest can be exactly
+reconstructed using `collection_errors`. Legacy partial reports whose late errors
+make that impossible are rejected as unsupported legacy inventory evidence;
+collect a new report. Unresolved CSI snapshot evidence participates in digest
+verification and remains a completeness blocker.
+
+`GET /api/v1/quotas/{project|user|organization}/{id}/native-storage` performs no
+collection or accounting writes and works while the quota baseline is unready.
+It reloads the actor's role/access, shares, current ownership and organization
+membership in one read-only repeatable-read snapshot. Revocation committed before
+the snapshot is honored; a concurrent transfer cannot mix versions. Separate
+connections leave caller transactions untouched. An in-memory/shared single-
+connection SQLite setup is deliberately refused because it cannot provide that
+boundary. Source evidence older than 15 minutes is stale, regardless of import
+time. Aggregate overflow beyond signed int64 leaves the authoritative amount
+null with `aggregation_overflow`; the known field remains a bounded subset.
+
+Project shares authorize project-only reads. Non-admin output includes no graph
+identities, other-project breakdowns or platform-pool fields. Admin-only
+`platform_bytes`, `unattributed_retained_projects` and
+`unattributed_retained_known_bytes` are diagnostics across the selected domains
+(including all retained orphan domains). They are **not** scope-attributed amounts
+and must not be added to a scope total.
+
+Deleted projects return 404 at project scope. Without a trusted deletion-time
+owner snapshot, retained storage is admin-only unresolved inventory. User and
+organization totals remain null with `retained_attribution_unavailable` whenever
+such ambiguity exists; the known live subset remains available. This bounded
+phase uses a conservative global blocker because an import-time historical owner
+may have transferred the project before deletion. A future trusted deletion hook
+can narrow this, but is not part of this reporting implementation.

@@ -186,6 +186,7 @@ class NativeStorageReport(AttributionResult):
     retained_bindings: list[VolumeBinding] = Field(max_length=10000)
     cache_bindings: list[CacheBinding] = Field(default_factory=list, max_length=10000)
     collection_errors: list[Blocker] = Field(max_length=10000)
+    inventory_blockers: list[Blocker] | None = Field(default=None, max_length=10000)
     enforcement_eligible: Literal[False] = False
     snapshot_evidence: list[CSISnapshotEvidence] = Field(
         default_factory=list, max_length=10000
@@ -198,6 +199,26 @@ class NativeStorageReport(AttributionResult):
         if any(i.collected_at > self.completed_at for i in self.images):
             raise ValueError("observation after report completion")
         return self
+
+
+class NativeStorageUsage(Evidence):
+    scope: Literal["project", "user", "organization"]
+    scope_id: str
+    metric: Literal["rbd_allocated_extent_bytes"] = "rbd_allocated_extent_bytes"
+    status: Literal["complete", "partial", "unavailable", "stale"]
+    allocated_bytes: Bytes | None
+    known_allocated_bytes: Bytes
+    provisioned_bytes: Bytes | None
+    observed_at: datetime | None
+    covered_projects: Annotated[int, Field(strict=True, ge=0)]
+    expected_projects: Annotated[int, Field(strict=True, ge=0)]
+    reason_codes: list[Text]
+    enforcement_eligible: Literal[False] = False
+    platform_bytes: Bytes | None = None
+    unattributed_retained_projects: Annotated[
+        int, Field(strict=True, ge=0)
+    ] | None = None
+    unattributed_retained_known_bytes: Bytes | None = None
 
 
 class CollectionLimits(Evidence):
