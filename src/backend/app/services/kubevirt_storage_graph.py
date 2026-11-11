@@ -103,7 +103,10 @@ def _project_allocation(
 ):
     required = nodes - cache
     reasons = failures | {
-        b.code for b in inventory.blockers if b.project_id in (None, root.project_id)
+        b.code
+        for b in inventory.blockers
+        if b.project_id in (None, root.project_id)
+        and (b.image_key is None or b.image_key in nodes)
     }
     if sum(x.project_id == root.project_id for x in inventory.project_roots) > 1:
         reasons.add("duplicate_project_root")
@@ -149,26 +152,44 @@ def _project_allocation(
     )
 
 
-def _platform_pools(cache, observations):
+def _pool_allocation(pool_key, keys, observations, blockers):
+    applicable = [
+        b
+        for b in blockers
+        if b.project_id is None and (b.image_key is None or b.image_key in keys)
+    ]
+    complete = [
+        observations[k]
+        for k in keys
+        if k in observations and observations[k].measurement_status == "complete"
+    ]
+    known = sum(i.allocated_bytes for i in complete)
+    if any(
+        b.code
+        in {
+            "backend_identity_changed",
+            "backend_identity_recheck_unavailable",
+            "backend_identity_or_capability_unavailable",
+            "cluster_identity_mismatch",
+        }
+        for b in applicable
+    ):
+        known = 0
+    return PoolAllocation(
+        pool_key=pool_key,
+        known_allocated_bytes=known,
+        allocated_bytes=known
+        if not applicable and len(complete) == len(keys)
+        else None,
+    )
+
+
+def _platform_pools(cache, observations, blockers):
     pools = defaultdict(list)
     for key in cache:
-        pools[PoolKey(ceph_fsid=key.ceph_fsid, pool_id=key.pool_id)].append(
-            observations.get(key)
-        )
+        pools[PoolKey(ceph_fsid=key.ceph_fsid, pool_id=key.pool_id)].append(key)
     return [
-        PoolAllocation(
-            pool_key=k,
-            known_allocated_bytes=sum(
-                i.allocated_bytes
-                for i in values
-                if i and i.measurement_status == "complete"
-            ),
-            allocated_bytes=(
-                sum(i.allocated_bytes for i in values)
-                if all(i and i.measurement_status == "complete" for i in values)
-                else None
-            ),
-        )
+        _pool_allocation(k, values, observations, blockers)
         for k, values in pools.items()
     ]
 
@@ -200,6 +221,6 @@ def attribute_graph(inventory, images, *, max_parent_depth=32):
     ]
     return AttributionResult(
         projects=projects,
-        platform_pools=_platform_pools(cache, observations),
+        platform_pools=_platform_pools(cache, observations, inventory.blockers),
         unattributed_images=sorted(unresolved, key=lambda k: k.model_dump_json()),
     )

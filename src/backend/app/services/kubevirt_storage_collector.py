@@ -277,11 +277,70 @@ def _final_checks(inventory, rbd_reader, errors):
             + inventory.cache_bindings
         }:
             errors.append(Blocker(code="backend_identity_changed"))
+    except Exception:
+        errors.append(Blocker(code="backend_identity_recheck_unavailable"))
+    try:
         rechecked = rbd_reader.recheck_inventory()
         if inventory_digest(rechecked) != inventory_digest(inventory):
             errors.append(Blocker(code="inventory_changed"))
     except Exception:
         errors.append(Blocker(code="inventory_recheck_unavailable"))
+
+
+def _graph_metadata(reader, image, pools, limits):
+    info = _call(reader.image_info, image.key)
+    if not isinstance(info.value, dict):
+        raise ValueError("invalid image metadata")
+    parent = _parent(info.value, image.key, pools, reader)
+    result = _call(reader.image_snapshots, image.key)
+    snapshots, names = _snapshot_rows(result.value, image.key)
+    if len(snapshots) > limits.max_objects:
+        raise _ReadFailure("scan_limit")
+    children = _children(
+        reader, image.key, names, pools, [], limits.max_objects - len(snapshots)
+    )
+    return info.value.get("id"), parent, set(snapshots), set(children)
+
+
+def _final_graph_check(reader, images, pools, limits, deadline, errors):
+    verified = []
+    for image in images:
+        if image.measurement_status != "complete":
+            verified.append(image)
+            continue
+        try:
+            if time.monotonic() >= deadline:
+                raise _ReadFailure("scan_limit")
+            observed = _graph_metadata(reader, image, pools, limits)
+            expected = (
+                image.key.image_id,
+                image.parent,
+                set(image.snapshots),
+                set(image.children),
+            )
+            if observed != expected:
+                raise _ReadFailure("identity_changed")
+            verified.append(image)
+        except (_ReadFailure, ValueError, KeyError, TypeError, AttributeError) as error:
+            status = (
+                error.status if isinstance(error, _ReadFailure) else "invalid_output"
+            )
+            code = (
+                "backend_graph_changed"
+                if status == "identity_changed"
+                else "backend_graph_recheck_unavailable"
+            )
+            errors.append(Blocker(code=code, image_key=image.key))
+            verified.append(
+                image.model_copy(
+                    update={
+                        "measurement_status": status,
+                        "allocated_bytes": None,
+                        "measurement_semantics_version": None,
+                    }
+                )
+            )
+    return verified
 
 
 def collect_report(inventory, rbd_reader, *, limits, clock):
@@ -301,6 +360,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         deadline,
     )
     _final_checks(inventory, rbd_reader, errors)
+    images = _final_graph_check(rbd_reader, images, pools, limits, deadline, errors)
     working = inventory.model_copy(update={"blockers": errors})
     attributed = attribute_graph(
         working, images, max_parent_depth=limits.max_parent_depth
@@ -338,6 +398,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         volume_bindings=inventory.volume_bindings,
         cache_bindings=inventory.cache_bindings,
         retained_bindings=inventory.retained_bindings,
+        snapshot_evidence=inventory.snapshot_evidence,
         images=images,
         collection_errors=errors,
     )

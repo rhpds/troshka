@@ -106,3 +106,65 @@ def test_unrelated_namespace_pvc_is_never_bound():
 
     kube.pvcs = wrong
     assert not discover_inventory(kube, [], [root(1)]).volume_bindings
+
+
+def snapshot_kube():
+    kube = Kube()
+    kube.snapshots = lambda ns: [
+        {
+            "metadata": {"uid": "snapshot-uid", "name": "retained"},
+            "spec": {"source": {"persistentVolumeClaimName": "deleted-source-pvc"}},
+            "status": {"readyToUse": True, "boundVolumeSnapshotContentName": "content"},
+        }
+    ]
+    kube.snapshot_contents = lambda: [
+        {
+            "metadata": {"name": "content", "uid": "content-uid"},
+            "spec": {
+                "driver": "unknown.csi",
+                "volumeSnapshotRef": {"uid": "snapshot-uid", "namespace": "project-1"},
+                "source": {"volumeHandle": "missing-volume-handle"},
+            },
+            "status": {"snapshotHandle": "unresolved-snapshot-handle"},
+        }
+    ]
+    return kube
+
+
+def test_ready_snapshot_without_source_pvc_is_explicitly_unresolved():
+    from app.schemas.kubevirt_storage import CollectionLimits
+    from app.services.kubevirt_storage_collector import collect_report
+    from tests.test_kubevirt_storage_collector import Rbd
+
+    kube = snapshot_kube()
+    discovered = discover_inventory(kube, [], [root(1)])
+    assert any(b.code == "csi_snapshot_backend_unresolved" for b in discovered.blockers)
+    assert discovered.snapshot_evidence[0].source_pvc_name == "deleted-source-pvc"
+    reader = Rbd()
+    reader.recheck_inventory = lambda: discover_inventory(kube, [], [root(1)])
+    result = collect_report(
+        discovered,
+        reader,
+        limits=CollectionLimits(),
+        clock=lambda: discovered.collected_at,
+    )
+    assert result.projects[0].allocated_bytes is None
+    assert result.snapshot_evidence == discovered.snapshot_evidence
+
+
+def test_snapshot_handle_and_content_replacements_change_inventory_digest():
+    from app.services.kubevirt_storage_inventory import inventory_digest
+
+    kube = snapshot_kube()
+    original = discover_inventory(kube, [], [root(1)])
+    contents = kube.snapshot_contents()
+    kube.snapshot_contents = lambda: contents
+    contents[0]["status"]["snapshotHandle"] = "replacement-handle"
+    assert inventory_digest(
+        discover_inventory(kube, [], [root(1)])
+    ) != inventory_digest(original)
+    contents[0]["status"]["snapshotHandle"] = "unresolved-snapshot-handle"
+    contents[0]["metadata"]["uid"] = "replacement-content-uid"
+    assert inventory_digest(
+        discover_inventory(kube, [], [root(1)])
+    ) != inventory_digest(original)

@@ -87,6 +87,24 @@ class CacheBinding(Evidence):
     image_key: ImageKey
 
 
+class CSISnapshotEvidence(Evidence):
+    """Kubernetes identity only; no canonical backend snapshot coverage is implied."""
+
+    root: ProjectRoot
+    snapshot_uid: Text | None
+    snapshot_name: Text | None
+    content_name: Text | None
+    content_uid: Text | None
+    source_pvc_name: Text | None
+    csi_driver: Text | None
+    ready_to_use: bool
+    snapshot_handle_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
+    source_snapshot_handle_sha256: Annotated[
+        str, Field(pattern=r"^[a-f0-9]{64}$")
+    ] | None
+    source_volume_handle_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
+
+
 class NativeInventory(Evidence):
     collector_id: Text = "standalone"
     project_roots: list[ProjectRoot] = Field(default_factory=list, max_length=10000)
@@ -98,6 +116,9 @@ class NativeInventory(Evidence):
     blockers: list[Blocker] = Field(default_factory=list, max_length=10000)
     collected_at: datetime
     inventory_digest: str = ""
+    snapshot_evidence: list[CSISnapshotEvidence] = Field(
+        default_factory=list, max_length=10000
+    )
 
 
 class ImageObservation(Evidence):
@@ -166,6 +187,9 @@ class NativeStorageReport(AttributionResult):
     cache_bindings: list[CacheBinding] = Field(default_factory=list, max_length=10000)
     collection_errors: list[Blocker] = Field(max_length=10000)
     enforcement_eligible: Literal[False] = False
+    snapshot_evidence: list[CSISnapshotEvidence] = Field(
+        default_factory=list, max_length=10000
+    )
 
     @model_validator(mode="after")
     def ordered_times(self):

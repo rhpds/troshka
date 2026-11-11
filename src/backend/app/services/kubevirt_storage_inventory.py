@@ -10,6 +10,7 @@ from kubernetes.utils.quantity import parse_quantity
 from app.schemas.kubevirt_storage import (
     Blocker,
     CacheBinding,
+    CSISnapshotEvidence,
     NativeInventory,
     VolumeBinding,
 )
@@ -27,6 +28,8 @@ def inventory_digest(inventory):
         "retained_bindings",
         "blockers",
     )
+    if inventory.snapshot_evidence:
+        fields += ("snapshot_evidence",)
     data = {
         name: sorted(
             (v.model_dump(mode="json") for v in getattr(inventory, name)),
@@ -101,21 +104,53 @@ def _pvc_binding(kube, pvc, pv_by_name, namespace):
     return result, int(size) if size is not None else None
 
 
-def _snapshot_blockers(kube, root, contents):
-    errors = []
+def _handle_digest(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        raise ValueError("invalid CSI handle")
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _snapshot_record(root, snapshot, content, content_name):
+    source = content.get("spec", {}).get("source", {})
+    return CSISnapshotEvidence(
+        root=root,
+        snapshot_uid=snapshot.get("metadata", {}).get("uid"),
+        snapshot_name=snapshot.get("metadata", {}).get("name"),
+        content_name=content_name,
+        content_uid=content.get("metadata", {}).get("uid"),
+        source_pvc_name=snapshot.get("spec", {})
+        .get("source", {})
+        .get("persistentVolumeClaimName"),
+        csi_driver=content.get("spec", {}).get("driver"),
+        ready_to_use=snapshot.get("status", {}).get("readyToUse") is True,
+        snapshot_handle_sha256=_handle_digest(
+            content.get("status", {}).get("snapshotHandle")
+        ),
+        source_snapshot_handle_sha256=_handle_digest(source.get("snapshotHandle")),
+        source_volume_handle_sha256=_handle_digest(source.get("volumeHandle")),
+    )
+
+
+def _snapshot_discovery(kube, root, contents):
+    records, errors = [], []
     for snapshot in kube.snapshots(root.namespace):
         status, meta = snapshot.get("status", {}), snapshot.get("metadata", {})
-        content = contents.get(status.get("boundVolumeSnapshotContentName"), {})
+        content_name = status.get("boundVolumeSnapshotContentName")
+        content = contents.get(content_name, {})
+        records.append(_snapshot_record(root, snapshot, content, content_name))
         ref = content.get("spec", {}).get("volumeSnapshotRef", {})
+        code = "csi_snapshot_backend_unresolved"
         if (
             not status.get("readyToUse")
             or ref.get("uid") != meta.get("uid")
             or ref.get("namespace") != root.namespace
         ):
-            errors.append(
-                Blocker(code="snapshot_identity_unresolved", project_id=root.project_id)
-            )
-    return errors
+            code = "snapshot_identity_unresolved"
+        # Ready references are insufficient without a supported backend snapshot resolver.
+        errors.append(Blocker(code=code, project_id=root.project_id))
+    return records, errors
 
 
 def _expired(kube):
@@ -159,13 +194,16 @@ def _project_discovery(kube, root, retained, cluster, pvs, contents):
             else _proof_root(kube, root, retained)
         )
         if problem:
-            return [], [Blocker(code=problem, project_id=root.project_id)]
+            return [], [], [Blocker(code=problem, project_id=root.project_id)]
+        snapshots, snapshot_errors = _snapshot_discovery(kube, root, contents)
         bindings, blockers = _project_pvcs(kube, root, pvs)
-        return bindings, blockers + _snapshot_blockers(kube, root, contents)
+        return bindings, snapshots, blockers + snapshot_errors
     except Exception:
-        return [], [
-            Blocker(code="project_discovery_unavailable", project_id=root.project_id)
-        ]
+        return (
+            [],
+            [],
+            [Blocker(code="project_discovery_unavailable", project_id=root.project_id)],
+        )
 
 
 def _retained_cache(kube, enrolled, cache):
@@ -234,7 +272,7 @@ def _retained_conflicts(retained, roots, bindings):
 
 def discover_inventory(kube_reader, retained_bindings, roots):
     """Discover full enrolled namespaces; retained records contain identity only."""
-    bindings, blockers, roots = [], [], list(roots)
+    bindings, snapshots, blockers, roots = [], [], [], list(roots)
     try:
         cluster = kube_reader.cluster_identity()
         pvs = {p["metadata"]["name"]: p for p in kube_reader.pvs()}
@@ -259,10 +297,11 @@ def discover_inventory(kube_reader, retained_bindings, roots):
             continue
         seen_projects.add(root.project_id)
         seen_namespaces.add(namespace_key)
-        found, problems = _project_discovery(
+        found, snapshot_records, problems = _project_discovery(
             kube_reader, root, retained_bindings, cluster, pvs, contents
         )
         bindings.extend(found)
+        snapshots.extend(snapshot_records)
         blockers.extend(problems)
     cache, cache_errors = _cache_discovery(kube_reader, cluster, pvs)
     blockers.extend(
@@ -274,6 +313,7 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         volume_bindings=bindings,
         cache_bindings=cache,
         retained_bindings=retained_bindings,
+        snapshot_evidence=snapshots,
         blockers=blockers,
         collected_at=getattr(kube_reader, "scan_started_at", datetime.now(UTC)),
     )
