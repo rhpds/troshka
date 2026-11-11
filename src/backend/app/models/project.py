@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -55,7 +56,7 @@ class Project(Base):
     )
     auto_delete_warned: Mapped[bool] = mapped_column(default=False)
     auto_stopped: Mapped[bool] = mapped_column(default=False)
-    budget_usd: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    budget_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     budget_warned: Mapped[bool] = mapped_column(default=False, server_default="false")
     budget_stopped: Mapped[bool] = mapped_column(default=False, server_default="false")
     lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(

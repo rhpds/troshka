@@ -55,6 +55,21 @@ def get_test_db():
 
 import pytest  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def isolated_quota_observation_transport(monkeypatch):
+    """Quota tests never read/write an application's Redis observation namespace."""
+    from unittest.mock import Mock
+
+    from app.services import quota_observations
+
+    monkeypatch.setattr(
+        quota_observations,
+        "_client",
+        Mock(get=Mock(return_value=None), eval=Mock(return_value=0)),
+    )
+
+
 # Live/real-install tests legitimately run long (a tier2 OCP install is ~30-60
 # min), so exempt them from the default per-test timeout. Everything else keeps
 # the timeout as a guardrail: an accidental real network call (e.g. a troshkad

@@ -118,3 +118,10 @@ metering:
   # Multiply CPU/RAM unit rates for nested hosts (ocpvirt/aws/gcp/azure/libvirt).
   # KubeVirt shared cluster and dedicated hosts skip this factor.
   nested_factor: 0.5
+
+quotas:
+  # Enable only after baseline import and resource coverage/reconciliation pass.
+  enabled: false
+  # Local filesystem operating reserve; distinct from project-owned allocated blocks.
+  storage_pool_reserve_bytes: 1073741824
+  storage_pool_reserve_percent: 5

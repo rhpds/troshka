@@ -75,6 +75,9 @@ def pause_vm_on_host(host, project_id: str, vm_id: str) -> None:
 
 def unpause_vm_on_host(host, project_id: str, vm_id: str) -> None:
     """Resume a VM previously paused by :func:`pause_vm_on_host`."""
+    from app.services.quota_operations import deny_unsupported
+
+    deny_unsupported("Individual VM resume")
     if host.host_type == _KUBEVIRT_HOST_TYPE:
         _kubevirt_vmi_subresource(host, project_id, vm_id, "unpause")
         return

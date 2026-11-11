@@ -1,7 +1,8 @@
 import datetime
+from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 OffAction = Literal["stop", "pause", "hibernate"]
 
@@ -32,7 +33,9 @@ class ProjectUpdate(BaseModel):
     guid: str | None = None
     clock_target: datetime.datetime | None = None
     guest_exec_enabled: bool | None = None
-    budget_usd: float | None = None
+    budget_usd: Decimal | None = Field(
+        default=None, ge=0, max_digits=18, decimal_places=6, allow_inf_nan=False
+    )
 
 
 class ProjectResponse(BaseModel):

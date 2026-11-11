@@ -133,9 +133,14 @@ describe("Palette editing and node creation", () => {
   });
 
   it("saves positive budgets and clears an unset budget", () => {
-    const change = vi.fn(); render(<Palette budgetUsd={10} onBudgetChange={change} />); click("Project"); const input = within(item("Budget (USD)")).getByRole("spinbutton");
-    expect(input).toHaveValue(10); fireEvent.change(input, { target: { value: "25.50" } }); fireEvent.blur(input); expect(change).toHaveBeenLastCalledWith(25.5);
+    const change = vi.fn(); render(<Palette budgetUsd="10" canEditBudget onBudgetChange={change} />); click("Project"); const input = screen.getByLabelText("Palette lifetime budget (USD)");
+    expect(input).toHaveValue("10"); fireEvent.change(input, { target: { value: "25.500001" } }); fireEvent.blur(input); expect(change).toHaveBeenLastCalledWith("25.500001");
     fireEvent.change(input, { target: { value: "" } }); fireEvent.blur(input); expect(change).toHaveBeenLastCalledWith(null);
     fireEvent.change(input, { target: { value: "-1" } }); fireEvent.blur(input); expect(change).toHaveBeenCalledTimes(2);
+  });
+  it("disables the alternate budget editor without server edit permission", () => {
+    const change = vi.fn(); render(<Palette budgetUsd="0" onBudgetChange={change} />); click("Project");
+    const input = screen.getByLabelText("Palette lifetime budget (USD)");
+    expect(input).toBeDisabled(); fireEvent.blur(input); expect(change).not.toHaveBeenCalled();
   });
 });

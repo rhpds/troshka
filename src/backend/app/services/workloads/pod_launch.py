@@ -395,6 +395,9 @@ def launch_runner_pod(
     cluster API (``api.<cluster>.local``). On KubeVirt it becomes the pod's
     ``dnsConfig``; on troshkad the resolver is already embedded per-network entry.
     """
+    from app.services.quota_operations import deny_unsupported
+
+    deny_unsupported("Workload runner allocation")
     if getattr(host, "host_type", None) == "kubevirt-cluster":
         return _launch_kubevirt(
             host,

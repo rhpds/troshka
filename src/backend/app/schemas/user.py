@@ -1,6 +1,7 @@
 import datetime
+from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class UserCreate(BaseModel):
@@ -25,5 +26,12 @@ class UserResponse(BaseModel):
     auth_source: str
     created_at: datetime.datetime
     access_enabled: bool = True
+    organization_id: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class OrganizationAssignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: UUID | None

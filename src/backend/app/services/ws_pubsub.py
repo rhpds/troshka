@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import threading
+from datetime import UTC, datetime
 
 from starlette.websockets import WebSocket
 
@@ -179,14 +180,61 @@ _POLL_INTERVAL = 2
 
 
 def get_cached_vm_states(project_id: str) -> dict | None:
-    """Return cached VM states from the last poll cycle, or None if not cached."""
+    """Return original source evidence, including across API/RQ process boundaries."""
     cached = _last_states.get(project_id)
-    if not cached:
+    local = (
+        {
+            "states": cached.get("vm_states", {}),
+            "container_states": cached.get("container_states", {}),
+            "progress": cached.get("vm_progress", {}),
+            "observed_at": cached.get("observed_at"),
+            "observation_id": cached.get("observation_id"),
+        }
+        if cached
+        else None
+    )
+    from app.services.quota_accounting import quotas_enabled
+
+    if not quotas_enabled():
+        return local
+    local = cached.get("quota_observation") if cached else None
+    from app.services import quota_observations
+
+    shared = quota_observations.read(project_id)
+    if shared and (
+        not local or _observation_timestamp(shared) > _observation_timestamp(local)
+    ):
+        return shared
+    return local
+
+
+def _observation_timestamp(snapshot):
+    value = snapshot.get("observed_at")
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if not isinstance(value, datetime):
+        return datetime.min.replace(tzinfo=UTC)
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def get_display_vm_states(project_id: str) -> dict | None:
+    """UI snapshots must not replace or normalize the trusted provider evidence."""
+    cached = _last_states.get(project_id)
+    if cached:
+        return {
+            "states": dict(cached.get("vm_states", {})),
+            "container_states": dict(cached.get("container_states", {})),
+            "progress": dict(cached.get("vm_progress", {})),
+        }
+    snapshot = get_cached_vm_states(project_id)
+    if snapshot is None:
         return None
     return {
-        "states": cached.get("vm_states", {}),
-        "container_states": cached.get("container_states", {}),
-        "progress": cached.get("vm_progress", {}),
+        **snapshot,
+        "states": {
+            node_id: _normalize_vm_state(state)
+            for node_id, state in snapshot.get("states", {}).items()
+        },
     }
 
 
@@ -405,7 +453,15 @@ def _log_vm_state_changes(project, vm_states, prev_vm_states):
 
 
 def _check_and_notify_project_changes(
-    project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+    project_id,
+    project,
+    dp,
+    vm_states,
+    vm_progress,
+    vm_boot_devs,
+    *,
+    observed_at=None,
+    quota_states=None,
 ):
     """Compare current state vs last cached state and send WS notifications.
 
@@ -460,7 +516,42 @@ def _check_and_notify_project_changes(
         "vm_states": vm_states if vm_states else last.get("vm_states", {}),
         "vm_progress": vm_progress,
         "vm_boot_devs": vm_boot_devs,
+        "observed_at": observed_at or last.get("observed_at"),
+        "observation_id": last.get("observation_id"),
+        "quota_observation": last.get("quota_observation"),
     }
+    # Display normalization is lossy; only the independent raw provider map is
+    # allowed into accounting and confirmed-shutdown evidence.
+    _publish_quota_observation(project_id, quota_states, {}, observed_at)
+
+
+def _publish_quota_observation(project_id, vm_states, vm_progress, observed_at):
+    from app.services.quota_accounting import quotas_enabled
+
+    if not quotas_enabled() or not isinstance(observed_at, datetime) or not vm_states:
+        return
+    from app.services import quota_observations
+
+    snapshot = {
+        "states": dict(vm_states),
+        "container_states": {},
+        "progress": dict(vm_progress),
+        "observed_at": observed_at,
+    }
+    identity = quota_observations.publish(project_id, snapshot)
+    _last_states[project_id]["observation_id"] = identity
+    _last_states[project_id]["quota_observation"] = {
+        **snapshot,
+        "observation_id": identity,
+    }
+
+
+class _ObservedStates(dict):
+    """Keep response age with its states without changing the mapping interface."""
+
+    def __init__(self, states, observations):
+        super().__init__(states)
+        self.observations = observations
 
 
 def _fetch_troshkad_host_states(host, host_batch_states):
@@ -472,9 +563,10 @@ def _fetch_troshkad_host_states(host, host_batch_states):
     from app.services.troshkad_client import get_all_vm_states
 
     try:
+        observed_at = datetime.now(UTC)
         batch = get_all_vm_states(host)
         if batch is not None:
-            host_batch_states[host.id] = batch
+            host_batch_states[host.id] = _ObservedStates(batch, {host.id: observed_at})
     except Exception:
         pass
 
@@ -505,9 +597,15 @@ def _fetch_kubevirt_states_for_host(
         if project.host_id == host_id or (
             project.host_assignments and host_id in project.host_assignments.values()
         ):
+            observed_at = datetime.now(UTC)
             kv_states = _fetch_kubevirt_vm_states(project, host, db)
             if kv_states:
-                project_batch_states[project.id] = kv_states
+                prior = project_batch_states.get(project.id)
+                observations = dict(getattr(prior, "observations", {}))
+                observations[host_id] = observed_at
+                project_batch_states[project.id] = _ObservedStates(
+                    kv_states, observations
+                )
 
 
 def _batch_fetch_vm_states(
@@ -561,6 +659,24 @@ def _get_vm_states_for_project(project, host_batch, kv_batch):
     return {}, {}, {}
 
 
+def _quota_vm_states(project, host_batch):
+    """Raw nested-VM states keyed by deployed identity, independent of the UI."""
+    from app.services.deploy_topology import _vm_domain_name
+    from app.services.quota_accounting import quotas_enabled
+    from app.services.quota_operations import retained_topology
+
+    if not quotas_enabled() or host_batch is None:
+        return {}
+    result = {}
+    for node in retained_topology(project).get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        state = host_batch.get(_vm_domain_name(project.id, node["id"]))
+        if state and state != "not_found":
+            result[node["id"]] = state
+    return result
+
+
 def _evict_stale_cache_entries(projects):
     """Evict cache entries for projects no longer active/stopped."""
     stale = [k for k in _last_states if k not in projects]
@@ -579,11 +695,56 @@ def _notify_all_projects(projects, host_batch_states, project_batch_states):
         vm_states, vm_progress, vm_boot_devs = _get_vm_states_for_project(
             project, host_batch, kv_batch
         )
-        _check_and_notify_project_changes(
-            project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+        quota_states = _quota_vm_states(project, host_batch)
+        observed_at = _observation_time(
+            project, quota_states, host_batch_states, kv_batch
         )
+        _check_and_notify_project_changes(
+            project_id,
+            project,
+            dp,
+            vm_states,
+            vm_progress,
+            vm_boot_devs,
+            observed_at=observed_at,
+            quota_states=quota_states,
+        )
+        from app.services import quota_operations
+
+        try:
+            quota_operations.reconcile(project_id)
+        except Exception:
+            logger.exception("Quota resource observation retained for %s", project_id)
 
     _evict_stale_cache_entries(projects)
+
+
+def _observation_time(project, vm_states, host_batch_states, kv_batch):
+    """Use the oldest required response, never batch completion or fallback time."""
+    from app.services.quota_operations import retained_topology
+
+    expected = {
+        n["id"]
+        for n in retained_topology(project).get("nodes", [])
+        if n.get("type") == "vmNode"
+    }
+    if not expected.issubset(vm_states) or any(
+        s in {"redeploying", "unknown", "Unknown"} for s in vm_states.values()
+    ):
+        return None
+    hosts = set((project.host_assignments or {}).values()) or {project.host_id}
+    if None in hosts:
+        return None
+    if kv_batch is not None:
+        observations = getattr(kv_batch, "observations", {})
+    else:
+        observations = {}
+        for host_id in hosts:
+            response = host_batch_states.get(host_id)
+            observations.update(getattr(response, "observations", {}))
+    if hosts.issubset(observations):
+        return min(observations[host_id] for host_id in hosts)
+    return None
 
 
 def _poll_active_projects():

@@ -2673,6 +2673,9 @@ def capture_pattern_disks(
     Runs in a background thread, spawned by the patterns API when creating from a source project.
     Uploads each disk to S3 via troshkad on the host, creates PatternDisk records, and updates pattern state.
     """
+    from app.services.quota_operations import deny_unsupported
+
+    deny_unsupported("Pattern capture (including NBD buffers)")
     from app.models.host import Host
     from app.models.project import Project
 

@@ -30,6 +30,12 @@ class User(Base):
     )
     password_hash: Mapped[str | None] = mapped_column(String(255))
     quota_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    organization_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("managed_groups.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     ocp_pull_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     pull_through_registry: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"

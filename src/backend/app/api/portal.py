@@ -195,6 +195,10 @@ def portal_vm_action(
     """Public endpoint -- token is the auth. Perform VM power actions via portal."""
     if action not in POWER_ACTIONS:
         raise HTTPException(400, f"Unknown action: {action}")
+    if action in {"start", "restart", "reboot", "unpause", "resume"}:
+        from app.services.quota_operations import deny_unsupported
+
+        deny_unsupported("Portal VM power increase")
     _, project = _get_portal_token(token, db, min_level="power")
     if project.state not in ("active", "stopped"):
         raise HTTPException(

@@ -176,6 +176,17 @@ def _resume_or_skip_deploying(project, enqueue_job) -> None:
             project.id[:8],
         )
         return
+    from app.services import quota_accounting, quota_operations
+
+    if quota_accounting.quotas_enabled():
+        try:
+            quota_operations.recover(project.id)
+        except quota_operations.AccountingUnavailable:
+            logger.warning(
+                "Quota operation for %s requires reconciliation; no duplicate deployment issued",
+                project.id,
+            )
+        return
     logger.info(
         "Startup: resuming deploy for %s (%s) from step '%s'",
         project.name,
@@ -522,6 +533,9 @@ async def lifespan(app):
     start_metering_poll()
     start_state_poller()
     start_redis_listener()
+    from app.services.quota_enforcement import start_enforcement_poll
+
+    start_enforcement_poll()
 
     from app.services.operator_updater import start_operator_updater
 
@@ -692,6 +706,7 @@ from app.api import patterns as pattern_routes  # noqa: E402
 from app.api import portal as portal_routes  # noqa: E402
 from app.api import projects as project_routes  # noqa: E402
 from app.api import providers as provider_routes  # noqa: E402
+from app.api import quotas as quota_routes  # noqa: E402
 from app.api import registry_credential_routes as registry_cred_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
 from app.api import templates as template_routes  # noqa: E402
@@ -719,6 +734,7 @@ app.include_router(provider_routes.router, prefix=_API_PREFIX)
 app.include_router(library_routes.router, prefix=_API_PREFIX)
 app.include_router(metering_routes.router, prefix=_API_PREFIX)
 app.include_router(group_routes.router, prefix=_API_PREFIX)
+app.include_router(quota_routes.router, prefix=_API_PREFIX)
 app.include_router(group_metering_routes.router, prefix=_API_PREFIX)
 app.include_router(pattern_routes.router, prefix=_API_PREFIX)
 app.include_router(eip_routes.router, prefix=_API_PREFIX)

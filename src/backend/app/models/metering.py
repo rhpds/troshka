@@ -38,6 +38,10 @@ class MeteringInterval(Base):
     ended_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    quota_accrued_through: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    quota_attribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class ProjectInvoice(Base):

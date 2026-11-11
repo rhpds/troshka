@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Any
 
+from app.services import quota_operations
+
 log = logging.getLogger(__name__)
 
 
@@ -144,6 +146,7 @@ def _save_snapshot_metadata(item: Any, library_item_id: str) -> None:
         )
 
 
+@quota_operations.unsupported_job
 def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> None:
     from app.core.database import SessionLocal
     from app.models.library import LibraryItem

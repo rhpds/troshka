@@ -8972,6 +8972,123 @@ def handle_vm_states(handler, params):
     handler._send_json(200, {"domains": domains, "source": "virsh"})
 
 
+def _quota_open_directory(path):
+    """Open each component without following symlinks, including ancestors."""
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.strip("/").split("/"):
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _quota_names(fd, context):
+    names = []
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            context["count"] += 1
+            if context["count"] > 20000 or time.monotonic() > context["deadline"]:
+                raise ValueError("Storage inventory exceeded its bound")
+            names.append(entry.name)
+    return sorted(names)
+
+
+def _quota_walk(fd, path, context, files):
+    """Bounded descriptor-relative walk. Count allocated blocks, never file length."""
+    import stat
+    names = _quota_names(fd, context)
+    for name in names:
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        full = path + "/" + name
+        if stat.S_ISDIR(info.st_mode):
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                if os.fstat(child).st_ino != info.st_ino:
+                    raise ValueError("Storage directory changed during inventory")
+                _quota_walk(child, full, context, files)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            key = (info.st_dev, info.st_ino)
+            if key in context["seen"]:
+                raise ValueError("Ambiguous duplicate storage ownership")
+            context["seen"].add(key)
+            files.append({"path": full, "device": str(info.st_dev), "inode": str(info.st_ino),
+                          "allocated_bytes": info.st_blocks * 512})
+        else:
+            raise ValueError("Unsupported storage alias, hardlink or special file")
+    if names != _quota_names(fd, context):
+        raise ValueError("Storage inventory changed during enumeration")
+
+
+def _quota_scan(path, context, files, *, optional=False):
+    try:
+        fd = _quota_open_directory(path)
+    except FileNotFoundError:
+        if optional:
+            return
+        raise
+    try:
+        _quota_walk(fd, path, context, files)
+    finally:
+        os.close(fd)
+
+
+def _quota_pool(path, pools):
+    fd = _quota_open_directory(path)
+    try:
+        info, fs = os.fstat(fd), os.fstatvfs(fd)
+        identity = str(info.st_dev)
+        pools[identity] = {"id": identity, "capacity_bytes": fs.f_blocks * fs.f_frsize,
+                           "free_bytes": fs.f_bavail * fs.f_frsize}
+        return identity
+    finally:
+        os.close(fd)
+
+
+def _quota_storage_inventory(project_id, generation_id):
+    """Exact project directories include retained overlays, seeds and orphan files.
+
+    Cached immutable images belong to the platform. Shared filesystem hosts need
+    a cluster-wide pool coordinator, so this first adapter is local-filesystem only.
+    """
+    import uuid
+    if str(uuid.UUID(project_id)) != project_id or not generation_id or len(generation_id) > 255:
+        raise ValueError("Invalid project/generation identity")
+    if _config.get("storage_mode", "local") != "local" or os.path.exists(_SHARED_DIR + "/vms"):
+        raise ValueError("Shared storage requires a cluster-wide physical pool adapter")
+    root = _TROSHKA_DIR + "/vms"
+    context = {"count": 0, "deadline": time.monotonic() + 2, "seen": set()}
+    files, bases, pools = [], [], {}
+    pool_id = _quota_pool(root, pools)  # A missing/unmounted root is never empty evidence.
+    _quota_scan(root + "/" + project_id, context, files, optional=True)
+    for category in ("images", "cache/patterns", "cache/snapshots"):
+        _quota_scan(_TROSHKA_DIR + "/" + category, context, bases, optional=True)
+    if any(item["device"] != pool_id for item in files + bases):
+        raise ValueError("Nested storage mounts require a pool adapter")
+    pools[pool_id]["platform_allocated_bytes"] = sum(item["allocated_bytes"] for item in bases)
+    return {"version": "allocated-v1", "complete": True, "project_id": project_id,
+            "generation_id": generation_id, "files": files, "bases": bases,
+            "pools": list(pools.values()), "writable_pool": pool_id}
+
+
+@route("POST", "/storage/inventory")
+def handle_storage_inventory(handler, params):
+    """Read-only synchronous endpoint; no shell commands or disk mutation."""
+    try:
+        params = handler._read_body()
+        result = _quota_storage_inventory(params["project_id"], params["generation_id"])
+    except (OSError, ValueError, KeyError) as error:
+        handler._send_json(200, {"version": "allocated-v1", "complete": False,
+                                 "error": str(error)})
+        return
+    handler._send_json(200, result)
+
+
 @route("GET", "/vms/events")
 def handle_vm_events(handler, params):
     """Return queued VM state change events."""

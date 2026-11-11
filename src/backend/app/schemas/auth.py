@@ -20,5 +20,6 @@ class UserIdentity(BaseModel):
     display_name: str | None = None
     role: str
     auth_source: str | None = None
+    organization_id: str | None = None
 
     model_config = {"from_attributes": True}

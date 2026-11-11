@@ -19,6 +19,7 @@ from app.models.host import Host
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
+from app.services import quota_operations
 from app.services.deploy_service import (  # noqa: F401
     _create_seed_isos_via_troshkad,
     _create_vm_disks_via_troshkad,
@@ -485,9 +486,9 @@ def _project_response_dict(project, db=None):
     if dp:
         result["deploy_progress"] = dp
 
-    from app.services.ws_pubsub import get_cached_vm_states
+    from app.services.ws_pubsub import get_display_vm_states
 
-    cached_states = get_cached_vm_states(project.id)
+    cached_states = get_display_vm_states(project.id)
     if cached_states:
         result["vm_states"] = cached_states
 
@@ -1683,6 +1684,7 @@ def get_ocp_install_log(
     "/{project_id}/ocp/restart-install",
     responses={400: {}, 403: {}, 404: {}, 409: {}},
 )
+@quota_operations.unsupported_job
 def restart_ocp_install(
     project_id: str,
     user: CurrentUser,
@@ -1944,10 +1946,20 @@ def get_kubeconfig(
     )
 
 
-def _reset_project_budget_flags(project):
-    project.budget_warned = False
-    if project.budget_usd is None:
-        project.budget_stopped = False
+def _apply_project_budget_policy(db, project, user, fields):
+    if "budget_usd" not in fields:
+        return
+    from app.schemas.quota import Limits
+    from app.services.quota_policy import set_limits
+
+    set_limits(
+        db,
+        user,
+        "project",
+        project.id,
+        Limits(spending_usd=fields.pop("budget_usd")),
+        datetime.datetime.now(datetime.UTC),
+    )
 
 
 def _recompute_auto_stop_timer(project, fields):
@@ -2045,6 +2057,9 @@ def update_project(
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     fields = body.model_dump(exclude_unset=True)
+    _apply_project_budget_policy(db, project, user, fields)
+    if "topology" in fields:
+        quota_operations.guard_topology_edit(db, project)
     _reject_unsupported_hibernate(db, project, fields.get("off_action"))
     previous_topology = (
         copy.deepcopy(project.topology or {}) if "topology" in fields else {}
@@ -2056,8 +2071,6 @@ def update_project(
         _recompute_auto_stop_timer(project, fields)
     if "auto_delete_minutes" in fields:
         _recompute_auto_delete_timer(project, fields)
-    if "budget_usd" in fields:
-        _reset_project_budget_flags(project)
 
     if "clock_target" in fields and project.state == "active":
         from app.services.clock_service import adjust_clocks_async
@@ -2253,7 +2266,9 @@ def _collect_deploy_topology_errors(topology) -> list:
     )
 
 
-def _persist_placement_and_enqueue(project, result, _project_id: str, db) -> dict:
+def _persist_placement_and_enqueue(
+    project, result, _project_id: str, db, quota_operation_id=None
+) -> dict:
     if result.get("multi_host"):
         _setup_multi_host_placement(project, result, db)
     else:
@@ -2263,7 +2278,10 @@ def _persist_placement_and_enqueue(project, result, _project_id: str, db) -> dic
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(deploy_project_async, project.id, project_id=project.id)
+    quota_kwargs = (
+        {"quota_operation_id": quota_operation_id} if quota_operation_id else {}
+    )
+    enqueue_job(deploy_project_async, project.id, project_id=project.id, **quota_kwargs)
 
     if result.get("multi_host"):
         return {
@@ -2338,13 +2356,24 @@ def deploy_project(
         project.provider_id = provider_id
         db.commit()
 
-    result = place_project(
-        db, project, storage_pool_id=storage_pool_id, host_id=host_id
-    )
+    operation_id = quota_operations.prepare(db, project, "deploy", host_id=host_id)
+    db.commit()
+
+    quota_kwargs = {"quota_operation_id": operation_id} if operation_id else {}
+    try:
+        result = place_project(
+            db,
+            project,
+            storage_pool_id=storage_pool_id,
+            host_id=host_id,
+            **quota_kwargs,
+        )
+    except quota_operations.AccountingUnavailable as error:
+        raise quota_operations._http_denial(error) from error
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
-    return _persist_placement_and_enqueue(project, result, project_id, db)
+    return _persist_placement_and_enqueue(project, result, project_id, db, operation_id)
 
 
 @router.post("/{project_id}/stop", responses={403: {}, 404: {}, 409: {}})
@@ -2595,6 +2624,7 @@ def start_project(
             status_code=409, detail=f"Project is {project.state}, not stopped"
         )
 
+    operation_id = quota_operations.prepare(db, project, "start")
     project.state = "starting"
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
@@ -2604,7 +2634,15 @@ def start_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(start_project_async, project.id, project_id=project.id)
+    if operation_id:
+        enqueue_job(
+            start_project_async,
+            project.id,
+            project_id=project.id,
+            quota_operation_id=operation_id,
+        )
+    else:
+        enqueue_job(start_project_async, project.id, project_id=project.id)
 
     return {"status": "starting"}
 
@@ -2743,14 +2781,14 @@ def get_all_vm_states(
     if not project.host_id:
         return {"states": {}}
 
-    # Return cached states from the background poller when available
+    # Return display states from the background poller when available
     # (avoids blocking troshkad calls on every browser poll)
-    from app.services.ws_pubsub import get_cached_vm_states
+    from app.services.ws_pubsub import get_display_vm_states
 
     # Always return cached states from the background poller.
     # The poller is the single source of truth — no direct troshkad
     # calls from REST to avoid racing with the WS poller.
-    cached = get_cached_vm_states(project_id)
+    cached = get_display_vm_states(project_id)
     if cached:
         return cached
     return {"states": {}, "container_states": {}, "progress": {}}
@@ -2789,6 +2827,7 @@ def start_vm(
     user: CurrentUser,
     db: DbSession,
 ):
+    quota_operations.deny_unsupported("Individual VM start (use project start)")
     project, host = _get_project_and_host(project_id, user, db)
 
     resumed = _resume_if_paused(db, project, host, project_id, vm_id)
@@ -2943,6 +2982,7 @@ def unpause_vm(
     db: DbSession,
 ):
     """Resume a VM previously paused via ``/pause``."""
+    quota_operations.deny_unsupported("Individual VM resume (use project start)")
     project, host = _get_project_and_host(project_id, user, db)
     try:
         unpause_vm_on_host(host, project_id, vm_id)
@@ -3085,6 +3125,7 @@ def restart_vm(
     user: CurrentUser,
     db: DbSession,
 ):
+    quota_operations.deny_unsupported("Individual VM restart")
     _, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: ensure runStrategy Always, then delete VMI to restart
@@ -3194,6 +3235,8 @@ def wipe_disk(
     db: DbSession,
     restart: bool = False,
 ):
+    if restart:
+        quota_operations.deny_unsupported("Disk wipe with automatic restart")
     project, host = _get_project_and_host(project_id, user, db)
 
     topo = project.deployed_topology or project.topology or {}
@@ -4158,6 +4201,7 @@ def start_container(
     user: CurrentUser,
     db: DbSession,
 ):
+    quota_operations.deny_unsupported("Container start")
     _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
     try:
@@ -4202,6 +4246,7 @@ def restart_container(
     user: CurrentUser,
     db: DbSession,
 ):
+    quota_operations.deny_unsupported("Container restart")
     _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
     try:
@@ -4231,6 +4276,7 @@ def redeploy_container(
     """Redeploy a single container/pod node: destroy + recreate so its init
     containers re-run (re-clone content_repo/ref, rebuild). VMs untouched —
     e.g. to pull updated showroom content after the repo changes."""
+    quota_operations.deny_unsupported("Container redeploy")
     from app.services.deploy_topology import _extract_containers
 
     project, _host = _get_project_and_host(project_id, user, db)
@@ -4323,6 +4369,7 @@ def reconfigure_project(
     body: dict | None = None,
 ):
     """Apply config changes (boot order, CPU, RAM) without destroying disks."""
+    quota_operations.deny_unsupported("Live reconfigure (stop and undeploy first)")
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
@@ -6262,6 +6309,7 @@ def _fail_reconfigure_bg(s, p_id: str, exc: Exception) -> None:
     _delete_deploy_progress(p_id)
 
 
+@quota_operations.unsupported_job
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.ocp.cluster_topology_heal import (
@@ -6302,6 +6350,7 @@ def redeploy_vm(
     db: DbSession,
 ):
     """Destroy and recreate a single VM in a background thread."""
+    quota_operations.deny_unsupported("Individual VM redeploy")
     project, host = _get_project_and_host(project_id, user, db, check_disk=True)
     _check_library_items_ready(project.topology or {}, db)
 
@@ -6869,6 +6918,7 @@ def _redeploy_vm_during_reconfigure(h, s, proj, p_id, target_vm_id, errors):
             pass
 
 
+@quota_operations.unsupported_job
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     from app.core.database import SessionLocal
     from app.services.deploy_topology import _vm_domain_name
@@ -6998,6 +7048,9 @@ def redeploy_project(
 
     OCP projects must pass ``ocp_mode=rebuild|recert`` (see RedeployRequest).
     """
+    quota_operations.deny_unsupported(
+        "Project redeploy (use confirmed undeploy then deploy)"
+    )
     project = db.query(Project).filter_by(id=project_id).with_for_update().first()
     if not project:
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
@@ -7073,8 +7126,18 @@ def undeploy_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    from app.services.quota_accounting import quotas_enabled
+
+    if quotas_enabled() and not project.host_id:
+        from app.services.quota_cleanup import complete_empty
+
+        if not complete_empty(db, project):
+            quota_operations.unavailable(
+                "Missing host does not prove resource absence; accounting retained"
+            )
+
     if project.host_id:
-        destroy_project_sync(
+        cleanup_confirmed = destroy_project_sync(
             {
                 "project_id": project.id,
                 "host_id": project.host_id,
@@ -7085,6 +7148,12 @@ def undeploy_project(
             },
             delete_record=False,
         )
+        from app.services.quota_accounting import quotas_enabled
+
+        if quotas_enabled() and not cleanup_confirmed:
+            quota_operations.unavailable(
+                "Cleanup is not confirmed; resources and billing remain retained"
+            )
 
     project.state = "draft"
     project.host_id = None
@@ -7109,23 +7178,20 @@ def delete_project(
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     from app.services.metering_service import safe_freeze_invoice
+    from app.services.quota_accounting import quotas_enabled
 
-    safe_freeze_invoice(db, project)
+    if not quotas_enabled():
+        safe_freeze_invoice(db, project)
 
-    # Release EIPs
-    from app.models.elastic_ip import ElasticIp
-    from app.services.eip_service import release_eip
-
-    project_eips = db.query(ElasticIp).filter_by(project_id=project_id).all()
-    for eip in project_eips:
-        try:
-            release_eip(db, eip)
-        except Exception:
-            logger.warning("Failed to release EIP %s on delete", eip.public_ip)
+    _release_project_eips_on_delete(db, project_id)
 
     if project.host_id and project.state not in ("draft",):
         import copy
 
+        if quotas_enabled():
+            from app.services.quota_cleanup import fence
+
+            fence(db, project.id)
         project.state = "deleting"
         project.deploy_error = None
         db.commit()
@@ -7150,9 +7216,27 @@ def delete_project(
         enqueue_job(destroy_project_sync, destroy_ctx, project_id=project.id)
         return {"status": "deleting", "id": project_id}
 
+    if quotas_enabled():
+        from app.services.quota_cleanup import complete_empty
+
+        if not complete_empty(db, project):
+            quota_operations.unavailable(
+                "Metadata deletion requires confirmed resource absence"
+            )
     db.delete(project)
     db.commit()
     notify_project(project_id, {"type": "project-deleted"})
+
+
+def _release_project_eips_on_delete(db, project_id):
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import release_eip
+
+    for eip in db.query(ElasticIp).filter_by(project_id=project_id).all():
+        try:
+            release_eip(db, eip)
+        except Exception:
+            logger.warning("Failed to release EIP %s on delete", eip.public_ip)
 
 
 class ImportVMRequest(PydanticBaseModel):
@@ -7258,6 +7342,7 @@ def import_vm_from_snapshot(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    quota_operations.guard_topology_edit(db, project)
 
     from app.models.library import Library, LibraryItem
 

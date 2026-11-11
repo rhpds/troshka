@@ -1,4 +1,5 @@
-.page { display: grid; gap: 1.5rem; }
+.page { display: grid; gap: 1.5rem; min-width: 0; }
+.page > * { min-width: 0; }
 .header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .toolbar { display: flex; align-items: end; gap: 1rem; flex-wrap: wrap; margin-block: 1rem; }
 .field { display: grid; gap: .5rem; }
@@ -10,4 +11,29 @@
 .muted { color: var(--pf-t--global--text--color--subtle); }
 .expandable { padding-block: .75rem; border-bottom: 1px solid var(--pf-t--global--border--color--default); }
 .expandable summary { cursor: pointer; padding-block: .25rem; }
-.table { overflow-x: auto; }
+.table { overflow-x: auto; max-width: 100%; margin-block: 1rem; }
+.table:focus-visible { outline: 2px solid var(--pf-t--global--color--brand--default); outline-offset: 2px; }
+.dataTable { width: 100%; border-collapse: collapse; text-align: left; font-size: .875rem; line-height: 1.5; }
+.dataTable th, .dataTable td { padding: .875rem 1rem; vertical-align: top; border-bottom: 1px solid var(--pf-t--global--border--color--default); }
+.dataTable th { font-weight: 600; white-space: nowrap; color: var(--pf-t--global--text--color--subtle); }
+.dataTable tbody tr:last-child > td { border-bottom: 0; }
+.dataTable .numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dataTable .identity { min-width: 11rem; max-width: 22rem; overflow-wrap: anywhere; }
+.dataTable .description { min-width: 15rem; max-width: 28rem; }
+.dataTable .nowrap { white-space: nowrap; }
+.dataTable .period { min-width: 12rem; }
+.dataTable .secondary { display: block; margin-top: .25rem; color: var(--pf-t--global--text--color--subtle); font-size: .8125rem; overflow-wrap: anywhere; }
+.resourceTable { min-width: 36rem; }
+.documentTable { min-width: 62rem; }
+.cardContent { display: grid; gap: 1rem; min-width: 0; }
+.cardContent h2 { font-size: 1.125rem; font-weight: 600; }
+.cardContent > button { justify-self: start; }
+.summaryTotal { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.notice { max-width: 75ch; padding: .75rem 1rem; border-inline-start: 3px solid var(--pf-t--global--color--status--warning--default); background: var(--pf-t--global--background--color--secondary--default); }
+.projectDetails { margin-block: .75rem; padding-inline-start: 1rem; }
+.projectDetails summary { cursor: pointer; padding-block: .5rem; overflow-wrap: anywhere; }
+.expandedContent { padding: .5rem; }
+@media (max-width: 600px) {
+  .dataTable th, .dataTable td { padding: .75rem; }
+  .projectDetails { padding-inline-start: .5rem; }
+}

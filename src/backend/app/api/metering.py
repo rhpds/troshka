@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.metering import MeteringRateDefault, MonthlyStatement, ProjectInvoice
 from app.models.project import Project
 from app.models.user import User
+from app.schemas.quota import AccountingUnavailable
 from app.services.group_access import billing_owner_ids, require_billing_owner
 from app.services.metering_math import RATE_KEYS
 from app.services.metering_service import (
@@ -20,6 +21,12 @@ from app.services.metering_service import (
     merge_rate_maps,
     metering_enabled,
     reconcile_project,
+)
+from app.services.quota_accounting import (
+    charge_rows,
+    quotas_enabled,
+    require_ready,
+    summarize,
 )
 
 router = APIRouter(prefix="/metering", tags=["metering"])
@@ -97,7 +104,7 @@ def list_invoices(
     rows = q.order_by(ProjectInvoice.finalized_at.desc()).all()
     emails = _owner_emails(db, (r.owner_id for r in rows))
     return [
-        _invoice_summary(row, emails.get(row.owner_id) if row.owner_id else None)
+        _invoice_summary(row, emails.get(row.owner_id) if row.owner_id else None, db)
         for row in rows
     ]
 
@@ -116,11 +123,13 @@ def get_invoice(invoice_id: str, user: CurrentUser, db: DbSession):
         raise HTTPException(status_code=404, detail="Invoice not found")
     require_billing_owner(db, user, row.owner_id)
     emails = _owner_emails(db, [row.owner_id])
-    return _invoice_detail(row, emails.get(row.owner_id) if row.owner_id else None)
+    return _invoice_detail(row, emails.get(row.owner_id) if row.owner_id else None, db)
 
 
-def _invoice_summary(row: ProjectInvoice, owner_email: str | None = None) -> dict:
-    return {
+def _invoice_summary(
+    row: ProjectInvoice, owner_email: str | None = None, db: Session | None = None
+) -> dict:
+    data = {
         "id": row.id,
         "project_id": row.project_id,
         "project_name": row.project_name,
@@ -132,11 +141,25 @@ def _invoice_summary(row: ProjectInvoice, owner_email: str | None = None) -> dic
         "period_end": row.period_end.isoformat() if row.period_end else None,
         "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
     }
+    if db is not None and quotas_enabled():
+        data["total_usd"] = str(
+            _ledger_summary(
+                db, "project", row.project_id, row.period_start, row.period_end
+            )["total"]
+        )
+        data["accounting_status"] = "ready"
+    return data
 
 
-def _invoice_detail(row: ProjectInvoice, owner_email: str | None = None) -> dict:
-    data = _invoice_summary(row, owner_email)
+def _invoice_detail(
+    row: ProjectInvoice, owner_email: str | None = None, db: Session | None = None
+) -> dict:
+    data = _invoice_summary(row, owner_email, db)
     data["line_items"] = row.line_items or {}
+    if db is not None and quotas_enabled():
+        data["line_items"] = _ledger_summary(
+            db, "project", row.project_id, row.period_start, row.period_end
+        )["line_items"]
     return data
 
 
@@ -158,7 +181,7 @@ def list_statements(
     rows = q.order_by(MonthlyStatement.period_start.desc()).all()
     emails = _owner_emails(db, (r.owner_id for r in rows))
     return [
-        _statement_summary(row, emails.get(row.owner_id) if row.owner_id else None)
+        _statement_summary(row, emails.get(row.owner_id) if row.owner_id else None, db)
         for row in rows
     ]
 
@@ -177,7 +200,9 @@ def get_statement(statement_id: str, user: CurrentUser, db: DbSession):
         raise HTTPException(status_code=404, detail="Statement not found")
     require_billing_owner(db, user, row.owner_id)
     emails = _owner_emails(db, [row.owner_id])
-    return _statement_detail(row, emails.get(row.owner_id) if row.owner_id else None)
+    return _statement_detail(
+        row, emails.get(row.owner_id) if row.owner_id else None, db
+    )
 
 
 @router.post(
@@ -193,11 +218,13 @@ def post_finalize_month(
     _require_enabled()
     rows = finalize_month(db, year, month)
     db.commit()
-    return [_statement_summary(row) for row in rows]
+    return [_statement_summary(row, db=db) for row in rows]
 
 
-def _statement_summary(row: MonthlyStatement, owner_email: str | None = None) -> dict:
-    return {
+def _statement_summary(
+    row: MonthlyStatement, owner_email: str | None = None, db: Session | None = None
+) -> dict:
+    data = {
         "id": row.id,
         "owner_id": row.owner_id,
         "owner_email": owner_email,
@@ -209,12 +236,32 @@ def _statement_summary(row: MonthlyStatement, owner_email: str | None = None) ->
         "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
         "project_count": len((row.line_items or {}).get("by_project") or []),
     }
+    if db is not None and quotas_enabled():
+        data["total_usd"] = str(
+            _ledger_summary(db, "user", row.owner_id, row.period_start, row.period_end)[
+                "total"
+            ]
+        )
+        data["accounting_status"] = "ready"
+    return data
 
 
-def _statement_detail(row: MonthlyStatement, owner_email: str | None = None) -> dict:
-    data = _statement_summary(row, owner_email)
+def _statement_detail(
+    row: MonthlyStatement, owner_email: str | None = None, db: Session | None = None
+) -> dict:
+    data = _statement_summary(row, owner_email, db)
     data["line_items"] = row.line_items or {}
     return data
+
+
+def _ledger_summary(db: Session, scope, scope_id, start, end):
+    try:
+        require_ready(db)
+        return summarize(charge_rows(db, scope, scope_id, start, end), start, end)
+    except AccountingUnavailable as exc:
+        raise HTTPException(
+            503, {"code": "accounting_unavailable", "message": str(exc)}
+        ) from exc
 
 
 @router.get(
@@ -237,8 +284,17 @@ def _project_metering(project_id: str, user: User, db: Session) -> dict:
     require_billing_owner(db, user, project.owner_id)
     # Delegated billing access must never trigger reconciliation's budget-stop
     # side effects. The regular meter poll still refreshes these persisted rows.
-    if project.owner_id == user.id or user.role == "admin":
-        reconcile_project(db, project)
-        db.commit()
-        db.refresh(project)
-    return live_spend(db, project)
+    try:
+        if project.owner_id == user.id or user.role == "admin":
+            if not quotas_enabled() or project.state != "draft":
+                reconcile_project(db, project)
+                db.commit()
+                db.refresh(project)
+        result = live_spend(db, project)
+        if quotas_enabled():
+            db.commit()
+        return result
+    except AccountingUnavailable as exc:
+        raise HTTPException(
+            503, {"code": "accounting_unavailable", "message": str(exc)}
+        ) from exc

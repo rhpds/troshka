@@ -6,6 +6,7 @@ from app.core.database import SessionLocal
 from app.models.host import Host
 from app.models.project import Project
 from app.models.storage_pool import StoragePool
+from app.services import quota_operations
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ def validate_migration(
     return errors
 
 
+@quota_operations.unsupported_job
 def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     from app.core.redis import enqueue_job
 
@@ -156,6 +158,7 @@ def _mark_migration_error(db: Session, project_id: str, error: Exception):
         pass
 
 
+@quota_operations.unsupported_job
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     from app.services.deploy_service import (
         _setup_bmc_via_troshkad,

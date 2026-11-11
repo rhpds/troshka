@@ -6,6 +6,7 @@ import { api, ApiError, BillingDocument, Group, GroupDetail, inMonth, TeamReport
 import ManagerControls from "@/components/groups/ManagerControls";
 import TeamUsage from "@/components/billing/TeamUsage";
 import TeamDocuments from "@/components/billing/TeamDocuments";
+import OrganizationDirectory from "@/components/quotas/OrganizationDirectory";
 
 function BillingScope({ group, month, owner, tab, onTab, onDenied }: { group: GroupDetail; month: string; owner: string; tab: string | number; onTab: (tab: string | number) => void; onDenied: (message: string) => void }) {
   const [data, setData] = useState<{ report: TeamReport; invoices: BillingDocument[]; statements: BillingDocument[] } | null>(null);
@@ -57,7 +58,7 @@ function SelectedTeam({ id }: { id: string }) {
     <details className={styles.expandable}><summary>Manage group managers ({group.managers.length})</summary><div className={styles.panel}>
     <ManagerControls group={group} onChange={updated => { setGroup(updated); setRevision(value => value + 1); }} onDenied={() => denied()} />
     </div></details>
-    <details className={styles.expandable}><summary>About this report and access</summary><p className={styles.muted}>This report covers current members’ available billing history, including usage before joining. It is not historical departmental chargeback. Removing an assignment revokes access on subsequent requests; downloaded files cannot be revoked.</p></details>
+    <details className={styles.expandable}><summary>About this report and access</summary><p className={styles.muted}>{group.is_organization ? "Organization totals retain charges attributed to this organization, including former members. User detail includes only charges attributed here." : "This report covers current members’ available billing history, including usage before joining. It is not historical departmental chargeback."} Removing an assignment revokes access on subsequent requests; downloaded files cannot be revoked.</p></details>
   </>;
 }
 export default function TeamBillingPage() {
@@ -70,6 +71,7 @@ export default function TeamBillingPage() {
     return () => { live = false; };
   }, []);
   return <PageSection><div className={styles.page}><Title headingLevel="h1">Team Usage &amp; Billing</Title>
+    <OrganizationDirectory />
     {error && <Alert isInline variant="danger" title={error} />}
     {!groups && !error && <p>Loading managed groups…</p>}
     {groups?.length === 0 && <p>You do not manage any groups. Ask an administrator or a current group manager for access. Membership alone does not grant team billing access.</p>}

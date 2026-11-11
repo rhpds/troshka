@@ -212,7 +212,7 @@ def _vm_running(vm: dict, project_state: str = "") -> bool:
     return project_state in ("active", "starting")
 
 
-def desired_resources(snapshot: dict) -> set[Desired]:
+def desired_resources(snapshot: dict, *, quota_mode: bool = False) -> set[Desired]:
     provider_type = snapshot.get("provider_type") or "unknown"
     default_host = snapshot.get("host_id")
     project_state = str(snapshot.get("project_state") or "")
@@ -222,7 +222,7 @@ def desired_resources(snapshot: dict) -> set[Desired]:
         return set()
     if billing_mode == "dedicated":
         return _dedicated_host_resources(snapshot, provider_type, default_host)
-    if project_state in ("stopped", "stopping"):
+    if not quota_mode and project_state in ("stopped", "stopping"):
         return set()
     out: set[Desired] = set()
     for vm in snapshot.get("vms") or []:

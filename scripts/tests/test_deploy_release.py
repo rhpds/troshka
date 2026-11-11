@@ -121,6 +121,52 @@ def test_exec_keeps_kubernetes_flags_out_of_remote_command(release, monkeypatch)
     assert command[command.index("--") + 1 :] == ["python3", "-c", "print(1)"]
 
 
+@pytest.mark.parametrize("kind", ["queued", "started", "deferred", "scheduled"])
+def test_idle_rejects_every_unfinished_job_registry(release, monkeypatch, kind):
+    queue = {"queue": "default", "queued": 0, "started": 0, "deferred": 0, "scheduled": 0}
+    queue[kind] = 1
+    monkeypatch.setattr(release, "oc", lambda *args: json.dumps([queue]))
+    with pytest.raises(RuntimeError, match="reconcile"):
+        release.idle("/tmp/cluster")
+
+
+def test_idle_reads_registries_without_cleanup(release, monkeypatch, capsys):
+    from types import ModuleType, SimpleNamespace
+
+    connection = object()
+    visited = []
+
+    class Registry:
+        def __init__(self, name, connection):
+            self.name = name
+
+        @property
+        def count(self):
+            pytest.fail("Registry.count can cleanup expired jobs")
+
+        def get_job_ids(self, *, cleanup):
+            assert cleanup is False
+            visited.append(self.name)
+            return []
+
+    modules = {name: ModuleType(name) for name in ("app", "app.core", "app.core.redis", "rq", "rq.registry")}
+    modules["app.core.redis"].get_redis_raw = lambda: connection
+    modules["rq"].Queue = SimpleNamespace(all=lambda **kwargs: [SimpleNamespace(name="default", count=0)])
+    for name in ("StartedJobRegistry", "DeferredJobRegistry", "ScheduledJobRegistry"):
+        setattr(modules["rq.registry"], name, Registry)
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    def execute_remote_code(*args):
+        exec(args[-1], {})  # noqa: S102 -- exercise the generated local code with fake modules
+        return capsys.readouterr().out
+
+    monkeypatch.setattr(release, "oc", execute_remote_code)
+    release.idle("/tmp/cluster")
+    assert visited == ["default", "default", "default"]
+    assert "idle" in capsys.readouterr().out
+
+
 def test_promote_preflights_all_images_before_first_copy(release, monkeypatch):
     copies = []
 

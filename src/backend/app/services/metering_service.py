@@ -19,9 +19,11 @@ from app.models.metering import (
 )
 from app.models.project import Project
 from app.models.provider import Provider
+from app.schemas.quota import AccountingUnavailable
 from app.services.instance_rates import (
     host_capacity,
     kubevirt_unit_rates,
+    load_catalog,
     rates_for_host,
 )
 from app.services.metering_math import (
@@ -38,6 +40,7 @@ from app.services.metering_math import (
     resolve_rate,
     spend_total,
 )
+from app.services.quota_accounting import quotas_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +266,16 @@ def _snapshot_disks(project: Project, topology: dict) -> list[dict]:
     return disks
 
 
+def _configured_rate_keys(*maps: dict | None) -> set[str]:
+    return {
+        key
+        for rates in maps
+        if rates
+        for key, value in rates.items()
+        if value is not None
+    }
+
+
 def build_snapshot(db: Session, project: Project) -> dict | None:
     if not project.host_id or project.state == "draft":
         return None
@@ -299,11 +312,24 @@ def build_snapshot(db: Session, project: Project) -> dict | None:
         "host_vcpus": capacity[0],
         "host_ram_gib": capacity[1],
         "host_rates": compose_host_rates(host, provider_type, load_type_rates(db)),
+        "rate_keys": list(
+            _configured_rate_keys(
+                load_catalog().get("kubevirt_unit_rates"),
+                _typed_rate_row(provider_type, load_type_rates(db)),
+                host.metering_rates if host else None,
+            )
+        ),
+        "observed_at": cached.get("observed_at"),
         "project_state": project.state,
         "vms": _vm_nodes(topology, live_states),
         "disks": disks,
         "eips": eips,
         "ceph": _ceph_nodes(topology),
+        "unsupported_nodes": [
+            n.get("type")
+            for n in topology.get("nodes", [])
+            if n.get("type") not in {"vmNode", "storageNode", "networkNode"}
+        ],
     }
 
 
@@ -333,19 +359,86 @@ def _open_interval(
     unit_rate: float,
     now: datetime,
 ) -> None:
-    db.add(
-        MeteringInterval(
-            project_id=project.id,
-            kind=kind,
-            resource_id=resource_id,
-            qty=qty,
-            unit_rate=unit_rate,
-            host_id=host_id,
-            provider_type=provider_type,
-            started_at=now,
-            ended_at=None,
-        )
+    interval = MeteringInterval(
+        project_id=project.id,
+        kind=kind,
+        resource_id=resource_id,
+        qty=qty,
+        unit_rate=unit_rate,
+        host_id=host_id,
+        provider_type=provider_type,
+        started_at=now,
+        ended_at=None,
     )
+    if quotas_enabled():
+        from app.services.quota_accounting import attribution
+
+        interval.quota_attribution = attribution(db, project)
+    db.add(interval)
+
+
+def _quota_snapshot(project: Project, snap: dict | None, now: datetime) -> dict:
+    """Require explicit supported observations before mutating quota meters."""
+    from app.services.metering_math import _state_running
+    from app.services.quota_accounting import utc
+
+    if snap is None or not project.host_id or snap.get("unsupported_nodes"):
+        raise AccountingUnavailable("Missing or unsupported project metering map")
+    if snap.get("project_state", project.state) in {"error", "stopping", "destroying"}:
+        raise AccountingUnavailable("Project requires infrastructure reconciliation")
+    if snap.get("provider_type") not in {
+        "aws",
+        "ec2",
+        "gcp",
+        "azure",
+        "ocpvirt",
+        "libvirt",
+        "kubevirt",
+    }:
+        raise AccountingUnavailable("Unsupported metering provider")
+    observed = snap.get("observed_at")
+    if isinstance(observed, str):
+        try:
+            observed = datetime.fromisoformat(observed)
+        except ValueError:
+            observed = None
+    if not isinstance(observed, datetime) or not 0 <= (
+        utc(now) - utc(observed)
+    ).total_seconds() <= max(30, poll_seconds()):
+        raise AccountingUnavailable("Fresh metering observation unavailable")
+    if str(snap.get("billing_mode") or "shared") == "dedicated":
+        if not snap.get("host_vcpus") or not snap.get("host_ram_gib"):
+            raise AccountingUnavailable("Dedicated capacity unavailable")
+        return snap
+    vms = []
+    for vm in snap.get("vms") or []:
+        running = _state_running(vm.get("live_state"))
+        if running is None:
+            raise AccountingUnavailable("Compute power observation unavailable")
+        vms.append({**vm, "running": running, "live_state": running})
+    # Ceph/general-disk overlap has no demonstrated billing interpretation yet.
+    if snap.get("ceph"):
+        raise AccountingUnavailable("Ceph pricing coverage needs verification")
+    return {**snap, "vms": vms}
+
+
+def _validate_quota_rates(
+    snap: dict, desired: set[Desired], type_rates: dict, fallback: dict
+) -> None:
+    available = snap.get("rate_keys")
+    if available is None:
+        available = _configured_rate_keys(
+            snap.get("host_rates"),
+            _typed_rate_row(snap.get("provider_type", ""), type_rates),
+            load_catalog().get("kubevirt_unit_rates"),
+        )
+    for kind, _rid, qty, _hid, ptype in desired:
+        key = KIND_TO_RATE.get(kind)
+        rate = resolve_rate(kind, ptype, snap.get("host_rates"), type_rates, fallback)
+        if key not in available or not Decimal(str(rate)).is_finite() or rate < 0:
+            raise AccountingUnavailable("Metering rate is unresolved or invalid")
+        if not Decimal(str(qty)).is_finite() or qty < 0:
+            raise AccountingUnavailable("Metering quantity is invalid")
 
 
 def _reopen_changed_rates(
@@ -380,17 +473,29 @@ def reconcile_project(
     project: Project,
     now: datetime | None = None,
     snapshot: dict | None = None,
+    quota_refresh: bool = False,
 ) -> float:
-    if not metering_enabled():
+    quota_mode = quotas_enabled() or quota_refresh
+    if not metering_enabled() and not quota_mode:
         return 0.0
+    if quota_mode and not metering_enabled():
+        raise AccountingUnavailable("Metering is disabled")
+    if quota_mode:
+        from app.services.quota_locks import lock_metering_project
+
+        project, _, _ = lock_metering_project(db, project.id)
     now = now or _now()
     snap = snapshot if snapshot is not None else build_snapshot(db, project)
+    if quota_mode:
+        snap = _quota_snapshot(project, snap, now)
     if snap is None:
         return live_spend_total(db, project, now)
     type_rates = load_type_rates(db)
     host_rates = snap.get("host_rates")
     fallback = kubevirt_unit_rates()
-    desired = desired_resources(snap)
+    desired = desired_resources(snap, quota_mode=quota_mode)
+    if quota_mode:
+        _validate_quota_rates(snap, desired, type_rates, fallback)
     open_list = _open_rows(db, project.id)
     open_tuples = [(row.kind, row.resource_id, _as_float(row.qty)) for row in open_list]
     to_close, to_open = diff_intervals(open_tuples, desired)
@@ -405,6 +510,13 @@ def reconcile_project(
         rate = resolve_rate(kind, ptype, host_rates, type_rates, fallback)
         _open_interval(db, project, kind, rid, qty, hid, ptype, rate, now)
     db.flush()
+    if quota_mode:
+        from app.services.quota_accounting import accrue, charge_rows
+
+        accrue(db, project.id, now)
+        return float(
+            sum((r.amount for r in charge_rows(db, "project", project.id)), Decimal(0))
+        )
     spend = live_spend_total(db, project, now)
     apply_budget(project, spend)
     return spend
@@ -414,6 +526,10 @@ def live_spend_total(
     db: Session, project: Project, now: datetime | None = None
 ) -> float:
     now = now or _now()
+    if quotas_enabled():
+        from app.services.quota_accounting import spend
+
+        return float(spend(db, "project", project.id, now))
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
     payload = [
         {
@@ -429,6 +545,10 @@ def live_spend_total(
 
 def live_spend(db: Session, project: Project, now: datetime | None = None) -> dict:
     now = now or _now()
+    if quotas_enabled():
+        from app.services.quota_accounting import project_view
+
+        return project_view(db, project, now)
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
     by_kind_map: dict[str, float] = dict.fromkeys(KIND_TO_RATE, 0.0)
     by_kind_lines: dict[str, dict] = {}
@@ -516,6 +636,8 @@ def _running_window(
 
 
 def apply_budget(project: Project, spend: float) -> None:
+    if quotas_enabled():
+        return  # Durable shared evaluator owns every quota-mode spending decision.
     budget = project.budget_usd
     if budget is None:
         return
@@ -553,6 +675,8 @@ def freeze_invoice(
     db: Session, project: Project, now: datetime | None = None
 ) -> ProjectInvoice:
     now = now or _now()
+    if quotas_enabled():
+        return _freeze_quota_invoice(db, project, now)
     reconcile_project(db, project, now=now)
     for row in _open_rows(db, project.id):
         _close_interval(row, now)
@@ -623,6 +747,34 @@ def freeze_invoice(
     db.add(invoice)
     db.flush()
     _contribute_intervals_to_months(db, project, rows, now)
+    return invoice
+
+
+def _freeze_quota_invoice(
+    db: Session, project: Project, now: datetime, *, refresh_live=True
+) -> ProjectInvoice:
+    from app.services.quota_accounting import accrue, charge_rows, refresh, summarize
+
+    if refresh_live:
+        refresh(db, "project", project.id, now)
+    # A document snapshot does not stop live charging. Only confirmed cleanup
+    # closes source intervals, immediately before taking the final projection.
+    accrue(db, project.id, now, retained=not refresh_live)
+    rows = charge_rows(db, "project", project.id, end=now)
+    summary = summarize(rows, end=now)
+    invoice = ProjectInvoice(
+        project_id=project.id,
+        project_name=project.name,
+        owner_id=project.owner_id,
+        total_usd=summary["total"],
+        line_items=summary["line_items"],
+        period_start=min((r.start_at for r in rows), default=now),
+        period_end=now,
+        currency="USD",
+        finalized_at=now,
+    )
+    db.add(invoice)
+    db.flush()
     return invoice
 
 
@@ -736,6 +888,8 @@ def finalize_month(
     if not metering_enabled():
         return []
     now = now or _now()
+    if quotas_enabled():
+        return _finalize_quota_month(db, year, month, now)
     period_start, period_end = month_bounds(year, month)
     if now < period_end:
         return []
@@ -778,6 +932,57 @@ def finalize_month(
     return finalized
 
 
+def _finalize_quota_month(
+    db: Session, year: int, month: int, now: datetime
+) -> list[MonthlyStatement]:
+    from app.models.quota import QuotaCharge
+    from app.services.quota_accounting import (
+        charge_rows,
+        refresh,
+        require_ready,
+        summarize,
+        utc,
+    )
+
+    require_ready(db)
+    start, end = month_bounds(year, month)
+    if utc(now) < end:
+        return []
+    for project in db.query(Project).all():
+        refresh(db, "project", project.id, now)
+    owners = {
+        owner
+        for (owner,) in db.query(QuotaCharge.owner_id)
+        .filter(QuotaCharge.end_at > start, QuotaCharge.start_at < end)
+        .distinct()
+        .all()
+    }
+    statements = []
+    for owner in sorted(owners):
+        statement = _get_or_create_statement(db, owner, year, month)
+        rows = charge_rows(db, "user", owner, start, end)
+        ids = sorted({row.project_id for row in rows})
+        projects = []
+        for pid in ids:
+            project_rows = [row for row in rows if row.project_id == pid]
+            summary = summarize(project_rows, start, end)
+            projects.append(
+                {
+                    "project_id": pid,
+                    "project_name": project_rows[0].project_name,
+                    "subtotal": str(summary["total"]),
+                    "by_kind": summary["line_items"]["by_kind"],
+                }
+            )
+        statement.line_items = {"by_project": projects, "source": "quota_charges"}
+        statement.total_usd = summarize(rows, start, end)["total"]
+        statement.status = "final"
+        statement.finalized_at = now
+        statements.append(statement)
+    db.flush()
+    return statements
+
+
 def maybe_finalize_previous_month(db: Session, now: datetime | None = None) -> None:
     now = now or _now()
     year, month = previous_month(now)
@@ -818,6 +1023,11 @@ def touch_metering(db: Session, project: Project) -> None:
 
 
 def safe_freeze_invoice(db: Session, project: Project) -> None:
+    if quotas_enabled():
+        # Metadata deletion must not discard intervals after a failed freeze.
+        freeze_invoice(db, project)
+        db.flush()
+        return
     if not metering_enabled():
         return
     try:

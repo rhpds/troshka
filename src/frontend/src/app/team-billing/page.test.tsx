@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TeamBillingPage from "./page";
+import { exampleUsage } from "@/components/quotas/test-fixtures";
 
 vi.mock("@/lib/confirm", () => ({ appConfirm: vi.fn(async () => true) }));
 const person = { id: "u", email: "Member@example.com", display_name: "Member" };
@@ -15,6 +16,7 @@ let download: ReturnType<typeof vi.fn<(obj: Blob | MediaSource) => string>>;
 beforeEach(() => {
   overrides = {}; statuses = {};
   vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.includes("/quotas/")) return new Response(JSON.stringify(overrides[url] || []), { status: statuses[url] || 200 });
     if (url in overrides) return response(overrides[url], statuses[url]);
     if (url === "/api/v1/groups") return response([group(), group("b")]);
     if (/\/groups\/[ab]$/.test(url)) return response(group(url.endsWith("a") ? "a" : "b"));
@@ -36,6 +38,22 @@ async function loaded() {
   await screen.findByRole("button", { name: "Download monthly CSV" });
 }
 describe("team billing", () => {
+  it("separates organization ceilings and authoritative user limits from billing month and reporting members", async () => {
+    overrides["/api/v1/quotas/organizations"] = [{ id: "a", name: "Alpha organization", cost_center_id: null }];
+    overrides["/api/v1/quotas/organizations/a/members"] = [{ id: "quota-user", email: "Assigned@example.com", display_name: null, organization_id: "a" }];
+    overrides["/api/v1/quotas/organization/a/usage"] = { ...exampleUsage, scope: "organization", scope_id: "a", can_edit: false };
+    overrides["/api/v1/quotas/user/quota-user/usage"] = { ...exampleUsage, scope_id: "quota-user" };
+    await loaded();
+    fireEvent.change(await screen.findByLabelText("Quota organization"), { target: { value: "a" } });
+    expect(await screen.findByText("Cost center not assigned")).toBeVisible();
+    expect(screen.getByLabelText("CPU limit")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Organization user limits"), { target: { value: "quota-user" } });
+    await waitFor(() => expect(screen.getAllByLabelText("CPU limit")).toHaveLength(2));
+    expect(screen.getAllByLabelText("CPU limit")[1]).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Billing month (UTC)"), { target: { value: "2026-10" } });
+    expect(screen.getByLabelText("Organization user limits")).toHaveValue("quota-user");
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/users/"))).toBe(false);
+  });
   it("starts with compact usage and separates invoices and statements", async () => {
     await loaded();
     expect(screen.getByRole("tab", { name: "Usage", selected: true })).toBeInTheDocument();

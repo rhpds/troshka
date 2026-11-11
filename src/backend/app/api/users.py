@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
@@ -9,9 +11,16 @@ from app.core.database import get_db
 from app.models.managed_group import ManagedGroupManager, ManagedGroupMember
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.schemas.quota import AccountingUnavailable, QuotaDenied
+from app.schemas.user import (
+    OrganizationAssignment,
+    UserCreate,
+    UserResponse,
+    UserUpdate,
+)
 from app.services.database_access import guard_account_change
 from app.services.group_access import protect_manager_user_deletion
+from app.services.organization_service import transfer_user
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -24,6 +33,41 @@ DbSession = Annotated[Session, Depends(get_db)]
 @router.get("/", response_model=list[UserResponse])
 def list_users(user: AdminUser, db: DbSession):
     return db.query(User).order_by(User.email).all()
+
+
+@router.put("/{user_id}/organization")
+def assign_organization(
+    user_id: UUID, body: OrganizationAssignment, user: AdminUser, db: DbSession
+):
+    try:
+        result = transfer_user(
+            db,
+            user,
+            str(user_id),
+            str(body.organization_id) if body.organization_id else None,
+            datetime.now(UTC),
+        )
+        db.commit()
+        return result
+    except QuotaDenied as exc:
+        db.rollback()
+        raise HTTPException(
+            409,
+            {
+                "reason": exc.reason,
+                "scope": exc.scope,
+                "dimension": exc.dimension,
+                "used": str(exc.used),
+                "reserved": str(exc.reserved),
+                "requested": str(exc.requested),
+                "limit": str(exc.limit),
+            },
+        ) from exc
+    except AccountingUnavailable as exc:
+        db.rollback()
+        raise HTTPException(
+            503, {"reason": "accounting_unavailable", "message": str(exc)}
+        ) from exc
 
 
 @router.post(
@@ -71,6 +115,8 @@ def update_user(
     current_user: AdminUser,
     db: DbSession,
 ):
+    if "quota_overrides" in body.model_fields_set:
+        raise HTTPException(422, "Use the quota policy API to update limits")
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
@@ -127,7 +173,7 @@ def delete_user(
             409,
             f"User has {project_count} project(s) — reassign or delete them first",
         )
-    protect_manager_user_deletion(db, user_id)
+    protect_manager_user_deletion(db, user_id, current_user)
     for association in (ManagedGroupMember, ManagedGroupManager):
         db.query(association).filter_by(user_id=user_id).delete(
             synchronize_session=False

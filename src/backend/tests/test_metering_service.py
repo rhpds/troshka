@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from app.core.auth import hash_password
 from app.models.disk import Disk
 from app.models.host import Host
@@ -33,6 +35,38 @@ _db.commit()
 _db.refresh(_user)
 USER_ID = _user.id
 _db.close()
+_SETUPS = []
+
+
+@pytest.fixture(autouse=True)
+def cleanup_metering_fixtures():
+    """Committed legacy disk fixtures must not pollute later quota-readiness tests."""
+    with TestSession() as db:
+        rate = db.get(MeteringRateDefault, "aws")
+        previous_rate = dict(rate.rates) if rate else None
+    yield
+    with TestSession() as db:
+        for project_id, host_id, provider_id in _SETUPS:
+            for model in (MeteringInterval, ProjectInvoice, Disk):
+                db.query(model).filter_by(project_id=project_id).delete(
+                    synchronize_session=False
+                )
+            db.query(Project).filter_by(id=project_id).delete(synchronize_session=False)
+            db.query(Host).filter_by(id=host_id).delete(synchronize_session=False)
+            db.query(Provider).filter_by(id=provider_id).delete(
+                synchronize_session=False
+            )
+        db.query(MonthlyStatement).filter_by(owner_id=USER_ID).delete(
+            synchronize_session=False
+        )
+        if previous_rate is None:
+            db.query(MeteringRateDefault).filter_by(provider_type="aws").delete(
+                synchronize_session=False
+            )
+        else:
+            db.merge(MeteringRateDefault(provider_type="aws", rates=previous_rate))
+        db.commit()
+    _SETUPS.clear()
 
 
 def _setup(rates=None, running=True, budget=None):
@@ -84,6 +118,7 @@ def _setup(rates=None, running=True, budget=None):
     db.commit()
     db.refresh(project)
     db.refresh(host)
+    _SETUPS.append((project.id, host.id, provider.id))
     return db, project, host
 
 

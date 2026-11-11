@@ -607,6 +607,11 @@ def create_pattern(
     """Create a pattern — either from a project (source_project_id) or from a
     raw topology+disk_mappings payload."""
 
+    if body.source_project_id:
+        from app.services.quota_operations import deny_unsupported
+
+        deny_unsupported("Pattern capture (including NBD buffers)")
+
     existing = db.query(Pattern).filter_by(owner_id=user.id, name=body.name).first()
     if existing:
         raise HTTPException(
@@ -1291,6 +1296,7 @@ def _start_auto_deploy(
 ) -> None:
     """Start async deployment if auto_deploy is requested."""
     from app.core.redis import enqueue_job
+    from app.services import quota_accounting, quota_operations
     from app.services.deploy_service import deploy_project_async
     from app.services.ocp.pull_through_registry import (
         check_pull_through_registry_for_project,
@@ -1299,6 +1305,32 @@ def _start_auto_deploy(
     ptr_err = check_pull_through_registry_for_project(db, project, project.topology)
     if ptr_err:
         raise HTTPException(status_code=400, detail=ptr_err)
+
+    if quota_accounting.quotas_enabled():
+        from app.services.placement import place_project
+
+        operation_id = quota_operations.prepare(
+            db, project, "deploy", host_id=body.host_id
+        )
+        db.commit()
+        try:
+            result = place_project(
+                db, project, host_id=body.host_id, quota_operation_id=operation_id
+            )
+        except quota_operations.AccountingUnavailable as error:
+            raise quota_operations._http_denial(error) from error
+        if "error" in result:
+            raise HTTPException(503, result["error"])
+        project.vni_map = result.get("vni_map")
+        db.commit()
+        enqueue_job(
+            deploy_project_async,
+            project.id,
+            body.auto_start,
+            project_id=project.id,
+            quota_operation_id=operation_id,
+        )
+        return
 
     if body.host_id:
         project.host_id = body.host_id
@@ -1386,6 +1418,11 @@ def deploy_pattern(
 
 
 def _bulk_deploy_projects(project_ids: list[str]):
+    from app.services import quota_accounting
+
+    if quota_accounting.quotas_enabled():
+        _quota_bulk_deploy_projects(project_ids)
+        return
     from app.core.database import SessionLocal
     from app.services.deploy_service import deploy_project_async
     from app.services.placement import calculate_project_requirements, place_project
@@ -1425,6 +1462,32 @@ def _bulk_deploy_projects(project_ids: list[str]):
 
     for pid in ready_ids:
         enqueue_job(deploy_project_async, pid, project_id=pid)
+
+
+def _quota_bulk_deploy_projects(project_ids):
+    from app.core.database import SessionLocal
+    from app.services import quota_operations
+
+    # Independent owner admission for each project; a denied batch never falls
+    # through to the legacy placement/worker path.
+    for project_id in project_ids:
+        with SessionLocal() as db:
+            project = db.get(Project, project_id)
+            if not project or project.state != "draft":
+                continue
+            try:
+                _start_auto_deploy(
+                    project,
+                    PatternDeployRequest(name=project.name, auto_deploy=True),
+                    db,
+                )
+            except (HTTPException, quota_operations.AccountingUnavailable) as error:
+                db.rollback()
+                logger.warning(
+                    "Quota bulk deployment withheld for %s: %s",
+                    project_id,
+                    type(error).__name__,
+                )
 
 
 def _create_bulk_project(

@@ -96,7 +96,7 @@ def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
 def _build_snapshot(project: Project, db) -> dict:
     """Build initial WS snapshot from cached poller data only."""
     from app.services.deploy_service import _get_deploy_progress_data
-    from app.services.ws_pubsub import get_cached_vm_states
+    from app.services.ws_pubsub import get_display_vm_states
 
     dp = _get_deploy_progress_data(project.id)
     if not dp and project.state == "deploying":
@@ -122,7 +122,7 @@ def _build_snapshot(project: Project, db) -> dict:
 
     db.close()
 
-    cached = get_cached_vm_states(project.id)
+    cached = get_display_vm_states(project.id)
     if cached:
         snapshot["vm_states"] = cached.get("states", {})
         snapshot["vm_progress"] = cached.get("progress", {})

@@ -1,5 +1,6 @@
 """Shared billing policy and serialized managed-group assignment rules."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -10,6 +11,7 @@ from app.models.managed_group import (
     ManagedGroupManager,
     ManagedGroupMember,
 )
+from app.models.quota import QuotaAudit
 from app.models.user import User
 
 
@@ -17,12 +19,19 @@ def billing_owner_ids(db: Session, user: User) -> set[str] | None:
     if user.role == "admin":
         return None
     managed = db.query(ManagedGroupManager.group_id).filter_by(user_id=user.id)
+    organizations = db.query(ManagedGroup.id).filter(
+        ManagedGroup.id.in_(managed), ManagedGroup.is_organization.is_(True)
+    )
+    reporting = db.query(ManagedGroup.id).filter(
+        ManagedGroup.id.in_(managed), ManagedGroup.is_organization.is_(False)
+    )
     members = (
         db.query(ManagedGroupMember.user_id)
-        .filter(ManagedGroupMember.group_id.in_(managed))
+        .filter(ManagedGroupMember.group_id.in_(reporting))
         .all()
     )
-    return {user.id, *(row.user_id for row in members)}
+    assigned = db.query(User.id).filter(User.organization_id.in_(organizations)).all()
+    return {user.id, *(row.user_id for row in members), *(row.id for row in assigned)}
 
 
 def require_billing_owner(db: Session, user: User, owner_id: str | None) -> None:
@@ -74,7 +83,7 @@ def prevent_last_manager_removal(db: Session, group_id: str, user_id: str) -> No
         raise HTTPException(409, "Cannot remove the last group manager")
 
 
-def protect_manager_user_deletion(db: Session, user_id: str) -> None:
+def protect_manager_user_deletion(db: Session, user_id: str, actor: User) -> None:
     # Assignment additions also lock this user first, preventing a newly added
     # sole-manager association from appearing after this group's snapshot.
     lock_assignment_user(db, user_id)
@@ -91,3 +100,25 @@ def protect_manager_user_deletion(db: Session, user_id: str) -> None:
     )
     for group in groups:
         prevent_last_manager_removal(db, group.id, user_id)
+        if group.is_organization:
+            before = [
+                row.user_id
+                for row in db.query(ManagedGroupManager)
+                .filter_by(group_id=group.id)
+                .all()
+            ]
+            db.add(
+                QuotaAudit(
+                    actor_id=actor.id,
+                    scope="organization",
+                    scope_id=group.id,
+                    action="organization_managers",
+                    before={"manager_ids": before},
+                    after={
+                        "manager_ids": [
+                            identity for identity in before if identity != user_id
+                        ]
+                    },
+                    effective_at=datetime.now(UTC),
+                )
+            )

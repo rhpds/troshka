@@ -924,8 +924,12 @@ def place_project(
     project: Project,
     storage_pool_id: str | None = None,
     host_id: str | None = None,
+    quota_operation_id: str | None = None,
 ) -> dict:
     """Assign a project to a host. Returns placement result."""
+    from app.services import quota_accounting, quota_operations
+
+    quota_operations.placement_guard(db, project, quota_operation_id)
     if not project.topology:
         return {"error": "Project has no topology"}
 
@@ -962,6 +966,16 @@ def place_project(
     )
     if error:
         return error
+
+    if quota_accounting.quotas_enabled():
+        if not host:
+            raise quota_operations.AccountingUnavailable(
+                "Quota deployment requires available single-host capacity; automatic backing-host provisioning is unsupported"
+            )
+        quota_operations.supported(db, project, host_id=host.id)
+        from app.services.quota_storage import bind_host
+
+        bind_host(db, project, host, quota_operation_id)
 
     if not host:
         # KubeVirt-only templates must not fall through to multi-host mesh or

@@ -1,12 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProjectCanvasPage from "./page";
+import { exampleUsage } from "@/components/quotas/test-fixtures";
 
 const harness = vi.hoisted(() => ({
   store: {} as Record<string, any>, socket: {} as Record<string, any>,
   push: vi.fn(), confirm: vi.fn(), save: vi.fn(),
+  projectId: "project-1",
 }));
-vi.mock("next/navigation", () => ({ useParams: () => ({ id: "project-1" }), useRouter: () => ({ push: harness.push }) }));
+vi.mock("next/navigation", () => ({ useParams: () => ({ id: harness.projectId }), useRouter: () => ({ push: harness.push }) }));
 vi.mock("@xyflow/react", () => ({ ReactFlowProvider: ({ children }: any) => children }));
 vi.mock("@/hooks/useVmStateSocket", () => ({ useVmStateSocket: () => harness.socket }));
 vi.mock("@/lib/confirm", () => ({ appConfirm: harness.confirm }));
@@ -21,7 +23,7 @@ vi.mock("@/stores/canvasStore", () => ({
   resetClustersForOcpRedeploy: (clusters: any[]) => clusters,
 }));
 vi.mock("@/components/canvas/Canvas", () => ({ default: () => <div>Topology canvas</div> }));
-vi.mock("@/components/canvas/Palette", () => ({ default: () => <div>Project palette</div> }));
+vi.mock("@/components/canvas/Palette", () => ({ default: ({ canEditBudget, onBudgetChange }: { canEditBudget?: boolean; onBudgetChange?: (value: string | null) => void }) => <div>Project palette<button disabled={!canEditBudget} onClick={() => onBudgetChange?.("11")}>Save palette budget</button></div> }));
 vi.mock("@/components/canvas/PropertiesPanel", () => ({ default: () => <div>Node properties</div> }));
 vi.mock("@/components/canvas/StartOrderPanel", () => ({ default: () => null }));
 vi.mock("@/components/canvas/ExternalIpsPanel", () => ({ default: () => null }));
@@ -40,6 +42,7 @@ let calls: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  harness.projectId = "project-1";
   harness.confirm.mockResolvedValue(true);
   harness.save.mockResolvedValue(undefined);
   harness.store = {
@@ -52,11 +55,11 @@ beforeEach(() => {
   };
   harness.socket = { vmStates: {}, containerStates: {}, clusterOcpPhases: {}, connected: true };
   project = { id: "project-1", name: "Test environment", state: "draft", owner_email: "alice@example.com" };
-  routes = { "/api/v1/auth/me": response({ role: "user" }), [`${base}/metering`]: response({}, 404), [`${base}/workloads`]: response([]) };
+  routes = { "/api/v1/auth/me": response({ role: "user" }), [`${base}/metering`]: response({}, 404), [`${base}/workloads`]: response([]), "/api/v1/quotas/project/project-1/usage": new Response(JSON.stringify({ ...exampleUsage, scope: "project", scope_id: "project-1", reset_at: null, can_edit: false })) };
   calls = vi.fn(async (url: string, options?: RequestInit) => {
     const result = routes[`${options?.method || "GET"} ${url}`] || routes[url];
     if (result instanceof Error) throw result;
-    if (result) return result;
+    if (result) return typeof result.clone === "function" ? result.clone() : result;
     if (url === base) return response(project);
     if (url.endsWith("/vm-states")) return response({ vm_states: {}, container_states: {} });
     return response({});
@@ -77,6 +80,27 @@ async function loaded(state = "draft") {
 function click(name: string | RegExp) { fireEvent.click(screen.getByRole("button", { name })); }
 
 describe("project canvas navigation and deployment", () => {
+  it("preserves stopped state and explains structured start rejection", async () => {
+    routes[`POST ${base}/start`] = response({ detail: { reason: "missing_organization" } }, 409);
+    await loaded("stopped");
+    click("▶ Start");
+    expect(await screen.findByText(/Ask a platform administrator to assign/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "▶ Start" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undeploy" })).toBeEnabled();
+  });
+  it("uses server quota edit permission and displays project lifetime usage", async () => {
+    routes["/api/v1/quotas/project/project-1/usage"] = new Response(JSON.stringify({ ...exampleUsage, scope: "project", scope_id: "project-1", can_edit: false, reset_at: null }));
+    await loaded();
+    expect(screen.queryByRole("dialog", { name: "Project quotas" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Quotas" }));
+    expect(screen.getByRole("dialog", { name: "Project quotas" })).toBeVisible();
+    expect(await screen.findByText(/Lifetime spending/)).toBeVisible();
+    expect(screen.getByLabelText("CPU limit")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save limits", hidden: true })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog", { name: "Project quotas" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Quotas" })).toHaveFocus());
+  });
   it("loads metadata, renames, toggles panels and returns to projects", async () => {
     await loaded();
     expect(document.title).toBe("Test environment — Troshka");
@@ -127,6 +151,34 @@ describe("project canvas navigation and deployment", () => {
 });
 
 describe("environment lifecycle", () => {
+  it.each(["stopped", "error"])("shows accounting unavailability on %s starts without optimistic state", async state => {
+    project.deployed_topology = { nodes: harness.store.nodes, edges: [] };
+    routes[`${base}/start`] = response({ detail: { reason: "accounting_unavailable" } }, 409);
+    await loaded(state); click(state === "error" ? /Retry Start/ : /Start$/);
+    expect(await screen.findByText(/Accounting unavailable\. New growth is blocked/)).toBeVisible();
+    expect(screen.queryByText("Starting...")).not.toBeInTheDocument();
+  });
+  it("preserves stopped state when republish is denied", async () => {
+    routes[`${base}/redeploy`] = response({ detail: { reason: "unsupported_quota_operation" } }, 409);
+    await loaded("stopped"); click(/Republish/);
+    expect(await screen.findByText(/This operation is not supported/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "▶ Start" })).toBeEnabled();
+  });
+  it("shows unsupported per-VM resume denial while keeping stop available", async () => {
+    harness.store.nodes = [{ id: "paused", type: "vmNode", data: { name: "paused", status: "paused" } }];
+    routes[`${base}/vms/paused/unpause`] = response({ detail: { reason: "unsupported_quota_operation" } }, 409);
+    await loaded("active"); click(/Start$/);
+    expect(await screen.findByText(/This operation is not supported with quota enforcement/)).toBeVisible();
+    expect(screen.getByRole("button", { name: /Stop$/ })).toBeEnabled();
+  });
+  it.each(["draft", "stopped", "active"])("formats a binding constraint on %s growth operations", async state => {
+    harness.store.topologyDirty = true;
+    const denial = response({ detail: { reason: "resource_limit", scope: "organization", dimension: "ram_bytes", used: "8", reserved: "2", requested: "4", limit: "10" } }, 409);
+    routes[`${base}/${state === "draft" ? "deploy" : "reconfigure"}`] = denial;
+    await loaded(state); click(state === "draft" ? /Deploy$/ : "Apply Changes");
+    expect(await screen.findByText(/organization RAM bytes limit: used 8 \+ reserved 2, requested 4, limit 10/)).toBeVisible();
+    expect(screen.queryByText("reconfiguring")).not.toBeInTheDocument();
+  });
   it("confirms stopping an active environment", async () => {
     await loaded("active"); click(/Stop$/);
     await screen.findByText("Stopping...");
@@ -243,6 +295,13 @@ describe("template import", () => {
     expect(await screen.findByText("No hosts")).toBeInTheDocument();
     expect(alert).toHaveBeenCalledWith("Imported with warnings:\n\nIP overlaps gateway");
   });
+  it("formats accounting failure from template auto-deploy", async () => {
+    routes[`${base}/import-template`] = response({});
+    routes[`${base}/deploy`] = response({ detail: { reason: "accounting_unavailable" } }, 409);
+    await openImport("networks: {}\nocp: []"); click("Import");
+    expect(await screen.findByText(/Accounting unavailable\. New growth is blocked/)).toBeVisible();
+    expect(screen.queryByText("Deploying...")).not.toBeInTheDocument();
+  });
 });
 
 describe("live project synchronization", () => {
@@ -322,6 +381,70 @@ describe("live project synchronization", () => {
 });
 
 describe("reconfiguration and budget", () => {
+  it.each([["badge", 403], ["badge", 404], ["palette", 403], ["palette", 404]] as const)("keeps %s budget writes revoked after a newer %i despite a late save refresh", async (source, status) => {
+    const usageUrl = "/api/v1/quotas/project/project-1/usage";
+    const authorized = { ...exampleUsage, scope: "project", scope_id: "project-1", reset_at: null };
+    let finish: (response: Response) => void = () => {};
+    let quotaCalls = 0;
+    const prior = vi.mocked(fetch).getMockImplementation()!;
+    calls.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url === usageUrl) {
+        quotaCalls++;
+        if (quotaCalls === 2) return new Promise<Response>(resolve => { finish = resolve; });
+        if (quotaCalls >= 3) return new Response('{"detail":"Revoked"}', { status });
+        return new Response(JSON.stringify(authorized));
+      }
+      if (url === "/api/v1/quotas/project/project-1" && options?.method === "PATCH") return new Response(JSON.stringify(authorized.limits));
+      return prior(url, options);
+    });
+    routes[`${base}/metering`] = response({ total_usd: 1.25, budget_usd: 10 });
+    await loaded("stopped");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save palette budget" })).toBeEnabled());
+    if (source === "badge") { fireEvent.click(screen.getByTitle("$1.25 lifetime spend — click to set budget")); click("Save"); }
+    else click("Save palette budget");
+    await waitFor(() => expect(quotaCalls).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "Quotas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh quotas" }));
+    await screen.findByText(/Quota usage unavailable: Revoked/);
+    await act(async () => { finish(new Response(JSON.stringify(authorized))); });
+    expect(screen.queryByLabelText("CPU limit")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save palette budget" })).toBeDisabled();
+    expect(screen.getByTitle("$1.25 lifetime spend — owner budget is read-only")).toBeDisabled();
+    expect(screen.queryByLabelText("Stop the project at this spend (USD)")).not.toBeInTheDocument();
+    expect(quotaCalls).toBe(3);
+  });
+  it("discards the prior project's pending budget refresh after project navigation", async () => {
+    const authorized = { ...exampleUsage, scope: "project", scope_id: "project-1", reset_at: null };
+    let finish: (response: Response) => void = () => {};
+    let quotaCalls = 0;
+    let nextProjectCalls = 0;
+    const prior = vi.mocked(fetch).getMockImplementation()!;
+    calls.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (url === "/api/v1/quotas/project/project-1/usage") {
+        if (++quotaCalls === 2) return new Promise<Response>(resolve => { finish = resolve; });
+        return new Response(JSON.stringify(authorized));
+      }
+      if (url === "/api/v1/quotas/project/project-1" && options?.method === "PATCH") return new Response(JSON.stringify(authorized.limits));
+      if (url === "/api/v1/quotas/project/project-2/usage") { nextProjectCalls++; return new Response(JSON.stringify({ ...authorized, scope_id: "project-2", can_edit: false })); }
+      return prior(url, options);
+    });
+    const view = await loaded("stopped");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save palette budget" })).toBeEnabled());
+    click("Save palette budget");
+    await waitFor(() => expect(quotaCalls).toBe(2));
+    harness.projectId = "project-2";
+    routes["/api/v1/projects/project-2"] = response({ ...project, id: "project-2", name: "Second environment" });
+    routes["/api/v1/projects/project-2/metering"] = response({}, 404);
+    routes["/api/v1/projects/project-2/workloads"] = response([]);
+    routes["/api/v1/quotas/project/project-2/usage"] = new Response(JSON.stringify({ ...authorized, scope_id: "project-2", can_edit: false }));
+    view.rerender(<ProjectCanvasPage />);
+    await screen.findByText("Second environment");
+    await waitFor(() => expect(nextProjectCalls).toBe(1));
+    await act(async () => { finish(new Response(JSON.stringify(authorized))); });
+    expect(screen.getByRole("button", { name: "Save palette budget" })).toBeDisabled();
+    expect(quotaCalls).toBe(2);
+    expect(nextProjectCalls).toBe(1);
+  });
   it.each(["iso", "qcow2"])("reviews %s replacement before restarting the attached VM", async (format) => {
     harness.store.topologyDirty = true;
     harness.store.nodes.push({ id: "disk", type: "storageNode", data: { name: "Root disk", format, libraryItemId: "replacement" } });
@@ -356,12 +479,16 @@ describe("reconfiguration and budget", () => {
     }
   });
   it.each(["25", ""])("saves budget %s from live spend", async (value) => {
+    routes["/api/v1/quotas/project/project-1/usage"] = new Response(JSON.stringify({ ...exampleUsage, scope: "project", scope_id: "project-1", reset_at: null }));
+    routes["PATCH /api/v1/quotas/project/project-1"] = new Response(JSON.stringify(exampleUsage.limits));
     routes[`${base}/metering`] = response({ total_usd: 1.25, budget_usd: 10, running_since: "2026-10-01T00:00:00Z", running_until: "2026-10-02T02:03:00Z", running_seconds: 93780 });
     await loaded("stopped");
-    fireEvent.click(await screen.findByTitle("$1.25 — click to set budget"));
+    const badge = await screen.findByTitle("$1.25 lifetime spend — click to set budget");
+    await waitFor(() => expect(badge).toBeEnabled());
+    fireEvent.click(badge);
     fireEvent.change(screen.getByLabelText("Stop the project at this spend (USD)"), { target: { value } });
     click("Save");
-    expect(calls).toHaveBeenCalledWith(base, expect.objectContaining({ body: JSON.stringify({ budget_usd: value ? 25 : null }) }));
+    await waitFor(() => expect(calls).toHaveBeenCalledWith("/api/v1/quotas/project/project-1", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ spending_usd: value || null }) })));
   });
   it("resumes paused and hibernated VMs with distinct operations", async () => {
     harness.store.nodes = [

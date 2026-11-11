@@ -59,8 +59,8 @@ export default function GroupsPage() {
         <Button variant="link" isDisabled={busy} onClick={() => setCreating(false)}>Cancel</Button>
       </form></CardBody></Card>}
       {!groups.length && <p>No groups created yet.</p>}
-      {!!groups.length && <Card><CardBody><div className={styles.table}><table aria-label="Groups" className="pf-v6-c-table"><thead><tr><th scope="col">Group</th><th scope="col">Description</th><th scope="col">Members</th><th scope="col">Managers</th></tr></thead><tbody>{groups.map(group => <tr key={group.id}>
-        <td><Button variant="link" isInline onClick={() => setSelected(group.id)}>{group.name}</Button></td><td>{group.description || "—"}</td><td>{group.member_count}</td><td>{group.manager_count}</td>
+      {!!groups.length && <Card><CardBody><div className={styles.table} role="region" aria-label="Groups" tabIndex={0}><table aria-label="Groups" className={styles.dataTable}><thead><tr><th scope="col">Group</th><th scope="col">Type</th><th scope="col">Description</th><th scope="col" className={styles.numeric}>Members</th><th scope="col" className={styles.numeric}>Managers</th></tr></thead><tbody>{groups.map(group => <tr key={group.id}>
+        <td className={styles.identity}><Button variant="link" isInline onClick={() => setSelected(group.id)}>{group.name}</Button></td><td className={styles.nowrap}>{group.is_organization ? "Quota organization" : "Reporting group"}</td><td className={styles.description}>{group.description || "—"}</td><td className={styles.numeric}>{group.member_count}</td><td className={styles.numeric}>{group.manager_count}</td>
       </tr>)}</tbody></table></div></CardBody></Card>}
     </>}</>}
   </div></PageSection>;

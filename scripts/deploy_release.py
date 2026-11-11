@@ -216,9 +216,12 @@ def cluster(kc, expected, skip_project_pods=False, verify_only=False):
 def idle(kc):
     code = (
         "import json; from app.core.redis import get_redis_raw; "
-        "from rq import Queue; from rq.registry import StartedJobRegistry; "
+        "from rq import Queue; from rq.registry import StartedJobRegistry, DeferredJobRegistry, ScheduledJobRegistry; "
         'r=get_redis_raw(); print(json.dumps([{"queue":q.name,"queued":q.count,'
-        '"started":StartedJobRegistry(q.name,connection=r).count} for q in Queue.all(connection=r)]))'
+        '"started":len(StartedJobRegistry(q.name,connection=r).get_job_ids(cleanup=False)),'
+        '"deferred":len(DeferredJobRegistry(q.name,connection=r).get_job_ids(cleanup=False)),'
+        '"scheduled":len(ScheduledJobRegistry(q.name,connection=r).get_job_ids(cleanup=False))}'
+        ' for q in Queue.all(connection=r)]))'
     )
     queues = json.loads(
         oc(
@@ -233,9 +236,9 @@ def idle(kc):
             code,
         )
     )
-    if any(q["queued"] or q["started"] for q in queues):
+    if any(q["queued"] or q["started"] or q["deferred"] or q["scheduled"] for q in queues):
         raise RuntimeError(
-            "Jobs are active or queued; wait for them to finish before promotion"
+            "Jobs are active, queued, deferred or scheduled; reconcile them before promotion"
         )
     print("Job queues are idle", flush=True)
 

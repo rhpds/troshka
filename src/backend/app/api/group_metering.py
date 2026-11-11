@@ -29,7 +29,14 @@ def report(
 ):
     _require_enabled()
     group = require_managed_group(db, user, group_id)
-    return group_report(db, group, scoped_members(db, group_id, owner_id), year, month)
+    return group_report(
+        db,
+        group,
+        scoped_members(db, group_id, owner_id),
+        year,
+        month,
+        owner_id=owner_id,
+    )
 
 
 def _documents(db, user, group_id, owner_id, model, summary):

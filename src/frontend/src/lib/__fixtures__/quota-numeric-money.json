@@ -1,0 +1,10 @@
+{
+  "zero": {
+    "limits": { "spending_usd": "0E-12" },
+    "spent_usd": "0E-12"
+  },
+  "small": {
+    "limits": { "spending_usd": "1E-12" },
+    "spent_usd": "1E-12"
+  }
+}

@@ -34,6 +34,7 @@ from app.core.redis import (
 )
 from app.models.host import Host
 from app.models.pattern import Pattern
+from app.services import quota_operations
 from app.services.deploy_topology import (
     _auto_assign_container_ips,
     _disk_path,
@@ -6163,6 +6164,7 @@ def _run_container_redeploy(db, host, project, project_id, container_id, topo, c
     )
 
 
+@quota_operations.unsupported_job
 def redeploy_container_bg(project_id: str, container_id: str) -> None:
     """Redeploy a single container/pod node: destroy then recreate so its init
     containers re-run (re-clone content_repo/ref and rebuild). VMs are left
@@ -9880,6 +9882,10 @@ def _cleanup_stale_shared_cache(s, project):
         s.delete(entry)
 
 
+from app.services.quota_operations import guarded_job
+
+
+@guarded_job("deploy")
 def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
@@ -13555,8 +13561,14 @@ def _finalize_project_paused(s, project, project_id, vms):
     )
 
 
-def stop_project_async(project_id: str):
-    """Background thread: apply the project's off_action (stop/pause/hibernate)."""
+def _project_stop_topology(project, force_stop):
+    if force_stop:
+        return quota_operations.retained_topology(project)
+    return project.topology or {}
+
+
+def stop_project_async(project_id: str, *, force_stop: bool = False):
+    """Apply off_action, or actual compute shutdown for durable quota enforcement."""
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
@@ -13578,7 +13590,7 @@ def stop_project_async(project_id: str):
             )
             return
 
-        off_action = project.off_action or "stop"
+        off_action = "stop" if force_stop else (project.off_action or "stop")
         if off_action == "hibernate" and not supports_hibernate(host):
             # Fail fast rather than leave the project stuck in "stopping".
             _set_project_error(
@@ -13589,7 +13601,7 @@ def stop_project_async(project_id: str):
             )
             return
 
-        topology = project.topology or {}
+        topology = _project_stop_topology(project, force_stop)
         vms = _extract_vms(topology)
 
         # Pause/hibernate only make sense for VMs that are actually running —
@@ -13917,6 +13929,7 @@ def _start_troshkad_host_project(s, project, host, project_id):
     return True
 
 
+@guarded_job("start")
 def start_project_async(project_id: str):
     """Background thread: restart a stopped project."""
     from app.core.database import SessionLocal
@@ -13980,6 +13993,24 @@ def _delete_project_record(project_id: str):
     try:
         project = s.get(Project, project_id)
         if project:
+            from app.services import quota_accounting
+
+            if quota_accounting.quotas_enabled():
+                from app.models.metering import MeteringInterval
+                from app.models.quota import QuotaReservation
+
+                if s.query(MeteringInterval).filter_by(
+                    project_id=project_id, ended_at=None
+                ).first() or any(
+                    any(row.observed.values())
+                    or row.state in {"pending", "dispatched", "reconciling"}
+                    for row in s.query(QuotaReservation).filter_by(
+                        project_id=project_id
+                    )
+                ):
+                    raise quota_accounting.AccountingUnavailable(
+                        "Retained infrastructure accounting needs confirmed cleanup"
+                    )
             s.delete(project)
             s.commit()
             notify_project(project_id, {"type": "project-deleted"})
@@ -14015,7 +14046,7 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
     """Synchronously destroy a project's VMs and networks."""
     _deploy_semaphore.acquire()
     try:
-        _destroy_project_inner(ctx, delete_record=delete_record)
+        return _destroy_project_inner(ctx, delete_record=delete_record)
     finally:
         _deploy_semaphore.release()
 
@@ -14540,12 +14571,18 @@ def _destroy_single_host_resources(s, ctx, project, delete_record: bool) -> bool
     project_id = ctx["project_id"]
     host = s.query(Host).filter_by(id=ctx["host_id"]).first()
     if not host or not host.ip_address:
-        if delete_record:
+        from app.services.quota_accounting import quotas_enabled
+
+        if delete_record and not quotas_enabled():
             _delete_project_record(project_id)
         return False
 
     if host.host_type == "kubevirt-cluster":
-        _destroy_kubevirt_native(project_id, host, s, delete_record)
+        from app.services.quota_accounting import quotas_enabled
+
+        _destroy_kubevirt_native(
+            project_id, host, s, delete_record and not quotas_enabled()
+        )
         return False
 
     vni_map = ctx.get("vni_map", {})
@@ -14581,6 +14618,14 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
                 _delete_project_record(project_id)
             return
 
+        from app.services.quota_accounting import quotas_enabled
+
+        if quotas_enabled():
+            from app.services.quota_cleanup import fence
+
+            fence(s, project_id)
+            s.commit()
+
         # Revoke the scoped ops-pod key before any teardown branch (covers the
         # KubeVirt-native early return below); no-op for non-ops-pod projects.
         _destroy_revoke_ops_pod_key(s, project_id)
@@ -14593,12 +14638,26 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
 
         _destroy_cleanup_dns(s, ctx, project_id)
         _destroy_cleanup_eips(s, project_id)
+        if quotas_enabled():
+            from app.models.host import Host
+            from app.services.quota_cleanup import complete
+
+            host = s.get(Host, ctx.get("host_id"))
+            if host is None or not complete(s, project, host):
+                s.commit()
+                _set_destroy_error(
+                    project_id, "Resource absence is not confirmed; accounting retained"
+                )
+                return False
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
         s.close()
         if delete_record:
             _delete_project_record(project_id)
+        return True
     except Exception as e:
         logger.exception("Destroy %s failed", project_id[:8])
+        s.rollback()
         _set_destroy_error(project_id, str(e))
+        return False
     finally:
         s.close()

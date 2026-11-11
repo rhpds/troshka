@@ -42,7 +42,7 @@ function toggleRevealed(prev: Set<string>, key: string) {
   return next;
 }
 
-function useBudgetDraft(budget: number | null | undefined) {
+function useBudgetDraft(budget: string | null | undefined) {
   const [previous, setPrevious] = useState(budget);
   const [draft, setDraft] = useState(budget == null ? "" : String(budget));
   if (previous !== budget) {
@@ -660,7 +660,7 @@ function SnapshotList({snapshots, loaded, onSnapshotDragStart}: Readonly<{ snaps
                       ))}</>;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, onBudgetChange }: Readonly<{ onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: number | null; onBudgetChange?: (usd: number | null) => void }>) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange, budgetUsd, canEditBudget = false, onBudgetChange }: Readonly<{ onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void; budgetUsd?: string | null; canEditBudget?: boolean; onBudgetChange?: (usd: string | null) => void }>) {
   const [showBmc, setShowBmc] = useState(false);
   const bmcHeaderRef = React.useRef<HTMLButtonElement>(null);
   const [bmcFlyoutPos, setBmcFlyoutPos] = useState({ top: 0, left: 220 });
@@ -1289,22 +1289,23 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <div className="palette-icon" style={{ background: "rgba(34,197,94,0.15)" }}>$</div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div className="palette-item-label">Budget (USD)</div>
+                  <div className="palette-item-label">Lifetime budget (USD)</div>
                   <input
-                    type="number"
-                    min={0}
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
+                    aria-label="Palette lifetime budget (USD)"
+                    disabled={!canEditBudget}
                     value={budgetDraft}
                     placeholder="None"
                     onChange={(e) => setBudgetDraft(e.target.value)}
                     onBlur={() => {
+                      if (!canEditBudget) return;
                       const raw = budgetDraft.trim();
                       if (raw === "") {
                         onBudgetChange?.(null);
                         return;
                       }
-                      const n = Number(raw);
-                      if (!Number.isNaN(n) && n >= 0) onBudgetChange?.(n);
+                      if (/^\d+(\.\d{1,6})?$/.test(raw)) onBudgetChange?.(raw);
                     }}
                     style={{
                       width: 72, fontSize: 10, padding: "1px 4px", borderRadius: 3,

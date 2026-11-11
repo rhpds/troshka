@@ -6,6 +6,7 @@ import time
 import yaml
 
 from app.core.logging_utils import sanitize_log
+from app.services import quota_operations
 from app.services.providers.base import ProviderDriver
 
 logger = logging.getLogger(__name__)
@@ -1131,6 +1132,7 @@ def _recreate_ops_pod(core_api, namespace: str, pod: dict, name: str) -> bool:
     raise RuntimeError(f"Ops pod {name} still terminating after retries: {last_error}")
 
 
+@quota_operations.unsupported_job
 def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:
     """[LIVE-ENV] Create the ops-pod Secret + Pod in the project namespace.
 
@@ -2619,6 +2621,7 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
+    @quota_operations.unsupported_job
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
         _ensure_operator_crds(provider)
 

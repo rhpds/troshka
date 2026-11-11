@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import GroupsPage from "./page";
 import { appConfirm } from "@/lib/confirm";
+import { exampleUsage } from "@/components/quotas/test-fixtures";
 vi.mock("@/lib/confirm", () => ({ appConfirm: vi.fn(async () => true) }));
 const person = { id: "u", email: "User@example.com", display_name: "User" };
 const other = { id: "v", email: "Alice@example.com", display_name: "Alice Smith" };
@@ -31,6 +32,23 @@ async function selected() {
   await screen.findByRole("tab", { name: "Members (0)" });
 }
 describe("group administration", () => {
+  it("designates organizations with optional cost center and authoritative quota controls", async () => {
+    const previous = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, options) => {
+      if (String(url).includes("/quotas/organizations/g/members")) return new Response(JSON.stringify([{ ...person, organization_id: "g" }]));
+      if (String(url).includes("/quotas/organization/g/usage")) return new Response(JSON.stringify({ ...exampleUsage, scope: "organization", scope_id: "g" }));
+      return previous(url, options);
+    });
+    await selected();
+    fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
+    fireEvent.click(screen.getByLabelText("Quota organization"));
+    fireEvent.change(screen.getByLabelText("Cost center (optional)"), { target: { value: "CC-42" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save group" }));
+    await waitFor(() => expect(current).toMatchObject({ is_organization: true, cost_center_id: "CC-42" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Organization quotas" }));
+    expect(await screen.findByLabelText("Organization user limits")).toHaveTextContent(person.email);
+    expect(screen.queryByRole("button", { name: "Add member" })).not.toBeInTheDocument();
+  });
   it("starts with the group list and opens focused management tabs", async () => {
     render(<GroupsPage />);
     expect(await screen.findByRole("table", { name: "Groups" })).toBeInTheDocument();

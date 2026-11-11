@@ -28,6 +28,15 @@ from app.models.pattern_location import PatternLocation
 from app.models.portal import ProjectPortalToken
 from app.models.project import Project, ProjectShare
 from app.models.provider import Provider
+from app.models.quota import (
+    QuotaAction,
+    QuotaAllocation,
+    QuotaAudit,
+    QuotaCharge,
+    QuotaPolicy,
+    QuotaReadiness,
+    QuotaReservation,
+)
 from app.models.registry_credential import RegistryCredential
 from app.models.storage_pool import SharedCacheEntry, StoragePool
 from app.models.system_config import SystemConfig
@@ -36,6 +45,13 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "QuotaPolicy",
+    "QuotaReservation",
+    "QuotaAllocation",
+    "QuotaCharge",
+    "QuotaAudit",
+    "QuotaAction",
+    "QuotaReadiness",
     "ManagedGroup",
     "ManagedGroupManager",
     "ManagedGroupMember",

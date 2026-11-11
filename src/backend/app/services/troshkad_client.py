@@ -326,6 +326,10 @@ def _get_drain_retry_reason(e: TroshkadError) -> str:
     return "busy (job queue full)"
 
 
+from app.services.quota_operations import tracked_agent_job
+
+
+@tracked_agent_job
 def start_job(host, path, params, request_timeout=30):
     """Start an operation on a host. Returns job_id.
 
@@ -341,6 +345,12 @@ def start_job(host, path, params, request_timeout=30):
     Returns:
         job_id string
     """
+    from app.services import quota_accounting, quota_operations
+
+    guarded = (
+        quota_accounting.quotas_enabled() and path in quota_operations.GROWTH_COMMANDS
+    )
+    retry_kwargs = {"retries": 1} if guarded else {}
     deadline = time.time() + _DRAIN_RETRY_TIMEOUT
 
     while True:
@@ -352,9 +362,12 @@ def start_job(host, path, params, request_timeout=30):
                 body=params,
                 timeout=request_timeout,
                 allow_disconnected=True,
+                **retry_kwargs,
             )
             return result["job_id"]
         except TroshkadError as e:
+            if guarded:
+                raise  # A lost mutation response can already represent accepted work.
             if not _is_drain_retryable(e):
                 raise
             if time.time() >= deadline:
@@ -375,9 +388,13 @@ def start_job(host, path, params, request_timeout=30):
 
 def poll_job(host, job_id):
     """Poll job status on a host. Returns job dict."""
-    return troshkad_request(
+    result = troshkad_request(
         host, "GET", f"/jobs/{job_id}", timeout=15, allow_disconnected=True
     )
+    from app.services.quota_operations import record_terminal
+
+    record_terminal(host.id, job_id, result.get("status"))
+    return result
 
 
 def cancel_job(host, job_id):

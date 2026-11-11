@@ -261,6 +261,8 @@ def enqueue_job(
                 meta["project_id"] = project_id
             if host_id:
                 meta["host_id"] = host_id
+            if kwargs.get("quota_operation_id"):
+                meta["quota_operation_id"] = kwargs["quota_operation_id"]
             job = q.enqueue(
                 func,
                 *args,
@@ -281,12 +283,18 @@ def enqueue_job(
             )
             if project_id:
                 get_redis().set(f"job:project:{project_id}", job.id, ex=7200)
+            from app.services.quota_operations import record_delivery
+
+            record_delivery(kwargs.get("quota_operation_id"), job.id, "rq")
             return job
         except Exception:
             logger.warning("RQ enqueue failed, falling back to thread")
 
     # Fallback: run in a daemon thread (single-process mode)
     t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
+    from app.services.quota_operations import record_delivery
+
+    record_delivery(kwargs.get("quota_operation_id"), t.name, "thread")
     t.start()
     return t
 

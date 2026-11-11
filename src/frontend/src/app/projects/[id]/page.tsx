@@ -42,6 +42,8 @@ import {
   type OcpRedeployMode,
 } from "@/lib/redeployOcp";
 import { formatApiDetail } from "@/lib/apiError";
+import { decimalCompare, fetchUsage, formatQuotaError, isQuotaRevocation, QuotaUsageData, saveLimits } from "@/lib/quotas";
+import QuotaScope from "@/components/quotas/QuotaScope";
 import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { resolveShowroomUrl } from "@/lib/routeUrl";
 import { openShowroom } from "@/lib/openShowroom";
@@ -272,7 +274,23 @@ export default function ProjectCanvasPage() {
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
   const [autoStopped, setAutoStopped] = useState(false);
-  const [budgetUsd, setBudgetUsd] = useState<number | null>(null);
+  const [projectQuota, setProjectQuota] = useState<QuotaUsageData | null>(null);
+  const [quotaRevision, setQuotaRevision] = useState(0);
+  const [quotaDialogProject, setQuotaDialogProject] = useState<string | null>(null);
+  const quotaButtonRef = React.useRef<HTMLButtonElement>(null);
+  const closeQuotaDialog = React.useCallback(() => {
+    setQuotaDialogProject(null);
+    requestAnimationFrame(() => quotaButtonRef.current?.focus());
+  }, []);
+  const quotaSaveGeneration = React.useRef(0);
+  useEffect(() => () => { quotaSaveGeneration.current++; }, [projectId]);
+  const receiveProjectQuota = React.useCallback((usage: QuotaUsageData | null) => {
+    if (usage && usage.scope_id !== projectId) return;
+    if (!usage?.can_edit) quotaSaveGeneration.current++;
+    setProjectQuota(usage);
+  }, [projectId]);
+  const canEditBudget = projectQuota?.scope_id === projectId && projectQuota.can_edit;
+  const budgetUsd = projectQuota?.scope_id === projectId ? projectQuota.limits.spending_usd : null;
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [budgetModalDraft, setBudgetModalDraft] = useState("");
   const [liveSpend, setLiveSpend] = useState<{
@@ -365,7 +383,6 @@ export default function ProjectCanvasPage() {
         setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
         setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
         setAutoStopped(!!data.auto_stopped);
-        setBudgetUsd(data.budget_usd ?? null);
         setClockTarget(data.clock_target ?? null);
         setGuestExecEnabled(data.guest_exec_enabled !== false);
         const clusterStatuses = (
@@ -600,9 +617,13 @@ export default function ProjectCanvasPage() {
           const action = status === "paused" ? "unpause" : "start";
           return fetch(`/api/v1/projects/${projectId}/vms/${n.id}/${action}`, {
             method: "POST",
-          }).catch(() => {});
+          }).then(async response => {
+            if (!response.ok) throw new Error(formatQuotaError(await response.json().catch(() => null), "VM start failed"));
+          });
         }),
       );
+    } catch (error) {
+      setAlertMsg(error instanceof Error ? error.message : "VM start failed");
     } finally {
       setResumingAll(false);
     }
@@ -1004,11 +1025,11 @@ export default function ProjectCanvasPage() {
         body: JSON.stringify(body),
       });
       const data = await resp.json();
-      if (data.status === "reconfiguring") {
+      if (resp.ok && data.status === "reconfiguring") {
         setProjectState("reconfiguring");
         useCanvasStore.setState({ topologyDirty: false });
       } else {
-        setDeployError(data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "Reconfigure failed");
+        setDeployError(formatQuotaError(data, data.output?.slice(-300) || data.errors?.join("\n") || "Reconfigure failed"));
       }
     } catch { setDeployError("Failed to connect to server"); }
     setApplyingChanges(false);
@@ -1216,7 +1237,7 @@ export default function ProjectCanvasPage() {
         }
       } else {
         setProjectState("draft");
-        setAlertMsg(data.detail || "Deployment failed");
+        setAlertMsg(formatQuotaError(data, "Deployment failed"));
       }
     } catch {
       setProjectState("draft");
@@ -1250,26 +1271,26 @@ export default function ProjectCanvasPage() {
   };
 
   const doRedeploy = async (ocpMode?: OcpRedeployMode) => {
+    const previousState = projectState;
     setProjectState("deploying");
     setDeployProgress(null);
-    const store = useCanvasStore.getState();
-    useCanvasStore.setState({
-      clusterOcpPhases: {},
-      clusters: resetClustersForOcpRedeploy(store.clusters),
-    });
+    try {
     const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, {
       method: "POST",
       headers: ocpMode ? { "Content-Type": "application/json" } : undefined,
       body: ocpMode ? JSON.stringify({ ocp_mode: ocpMode }) : undefined,
     });
     if (r.ok) {
+      const store = useCanvasStore.getState();
+      useCanvasStore.setState({ clusterOcpPhases: {}, clusters: resetClustersForOcpRedeploy(store.clusters) });
       useCanvasStore.setState({ deployedVmIds: new Set() });
       setDeployError(null);
     } else {
-      setProjectState("active");
+      setProjectState(previousState);
       const err = await r.json().catch(() => ({ detail: "Redeploy failed" }));
-      setAlertMsg(err.detail || "Redeploy failed");
+      setAlertMsg(formatQuotaError(err, "Redeploy failed"));
     }
+    } catch { setProjectState(previousState); setAlertMsg("Failed to connect to server"); }
   };
 
   const handleRepublish = async (message: string) => {
@@ -1402,8 +1423,10 @@ export default function ProjectCanvasPage() {
                 flexShrink: 0,
                 whiteSpace: "nowrap",
               }}
-              title={`$${String(Number(liveSpend.total_usd.toFixed(8)))} — click to set budget`}
+              title={`$${String(Number(liveSpend.total_usd.toFixed(8)))} lifetime spend${canEditBudget ? " — click to set budget" : " — owner budget is read-only"}`}
+              disabled={!canEditBudget}
               onClick={() => {
+                if (!canEditBudget) return;
                 setBudgetModalDraft(budgetUsd == null ? "" : String(budgetUsd));
                 setShowBudgetModal(true);
               }}
@@ -1552,27 +1575,30 @@ projectState === "active" && (
   const renderStoppedActions = () => (
 projectState === "stopped" && (
             <>
-              <button type="button" className="project-publish-btn" onClick={() => {
-                fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
-                  .then(() => setProjectState("starting"));
-              }}>
+              <button type="button" className="project-publish-btn" onClick={() => void retryStart()}>
                 ▶ Start
               </button>
               <button type="button" className="project-publish-btn" onClick={async () => {
                 setDeployError(null);
+                try {
                 const s = useCanvasStore.getState();
-                await fetch(`/api/v1/projects/${projectId}`, {
+                const saved = await fetch(`/api/v1/projects/${projectId}`, {
                   method: "PATCH",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
                 });
+                if (!saved.ok) {
+                  setAlertMsg(formatQuotaError(await saved.json().catch(() => null), "Could not save topology"));
+                  return;
+                }
                 const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
                 const data = await resp.json();
-                if (data.status === "reconfiguring") {
+                if (resp.ok && data.status === "reconfiguring") {
                   setProjectState("reconfiguring");
                 } else {
-                  setDeployError(data.output?.slice(-300) || data.detail || "Reconfigure failed");
+                  setAlertMsg(formatQuotaError(data, data.output?.slice(-300) || "Reconfigure failed"));
                 }
+                } catch { setAlertMsg("Failed to connect to server"); }
               }}>
                 Apply Changes
               </button>
@@ -1596,14 +1622,16 @@ projectState === "stopped" && (
   );
 
   const retryStart = async () => {
+    try {
     const response = await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
     if (response.ok) {
       setProjectState("starting");
       setDeployError(null);
       return;
     }
-    const data = await response.json();
-    setAlertMsg(data.detail || "Start failed");
+    const data = await response.json().catch(() => null);
+    setAlertMsg(formatQuotaError(data, "Start failed"));
+    } catch { setAlertMsg("Failed to connect to server"); }
   };
 
   const renderErrorActions = () => (
@@ -1889,7 +1917,7 @@ showImportModal && (
                       const deployResp = await fetch(`/api/v1/projects/${projectId}/deploy`, { method: "POST" });
                       if (!deployResp.ok) {
                         const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-                        setAlertMsg(typeof err.detail === "string" ? err.detail : "Deploy failed");
+                        setAlertMsg(formatQuotaError(err, "Deploy failed"));
                       } else {
                         // Refresh state so the toolbar reflects deploying.
                         loadProject(projectId);
@@ -2024,8 +2052,27 @@ showExportModal && (
       )
   );
 
+  const saveProjectBudget = async (value: string | null) => {
+    if (!canEditBudget) return;
+    const generation = ++quotaSaveGeneration.current;
+    try {
+      if (value !== null) decimalCompare(value, "0");
+      await saveLimits("project", projectId, { spending_usd: value });
+      if (generation !== quotaSaveGeneration.current) return;
+      const updated = await fetchUsage("project", projectId);
+      if (generation !== quotaSaveGeneration.current) return;
+      setProjectQuota(updated);
+      setQuotaRevision(revision => revision + 1);
+      setShowBudgetModal(false);
+    } catch (error) {
+      if (generation !== quotaSaveGeneration.current) return;
+      if (isQuotaRevocation(error)) { quotaSaveGeneration.current++; setProjectQuota(null); setShowBudgetModal(false); }
+      setAlertMsg(error instanceof Error ? error.message : "Budget save failed");
+    }
+  };
+
   const renderBudgetDialog = () => (
-showBudgetModal && (
+showBudgetModal && canEditBudget && (
         <ModalBackdrop label="Project settings" className="start-order-overlay" onClose={() => { setShowBudgetModal(false); }}>
           <div className="start-order-modal" style={{ maxWidth: 400 }} >
             <div className="start-order-header">
@@ -2033,13 +2080,13 @@ showBudgetModal && (
               <button type="button" onClick={() => setShowBudgetModal(false)}>&#x2715;</button>
             </div>
             <div className="start-order-body" style={{ padding: 16 }}>
+              <p>Lifetime spending limit. A limit at or below accumulated spend triggers compute shutdown when enforcement is enabled. Existing positive project caps retain their current safeguards with hierarchy enforcement disabled. Blank means unlimited; zero prohibits spending when quota enforcement is enabled.</p>
               <LabeledField style={{ fontSize: 13, display: "block", marginBottom: 6 }} label={<>
                 Stop the project at this spend (USD)
               </>}>
               <input
-                type="number"
-                min={0}
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 autoFocus
                 placeholder="None"
                 value={budgetModalDraft}
@@ -2065,17 +2112,7 @@ showBudgetModal && (
                 className="start-order-btn save"
                 onClick={() => {
                   const raw = budgetModalDraft.trim();
-                  const next = raw === "" ? null : Number(raw);
-                  if (next != null && (Number.isNaN(next) || next < 0)) return;
-                  setBudgetUsd(next);
-                  setShowBudgetModal(false);
-                  fetch(`/api/v1/projects/${projectId}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ budget_usd: next }),
-                  }).then((r) => (r.ok ? r.json() : null)).then((data) => {
-                    if (data) setBudgetUsd(data.budget_usd ?? null);
-                  });
+                  void saveProjectBudget(raw === "" ? null : raw);
                 }}
               >
                 Save
@@ -2214,16 +2251,7 @@ timerToast && (
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ guest_exec_enabled: v }),
           });
-        }} budgetUsd={budgetUsd} onBudgetChange={(v: number | null) => {
-          setBudgetUsd(v);
-          fetch(`/api/v1/projects/${projectId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ budget_usd: v }),
-          }).then((r) => r.ok ? r.json() : null).then((data) => {
-            if (data) setBudgetUsd(data.budget_usd ?? null);
-          });
-        }} />}
+        }} budgetUsd={budgetUsd} canEditBudget={canEditBudget} onBudgetChange={canEditBudget ? (value: string | null) => { void saveProjectBudget(value); } : undefined} />}
         <button type="button"
           onClick={() => setShowPalette(!showPalette)}
           title={showPalette ? "Hide palette" : "Show palette"}
@@ -2423,6 +2451,7 @@ showWorkloadModal && (
               Export Template
             </button>
           )}
+          <button ref={quotaButtonRef} type="button" className="project-stop-btn" style={{ color: "#fff", borderColor: "#fff" }} aria-haspopup="dialog" onClick={() => setQuotaDialogProject(projectId)}>Quotas</button>
           {projectState !== "deleting" && (
             <button type="button"
               className="project-stop-btn"
@@ -2512,6 +2541,7 @@ showWorkloadModal && (
         </div>
       )}
       {renderDeployProgress()}
+      <QuotaScope key={`${projectId}:${quotaRevision}`} scope="project" id={projectId} onUsage={receiveProjectQuota} dialog={{ isOpen: quotaDialogProject === projectId, onClose: closeQuotaDialog }} />
       {renderCanvas()}
       {renderAuxiliaryPanels()}
       {reconfigWarnings && (

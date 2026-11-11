@@ -1,5 +1,5 @@
 export interface Person { id: string; email: string; display_name: string | null }
-export interface Group { id: string; name: string; description: string; member_count?: number; manager_count?: number }
+export interface Group { id: string; name: string; description: string; member_count?: number; manager_count?: number; is_organization?: boolean; cost_center_id?: string | null }
 export interface GroupDetail extends Group { members: Person[]; managers: Person[] }
 export interface UsageLine { kind: string; qty_hours: number; unit_rate?: number; subtotal: number }
 export interface ProjectLine { project_id: string; project_name: string; subtotal: number; by_kind: UsageLine[] }

@@ -12,6 +12,8 @@ import {
   Label,
 } from "@patternfly/react-core";
 import { appConfirm } from "@/lib/confirm";
+import { Organization, quotaFetch } from "@/lib/quotas";
+import OrganizationAssignment from "@/components/quotas/OrganizationAssignment";
 
 interface UserInfo {
   id: string;
@@ -21,6 +23,7 @@ interface UserInfo {
   auth_source: string;
   created_at: string;
   access_enabled: boolean;
+  organization_id?: string | null;
 }
 
 const inputStyle = {
@@ -47,6 +50,7 @@ const roleLabels: Record<string, string> = {
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<UserInfo[]>([]);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -70,6 +74,8 @@ export default function AdminUsersPage() {
   };
 
   useEffect(() => {
+    let live = true;
+    quotaFetch<Organization[]>("/quotas/organizations").then(data => { if (live && Array.isArray(data)) setOrganizations(data); }).catch(() => { if (live) setOrganizations([]); });
     fetch("/api/v1/auth/me")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -79,7 +85,7 @@ export default function AdminUsersPage() {
 
     loadUsers();
     const interval = setInterval(loadUsers, 10000);
-    return () => clearInterval(interval);
+    return () => { live = false; clearInterval(interval); };
   }, []);
 
   const handleCreate = async () => {
@@ -197,7 +203,7 @@ export default function AdminUsersPage() {
           />
         )}
         {notice && <Alert variant="info" title={notice} isInline style={{ marginBottom: 16 }} />}
-        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>Manage Troshka access and roles here. SSO verifies identity; enabled accounts can sign in.</p>
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>Manage Troshka access and roles here. SSO verifies identity; enabled accounts can sign in. New users remain unassigned until an administrator assigns an organization.</p>
 
         {showCreate && (
           <Card style={{ marginBottom: 16 }}>
@@ -294,6 +300,7 @@ export default function AdminUsersPage() {
                     {" · joined "}
                     {new Date(u.created_at).toLocaleDateString()}
                   </div>
+                  <OrganizationAssignment key={`${u.id}:${u.organization_id || "unassigned"}`} user={u} organizations={organizations} onChanged={message => { setNotice(message); loadUsers(); }} />
                 </div>
 
                 <div

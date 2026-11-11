@@ -8,6 +8,8 @@ creates its own DB session internally.
 
 import logging
 
+from app.services import quota_operations
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,7 @@ def _reassociate_eips(s, project_id: str, topology: dict, host):
     return topology
 
 
+@quota_operations.unsupported_job
 def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
     """Start infrastructure (networks, EIPs) then a single VM.
 
@@ -119,6 +122,7 @@ def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
         s.close()
 
 
+@quota_operations.unsupported_job
 def job_cache_and_start_vm(project_id: str, host_id: str, vm_id: str):
     """Re-cache missing images then start a single VM.
 
@@ -193,6 +197,7 @@ def job_hibernate_vm(project_id: str, host_id: str, vm_id: str):
         s.close()
 
 
+@quota_operations.unsupported_job
 def job_redeploy_bg(
     project_id: str,
     destroy_ctx: dict | None,
@@ -250,6 +255,7 @@ def job_redeploy_bg(
     deploy_project_async(project_id)
 
 
+@quota_operations.unsupported_job
 def job_vm_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     """Redeploy a single VM. Entrypoint lives in jobs.py so RQ resolves it on the
     worker — enqueuing app.api.projects._do_redeploy_bg directly fails RQ's
@@ -259,6 +265,7 @@ def job_vm_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     _do_redeploy_bg(p_id, host_id, target_vm_id)
 
 
+@quota_operations.unsupported_job
 def job_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list):
     """Reconfigure a project's VMs. Entrypoint in jobs.py for RQ resolution
     (see job_vm_redeploy_bg)."""
@@ -267,6 +274,7 @@ def job_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list):
     _do_reconfigure_bg(p_id, h_id, restart_vm_ids)
 
 
+@quota_operations.unsupported_job
 def job_container_redeploy_bg(project_id: str, container_id: str):
     """Redeploy a single container/pod node (destroy + recreate so init
     containers re-run). Entrypoint in jobs.py for RQ resolution."""
