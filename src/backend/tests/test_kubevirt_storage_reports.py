@@ -747,3 +747,95 @@ def test_explicit_new_cr_enrollment_retains_old_root_identity(native_case):
             "cr-2",
             "explicitly-verified-new-cr",
         }
+
+
+@pytest.mark.parametrize("source", ["live", "retained", "live-retained", "cache"])
+@pytest.mark.parametrize(
+    "field", ["pv_uid", "volume_handle", "csi_driver", "image_key"]
+)
+def test_first_report_conflicting_pvc_mappings_never_promote_identity(
+    native_case, source, field
+):
+    from app.models.kubevirt_storage import (
+        NativeCollectionDomain,
+        NativeRetainedBinding,
+        NativeStorageSnapshot,
+    )
+
+    q = native_case
+    binding = (
+        q.report.cache_bindings[0] if source == "cache" else q.report.volume_bindings[0]
+    )
+    replacement = (
+        binding.image_key.model_copy(update={"image_id": "contradictory-image"})
+        if field == "image_key"
+        else "contradictory-identity"
+    )
+    conflicting = binding.model_copy(update={field: replacement})
+    if source == "cache":
+        report = revised(q.report, cache_bindings=[binding, conflicting])
+    elif source == "live":
+        report = revised(
+            q.report, volume_bindings=[*q.report.volume_bindings, conflicting]
+        )
+    elif source == "retained":
+        report = revised(
+            q.report,
+            volume_bindings=q.report.volume_bindings[1:],
+            retained_bindings=[binding, conflicting],
+        )
+    else:
+        report = revised(q.report, retained_bindings=[conflicting])
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        snapshot = db.get(NativeStorageSnapshot, identity)
+        assert snapshot.accepted is False
+        assert "retained_binding_identity_changed" in snapshot.reason_codes
+        assert db.query(NativeRetainedBinding).count() == 0
+        assert (
+            db.get(NativeCollectionDomain, snapshot.domain_id).latest_report_id
+            == identity
+        )
+    assert usage(q).allocated_bytes is None
+
+
+def test_identical_live_retained_and_cache_aliases_still_deduplicate(native_case):
+    from app.models.kubevirt_storage import NativeRetainedBinding
+
+    q = native_case
+    report = revised(
+        q.report,
+        volume_bindings=q.report.volume_bindings * 2,
+        retained_bindings=q.report.volume_bindings,
+        cache_bindings=q.report.cache_bindings * 2,
+    )
+    ingest(q, report)
+    assert usage(q).allocated_bytes == 80
+    assert usage(q, admin=True).platform_bytes == 100
+    with q.sessions() as db:
+        assert db.query(NativeRetainedBinding).count() == 3
+
+
+def test_new_contradictory_attempt_preserves_prior_bindings_but_invalidates_current_usage(
+    native_case,
+):
+    from app.models.kubevirt_storage import NativeRetainedBinding
+
+    q = native_case
+    ingest(q)
+    with q.sessions() as db:
+        previous = {b.key: b.payload for b in db.query(NativeRetainedBinding)}
+    binding = q.report.volume_bindings[0].model_copy(
+        update={"pvc_uid": "new-pvc", "pv_uid": "new-pv"}
+    )
+    report = revised(
+        q.report,
+        started_at=q.report.started_at + timedelta(seconds=1),
+        completed_at=q.report.completed_at + timedelta(seconds=1),
+        volume_bindings=[*q.report.volume_bindings, binding],
+        retained_bindings=[binding.model_copy(update={"pv_uid": "conflicting-new-pv"})],
+    )
+    ingest(q, report)
+    assert usage(q, now=report.completed_at).allocated_bytes is None
+    with q.sessions() as db:
+        assert {b.key: b.payload for b in db.query(NativeRetainedBinding)} == previous

@@ -198,11 +198,13 @@ def _binding_errors(report, manifest, roots, retained):
             binding.namespace_uid,
         ) not in cache_roots:
             errors.add("unenrolled_cache_namespace")
+    identities = dict(saved)
     for binding in (
         report.volume_bindings + report.retained_bindings + report.cache_bindings
     ):
-        previous = saved.get(binding_key(binding))
-        if previous is not None and previous != _binding_identity(binding):
+        identity = _binding_identity(binding)
+        previous = identities.setdefault(binding_key(binding), identity)
+        if previous != identity:
             errors.add("retained_binding_identity_changed")
     return errors
 
