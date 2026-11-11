@@ -1,0 +1,285 @@
+{
+  "projects": [
+    {
+      "project_id": "00000000-0000-4000-8000-000000000001",
+      "namespace_uid": "ns-1",
+      "allocated_bytes": 30,
+      "known_allocated_bytes": 30,
+      "provisioned_bytes": 100,
+      "measured_images": 2,
+      "required_images": 2,
+      "oldest_observed_at": "2026-01-01T00:00:00Z",
+      "coverage": "complete",
+      "blockers": []
+    },
+    {
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "namespace_uid": "ns-2",
+      "allocated_bytes": 50,
+      "known_allocated_bytes": 50,
+      "provisioned_bytes": 100,
+      "measured_images": 2,
+      "required_images": 2,
+      "oldest_observed_at": "2026-01-01T00:00:00Z",
+      "coverage": "complete",
+      "blockers": []
+    }
+  ],
+  "platform_pools": [
+    {
+      "pool_key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1
+      },
+      "allocated_bytes": 100,
+      "known_allocated_bytes": 100
+    }
+  ],
+  "unattributed_images": [],
+  "version": "kubevirt-rbd-allocated-v1",
+  "metric": "rbd_allocated_extent_bytes",
+  "report_id": "00000000-0000-4000-8000-000000000099",
+  "collector_id": "sanitized-fixture",
+  "started_at": "2026-01-01T00:00:00Z",
+  "completed_at": "2026-01-01T00:00:00Z",
+  "inventory_digest": "a87bdd506712d8f981c83348a7d74e113607160010ae17c15d85b9990ed79876",
+  "cluster_keys": [
+    "cluster"
+  ],
+  "pool_keys": [
+    {
+      "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+      "pool_id": 1
+    }
+  ],
+  "project_roots": [
+    {
+      "project_id": "00000000-0000-4000-8000-000000000001",
+      "cluster_key": "cluster",
+      "namespace": "project-1",
+      "namespace_uid": "ns-1",
+      "project_cr_uid": "cr-1",
+      "deployment_generation": null
+    },
+    {
+      "project_id": "00000000-0000-4000-8000-000000000002",
+      "cluster_key": "cluster",
+      "namespace": "project-2",
+      "namespace_uid": "ns-2",
+      "project_cr_uid": "cr-2",
+      "deployment_generation": null
+    }
+  ],
+  "volume_bindings": [
+    {
+      "root": {
+        "project_id": "00000000-0000-4000-8000-000000000001",
+        "cluster_key": "cluster",
+        "namespace": "project-1",
+        "namespace_uid": "ns-1",
+        "project_cr_uid": "cr-1",
+        "deployment_generation": null
+      },
+      "pvc_uid": "pvc-1",
+      "pv_uid": "pv-1",
+      "csi_driver": "openshift-storage.rbd.csi.ceph.com",
+      "volume_handle": "handle-1",
+      "image_key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "child-1"
+      },
+      "provisioned_bytes": 100,
+      "owner_reference_uids": []
+    },
+    {
+      "root": {
+        "project_id": "00000000-0000-4000-8000-000000000002",
+        "cluster_key": "cluster",
+        "namespace": "project-2",
+        "namespace_uid": "ns-2",
+        "project_cr_uid": "cr-2",
+        "deployment_generation": null
+      },
+      "pvc_uid": "pvc-2",
+      "pv_uid": "pv-2",
+      "csi_driver": "openshift-storage.rbd.csi.ceph.com",
+      "volume_handle": "handle-2",
+      "image_key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "child-2"
+      },
+      "provisioned_bytes": 100,
+      "owner_reference_uids": []
+    }
+  ],
+  "images": [
+    {
+      "key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "child-1"
+      },
+      "parent": {
+        "image_key": {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "parent-1"
+        },
+        "snapshot_id": "1"
+      },
+      "snapshots": [],
+      "children": [],
+      "collected_at": "2026-01-01T00:00:00Z",
+      "allocated_bytes": 30,
+      "provisioned_bytes": 100,
+      "measurement_status": "complete",
+      "command_version": "test",
+      "measurement_semantics_version": "kubevirt-rbd-allocated-v1"
+    },
+    {
+      "key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "child-2"
+      },
+      "parent": {
+        "image_key": {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "parent-2"
+        },
+        "snapshot_id": "1"
+      },
+      "snapshots": [],
+      "children": [],
+      "collected_at": "2026-01-01T00:00:00Z",
+      "allocated_bytes": 40,
+      "provisioned_bytes": 100,
+      "measurement_status": "complete",
+      "command_version": "test",
+      "measurement_semantics_version": "kubevirt-rbd-allocated-v1"
+    },
+    {
+      "key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "parent-1"
+      },
+      "parent": {
+        "image_key": {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "cache"
+        },
+        "snapshot_id": "1"
+      },
+      "snapshots": [],
+      "children": [
+        {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "child-1"
+        }
+      ],
+      "collected_at": "2026-01-01T00:00:00Z",
+      "allocated_bytes": 0,
+      "provisioned_bytes": 100,
+      "measurement_status": "complete",
+      "command_version": "test",
+      "measurement_semantics_version": "kubevirt-rbd-allocated-v1"
+    },
+    {
+      "key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "parent-2"
+      },
+      "parent": {
+        "image_key": {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "cache"
+        },
+        "snapshot_id": "1"
+      },
+      "snapshots": [],
+      "children": [
+        {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "child-2"
+        }
+      ],
+      "collected_at": "2026-01-01T00:00:00Z",
+      "allocated_bytes": 10,
+      "provisioned_bytes": 100,
+      "measurement_status": "complete",
+      "command_version": "test",
+      "measurement_semantics_version": "kubevirt-rbd-allocated-v1"
+    },
+    {
+      "key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "cache"
+      },
+      "parent": null,
+      "snapshots": [],
+      "children": [
+        {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "parent-1"
+        },
+        {
+          "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+          "pool_id": 1,
+          "rbd_namespace": "",
+          "image_id": "parent-2"
+        }
+      ],
+      "collected_at": "2026-01-01T00:00:00Z",
+      "allocated_bytes": 100,
+      "provisioned_bytes": 100,
+      "measurement_status": "complete",
+      "command_version": "test",
+      "measurement_semantics_version": "kubevirt-rbd-allocated-v1"
+    }
+  ],
+  "retained_bindings": [],
+  "cache_bindings": [
+    {
+      "cluster_key": "cluster",
+      "namespace": "trusted-cache",
+      "namespace_uid": "cache-ns",
+      "pvc_uid": "cache-pvc",
+      "pv_uid": "cache-pv",
+      "csi_driver": "openshift-storage.rbd.csi.ceph.com",
+      "volume_handle": "cache-handle",
+      "image_key": {
+        "ceph_fsid": "11111111-1111-4111-8111-111111111111",
+        "pool_id": 1,
+        "rbd_namespace": "",
+        "image_id": "cache"
+      }
+    }
+  ],
+  "collection_errors": [],
+  "enforcement_eligible": false
+}
