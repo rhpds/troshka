@@ -25,6 +25,9 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="user")
     auth_source: Mapped[str] = mapped_column(String(20), default="local")
+    access_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
     password_hash: Mapped[str | None] = mapped_column(String(255))
     quota_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ocp_pull_secret: Mapped[str | None] = mapped_column(Text, nullable=True)

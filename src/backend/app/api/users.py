@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
@@ -9,6 +10,7 @@ from app.models.managed_group import ManagedGroupManager, ManagedGroupMember
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
+from app.services.database_access import guard_account_change
 from app.services.group_access import protect_manager_user_deletion
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -43,13 +45,14 @@ def create_user(
             400,
             f"Invalid role: {body.role}. Must be one of: {', '.join(sorted(VALID_ROLES))}",
         )
-    if db.query(User).filter_by(email=email).first():
+    if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(409, "A user with this email already exists")
     user = User(
         email=email,
         display_name=body.display_name or email.split("@")[0],
         role=body.role,
         auth_source="invited",
+        access_enabled=True,
     )
     db.add(user)
     db.commit()
@@ -71,6 +74,13 @@ def update_user(
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+    if user_id == current_user.id and body.role is not None:
+        raise HTTPException(400, "Cannot change your own role")
+    if user_id == current_user.id and body.access_enabled is False:
+        raise HTTPException(400, "Cannot disable your own access")
+    guard_account_change(
+        db, current_user, user, role=body.role, access_enabled=body.access_enabled
+    )
     if body.role is not None:
         if body.role not in VALID_ROLES:
             raise HTTPException(
@@ -82,6 +92,10 @@ def update_user(
         user.role = body.role
     if body.display_name is not None:
         user.display_name = body.display_name
+    if body.access_enabled is not None:
+        if user_id == current_user.id and not body.access_enabled:
+            raise HTTPException(400, "Cannot disable your own access")
+        user.access_enabled = body.access_enabled
     db.commit()
     db.refresh(user)
     return user
@@ -106,6 +120,7 @@ def delete_user(
         raise HTTPException(404, "User not found")
     if user_id == current_user.id:
         raise HTTPException(400, "Cannot delete yourself")
+    guard_account_change(db, current_user, user, access_enabled=False)
     project_count = db.query(Project).filter_by(owner_id=user_id).count()
     if project_count > 0:
         raise HTTPException(

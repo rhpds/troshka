@@ -5,6 +5,7 @@ import time
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import config
@@ -175,41 +176,34 @@ def _get_user_from_jwt(request: Request) -> dict | None:
     return decode_jwt(token)
 
 
-def _upsert_sso_user(
-    email: str, display_name: str | None, db: Session, resolved_role: str = "user"
-):
-    from app.models.user import User
-
-    user = db.query(User).filter_by(email=email).first()
+def _upsert_sso_user(email: str, db: Session):
+    user = find_enabled_user(db, email)
     if user is None:
-        user = User(
-            email=email,
-            display_name=display_name or email.split("@")[0],
-            role=resolved_role,
-            auth_source="sso",
+        raise HTTPException(
+            403, "Access denied. Ask a Troshka administrator for access."
         )
-        db.add(user)
+    if user.auth_source == "invited":
+        user.auth_source = "sso"
         db.commit()
         db.refresh(user)
-        logger.info("Created SSO user %s with role %s", email, user.role)
-    else:
-        changed = False
-        if user.auth_source == "invited":
-            user.auth_source = "sso"
-            changed = True
-        if display_name and not user.display_name:
-            user.display_name = display_name
-            changed = True
-        if user.role != resolved_role:
-            logger.info(
-                "Updating role for %s: %s -> %s", email, user.role, resolved_role
-            )
-            user.role = resolved_role
-            changed = True
-        if changed:
-            db.commit()
-            db.refresh(user)
     return user
+
+
+def find_enabled_user(db: Session, identity: str):
+    """Prefer exact identities; allow a unique case-insensitive invitation match."""
+    from app.models.user import User
+
+    identity = identity.strip()
+    user = db.query(User).filter_by(email=identity).first()
+    if user is None:
+        matches = (
+            db.query(User)
+            .filter(func.lower(User.email) == identity.lower())
+            .limit(2)
+            .all()
+        )
+        user = matches[0] if len(matches) == 1 else None
+    return user if user is not None and user.access_enabled else None
 
 
 def _get_or_create_dev_user(db: Session):
@@ -252,7 +246,10 @@ def _get_user_from_api_key(request: Request, db: Session):
     # Surface the matched key so downstream dependencies (e.g.
     # enforce_project_scope) can enforce project scope + permissions.
     request.state.api_key = api_key
-    return api_key.user
+    user = api_key.user
+    if not user or not user.access_enabled:
+        raise HTTPException(403, "Account access is disabled")
+    return user
 
 
 def _enforce_access(email: str, ocp_username: str | None = None):
@@ -325,8 +322,6 @@ def _enforce_scoped_key_access(request: Request):
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
-    from app.models.user import User
-
     # Default: no API key. _get_user_from_api_key sets this when a trk_ key
     # authenticates, so _enforce_scoped_key_access can distinguish auth paths.
     request.state.api_key = None
@@ -335,21 +330,15 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     if config.auth.oauth_enabled:
         user_info = _get_user_from_oauth_headers(request)
         if user_info:
-            ocp_username = user_info.get("user")
-            _enforce_access(user_info["email"], ocp_username)
-            resolved_role = _resolve_role(user_info["email"], ocp_username)
             user = _upsert_sso_user(
                 user_info["email"],
-                ocp_username,
                 db,
-                resolved_role=resolved_role,
             )
             return user
 
     # Try API key (trk_ prefix)
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
-        _enforce_access(api_key_user.email)
         _enforce_scoped_key_access(request)
         return api_key_user
 
@@ -358,14 +347,17 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     if user_info:
         email = user_info.get("email") or user_info.get("sub")
         if email:
-            _enforce_access(email)
-            user = db.query(User).filter_by(email=email).first()
+            user = find_enabled_user(db, email)
             if user:
                 return user
+            raise HTTPException(403, "Account access is disabled or unavailable")
 
     # Dev mode: auto-authenticate as the default admin user
     if not config.auth.oauth_enabled:
-        return _get_or_create_dev_user(db)
+        user = _get_or_create_dev_user(db)
+        if not user.access_enabled:
+            raise HTTPException(403, "Account access is disabled")
+        return user
 
     raise HTTPException(status_code=401, detail="Not authenticated")
 

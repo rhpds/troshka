@@ -35,21 +35,34 @@ to `latest`.
 
 ### Installation methods
 
+For a fresh SSO deployment, supply the first admin's SSO identity using Helm
+`--set auth.oauthEnabled=true --set-string auth.initialAdmin=person@example.com`
+or Ansible `-e troshka_oauth_enabled=true -e troshka_initial_admin=person@example.com`.
+The migration job seeds that enabled admin account in the database. Once access
+has been initialized, this option cannot restore a deleted admin or override role
+changes; manage all later access through **Admin → Users**. Without an initial
+admin or a legacy policy to import, SSO logins are denied until an admin is seeded.
+Dedicated CI supplies the requester identity to the same bootstrap command during
+its one-time provision. Infrastructure configuration remains in `troshka-config`.
+
+Existing deployments import their old allowlists/group-derived access once, then
+ignore those settings for authorization. The database is authoritative for roles
+and enabled/disabled state. No login-group write permission is required.
+
 Three deployment methods — all produce equivalent results:
 ### Helm Chart (`deploy/helm/`)
 ```bash
 helm install troshka deploy/helm/ -n troshka \
   --set postgres.deploy=true \
   --set auth.oauthEnabled=true \
-  --set auth.allowedGroups="rhpds-admins\,troshka-users" \
-  --set auth.adminGroups="rhpds-admins" \
+  --set-string auth.initialAdmin=person@example.com \
   --set route.host=troshka.apps.cluster.example.com
 ```
 - Full-stack chart: backend, frontend, **troshka-tunnel**, PostgreSQL, S4, OAuth proxy, RBAC, migration Job
 - All components conditional via `values.yaml` toggles (`postgres.deploy`, `s4.deploy`, `auth.oauthEnabled`, `tunnel.enabled`)
 - **troshka-tunnel**: dedicated Deployment/Service/Route/HPA for nested-OCP `troshka-oc` WebSockets (`app.tunnel_main:app`). Route host is `route.host` with `troshka.` → `troshka-tunnel.`. Isolates port-forward load from the API worker — see [`troshka-oc.md`](troshka-oc.md)
 - Global `deploy: false` suppresses all resources (ArgoCD pattern)
-- Migration runs as Helm pre-install/pre-upgrade hook
+- Migration runs as Helm post-install/post-upgrade hook
 - Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)
 - ConfigMap changes trigger pod restart via `checksum/config` annotation
 - infra01's expanded S4 PVC is recorded in the non-secret
@@ -83,7 +96,7 @@ ansible-playbook deploy/ansible/deploy.yaml \
   -e kubeconfig=~/secrets/cluster.kubeconfig \
   -e troshka_deploy_postgres=true \
   -e troshka_oauth_enabled=true \
-  -e troshka_allowed_groups="rhpds-admins,troshka-users"
+  -e troshka_initial_admin=person@example.com
 ```
 - Variables in `deploy/ansible/inventory/group_vars/all.yaml`
 - Task order: namespace → RBAC → secrets → PostgreSQL → S4 → backend → migration → frontend → OAuth

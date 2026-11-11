@@ -25,7 +25,7 @@ auth:
   jwt_expiry_hours: 24
   oauth_enabled: false
   allow_registration: true
-  admin_users: "prutledg@redhat.com"
+  admin_users: ""  # Legacy import only; roles are managed in the database.
   allowed_users: ""
   operator_users: ""
   allowed_groups: ""

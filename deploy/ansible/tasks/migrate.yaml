@@ -17,8 +17,18 @@
             containers:
               - name: migrate
                 image: "{{ troshka_backend_image }}"
-                command: ["python3", "-m", "alembic", "upgrade", "head"]
+                command:
+                  - /bin/sh
+                  - -ec
+                  - |
+                    if [ -n "$TROSHKA_INITIAL_ADMIN" ]; then
+                      python3 -m app.services.database_access --prepare-db --admin "$TROSHKA_INITIAL_ADMIN"
+                    else
+                      python3 -m app.services.database_access --prepare-db
+                    fi
                 env:
+                  - name: TROSHKA_INITIAL_ADMIN
+                    value: "{{ troshka_initial_admin | default('') }}"
                   - name: TROSHKA_DATABASE__URL
                     valueFrom:
                       secretKeyRef:

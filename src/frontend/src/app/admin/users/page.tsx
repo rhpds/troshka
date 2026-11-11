@@ -20,6 +20,7 @@ interface UserInfo {
   role: string;
   auth_source: string;
   created_at: string;
+  access_enabled: boolean;
 }
 
 const inputStyle = {
@@ -50,9 +51,9 @@ export default function AdminUsersPage() {
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState("");
 
   const [newEmail, setNewEmail] = useState("");
-  const [newDisplayName, setNewDisplayName] = useState("");
   const [newRole, setNewRole] = useState("user");
 
   const [editId, setEditId] = useState<string | null>(null);
@@ -60,9 +61,12 @@ export default function AdminUsersPage() {
 
   const loadUsers = () => {
     fetch("/api/v1/users/")
-      .then((r) => (r.ok ? r.json() : []))
+      .then((r) => { if (!r.ok) throw new Error("Failed to load users"); return r.json(); })
       .then((data) => setUsers(Array.isArray(data) ? data : []))
-      .catch(() => setError("Failed to load users"));
+      .catch(() => {
+        setError("Failed to load users");
+        setUsers([]);
+      });
   };
 
   useEffect(() => {
@@ -85,20 +89,20 @@ export default function AdminUsersPage() {
     }
     setCreating(true);
     setError("");
+    setNotice("");
     try {
       const resp = await fetch("/api/v1/users/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: newEmail,
-          display_name: newDisplayName || undefined,
           role: newRole,
         }),
       });
       if (resp.ok) {
+        setNotice("Account created with access enabled.");
         setShowCreate(false);
         setNewEmail("");
-        setNewDisplayName("");
         setNewRole("user");
         loadUsers();
       } else {
@@ -129,6 +133,19 @@ export default function AdminUsersPage() {
     } catch {
       setError("Failed to connect");
     }
+  };
+
+  const handleAccess = async (user: UserInfo) => {
+    if (user.access_enabled && !(await appConfirm({ title: "Disable access", message: `Disable Troshka access for ${user.email}? Their projects and billing records will be preserved.`, confirmLabel: "Disable", variant: "danger" }))) return;
+    setError("");
+    try {
+      const response = await fetch(`/api/v1/users/${user.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_enabled: !user.access_enabled }) });
+      if (!response.ok) {
+        const body = await response.json();
+        throw new Error(body.detail || "Access update failed");
+      }
+      loadUsers();
+    } catch (e) { setError(e instanceof Error ? e.message : "Access update failed"); }
   };
 
   const handleDelete = async (id: string, email: string) => {
@@ -179,6 +196,8 @@ export default function AdminUsersPage() {
             style={{ marginBottom: 16 }}
           />
         )}
+        {notice && <Alert variant="info" title={notice} isInline style={{ marginBottom: 16 }} />}
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>Manage Troshka access and roles here. SSO verifies identity; enabled accounts can sign in.</p>
 
         {showCreate && (
           <Card style={{ marginBottom: 16 }}>
@@ -198,23 +217,11 @@ export default function AdminUsersPage() {
                     Email
                   </>}>
                   <input
+                    type="email"
                     style={inputStyle}
                     value={newEmail}
                     onChange={(e) => setNewEmail(e.target.value)}
                     placeholder="user@redhat.com"
-                  /></LabeledField>
-                </div>
-                <div>
-                  <LabeledField
-                    style={{ fontSize: 12, display: "block", marginBottom: 4 }}
-                   label={<>
-                    Display Name (optional)
-                  </>}>
-                  <input
-                    style={inputStyle}
-                    value={newDisplayName}
-                    onChange={(e) => setNewDisplayName(e.target.value)}
-                    placeholder="Jane Doe"
                   /></LabeledField>
                 </div>
                 <div>
@@ -283,7 +290,6 @@ export default function AdminUsersPage() {
                   <div
                     style={{ fontSize: 12, opacity: 0.7, marginTop: 2 }}
                   >
-                    {u.display_name && `${u.display_name} · `}
                     {u.auth_source}
                     {" · joined "}
                     {new Date(u.created_at).toLocaleDateString()}
@@ -328,8 +334,10 @@ export default function AdminUsersPage() {
                       <Label color={roleColors[u.role] || "grey"}>
                         {roleLabels[u.role] || u.role}
                       </Label>
+                      {!u.access_enabled && <Label color="red">Access disabled</Label>}
                       {u.id !== currentUserId && (
                         <>
+                          <Button variant="secondary" size="sm" onClick={() => void handleAccess(u)}>{u.access_enabled ? "Disable access" : "Enable access"}</Button>
                           <Button
                             variant="secondary"
                             size="sm"

@@ -54,22 +54,24 @@ def _authenticate_ws_api_key(token: str, db) -> User | None:
     if api_key.expires_at and api_key.expires_at < datetime.datetime.now(datetime.UTC):
         return None
     api_key.last_used_at = datetime.datetime.now(datetime.UTC)
-    return api_key.user
+    user = api_key.user
+    return user if user and user.access_enabled else None
 
 
 def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
     if not config.auth.oauth_enabled and not token:
         from app.core.auth import _get_or_create_dev_user
 
-        return _get_or_create_dev_user(db)
+        user = _get_or_create_dev_user(db)
+        return user if user.access_enabled else None
 
     # SSO mode: check X-Forwarded-Email header (from oauth-proxy)
     if headers:
         email = headers.get("x-forwarded-email")
         if email:
-            from app.core.auth import _upsert_sso_user
+            from app.core.auth import find_enabled_user
 
-            return _upsert_sso_user(email, headers.get("x-forwarded-user"), db)
+            return find_enabled_user(db, email)
 
     if not token:
         return None
@@ -86,7 +88,9 @@ def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
     email = payload.get("email") or payload.get("sub")
     if not email:
         return None
-    return db.query(User).filter_by(email=email).first()
+    from app.core.auth import find_enabled_user
+
+    return find_enabled_user(db, email)
 
 
 def _build_snapshot(project: Project, db) -> dict:

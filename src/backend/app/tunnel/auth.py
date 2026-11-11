@@ -120,4 +120,5 @@ def _resolve_user(token: str | None, db) -> User | None:
     if api_key.expires_at and api_key.expires_at < datetime.datetime.now(datetime.UTC):
         return None
     api_key.last_used_at = datetime.datetime.now(datetime.UTC)
-    return api_key.user
+    user = api_key.user
+    return user if user and user.access_enabled else None

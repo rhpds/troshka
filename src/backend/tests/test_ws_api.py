@@ -109,10 +109,12 @@ class TestAuthenticateWs:
         db.close()
 
     def test_sso_mode_with_forwarded_email(self):
-        """SSO mode with x-forwarded-email header upserts and returns user."""
+        """SSO mode matches an explicitly admitted database account."""
         from app.api.ws import _authenticate_ws
 
         db = TestSession()
+        db.add(User(email="sso-ws-test@example.com", role="user", access_enabled=True))
+        db.commit()
         with patch("app.api.ws.config") as mock_config:
             mock_config.auth.oauth_enabled = True
             headers = {

@@ -81,6 +81,8 @@ ingress:
 
 auth:
   oauthEnabled: false
+  # First-install bootstrap only. All later access and role changes use the DB.
+  initialAdmin: ""
   # Edge basic auth (nginx Ingress). Used on public EKS quickstarts so the UI
   # is not open to the internet; app still runs in oauth-off / auto-admin mode
   # behind the edge password.
@@ -105,6 +107,7 @@ auth:
       - "*"
     # Extra skip-auth path regexes (in addition to health/ws defaults).
     skipAuthRegexes: []
+  # Legacy settings are imported once when upgrading an existing deployment.
   adminUsers: ""
   operatorUsers: ""
   allowedUsers: ""

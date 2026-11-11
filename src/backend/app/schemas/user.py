@@ -13,6 +13,7 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     display_name: str | None = None
     role: str | None = None
+    access_enabled: bool | None = None
     quota_overrides: dict | None = None
 
 
@@ -23,5 +24,6 @@ class UserResponse(BaseModel):
     role: str
     auth_source: str
     created_at: datetime.datetime
+    access_enabled: bool = True
 
     model_config = {"from_attributes": True}

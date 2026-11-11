@@ -397,7 +397,7 @@ if [[ "${USE_COGNITO}" == "true" ]]; then
     "--set-string" "auth.oauth2Proxy.clientSecret=${COGNITO_CLIENT_SECRET}"
     "--set-string" "auth.oauth2Proxy.oidcIssuerUrl=${COGNITO_ISSUER}"
     "--set-string" "auth.oauth2Proxy.redirectUrl=https://${INGRESS_HOST}/oauth2/callback"
-    "--set-string" "auth.adminUsers=${ADMIN_EMAIL}"
+    "--set-string" "auth.initialAdmin=${ADMIN_EMAIL}"
   )
 else
   BASIC_PASS="$(random_password)"

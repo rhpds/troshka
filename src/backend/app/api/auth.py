@@ -28,10 +28,8 @@ def _get_or_create_dev_user(db: Session, role: str = "admin") -> User:
         db.add(user)
         db.commit()
         db.refresh(user)
-    elif user.role != role:
-        user.role = role
-        db.commit()
-        db.refresh(user)
+    if not user.access_enabled:
+        raise HTTPException(403, "Account access is disabled")
 
     return user
 
@@ -85,6 +83,8 @@ def dev_token_with_role(role: str, db: DbSession):
         )
 
     user = _get_or_create_dev_user(db, role=role)
+    if user.role != role:
+        raise HTTPException(403, "Manage roles through Admin > Users")
     token = create_jwt(user_id=user.id, email=user.email, role=user.role)
     return LoginResponse(
         token=token,

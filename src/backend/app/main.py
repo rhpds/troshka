@@ -541,10 +541,15 @@ async def lifespan(app):
     # can't block the port bind (see _run_deferred_startup).
     _start_deferred_startup()
 
+    from app.services.database_access import start_access_bootstrap
+
+    access_bootstrap_stop = start_access_bootstrap()
+
     audit("lifespan startup complete")
     yield
 
     audit("lifespan shutdown begin")
+    access_bootstrap_stop.set()
     # Shutdown
     from app.core.redis import close_redis
 
