@@ -198,9 +198,11 @@ class NativeExecutionPlan:
             NativePoolDemand(
                 key,
                 tuple(item.resource_id for item in rows),
-                None
-                if any(item.initial_storage_bytes is None for item in rows)
-                else sum(item.initial_storage_bytes for item in rows),
+                (
+                    None
+                    if any(item.initial_storage_bytes is None for item in rows)
+                    else sum(item.initial_storage_bytes for item in rows)
+                ),
             )
             for key, rows in groups.items()
         )
@@ -256,13 +258,39 @@ def resolve_pool_alias(storage_class, aliases):
     return next(iter(keys))
 
 
+def _controller_count(spec, field, default):
+    count = spec.get(field, default)
+    if type(count) is not int or not 0 <= count <= MAX_QUANTITY:
+        raise AccountingUnavailable("Invalid native controller workload count")
+    return count
+
+
+def _pod_concurrency(body):
+    """Known steady concurrency only; rollout/replacement overlap is unresolved."""
+    kind, spec = body["kind"], body["spec"]
+    if kind == "Pod":
+        return 1, []
+    blockers = ["controller_transient_concurrency_unresolved"]
+    if kind == "Deployment":
+        return _controller_count(spec, "replicas", 1), blockers
+    if kind != "Job":
+        raise AccountingUnavailable("Unsupported native workload controller")
+    count = _controller_count(spec, "parallelism", 1)
+    if "completions" in spec:
+        count = min(count, _controller_count(spec, "completions", 1))
+    suspended = spec.get("suspend", False)
+    if type(suspended) is not bool:
+        raise AccountingUnavailable("Invalid native Job suspend state")
+    return (0 if suspended else count), blockers
+
+
 def _pod_demand(body):
+    """Per-Pod caps at known concurrency are lower bounds for blocked controllers."""
     spec = body["spec"]
-    replicas = spec.get("replicas", 1)
+    replicas, blockers = _pod_concurrency(body)
     pod = spec if body["kind"] == "Pod" else spec["template"]["spec"]
     regular = [_container_envelope(item) for item in pod.get("containers", [])]
     init = [_container_envelope(item) for item in pod.get("initContainers", [])]
-    blockers = []
     quantities = []
     for dimension in (0, 1):
         peak = _pod_dimension(regular, init, dimension, replicas)
@@ -653,6 +681,15 @@ def build_native_plan(db, project, host) -> NativeExecutionPlan:
     }
     resources = _render_networks(body, topology, helpers)
     vms, blocked = _render_vms(body, topology, helpers)
+    # No topology/provider combination establishes tested execution capability
+    # at this milestone, even an empty retained topology with bounded VNC caps.
+    blocked.append(
+        _blocked(
+            f"Runtime:{namespace}/execution-capability",
+            "helper",
+            "native_execution_capability_profile_unresolved",
+        )
+    )
     blocked.extend(provider_blocked)
     resources.extend(vms)
     resources.extend(_render_containers(body, topology, helpers))

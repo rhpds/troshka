@@ -426,3 +426,110 @@ def test_pool_initialization_aggregate_overflow_is_unavailable():
     plan = NativeExecutionPlan("p", "h", "g", "d", "t", "[]", demands)
     with pytest.raises(AccountingUnavailable):
         _ = plan.pool_initialization_demands
+
+
+def test_valid_provider_empty_retained_plan_is_universally_blocked(native_target):
+    from app.services.quota_native import build_native_plan
+    from app.services.quota_resources import native_resources
+
+    project, host = native_target
+    project.deployed_topology = {}
+    db = Mock()
+    db.get.return_value = SimpleNamespace(get_credentials=lambda: {})
+    plan = build_native_plan(db, project, host)
+    assert not any(
+        "provider_namespace_configuration_unresolved" in reason
+        for reason in plan.unsupported_reasons
+    )
+    assert any(
+        "native_execution_capability_profile_unresolved" in reason
+        for reason in plan.unsupported_reasons
+    )
+    assert not plan.complete
+    with pytest.raises(AccountingUnavailable):
+        native_resources(plan)
+
+
+def _bounded_controller(kind, **settings):
+    resources = {"cpu": "1", "memory": "1Gi"}
+    return {
+        "kind": kind,
+        "metadata": {"namespace": "n", "name": "workload"},
+        "spec": {
+            **settings,
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"resources": {"limits": resources, "requests": resources}}
+                    ]
+                }
+            },
+        },
+    }
+
+
+def test_deployment_surge_is_blocked_and_replicas_are_only_known_lower_bound():
+    from app.services.quota_native import demand_for_manifest
+
+    deployment = _bounded_controller(
+        "Deployment",
+        replicas=2,
+        strategy={"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 1}},
+    )
+    demand = demand_for_manifest(deployment)
+    assert demand.cpu_millicores == demand.requested_cpu_millicores == 2000
+    assert demand.ram_bytes == demand.requested_ram_bytes == 2 * 2**30
+    assert "controller_transient_concurrency_unresolved" in demand.blockers
+
+
+@pytest.mark.parametrize(
+    "settings,known_count",
+    [
+        ({"parallelism": 3}, 3),
+        ({"parallelism": 3, "completions": 1}, 1),
+        ({"parallelism": 3, "suspend": True}, 0),
+    ],
+)
+def test_job_parallelism_is_known_lower_bound_with_controller_blocker(
+    settings, known_count
+):
+    from app.services.quota_native import demand_for_manifest
+
+    demand = demand_for_manifest(_bounded_controller("Job", **settings))
+    assert (
+        demand.cpu_millicores == demand.requested_cpu_millicores == known_count * 1000
+    )
+    assert demand.ram_bytes == demand.requested_ram_bytes == known_count * 2**30
+    assert "controller_transient_concurrency_unresolved" in demand.blockers
+
+
+@pytest.mark.parametrize(
+    "kind,field",
+    [("Deployment", "replicas"), ("Job", "parallelism"), ("Job", "completions")],
+)
+@pytest.mark.parametrize("invalid", [-1, True, "2", 1.5, None, 2**63])
+def test_invalid_controller_counts_fail_closed(kind, field, invalid):
+    from app.services.quota_native import demand_for_manifest
+
+    manifest = _bounded_controller(kind, **{field: invalid})
+    manifest["spec"]["template"]["spec"]["containers"][0]["resources"] = {
+        "limits": {"cpu": "1m", "memory": "1"},
+    }
+    with pytest.raises(AccountingUnavailable):
+        demand_for_manifest(manifest)
+
+
+def test_actual_vnc_deployment_retains_controller_concurrency_blocker(native_target):
+    from app.services.quota_native import build_native_plan
+
+    db = Mock()
+    db.get.return_value = SimpleNamespace(get_credentials=lambda: {})
+    plan = build_native_plan(db, *native_target)
+    vnc = next(
+        item
+        for item in plan.demands
+        if "Deployment:" in item.resource_id and "/vnc-proxy-" in item.resource_id
+    )
+    assert vnc.cpu_millicores == 500
+    assert vnc.ram_bytes == 256 * 2**20
+    assert "controller_transient_concurrency_unresolved" in vnc.blockers
