@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,7 @@ from app.models.project import Project
 from app.models.provider import Provider
 from app.models.quota import QuotaCharge, QuotaReadiness
 from app.models.user import User
+from app.services import group_metering
 from app.services import quota_accounting as accounting
 from app.services.group_metering import group_report, scoped_members
 from app.services.organization_service import transfer_user
@@ -31,6 +33,100 @@ NOW = START + timedelta(hours=2)
 END = datetime(2026, 12, 1, tzinfo=UTC)
 actors = group_actors
 postgres = postgres_fixture
+
+
+class CountedCharges(list):
+    """Count actual production ledger visits, independently of elapsed time."""
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.visits = 0
+
+    def __iter__(self):
+        for value in super().__iter__():
+            self.visits += 1
+            yield value
+
+
+def disjoint_charge(index):
+    return SimpleNamespace(
+        id=str(index),
+        project_id="project",
+        source="interval",
+        source_id="source",
+        organization_id="group",
+        start_at=START + timedelta(minutes=index),
+        end_at=START + timedelta(minutes=index + 1),
+    )
+
+
+def test_lifetime_evidence_without_summaries_has_bounded_charge_visits():
+    charges = CountedCharges(disjoint_charge(index) for index in range(1000))
+    rows = group_metering._evidence([], charges, "group", NOW)
+    assert len(rows) == 1000
+    assert {row.id for row in rows} == {str(index) for index in range(1000)}
+    assert charges.visits <= 8000
+
+
+@pytest.mark.parametrize("kind", ["resource", "charge"])
+def test_disjoint_lifetime_intervals_have_bounded_time_boundary_visits(
+    monkeypatch, kind
+):
+    calls = 0
+    real_utc = group_metering.utc
+
+    def counted_utc(value):
+        nonlocal calls
+        calls += 1
+        return real_utc(value)
+
+    monkeypatch.setattr(group_metering, "utc", counted_utc)
+    charges = [disjoint_charge(index) for index in range(1000)]
+    if kind == "charge":
+        invalid = group_metering._charge_conflicts(charges)
+    else:
+        sources = [
+            SimpleNamespace(id=row.id, started_at=row.start_at, ended_at=row.end_at)
+            for row in charges
+        ]
+        invalid = group_metering._resource_overlaps(sources, NOW)
+    assert invalid == set()
+    assert calls <= 6000
+
+
+@pytest.mark.parametrize("kind", ["resource", "charge"])
+def test_overlap_sweeps_mark_every_nested_and_chained_conflict(kind):
+    spans = [
+        ("outer", 0, 10),
+        ("nested", 1, 2),
+        ("nested_peer", 2, 3),
+        ("bridge", 9, 12),
+        ("chain", 11, 13),
+        ("adjacent", 13, 14),
+        ("far", 20, 21),
+    ]
+    charges = [
+        SimpleNamespace(
+            id=identity,
+            project_id="project",
+            source="interval",
+            source_id="source",
+            start_at=START + timedelta(hours=start),
+            end_at=START + timedelta(hours=end),
+        )
+        for identity, start, end in reversed(spans)
+    ]
+    if kind == "charge":
+        invalid = group_metering._charge_conflicts(charges)
+    else:
+        invalid = group_metering._resource_overlaps(
+            [
+                SimpleNamespace(id=row.id, started_at=row.start_at, ended_at=row.end_at)
+                for row in charges
+            ],
+            START + timedelta(hours=22),
+        )
+    assert invalid == {"outer", "nested", "nested_peer", "bridge", "chain"}
 
 
 def source(db, member, *, rate="0.5", kind="vcpu", start=START, end=None):

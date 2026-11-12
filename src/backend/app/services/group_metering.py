@@ -5,6 +5,7 @@ therefore expose known subtotals with null authoritative totals until a reviewed
 monetary coverage contract exists. Owner documents never supply employer money.
 """
 
+from bisect import bisect_left
 from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -100,38 +101,59 @@ def _valid_source(row):
     return all(value.is_finite() and value >= 0 for value in values)
 
 
-def _overlap(start, end, other_start, other_end):
-    return utc(start) < utc(other_end) and utc(other_start) < utc(end)
-
-
-def _resource_overlaps(rows, now):
+def _overlapping_ids(spans):
+    """A furthest-ending witness marks every nested/chain conflict once."""
     invalid = set()
-    rows.sort(key=lambda row: utc(row.started_at))
-    for i, row in enumerate(rows):
-        for previous in rows[:i]:
-            if _overlap(
-                row.started_at,
-                row.ended_at or now,
-                previous.started_at,
-                previous.ended_at or now,
-            ):
-                invalid.update((row.id, previous.id))
+    furthest = None
+    for start, end, identity in sorted(spans):
+        if furthest is not None and start < furthest[1]:
+            invalid.update((furthest[2], identity))
+        if furthest is None or end > furthest[1]:
+            furthest = (start, end, identity)
     return invalid
 
 
-def _ambiguous_sources(sources, charges, now):
+def _resource_overlaps(rows, now):
+    return _overlapping_ids(
+        (utc(row.started_at), utc(row.ended_at or now), row.id) for row in rows
+    )
+
+
+def _summary_index(charges):
+    """Per-project sorted starts and prefix maximum ends permit binary search."""
+    projects = defaultdict(list)
+    for charge in charges:
+        if charge.source != "interval":
+            projects[charge.project_id].append(
+                (utc(charge.start_at), utc(charge.end_at))
+            )
+    index = {}
+    for project_id, spans in projects.items():
+        starts, ends = [], []
+        for start, end in sorted(spans):
+            starts.append(start)
+            ends.append(max(end, ends[-1]) if ends else end)
+        index[project_id] = (starts, ends)
+    return index
+
+
+def _summary_overlaps(project_id, start, end, summaries):
+    bounds = summaries.get(project_id)
+    if bounds is None:
+        return False
+    starts, ends = bounds
+    position = bisect_left(starts, utc(end)) - 1
+    return position >= 0 and ends[position] > utc(start)
+
+
+def _ambiguous_sources(sources, summaries, now):
     """Reject overlapping detailed resources and materialized summary coverage."""
     invalid = set()
     resources = defaultdict(list)
     for row in sources:
         resources[(row.project_id, row.kind, row.resource_id)].append(row)
-        if any(
-            charge.source != "interval"
-            and charge.project_id == row.project_id
-            and _overlap(
-                row.started_at, row.ended_at or now, charge.start_at, charge.end_at
-            )
-            for charge in charges
+        if _summary_overlaps(
+            row.project_id, row.started_at, row.ended_at or now, summaries
         ):
             invalid.add(row.id)
     for rows in resources.values():
@@ -189,7 +211,8 @@ def _tails(row, now):
 
 
 def _evidence(sources, charges, group_id, now):
-    invalid = _ambiguous_sources(sources, charges, now)
+    summaries = _summary_index(charges)
+    invalid = _ambiguous_sources(sources, summaries, now)
     conflicts = _charge_conflicts(charges)
     invalid.update(row.source_id for row in charges if row.id in conflicts)
     rows = [
@@ -198,7 +221,7 @@ def _evidence(sources, charges, group_id, now):
         if row.organization_id == group_id
         and row.id not in conflicts
         and not (row.source == "interval" and row.source_id in invalid)
-        and not _covered_by_summary(row, charges)
+        and not _covered_by_summary(row, summaries)
     ]
     segments = defaultdict(list)
     for charge in charges:
@@ -225,19 +248,17 @@ def _charge_conflicts(charges):
         )
         by_source[key].append(row)
     for rows in by_source.values():
-        for i, row in enumerate(rows):
-            for other in rows[:i]:
-                if _overlap(row.start_at, row.end_at, other.start_at, other.end_at):
-                    invalid.update((row.id, other.id))
+        invalid.update(
+            _overlapping_ids(
+                (utc(row.start_at), utc(row.end_at), row.id) for row in rows
+            )
+        )
     return invalid
 
 
-def _covered_by_summary(row, charges):
-    return row.source == "interval" and any(
-        other.source != "interval"
-        and other.project_id == row.project_id
-        and _overlap(row.start_at, row.end_at, other.start_at, other.end_at)
-        for other in charges
+def _covered_by_summary(row, summaries):
+    return row.source == "interval" and _summary_overlaps(
+        row.project_id, row.start_at, row.end_at, summaries
     )
 
 
