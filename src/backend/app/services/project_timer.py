@@ -306,6 +306,8 @@ def _delete_project(s, project):
         except Exception:
             logger.warning("Failed to release EIP %s on timer delete", eip.public_ip)
 
+    # EIP release commits this session; reacquire identities after its last commit.
+    retain_attributed_history(s, [project.id], datetime.datetime.now(datetime.UTC))
     s.delete(project)
     s.commit()
     logger.info("Auto-delete complete for project %s", project_id[:8])

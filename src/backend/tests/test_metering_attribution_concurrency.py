@@ -9,14 +9,17 @@ import pytest
 from sqlalchemy import event
 
 from app.models.host import Host
+from app.models.managed_group import ManagedGroup
 from app.models.metering import MeteringInterval, MonthlyStatement, ProjectInvoice
 from app.models.project import Project
 from app.models.provider import Provider
 from app.models.quota import QuotaCharge
+from app.models.user import User
 from app.services import metering_service as metering
 from app.services import quota_accounting as accounting
 from app.services.organization_service import _lock_transfer
 from app.services.quota_locks import ScopeChanged
+from tests.test_metering_attribution import assert_eip_commit_retains_transfer
 from tests.test_quota_concurrency import postgres as postgres_fixture
 
 postgres = postgres_fixture
@@ -25,6 +28,35 @@ pytestmark = pytest.mark.skipif(
     reason="disposable PostgreSQL URL not configured",
 )
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("deletion", ["timer", "api"])
+@pytest.mark.parametrize("associated", [False, True])
+def test_eip_cleanup_commit_retains_real_postgresql_transfer(
+    postgres, monkeypatch, deletion, associated
+):
+    sessions, (projects, users, original, destination), _engine = postgres
+    monkeypatch.setattr(metering, "quotas_enabled", lambda: False)
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: False)
+    monkeypatch.setattr(metering, "metering_enabled", lambda: True)
+    snap = {
+        "provider_type": "aws",
+        "project_state": "active",
+        "host_rates": {"vcpu_hour": 3, "ram_gib_hour": 0},
+        "vms": [{"id": "vm", "vcpus": 2, "ram_gib": 0, "running": True}],
+        "disks": [],
+        "eips": [],
+        "ceph": [],
+    }
+    with sessions() as db:
+        sample = (
+            db,
+            db.get(Project, projects[0]),
+            db.get(User, users[0]),
+            [db.get(ManagedGroup, original), db.get(ManagedGroup, destination)],
+            snap,
+        )
+        assert_eip_commit_retains_transfer(sample, monkeypatch, deletion, associated)
 
 
 @pytest.mark.parametrize(

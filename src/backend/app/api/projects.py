@@ -7223,6 +7223,10 @@ def delete_project(
             quota_operations.unavailable(
                 "Metadata deletion requires confirmed resource absence"
             )
+    from app.services.quota_accounting import retain_attributed_history
+
+    # EIP cleanup commits the shared session before this immediate-delete branch.
+    retain_attributed_history(db, [project.id], datetime.datetime.now(datetime.UTC))
     db.delete(project)
     db.commit()
     notify_project(project_id, {"type": "project-deleted"})
