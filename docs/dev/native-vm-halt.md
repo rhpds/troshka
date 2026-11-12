@@ -1,5 +1,8 @@
 # Native VM and helper controller maintenance requests
 
+Scoped development validation is recorded in the
+[2026-11-12 controller acceptance report](native-controller-stop-acceptance-2026-11-12.md).
+
 This standalone command sends an exact desired-state halt request for explicitly
 selected existing native VMs or supported helper controllers. It defaults to Kubernetes server dry-run. It is not
 a project stop command, a controller fence, or proof that compute stopped.
