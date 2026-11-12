@@ -2,9 +2,12 @@
 
 import hashlib
 import json
+import os
+import stat
 import time
 from datetime import UTC, datetime
 
+import yaml
 from kubernetes.utils.quantity import parse_quantity
 
 from app.schemas.kubevirt_storage import (
@@ -320,6 +323,40 @@ def discover_inventory(kube_reader, retained_bindings, roots):
     return result.model_copy(update={"inventory_digest": inventory_digest(result)})
 
 
+def _static_kubeconfig(data):
+    if not isinstance(data, dict) or not isinstance(data.get("users"), list):
+        raise ValueError("static operator kubeconfig required")
+    for entry in data["users"]:
+        user = entry.get("user") if isinstance(entry, dict) else None
+        if not isinstance(user, dict) or {"exec", "auth-provider"}.intersection(user):
+            raise ValueError("static operator kubeconfig required")
+    return data
+
+
+def read_static_kubeconfig(path):
+    """Reject executable/refreshing auth before any Kubernetes loader or process.
+
+    The operator must keep this private file unchanged for subsequent oc reads.
+    The Python loader receives these same parsed bytes rather than reopening it.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise ValueError("operator-owned regular kubeconfig required")
+        raw = stream.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        raise ValueError("kubeconfig exceeds bound")
+    try:
+        return _static_kubeconfig(yaml.safe_load(raw))
+    except yaml.YAMLError:
+        raise ValueError("invalid static operator kubeconfig") from None
+
+
 class KubernetesReader:
     """Standalone Kubernetes get/list adapter; never imported by application routes."""
 
@@ -333,13 +370,21 @@ class KubernetesReader:
         scan_deadline=None,
         csi_requests=None,
         max_objects=10000,
+        kubeconfig_data=None,
     ):
-        from kubernetes import client, config
+        from kubernetes import client
+        from kubernetes.config.kube_config import KubeConfigLoader
 
         configuration = client.Configuration()
-        config.load_kube_config(
-            config_file=kubeconfig, client_configuration=configuration
+        data = (
+            read_static_kubeconfig(kubeconfig)
+            if kubeconfig_data is None
+            else _static_kubeconfig(kubeconfig_data)
         )
+        KubeConfigLoader(
+            config_dict=data,
+            config_base_path=os.path.dirname(os.path.abspath(kubeconfig)),
+        ).load_and_set(configuration)
         self.api = client.ApiClient(configuration)
         # Configure urllib3's supported pool option before the first request.
         # Kubernetes' generated Configuration incorrectly infers retries as None.

@@ -74,7 +74,16 @@ If the workstation has no local Ceph identity/binaries, toolbox mode reuses an
 **existing** `rook-ceph-tools-*` pod in `openshift-storage`. The operator must
 already hold access to GET the pinned pod and `kube-system` namespace and exec
 into that pod with local `oc`. Use an explicit absolute kubeconfig path; there is
-no default kubeconfig or in-cluster fallback. Pin the cluster's `kube-system` UID,
+no default kubeconfig or in-cluster fallback. Both verification and collection
+require a bounded operator-owned regular kubeconfig file without symlinks or
+group/other write permissions. Only static authentication is supported (for
+example, an existing token or client certificate). Any `exec` or `auth-provider`
+entry, including in an unused user, is rejected before loading authentication,
+creating API clients or running commands. Existing auth helpers and refreshing
+provider credentials are unsupported; the workflow does not run a helper or
+create replacement credentials. Python loads the same parsed configuration that
+was validated. `oc` reads the explicit validated path, so the trusted operator
+must keep that file unchanged throughout verification/collection. Pin the cluster's `kube-system` UID,
 pod UID, namespace, container, FSID and pool name allowlist. All toolbox fields
 shown below are required, including namespace and container. The FSID must match
 the outer backend FSID, and the allowlist must exactly match configured pool

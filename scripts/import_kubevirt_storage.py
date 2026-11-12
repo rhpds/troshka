@@ -30,7 +30,7 @@ from app.services.kubevirt_storage_enrollment import (
     digest, enroll_native_roots, prepare_native_enrollment, verify_native_enrollment,
 )
 from app.services.kubevirt_storage_reports import import_report
-from app.services.kubevirt_storage_inventory import KubernetesReader
+from app.services.kubevirt_storage_inventory import KubernetesReader, read_static_kubeconfig
 from app.services.kubevirt_storage_transport import (
     CapabilityProfile, DirectTransport, PoolConfig, RbdReader, ToolboxConfig, ToolboxTransport,
 )
@@ -88,11 +88,11 @@ class ToolboxBackendConfig(BackendConfig):
 class ToolboxIdentityReader(KubernetesReader):
     """Reuse collector identity GETs with verification's budget and cleanup."""
 
-    def __init__(self, kubeconfig, limits, deadline):
+    def __init__(self, kubeconfig, limits, deadline, kubeconfig_data):
         self.command_timeout_seconds = limits.command_timeout_seconds
         try:
             super().__init__(kubeconfig, None, collector_id="enrollment-identity-only",
-                             cache_roots=[], scan_deadline=deadline)
+                             cache_roots=[], scan_deadline=deadline, kubeconfig_data=kubeconfig_data)
         except Exception:
             if getattr(self, "api", None) is not None:
                 self.api.close()
@@ -161,6 +161,8 @@ def _verify(db, args):
     limits = CollectionLimits(command_timeout_seconds=args.command_timeout_seconds,
                               scan_timeout_seconds=args.verification_timeout_seconds)
     deadline = time.monotonic() + limits.scan_timeout_seconds
+    kubeconfigs = {str(config.ceph_fsid): read_static_kubeconfig(config.kubeconfig)
+                   for config in backends if isinstance(config, ToolboxBackendConfig)}
     with ExitStack() as cleanup:
         readers = {}
         for identity in {str(p.provider_id) for p in request.projects}:
@@ -170,7 +172,7 @@ def _verify(db, args):
             reader = ProviderReader(provider, limits, deadline)
             cleanup.callback(reader.close)
             readers[identity] = reader
-        backend_readers = {str(config.ceph_fsid): _backend_reader(config, limits, deadline, cleanup)
+        backend_readers = {str(config.ceph_fsid): _backend_reader(config, limits, deadline, cleanup, kubeconfigs.get(str(config.ceph_fsid)))
                            for config in backends}
         manifest = verify_native_enrollment(request, readers, backend_readers, pins=pins)
         if time.monotonic() >= deadline:
@@ -187,9 +189,9 @@ def _check_backend_coverage(backends, pins):
         raise ValueError("backend configuration must exactly cover pinned pools")
 
 
-def _backend_reader(config, limits, deadline, cleanup):
+def _backend_reader(config, limits, deadline, cleanup, kubeconfig_data):
     if isinstance(config, ToolboxBackendConfig):
-        kube = ToolboxIdentityReader(config.kubeconfig, limits, deadline)
+        kube = ToolboxIdentityReader(config.kubeconfig, limits, deadline, kubeconfig_data)
         cleanup.callback(kube.api.close)
         transport = ToolboxTransport(limits, config.toolbox, kube, config.kubeconfig,
                                      scan_deadline=deadline)

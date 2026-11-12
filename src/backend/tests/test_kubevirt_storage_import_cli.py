@@ -139,11 +139,12 @@ def verification_case(cli, native_case, monkeypatch, tmp_path):
     """Real CLI/enrollment/transports; replace only Kubernetes and command I/O."""
     from types import SimpleNamespace
 
-    from kubernetes import client, config
+    from kubernetes import client
 
     from app.models.provider import Provider
     from app.schemas.kubevirt_storage import ReadResult
     from app.services.kubevirt_storage_transport import BoundedProcess
+    from tests.test_kubevirt_storage_inventory import static_kubeconfig
 
     q = native_case
     state = SimpleNamespace(
@@ -153,7 +154,7 @@ def verification_case(cli, native_case, monkeypatch, tmp_path):
         command_status="complete",
         clients=[],
         commands=[],
-        kubeconfigs=[],
+        configurations=[],
         timeouts=[],
         advance=None,
         fail_client=None,
@@ -167,6 +168,7 @@ def verification_case(cli, native_case, monkeypatch, tmp_path):
 
     class Api:
         def __init__(self, configuration):
+            state.configurations.append(configuration)
             self.rest_client = SimpleNamespace(
                 pool_manager=SimpleNamespace(connection_pool_kw={})
             )
@@ -240,18 +242,16 @@ def verification_case(cli, native_case, monkeypatch, tmp_path):
     monkeypatch.setattr(client, "ApiClient", Api)
     monkeypatch.setattr(client, "CoreV1Api", Core)
     monkeypatch.setattr(client, "CustomObjectsApi", Custom)
-    monkeypatch.setattr(
-        config, "load_kube_config", lambda **kwargs: state.kubeconfigs.append(kwargs)
-    )
     monkeypatch.setattr(BoundedProcess, "run", run)
     monkeypatch.setenv(
         "TROSHKA_NATIVE_REPORT_DATABASE_URL", str(q.sessions.kw["bind"].url)
     )
+    state.kubeconfig_path, state.kubeconfig_body = static_kubeconfig(tmp_path)
     state.backend = {
         "ceph_fsid": q.pins.pool_keys[0].ceph_fsid,
         "pools": [{"pool_id": 1, "name": "pool", "csi_cluster_id": "rook"}],
         "mode": "toolbox",
-        "kubeconfig": "/private/tmp/operator-kubeconfig",
+        "kubeconfig": str(state.kubeconfig_path),
         "toolbox": {
             "cluster_key": "cluster",
             "namespace": "openshift-storage",
@@ -299,7 +299,8 @@ def test_verify_existing_toolbox_produces_manifest_with_bounded_identity_reads(
     body = json.loads(s.output.read_text())
     assert body["request"]["request_id"] == str(s.case.request.request_id)
     assert body["pins"]["pool_keys"] == s.case.pins.model_dump(mode="json")["pool_keys"]
-    assert s.kubeconfigs[0]["config_file"] == "/private/tmp/operator-kubeconfig"
+    assert s.configurations[1].host == "https://storage.invalid"
+    assert s.configurations[1].api_key["BearerToken"] == "Bearer test-only-token"
     assert all(client.closed for client in s.clients)
     assert all(
         client.rest_client.pool_manager.connection_pool_kw["retries"] == 0
@@ -325,7 +326,7 @@ def test_verify_direct_compatibility(verification_case, explicit_mode):
     if explicit_mode:
         s.backend["mode"] = "direct"
     assert s.verify() == 0
-    assert s.kubeconfigs == []
+    assert len(s.clients) == 1
     assert {argv[0] for argv, _, _ in s.commands} == {"ceph"}
     assert all(deadline is not None for _, _, deadline in s.commands)
     assert all(client.closed for client in s.clients)
@@ -470,3 +471,21 @@ def test_verify_direct_requires_explicit_credentials(verification_case):
     assert s.verify() == 1
     assert not s.commands
     assert not s.clients
+
+
+@pytest.mark.parametrize("auth", ["exec", "auth-provider"])
+def test_verify_rejects_auth_helpers_before_any_api_or_command(
+    verification_case, auth, capsys
+):
+    import yaml
+
+    s = verification_case
+    s.kubeconfig_body["users"][0]["user"] = {
+        auth: {"command": "private-helper-command", "name": "gcp"}
+    }
+    s.kubeconfig_path.write_text(yaml.safe_dump(s.kubeconfig_body))
+    assert s.verify() == 1
+    assert not s.clients
+    assert not s.commands
+    assert not s.output.exists()
+    assert "private-helper-command" not in capsys.readouterr().err

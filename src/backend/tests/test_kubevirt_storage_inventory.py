@@ -1,5 +1,8 @@
 from copy import deepcopy
 
+import pytest
+import yaml
+
 from app.schemas.kubevirt_storage import ReadResult
 from app.services.kubevirt_storage_inventory import discover_inventory
 from tests.test_kubevirt_storage_graph import NOW, key, root
@@ -168,3 +171,125 @@ def test_snapshot_handle_and_content_replacements_change_inventory_digest():
     assert inventory_digest(
         discover_inventory(kube, [], [root(1)])
     ) != inventory_digest(original)
+
+
+def static_kubeconfig(tmp_path, user=None):
+    """A local-only operator file; no real credential or API endpoint."""
+    path = tmp_path / "operator-kubeconfig"
+    body = {
+        "apiVersion": "v1",
+        "kind": "Config",
+        "current-context": "operator",
+        "clusters": [
+            {"name": "storage", "cluster": {"server": "https://storage.invalid"}}
+        ],
+        "contexts": [
+            {"name": "operator", "context": {"cluster": "storage", "user": "operator"}}
+        ],
+        "users": [{"name": "operator", "user": user or {"token": "test-only-token"}}],
+    }
+    path.write_text(yaml.safe_dump(body))
+    path.chmod(0o600)
+    return path, body
+
+
+@pytest.mark.parametrize("auth", ["exec", "auth-provider"])
+@pytest.mark.parametrize("active", [True, False])
+def test_native_reader_rejects_auth_helpers_before_loader_or_api(
+    tmp_path, monkeypatch, capsys, caplog, auth, active
+):
+    import subprocess
+
+    from kubernetes import client
+
+    from app.services.kubevirt_storage_inventory import KubernetesReader
+
+    path, body = static_kubeconfig(tmp_path)
+    helper = (
+        {
+            "command": "forbidden-auth-helper",
+            "apiVersion": "client.authentication.k8s.io/v1beta1",
+        }
+        if auth == "exec"
+        else {"name": "gcp", "config": {"cmd-path": "forbidden-auth-helper"}}
+    )
+    if active:
+        body["users"][0]["user"] = {auth: helper}
+    else:
+        body["users"].append({"name": "unused", "user": {auth: helper}})
+    path.write_text(yaml.safe_dump(body))
+    launches, apis = [], []
+
+    def forbidden_process(*args, **kwargs):
+        launches.append(args)
+        raise RuntimeError("private-helper-diagnostic")
+
+    def forbidden_api(*args, **kwargs):
+        apis.append(args)
+        raise RuntimeError("API must not be initialized")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden_process)
+    monkeypatch.setattr(client, "ApiClient", forbidden_api)
+    with pytest.raises(ValueError, match="static"):
+        KubernetesReader(str(path), None, collector_id="test", cache_roots=[])
+    assert launches == []
+    assert apis == []
+    assert "private-helper-diagnostic" not in capsys.readouterr().err
+    assert "private-helper-diagnostic" not in caplog.text
+
+
+@pytest.mark.parametrize("auth", ["token", "client-certificate"])
+def test_native_reader_keeps_static_credentials_and_relative_certificate_paths(
+    tmp_path, auth
+):
+    from app.services.kubevirt_storage_inventory import KubernetesReader
+
+    user = {"token": "test-only-token"}
+    if auth == "client-certificate":
+        (tmp_path / "client.crt").write_text("test certificate fixture")
+        (tmp_path / "client.key").write_text("test key fixture")
+        user = {"client-certificate": "client.crt", "client-key": "client.key"}
+    path, _ = static_kubeconfig(tmp_path, user)
+    reader = KubernetesReader(str(path), None, collector_id="test", cache_roots=[])
+    try:
+        assert reader.api.configuration.host == "https://storage.invalid"
+        if auth == "token":
+            assert (
+                reader.api.configuration.api_key["BearerToken"]
+                == "Bearer test-only-token"
+            )
+        else:
+            assert reader.api.configuration.cert_file == str(tmp_path / "client.crt")
+            assert reader.api.configuration.key_file == str(tmp_path / "client.key")
+    finally:
+        reader.api.close()
+
+
+def test_native_reader_uses_same_validated_data_without_reopening_file(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    from app.services.kubevirt_storage_inventory import (
+        KubernetesReader,
+        read_static_kubeconfig,
+    )
+
+    path, body = static_kubeconfig(tmp_path)
+    parsed = read_static_kubeconfig(path)
+    body["users"][0]["user"] = {"exec": {"command": "forbidden-auth-helper"}}
+    path.write_text(yaml.safe_dump(body))
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("must not reopen config"),
+    )
+    reader = KubernetesReader(
+        str(path), None, collector_id="test", cache_roots=[], kubeconfig_data=parsed
+    )
+    try:
+        assert (
+            reader.api.configuration.api_key["BearerToken"] == "Bearer test-only-token"
+        )
+    finally:
+        reader.api.close()

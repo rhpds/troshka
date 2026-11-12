@@ -589,15 +589,27 @@ def test_preflight_old_schema_fails_before_orm_import(monkeypatch, capsys):
 
     report = json.loads(capsys.readouterr().out)
     assert report["phase"] == "schema_required"
-    assert report["schema"]["expected_revisions"] == ["c935e6fa0421"]
+    assert report["schema"]["expected_revisions"] == _current_schema_heads()
     assert "users" in report["schema"]["missing_columns"]
     assert not report["ready"]
 
 
-def _stamp_schema(db, revision="c935e6fa0421"):
+def _current_schema_heads():
+    from alembic.script import ScriptDirectory
+
+    return sorted(
+        ScriptDirectory(
+            str(Path(__file__).resolve().parents[1] / "alembic")
+        ).get_heads()
+    )
+
+
+def _stamp_schema(db, revision=None):
+    revisions = _current_schema_heads() if revision is None else [revision]
     db.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
     db.execute(
-        text("INSERT INTO alembic_version VALUES (:revision)"), {"revision": revision}
+        text("INSERT INTO alembic_version VALUES (:revision)"),
+        [{"revision": item} for item in revisions],
     )
     db.commit()
 
