@@ -21,7 +21,7 @@ native_case = native_case_fixture
 
 
 @pytest.fixture
-def native_client(native_case, monkeypatch):
+def unimported_native_client(native_case, monkeypatch):
     from app.api import quotas
 
     case = native_case
@@ -39,7 +39,6 @@ def native_client(native_case, monkeypatch):
             now=lambda zone: case.report.completed_at + timedelta(seconds=2)
         ),
     )
-    ingest(case)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("native usage invoked external collection or credentials")
@@ -52,6 +51,13 @@ def native_client(native_case, monkeypatch):
     yield TestClient(app), case
     app.dependency_overrides.clear()
     app.dependency_overrides.update(previous)
+
+
+@pytest.fixture
+def native_client(unimported_native_client):
+    client, case = unimported_native_client
+    ingest(case)
+    return client, case
 
 
 def act(case, user_id):
@@ -378,3 +384,51 @@ def test_discovered_orphan_or_reused_snapshot_never_imports_as_complete(
     recomputed = revised(tampered, report_id=report.report_id)
     with pytest.raises(ValueError, match="changed same-ID report replay"):
         ingest(q, recomputed)
+
+
+@pytest.mark.parametrize("orphan", [True, False])
+def test_first_snapshot_partial_import_keeps_measured_api_subsets(
+    unimported_native_client, orphan
+):
+    from app.models.kubevirt_storage import NativeRetainedBinding, NativeStorageSnapshot
+    from app.models.quota import QuotaReadiness, QuotaReservation
+    from tests.test_kubevirt_storage_reports import discovered_snapshot_report
+
+    client, q = unimported_native_client
+    report = discovered_snapshot_report(q, orphan=orphan)
+    payload = report.model_dump(mode="json")
+    with q.sessions() as db:
+        assert db.query(NativeRetainedBinding).count() == 0
+        assert db.query(NativeStorageSnapshot).count() == 0
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert saved.accepted is True
+        assert saved.reason_codes == []
+        assert saved.payload == payload
+        assert db.query(NativeRetainedBinding).count() == 3
+        assert db.get(QuotaReadiness, "baseline").ready is False
+        assert db.query(QuotaReservation).count() == 0
+    assert report.model_dump(mode="json") == payload
+    assert report.snapshot_evidence[0].reference_snapshot_uid == "snapshot-uid"
+    assert report.snapshot_evidence[0].snapshot_handle_sha256 is not None
+    act(q, q.owner_id)
+    affected, unaffected = [str(r.project_id) for r in report.project_roots]
+    response = client.get(url("project", affected))
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "partial"
+    assert body["allocated_bytes"] is None
+    assert body["known_allocated_bytes"] == 30
+    assert body["covered_projects"] == 0
+    assert body["enforcement_eligible"] is False
+    assert {b.code for b in report.inventory_blockers} <= set(body["reason_codes"])
+    assert "csi_snapshot_backend_unresolved" in body["reason_codes"]
+    control = client.get(url("project", unaffected)).json()
+    assert control["status"] == "complete"
+    assert control["allocated_bytes"] == control["known_allocated_bytes"] == 50
+    assert control["covered_projects"] == 1
+    total = client.get(url("user", q.owner_id)).json()
+    assert total["allocated_bytes"] is None
+    assert total["known_allocated_bytes"] == 80
+    assert total["covered_projects"] == 1

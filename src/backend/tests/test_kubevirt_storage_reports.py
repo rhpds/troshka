@@ -238,6 +238,163 @@ def revised(report, **updates):
     )
 
 
+def discovered_snapshot_report(case, *, orphan=True):
+    """Real snapshot discovery plus live PVC identity, without a prior import."""
+    from app.services.kubevirt_storage_inventory import discover_inventory
+    from tests.test_kubevirt_storage_inventory import snapshot_kube
+
+    kube = snapshot_kube()
+    if orphan:
+        kube.snapshots = lambda ns: []
+    discovered = discover_inventory(kube, [], [case.report.project_roots[0]])
+    assert not discovered.retained_bindings
+    assert len(discovered.volume_bindings) == 1
+    assert len(discovered.snapshot_evidence) == 1
+    return revised(
+        case.report,
+        volume_bindings=[
+            *discovered.volume_bindings,
+            case.report.volume_bindings[1],
+        ],
+        inventory_blockers=discovered.blockers,
+        collection_errors=discovered.blockers,
+        snapshot_evidence=discovered.snapshot_evidence,
+    )
+
+
+@pytest.mark.parametrize(
+    "code,scoped",
+    [
+        ("snapshot_identity_unresolved", False),
+        ("csi_snapshot_backend_unresolved", False),
+        ("pvc_binding_unresolved", True),
+        ("claim_identity_mismatch", True),
+        ("project_discovery_unavailable", True),
+        ("namespace_identity_changed", True),
+        ("backend_identity_changed", True),
+        ("inventory_changed", True),
+        ("scan_limit", False),
+        ("unknown_discovery_failure", True),
+    ],
+)
+def test_first_snapshot_partial_never_exempts_other_discovery_failures(
+    native_case, code, scoped
+):
+    from app.models.kubevirt_storage import NativeRetainedBinding, NativeStorageSnapshot
+    from app.schemas.kubevirt_storage import Blocker
+
+    q = native_case
+    report = discovered_snapshot_report(q)
+    blocker = Blocker(
+        code=code, project_id=report.project_roots[0].project_id if scoped else None
+    )
+    report = revised(report, inventory_blockers=[*report.inventory_blockers, blocker])
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert saved.accepted is False
+        assert "new_binding_requires_complete_discovery" in saved.reason_codes
+        assert saved.payload == report.model_dump(mode="json")
+        assert db.query(NativeRetainedBinding).count() == 0
+
+
+@pytest.mark.parametrize(
+    "mutation", ["contradictory", "root", "backend", "retained", "missing_root"]
+)
+def test_first_snapshot_partial_preserves_binding_and_enrollment_checks(
+    native_case, mutation
+):
+    from app.models.kubevirt_storage import NativeRetainedBinding, NativeStorageSnapshot
+
+    q = native_case
+    report = discovered_snapshot_report(q)
+    first, second = report.volume_bindings
+    changes = {
+        "contradictory": {
+            "volume_bindings": [
+                first,
+                first.model_copy(update={"pv_uid": "contradictory-pv"}),
+                second,
+            ]
+        },
+        "root": {
+            "volume_bindings": [
+                first.model_copy(
+                    update={
+                        "root": first.root.model_copy(
+                            update={"namespace_uid": "changed"}
+                        )
+                    }
+                ),
+                second,
+            ]
+        },
+        "backend": {
+            "volume_bindings": [
+                first.model_copy(
+                    update={
+                        "image_key": first.image_key.model_copy(update={"pool_id": 999})
+                    }
+                ),
+                second,
+            ]
+        },
+        "retained": {"volume_bindings": [second], "retained_bindings": [first]},
+        "missing_root": {"project_roots": [second.root]},
+    }
+    reasons = {
+        "contradictory": "retained_binding_identity_changed",
+        "root": "unenrolled_binding_root",
+        "backend": "unenrolled_backend_pool",
+        "retained": "new_binding_requires_complete_discovery",
+        "missing_root": "new_binding_requires_complete_discovery",
+    }
+    report = revised(report, **changes[mutation])
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert saved.accepted is False
+        assert reasons[mutation] in saved.reason_codes
+        assert db.query(NativeRetainedBinding).count() == 0
+
+
+def test_first_snapshot_partial_freezes_live_identity_with_both_snapshot_codes(
+    native_case,
+):
+    from app.models.kubevirt_storage import NativeRetainedBinding, NativeStorageSnapshot
+    from app.schemas.kubevirt_storage import Blocker
+
+    q = native_case
+    report = discovered_snapshot_report(q)
+    report = revised(
+        report,
+        inventory_blockers=[
+            *report.inventory_blockers,
+            Blocker(
+                code="csi_snapshot_backend_unresolved",
+                project_id=report.project_roots[0].project_id,
+            ),
+        ],
+    )
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        assert db.get(NativeStorageSnapshot, identity).accepted is True
+        before = {b.key: b.payload for b in db.query(NativeRetainedBinding)}
+    first, second = report.volume_bindings
+    changed = revised(
+        report,
+        volume_bindings=[first.model_copy(update={"pv_uid": "changed"}), second],
+        started_at=report.started_at + timedelta(seconds=1),
+        completed_at=report.completed_at + timedelta(seconds=1),
+    )
+    identity = ingest(q, changed)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert saved.accepted is False
+        assert "retained_binding_identity_changed" in saved.reason_codes
+        assert {b.key: b.payload for b in db.query(NativeRetainedBinding)} == before
+
+
 def usage(case, scope="user", identity=None, now=None, admin=False):
     from app.services.kubevirt_storage_usage import read_native_usage
 

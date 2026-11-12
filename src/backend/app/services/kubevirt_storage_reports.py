@@ -170,25 +170,39 @@ def _domain_errors(report, manifest, roots):
     return errors
 
 
+def _binding_discovery_complete(project_id, blockers, *, live=False):
+    """Snapshot uncertainty alone cannot disprove a verified live PVC identity."""
+    snapshot_codes = {
+        "snapshot_identity_unresolved",
+        "csi_snapshot_backend_unresolved",
+    }
+    applicable = [b for b in blockers if b.project_id in (None, project_id)]
+    return all(
+        live and b.project_id == project_id and b.code in snapshot_codes
+        for b in applicable
+    )
+
+
 def _binding_errors(report, manifest, roots, retained):
     errors = set()
     enrolled = {r.key: r.payload for r in roots}
     saved = {b.key: b.payload for b in retained}
     discovery_blockers = report_inventory(report).blockers
-    complete = {
-        r.project_id
-        for r in report.project_roots
-        if not any(b.project_id in (None, r.project_id) for b in discovery_blockers)
-    }
+    present = {r.project_id for r in report.project_roots}
+    live_keys = {binding_key(b) for b in report.volume_bindings}
     cache_roots = {
         (c.cluster_key, c.namespace, c.namespace_uid) for c in manifest.pins.cache_roots
     }
     for binding in report.volume_bindings + report.retained_bindings:
         if enrolled.get(root_key(binding.root)) != root_identity(binding.root):
             errors.add("unenrolled_binding_root")
-        if (
-            binding_key(binding) not in saved
-            and binding.root.project_id not in complete
+        if binding_key(binding) not in saved and (
+            binding.root.project_id not in present
+            or not _binding_discovery_complete(
+                binding.root.project_id,
+                discovery_blockers,
+                live=binding_key(binding) in live_keys,
+            )
         ):
             errors.add("new_binding_requires_complete_discovery")
     for binding in report.cache_bindings:
