@@ -1,3 +1,5 @@
+import pytest
+
 from app.schemas.kubevirt_storage import (
     CollectionLimits,
     NativeStorageReport,
@@ -189,7 +191,8 @@ def test_final_graph_recheck_detects_consumer_added_during_later_du():
     assert all(i.collected_at == NOW for i in result.images)
 
 
-def test_final_fsid_mismatch_invalidates_platform_total():
+@pytest.mark.parametrize("failure", ["changed", "unavailable"])
+def test_final_fsid_failure_invalidates_project_and_platform_measurements(failure):
     reader = Rbd()
     reader.image_usage = lambda image: ReadResult(
         status="complete",
@@ -202,6 +205,8 @@ def test_final_fsid_mismatch_invalidates_platform_total():
 
     def identity():
         calls.append(True)
+        if len(calls) > 1 and failure == "unavailable":
+            return ReadResult(status="timeout", collected_at=NOW)
         return ReadResult(
             status="complete",
             value=key("x").ceph_fsid if len(calls) == 1 else "other-fsid",
@@ -214,6 +219,10 @@ def test_final_fsid_mismatch_invalidates_platform_total():
     )
     assert result.platform_pools[0].allocated_bytes is None
     assert result.platform_pools[0].known_allocated_bytes == 0
+    assert all(p.allocated_bytes is None for p in result.projects)
+    assert all(p.known_allocated_bytes == 0 for p in result.projects)
+    assert all(p.measured_images == 0 for p in result.projects)
+    assert all(p.coverage == "unavailable" for p in result.projects)
 
 
 def test_inventory_recheck_failure_invalidates_platform_total():
@@ -231,6 +240,10 @@ def test_inventory_recheck_failure_invalidates_platform_total():
     )
     assert result.platform_pools[0].allocated_bytes is None
     assert result.platform_pools[0].known_allocated_bytes == 7
+    assert [p.known_allocated_bytes for p in result.projects] == [7, 7]
+    assert all(
+        p.measured_images == 1 and p.coverage == "partial" for p in result.projects
+    )
 
 
 def test_final_metadata_checks_cover_ids_parents_snapshots_and_unavailable_reads():

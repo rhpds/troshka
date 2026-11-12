@@ -281,3 +281,100 @@ def test_importer_api_ui_replay_and_transfer_keep_original_evidence(native_clien
         } == before
         assert db.get(QuotaReadiness, "baseline").ready is False
         assert db.query(QuotaReservation).count() == 0
+
+
+@pytest.mark.parametrize(
+    "code,known,status",
+    [
+        ("backend_identity_changed", 0, "unavailable"),
+        ("backend_identity_recheck_unavailable", 0, "unavailable"),
+        ("backend_identity_or_capability_unavailable", 0, "unavailable"),
+        ("inventory_changed", 30, "partial"),
+    ],
+)
+def test_import_and_api_recompute_identity_failure_vs_valid_subset(
+    native_client, code, known, status
+):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.schemas.kubevirt_storage import Blocker
+    from tests.test_kubevirt_storage_reports import revised
+
+    client, q = native_client
+    report = revised(
+        q.report,
+        inventory_blockers=[],
+        collection_errors=[Blocker(code=code)],
+        started_at=q.report.started_at + timedelta(seconds=1),
+        completed_at=q.report.completed_at + timedelta(seconds=1),
+    )
+    # Supplied positive complete totals are assertions, not importer authority.
+    assert report.projects[0].known_allocated_bytes == 30
+    identity = ingest(q, report)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert saved.accepted is True
+        assert saved.payload == report.model_dump(mode="json")
+    act(q, q.owner_id)
+    pid = str(report.project_roots[0].project_id)
+    response = client.get(url("project", pid))
+    assert response.status_code == 200
+    assert response.json()["allocated_bytes"] is None
+    assert response.json()["known_allocated_bytes"] == known
+    assert response.json()["status"] == status
+    assert response.json()["covered_projects"] == 0
+    assert code in response.json()["reason_codes"]
+    assert response.json()["enforcement_eligible"] is False
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+@pytest.mark.parametrize(
+    "tampered_field,replacement_value",
+    [
+        ("content_uid", "edited-content"),
+        ("snapshot_handle_sha256", "f" * 64),
+        ("reference_snapshot_uid", "edited-reference"),
+    ],
+)
+def test_discovered_orphan_or_reused_snapshot_never_imports_as_complete(
+    native_client, replacement, tampered_field, replacement_value
+):
+    from app.services.kubevirt_storage_inventory import discover_inventory
+    from tests.test_kubevirt_storage_graph import root
+    from tests.test_kubevirt_storage_inventory import snapshot_kube
+    from tests.test_kubevirt_storage_reports import revised
+
+    client, q = native_client
+    kube = snapshot_kube()
+    snapshots = kube.snapshots("project-1")
+    snapshots[0]["metadata"]["uid"] = "replacement-uid"
+    kube.snapshots = lambda ns: snapshots if replacement else []
+    discovered = discover_inventory(kube, [], [root(1)])
+    assert len(discovered.snapshot_evidence) == 1
+    report = revised(
+        q.report,
+        # Recompute conservatively even if an external report omits its blockers.
+        inventory_blockers=[],
+        collection_errors=[],
+        snapshot_evidence=discovered.snapshot_evidence,
+        started_at=q.report.started_at + timedelta(seconds=1),
+        completed_at=q.report.completed_at + timedelta(seconds=1),
+    )
+    ingest(q, report)
+    act(q, q.owner_id)
+    response = client.get(url("project", str(report.project_roots[0].project_id)))
+    assert response.status_code == 200
+    assert response.json()["allocated_bytes"] is None
+    assert response.json()["status"] == "partial"
+    assert response.json()["known_allocated_bytes"] == 30
+    assert "csi_snapshot_backend_unresolved" in response.json()["reason_codes"]
+    assert "snapshot-uid" not in response.text
+    assert "content-uid" not in response.text
+    changed = report.snapshot_evidence[0].model_copy(
+        update={tampered_field: replacement_value}
+    )
+    tampered = report.model_copy(update={"snapshot_evidence": [changed]})
+    with pytest.raises(ValueError, match="inventory digest mismatch"):
+        ingest(q, tampered)
+    recomputed = revised(tampered, report_id=report.report_id)
+    with pytest.raises(ValueError, match="changed same-ID report replay"):
+        ingest(q, recomputed)

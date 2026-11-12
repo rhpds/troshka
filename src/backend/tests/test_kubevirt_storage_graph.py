@@ -157,6 +157,42 @@ def test_cycle_is_partial():
     assert attribute_graph(inventory(), images).projects[0].allocated_bytes is None
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "backend_identity_changed",
+        "backend_identity_recheck_unavailable",
+        "backend_identity_or_capability_unavailable",
+        "cluster_identity_mismatch",
+    ],
+)
+def test_unverified_global_identity_clears_project_measurement_provenance(code):
+    from app.schemas.kubevirt_storage import Blocker
+
+    evidence = inventory().model_copy(update={"blockers": [Blocker(code=code)]})
+    result = attribute_graph(evidence, observations())
+    for project in result.projects:
+        assert project.allocated_bytes is None
+        assert project.known_allocated_bytes == 0
+        assert project.measured_images == 0
+        assert project.oldest_observed_at is None
+        assert project.coverage == "unavailable"
+    assert result.platform_pools[0].known_allocated_bytes == 0
+
+
+def test_ordinary_partial_inventory_preserves_verified_project_subset():
+    from app.schemas.kubevirt_storage import Blocker
+
+    evidence = inventory().model_copy(
+        update={"blockers": [Blocker(code="inventory_changed")]}
+    )
+    result = attribute_graph(evidence, observations())
+    assert [p.known_allocated_bytes for p in result.projects] == [30, 50]
+    assert all(
+        p.measured_images == 2 and p.coverage == "partial" for p in result.projects
+    )
+
+
 @pytest.mark.parametrize("amount", [-1, 2**63, True])
 def test_strict_bytes(amount):
     with pytest.raises(ValidationError):

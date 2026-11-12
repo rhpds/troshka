@@ -9,6 +9,15 @@ from app.schemas.kubevirt_storage import (
     ProjectAllocation,
 )
 
+UNVERIFIED_IDENTITY = frozenset(
+    {
+        "backend_identity_changed",
+        "backend_identity_recheck_unavailable",
+        "backend_identity_or_capability_unavailable",
+        "cluster_identity_mismatch",
+    }
+)
+
 
 def _walk(start, observations, cache, depth_limit):
     seen, path, errors = set(), set(), set()
@@ -117,6 +126,8 @@ def _project_allocation(
         for k in required - unresolved
         if k in observations and observations[k].measurement_status == "complete"
     ]
+    if reasons & UNVERIFIED_IDENTITY:
+        measured = []
     if len(measured) != len(required):
         reasons.add("incomplete_measurement")
     if any(
@@ -164,16 +175,7 @@ def _pool_allocation(pool_key, keys, observations, blockers):
         if k in observations and observations[k].measurement_status == "complete"
     ]
     known = sum(i.allocated_bytes for i in complete)
-    if any(
-        b.code
-        in {
-            "backend_identity_changed",
-            "backend_identity_recheck_unavailable",
-            "backend_identity_or_capability_unavailable",
-            "cluster_identity_mismatch",
-        }
-        for b in applicable
-    ):
+    if any(b.code in UNVERIFIED_IDENTITY for b in applicable):
         known = 0
     return PoolAllocation(
         pool_key=pool_key,

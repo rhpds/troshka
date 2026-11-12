@@ -116,7 +116,8 @@ def _handle_digest(value):
 
 
 def _snapshot_record(root, snapshot, content, content_name):
-    source = content.get("spec", {}).get("source", {})
+    spec = content.get("spec", {})
+    source, ref = spec.get("source", {}), spec.get("volumeSnapshotRef", {})
     return CSISnapshotEvidence(
         root=root,
         snapshot_uid=snapshot.get("metadata", {}).get("uid"),
@@ -133,15 +134,20 @@ def _snapshot_record(root, snapshot, content, content_name):
         ),
         source_snapshot_handle_sha256=_handle_digest(source.get("snapshotHandle")),
         source_volume_handle_sha256=_handle_digest(source.get("volumeHandle")),
+        reference_snapshot_uid=ref.get("uid"),
+        reference_snapshot_name=ref.get("name"),
+        reference_namespace=ref.get("namespace"),
+        deletion_policy=spec.get("deletionPolicy"),
     )
 
 
 def _snapshot_discovery(kube, root, contents):
-    records, errors = [], []
+    records, errors, referenced = [], [], set()
     for snapshot in kube.snapshots(root.namespace):
         status, meta = snapshot.get("status", {}), snapshot.get("metadata", {})
         content_name = status.get("boundVolumeSnapshotContentName")
         content = contents.get(content_name, {})
+        referenced.add(content_name)
         records.append(_snapshot_record(root, snapshot, content, content_name))
         ref = content.get("spec", {}).get("volumeSnapshotRef", {})
         code = "csi_snapshot_backend_unresolved"
@@ -153,6 +159,16 @@ def _snapshot_discovery(kube, root, contents):
             code = "snapshot_identity_unresolved"
         # Ready references are insufficient without a supported backend snapshot resolver.
         errors.append(Blocker(code=code, project_id=root.project_id))
+    for name, content in contents.items():
+        ref = content.get("spec", {}).get("volumeSnapshotRef", {})
+        if name in referenced or ref.get("namespace") != root.namespace:
+            continue
+        # The name selects relevant uncertainty, not ownership of a namespace
+        # generation or a backend image. Keep live and reference UIDs separate.
+        records.append(_snapshot_record(root, {}, content, name))
+        errors.append(
+            Blocker(code="snapshot_identity_unresolved", project_id=root.project_id)
+        )
     return records, errors
 
 

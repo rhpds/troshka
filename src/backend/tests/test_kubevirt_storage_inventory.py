@@ -125,7 +125,12 @@ def snapshot_kube():
             "metadata": {"name": "content", "uid": "content-uid"},
             "spec": {
                 "driver": "unknown.csi",
-                "volumeSnapshotRef": {"uid": "snapshot-uid", "namespace": "project-1"},
+                "volumeSnapshotRef": {
+                    "uid": "snapshot-uid",
+                    "name": "retained",
+                    "namespace": "project-1",
+                },
+                "deletionPolicy": "Retain",
                 "source": {"volumeHandle": "missing-volume-handle"},
             },
             "status": {"snapshotHandle": "unresolved-snapshot-handle"},
@@ -171,6 +176,176 @@ def test_snapshot_handle_and_content_replacements_change_inventory_digest():
     assert inventory_digest(
         discover_inventory(kube, [], [root(1)])
     ) != inventory_digest(original)
+
+
+def test_deleted_snapshot_content_is_uncertain_evidence_without_promoting_ownership():
+    from app.schemas.kubevirt_storage import CollectionLimits
+    from app.services.kubevirt_storage_collector import collect_report
+    from tests.test_kubevirt_storage_collector import Rbd
+
+    kube = snapshot_kube()
+    kube.snapshots = lambda ns: []
+    discovered = discover_inventory(kube, [], [root(1)])
+    assert len(discovered.snapshot_evidence) == 1
+    evidence = discovered.snapshot_evidence[0]
+    assert evidence.snapshot_uid is None
+    assert evidence.reference_snapshot_uid == "snapshot-uid"
+    assert evidence.reference_namespace == "project-1"
+    assert evidence.reference_snapshot_name == "retained"
+    assert evidence.deletion_policy == "Retain"
+    assert evidence.content_uid == "content-uid"
+    assert not discovered.retained_bindings
+    assert [b.image_key for b in discovered.volume_bindings] == [key("child-1")]
+    assert "snapshot_identity_unresolved" in {b.code for b in discovered.blockers}
+    reader = Rbd()
+    reader.recheck_inventory = lambda: discover_inventory(kube, [], [root(1)])
+    result = collect_report(
+        discovered,
+        reader,
+        limits=CollectionLimits(),
+        clock=lambda: discovered.collected_at,
+    )
+    assert result.projects[0].allocated_bytes is None
+    assert result.projects[0].coverage == "partial"
+    assert result.projects[0].measured_images == 1
+
+
+@pytest.mark.parametrize(
+    "section,field,replacement",
+    [
+        ("metadata", "uid", "replacement-content"),
+        ("status", "snapshotHandle", "replacement-handle"),
+        ("reference", "uid", "replacement-snapshot"),
+        ("reference", "name", "replacement-name"),
+        ("reference", "namespace", "unrelated-namespace"),
+        ("source", "volumeHandle", "replacement-volume"),
+        ("source", "snapshotHandle", "replacement-source-snapshot"),
+        ("spec", "deletionPolicy", "Delete"),
+    ],
+)
+def test_orphan_content_mutations_change_digest_and_final_recheck(
+    section, field, replacement
+):
+    from app.schemas.kubevirt_storage import CollectionLimits
+    from app.services.kubevirt_storage_collector import collect_report
+    from tests.test_kubevirt_storage_collector import Rbd
+
+    kube = snapshot_kube()
+    kube.snapshots = lambda ns: []
+    contents = kube.snapshot_contents()
+    kube.snapshot_contents = lambda: contents
+    before = discover_inventory(kube, [], [root(1)])
+    target = contents[0]
+    if section in {"reference", "source"}:
+        target = target["spec"].setdefault(
+            "volumeSnapshotRef" if section == "reference" else "source", {}
+        )
+    else:
+        target = target[section]
+    target[field] = replacement
+    after = discover_inventory(kube, [], [root(1)])
+    assert after.inventory_digest != before.inventory_digest
+    reader = Rbd()
+    reader.recheck_inventory = lambda: after
+    report = collect_report(
+        before, reader, limits=CollectionLimits(), clock=lambda: after.collected_at
+    )
+    assert "inventory_changed" in {b.code for b in report.collection_errors}
+
+
+def test_same_snapshot_name_new_uid_does_not_rebind_old_content():
+    kube = snapshot_kube()
+    snapshots = kube.snapshots("project-1")
+    snapshots[0]["metadata"]["uid"] = "new-snapshot-uid"
+    kube.snapshots = lambda ns: snapshots
+    discovered = discover_inventory(kube, [], [root(1)])
+    evidence = discovered.snapshot_evidence[0]
+    assert evidence.snapshot_uid == "new-snapshot-uid"
+    assert evidence.reference_snapshot_uid == "snapshot-uid"
+    assert "snapshot_identity_unresolved" in {b.code for b in discovered.blockers}
+
+
+def test_replacement_snapshot_with_new_content_keeps_old_orphan_separate():
+    kube = snapshot_kube()
+    snapshots, contents = kube.snapshots("project-1"), kube.snapshot_contents()
+    snapshots[0]["metadata"]["uid"] = "new-snapshot-uid"
+    snapshots[0]["status"]["boundVolumeSnapshotContentName"] = "new-content"
+    new_content = deepcopy(contents[0])
+    new_content["metadata"] = {"name": "new-content", "uid": "new-content-uid"}
+    new_content["spec"]["volumeSnapshotRef"]["uid"] = "new-snapshot-uid"
+    kube.snapshots = lambda ns: snapshots
+    kube.snapshot_contents = lambda: [*contents, new_content]
+    discovered = discover_inventory(kube, [], [root(1)])
+    assert len(discovered.snapshot_evidence) == 2
+    evidence = {e.content_uid: e for e in discovered.snapshot_evidence}
+    assert evidence["content-uid"].snapshot_uid is None
+    assert evidence["content-uid"].reference_snapshot_uid == "snapshot-uid"
+    assert evidence["new-content-uid"].snapshot_uid == "new-snapshot-uid"
+    assert {b.code for b in discovered.blockers} == {
+        "snapshot_identity_unresolved",
+        "csi_snapshot_backend_unresolved",
+    }
+
+
+def test_unrelated_orphan_content_does_not_establish_project_evidence():
+    kube = snapshot_kube()
+    kube.snapshots = lambda ns: []
+    contents = kube.snapshot_contents()
+    contents[0]["spec"]["volumeSnapshotRef"]["namespace"] = "unrelated"
+    kube.snapshot_contents = lambda: contents
+    discovered = discover_inventory(kube, [], [root(1)])
+    assert discovered.snapshot_evidence == []
+    assert discovered.blockers == []
+
+
+def test_orphan_content_removal_changes_digest():
+    kube = snapshot_kube()
+    kube.snapshots = lambda ns: []
+    before = discover_inventory(kube, [], [root(1)])
+    kube.snapshot_contents = lambda: []
+    assert (
+        discover_inventory(kube, [], [root(1)]).inventory_digest
+        != before.inventory_digest
+    )
+
+
+def test_legacy_snapshot_evidence_serialization_and_digest_are_preserved():
+    import hashlib
+    import json
+
+    from app.schemas.kubevirt_storage import CSISnapshotEvidence, NativeInventory
+    from app.services.kubevirt_storage_inventory import inventory_digest
+
+    legacy = {
+        "root": root(1).model_dump(mode="json"),
+        "snapshot_uid": "old-uid",
+        "snapshot_name": "old-name",
+        "content_name": None,
+        "content_uid": None,
+        "source_pvc_name": None,
+        "csi_driver": None,
+        "ready_to_use": False,
+        "snapshot_handle_sha256": None,
+        "source_snapshot_handle_sha256": None,
+        "source_volume_handle_sha256": None,
+    }
+    evidence = CSISnapshotEvidence.model_validate(legacy)
+    assert evidence.model_dump(mode="json") == legacy
+    inventory = NativeInventory(
+        project_roots=[root(1)], snapshot_evidence=[evidence], collected_at=NOW
+    )
+    normalized = {
+        "project_roots": [legacy["root"]],
+        "volume_bindings": [],
+        "cache_bindings": [],
+        "retained_bindings": [],
+        "blockers": [],
+        "snapshot_evidence": [legacy],
+    }
+    expected = hashlib.sha256(
+        json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert inventory_digest(inventory) == expected
 
 
 def static_kubeconfig(tmp_path, user=None):

@@ -4,7 +4,14 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 Bytes = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 Text = Annotated[str, Field(min_length=1, max_length=256)]
@@ -88,7 +95,11 @@ class CacheBinding(Evidence):
 
 
 class CSISnapshotEvidence(Evidence):
-    """Kubernetes identity only; no canonical backend snapshot coverage is implied."""
+    """Kubernetes evidence relevant to a root, not proof of retained ownership.
+
+    Content references lack namespace-generation identity. An orphan's namespace
+    name selects an uncertainty blocker only; it never establishes a binding.
+    """
 
     root: ProjectRoot
     snapshot_uid: Text | None
@@ -103,6 +114,24 @@ class CSISnapshotEvidence(Evidence):
         str, Field(pattern=r"^[a-f0-9]{64}$")
     ] | None
     source_volume_handle_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
+    reference_snapshot_uid: Text | None = None
+    reference_snapshot_name: Text | None = None
+    reference_namespace: Text | None = None
+    deletion_policy: Text | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_reference(self, handler):
+        data = handler(self)
+        # Preserve old immutable payload/digest identities when fields were absent.
+        for name in (
+            "reference_snapshot_uid",
+            "reference_snapshot_name",
+            "reference_namespace",
+            "deletion_policy",
+        ):
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
 
 class NativeInventory(Evidence):

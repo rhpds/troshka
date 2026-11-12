@@ -17,10 +17,9 @@ discovery for the explicitly enrolled roots and trusted cache namespaces. Ceph
 reads need the selected FSID/pools, immutable image identities, CSI journals,
 parent/child links, image trash and snapshot inventory, and bounded merged `du`.
 
-Direct collection and the current enrollment verifier require installed `ceph`,
-`rbd` and `rados` clients plus a read-only configuration/keyring. A machine with
-only Kubernetes access cannot perform the current direct enrollment verification.
-Toolbox **collection** instead requires the existing enrolled
+Direct collection and direct enrollment verification require installed `ceph`,
+`rbd` and `rados` clients plus a read-only configuration/keyring. Toolbox collection
+and enrollment verification instead use the existing independently pinned
 `openshift-storage/rook-ceph-tools-*` pod/container, exact pod UID, FSID and pool
 allowlist; `oc` and the remote `timeout --kill-after` command must be available.
 The toolbox must already possess an appropriate read-only backend identity.
@@ -43,8 +42,8 @@ enrollment solely from a report submitted for import.
    [Native RBD reporting](native-storage-reporting.md#explicit-target-and-independent-enrollment).
    That guide owns the exact `scripts/import_kubevirt_storage.py` commands,
    explicit database target variable/UUID, pins and immutable enrollment digest.
-   Its verification step currently uses direct Ceph transport; toolbox collection
-   support does not imply toolbox enrollment verification is implemented.
+   Its verification step supports both direct and constrained toolbox transport;
+   follow the linked toolbox procedure when local Ceph clients are unavailable.
 
 2. Create the operator-owned inventory manifest for those enrolled roots and
    inspect every PVC/PV/CSI mapping. Supply literal argv values; the application
