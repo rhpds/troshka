@@ -91,6 +91,8 @@ assets, ownership, workloads or enrollment. It is not a stop command.
   10,000). Continuation tokens, duplicate names/UIDs and malformed records invalidate
   the entire kind. No page-following loop or retry runs. Increase the object bound
   only after inspecting the cause; a byte-limit response stays incomplete.
+  Non-2xx responses are closed without reading their bodies. Redirects and retries
+  are disabled so intermediate HTTP responses cannot bypass the bound.
 - A monotonic scan budget prevents starting more reads after expiry; each request
   uses at most 15 seconds of remaining budget. Socket/server behavior can extend
   wall-clock duration; this is not a validated quota-enforcement freshness SLA.
@@ -101,6 +103,16 @@ assets, ownership, workloads or enrollment. It is not a stop command.
   `storage_absence_verified` and `admitted_plan_verified` false. No importer or live
   accounting integration is provided. Do not derive zero reserved capacity from
   an empty inventory. Native quota enablement remains unsupported.
+
+## Validation record
+
+On 2026-11-12, a read-only development check against the deleted quarantine
+acceptance namespace returned exit 2 with `identity_unavailable`,
+`inventory_complete=false`, and all release/settlement fields false. The existing
+development kubeconfig skipped TLS verification and emitted urllib3 warnings; this
+is not authenticated production evidence. No genuine project root existed there,
+so this did not validate a successful live inventory. No workload was created.
+Offline tests cover the complete path and bounded success/error HTTP responses.
 
 ## References
 

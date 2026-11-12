@@ -2,10 +2,9 @@
 
 import json
 from datetime import UTC, datetime
-from typing import cast
 from urllib.parse import quote
 
-from urllib3.response import HTTPResponse
+from urllib3 import Timeout
 
 from app.schemas.native_workload_observations import (
     WorkloadCollection,
@@ -200,19 +199,26 @@ class WorkloadReader(KubernetesReader):
     max_response_bytes = 4 * 1024 * 1024
 
     def _get(self, path, *, listing=False):
-        response = cast(
-            HTTPResponse,
-            self.api.call_api(
-                path,
-                "GET",
-                query_params=[("limit", self.max_objects + 1)] if listing else [],
-                auth_settings=["BearerToken"],
-                _return_http_data_only=True,
-                _preload_content=False,
-                _request_timeout=self._timeout(),
-            ),
+        # ApiClient.call_api raises on HTTP errors by reading response.data in
+        # full. Reuse its configured TLS/proxy pool and auth, but inspect every
+        # status ourselves before any body is materialized. No redirects/retries
+        # may drain an intermediate body or send credentials to another target.
+        query = [("limit", str(self.max_objects + 1))] if listing else []
+        headers = {**self.api.default_headers, "Accept": "application/json"}
+        self.api.update_params_for_auth(headers, query, ["BearerToken"])
+        response = self.api.rest_client.pool_manager.request(
+            "GET",
+            self.api.configuration.host + path,
+            fields=query,
+            headers=headers,
+            preload_content=False,
+            redirect=False,
+            retries=False,
+            timeout=Timeout(total=self._timeout()),
         )
         try:
+            if not 200 <= response.status <= 299:
+                raise ValueError("HTTP response unavailable")
             data = response.read(self.max_response_bytes + 1)
             if len(data) > self.max_response_bytes:
                 raise ValueError("response limit")

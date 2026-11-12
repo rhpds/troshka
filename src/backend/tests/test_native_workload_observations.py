@@ -205,10 +205,23 @@ def test_object_bound_discards_overflow_without_partial_complete_rows():
     assert pods.status == "invalid_output" and not pods.resources
 
 
+def api_with_pool(request):
+    from types import SimpleNamespace
+
+    from kubernetes.client import ApiClient, Configuration
+
+    config = Configuration()
+    config.host = "https://example.invalid"
+    api = ApiClient(config)
+    api.rest_client.pool_manager = SimpleNamespace(request=request)
+    return api
+
+
 def test_bounded_reader_uses_only_get_without_selectors_and_closes_response():
     import io
     import json
-    from types import SimpleNamespace
+
+    from urllib3.response import HTTPResponse
 
     from app.services.native_workload_observations import WorkloadReader
 
@@ -216,18 +229,22 @@ def test_bounded_reader_uses_only_get_without_selectors_and_closes_response():
     reader.scan_deadline = None
     reader.max_objects = 7
     reader.max_response_bytes = 1024
-    response = io.BytesIO(
-        json.dumps({"metadata": {"resourceVersion": "42"}, "items": []}).encode()
+    response = HTTPResponse(
+        body=io.BytesIO(
+            json.dumps({"metadata": {"resourceVersion": "42"}, "items": []}).encode()
+        ),
+        status=200,
+        preload_content=False,
     )
 
-    def request(path, method, **kwargs):
-        assert path == "/api/v1/namespaces/project/pods"
+    def request(method, path, **kwargs):
+        assert path == "https://example.invalid/api/v1/namespaces/project/pods"
         assert method == "GET"
-        assert kwargs["query_params"] == [("limit", 8)]
-        assert kwargs["_preload_content"] is False
+        assert kwargs["fields"] == [("limit", "8")]
+        assert kwargs["preload_content"] is False
         return response
 
-    reader.api = SimpleNamespace(call_api=request)
+    reader.api = api_with_pool(request)
     assert reader.workloads("Pod", "project")["items"] == []
     assert response.closed
 
@@ -268,22 +285,21 @@ def test_cli_writes_private_report_and_sanitizes_credential_failure(
 @pytest.mark.parametrize("payload", [b"x" * 1025, b"{bad json", b"[]"])
 def test_reader_rejects_oversize_or_invalid_response_and_closes_it(payload):
     import io
-    from types import SimpleNamespace
+
+    from urllib3.response import HTTPResponse
 
     from app.services.native_workload_observations import WorkloadReader
 
     reader = object.__new__(WorkloadReader)
     reader.scan_deadline, reader.max_objects, reader.max_response_bytes = None, 10, 1024
-    response = io.BytesIO(payload)
-    reader.api = SimpleNamespace(call_api=lambda *args, **kwargs: response)
+    response = HTTPResponse(body=io.BytesIO(payload), status=200, preload_content=False)
+    reader.api = api_with_pool(lambda *args, **kwargs: response)
     with pytest.raises(ValueError):
         reader.workloads("Pod", "project")
     assert response.closed
 
 
 def test_expired_scan_never_dispatches_another_http_request():
-    from types import SimpleNamespace
-
     from app.services.native_workload_observations import WorkloadReader
 
     reader = object.__new__(WorkloadReader)
@@ -292,7 +308,7 @@ def test_expired_scan_never_dispatches_another_http_request():
     def unexpected(*args, **kwargs):
         pytest.fail("expired scan made request")
 
-    reader.api = SimpleNamespace(call_api=unexpected)
+    reader.api = api_with_pool(unexpected)
     with pytest.raises(TimeoutError):
         reader.workloads("Pod", "project")
 
@@ -421,3 +437,55 @@ def test_cli_cannot_overwrite_input_or_kubeconfig(tmp_path):
     assert (
         manifest.read_bytes() == original and config.read_text() == "PRIVATE-CREDENTIAL"
     )
+
+
+@pytest.mark.parametrize("status", [302, 401, 403, 404, 503])
+@pytest.mark.parametrize("operation", ["namespace", "workloads"])
+def test_real_client_error_transport_never_buffers_unbounded_body(status, operation):
+    import io
+    from types import SimpleNamespace
+
+    from kubernetes.client import ApiClient, Configuration
+    from urllib3.response import HTTPResponse
+
+    from app.services.native_workload_observations import WorkloadReader
+
+    class Body(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 <= size <= 1025, "transport attempted unbounded error-body read"
+            return super().read(size)
+
+    config = Configuration()
+    config.host = "https://example.invalid"
+    config.api_key["authorization"] = "Bearer TEST-TOKEN"
+    api = ApiClient(config)
+    body = Body(b"x" * 10000)
+    response = HTTPResponse(body=body, status=status, preload_content=False)
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return response
+
+    api.rest_client.pool_manager = SimpleNamespace(request=request)
+    reader = object.__new__(WorkloadReader)
+    reader.api, reader.scan_deadline, reader.max_objects = api, None, 7
+    reader.max_response_bytes = 1024
+    try:
+        with pytest.raises(ValueError):
+            if operation == "namespace":
+                reader.namespace("project")
+            else:
+                reader.workloads("Pod", "project")
+        assert body.closed
+        assert len(calls) == 1
+        method, url, kwargs = calls[0]
+        assert method == "GET" and url.startswith(
+            "https://example.invalid/api/v1/namespaces/project"
+        )
+        assert kwargs["headers"]["authorization"] == "Bearer TEST-TOKEN"
+        assert kwargs["preload_content"] is False
+        assert kwargs["redirect"] is False and kwargs["retries"] is False
+    finally:
+        response.close()
+        api.close()
