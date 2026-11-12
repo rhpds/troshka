@@ -6,7 +6,7 @@ SonarQube coverage on the newly refactored code.
 
 import re
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -7910,17 +7910,29 @@ class TestDeleteProjectRecord:
 
     @patch("app.services.deploy_service.notify_project")
     @patch("app.services.deploy_service.logger")
-    def test_project_exists_deletes_and_notifies(self, mock_logger, mock_notify):
+    @patch("app.services.quota_accounting.accrue")
+    @patch("app.services.quota_accounting.quotas_enabled", return_value=False)
+    @patch("app.services.quota_locks.lock_metering_project")
+    def test_project_exists_deletes_and_notifies(
+        self, mock_lock, mock_enabled, mock_accrue, mock_logger, mock_notify
+    ):
         from app.services.deploy_service import _delete_project_record
 
         mock_project = MagicMock()
         mock_session = MagicMock()
         mock_session.get.return_value = mock_project
+        # This orchestration test stubs the DB; real retention/identity checks
+        # are covered by test_metering_attribution using actual sessions.
+        mock_lock.return_value = (mock_project, None, None)
 
         with patch("app.core.database.SessionLocal", return_value=mock_session):
             _delete_project_record("proj-12345678")
 
         mock_session.delete.assert_called_once_with(mock_project)
+        mock_lock.assert_called_once_with(mock_session, "proj-12345678")
+        mock_accrue.assert_called_once_with(
+            mock_session, "proj-12345678", ANY, attributed_only=True
+        )
         mock_session.commit.assert_called_once()
         mock_notify.assert_called_once_with(
             "proj-12345678", {"type": "project-deleted"}

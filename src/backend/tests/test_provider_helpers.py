@@ -2,7 +2,7 @@
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -1191,7 +1191,14 @@ class TestCleanupKubevirtK8sResources:
 class TestCleanupKubevirtDbResources:
     """Tests for _cleanup_kubevirt_db_resources()."""
 
-    def test_with_projects_and_core_api(self):
+    @pytest.fixture(autouse=True)
+    def mock_retention(self):
+        # These tests stub SQLAlchemy; actual retained-owner locks and charges
+        # are exercised with a real DB in test_metering_attribution.
+        with patch("app.services.quota_accounting.retain_attributed_history") as retain:
+            yield retain
+
+    def test_with_projects_and_core_api(self, mock_retention):
         from app.api.providers import _cleanup_kubevirt_db_resources
 
         db = MagicMock()
@@ -1208,6 +1215,7 @@ class TestCleanupKubevirtDbResources:
         db.query.return_value.filter.return_value.all.return_value = [mock_project]
 
         _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
+        mock_retention.assert_called_once_with(db, [mock_project.id], ANY)
 
         # Namespace should be deleted via core_api
         core_api.delete_namespace.assert_called_once_with(name="lab-proj-000")
@@ -1215,7 +1223,7 @@ class TestCleanupKubevirtDbResources:
         db.delete.assert_any_call(mock_project)
         db.delete.assert_any_call(mock_host)
 
-    def test_without_core_api_skips_namespace_delete(self):
+    def test_without_core_api_skips_namespace_delete(self, mock_retention):
         from app.api.providers import _cleanup_kubevirt_db_resources
 
         db = MagicMock()
@@ -1231,12 +1239,13 @@ class TestCleanupKubevirtDbResources:
         db.query.return_value.filter.return_value.all.return_value = [mock_project]
 
         _cleanup_kubevirt_db_resources(db, provider, creds, None)
+        mock_retention.assert_called_once_with(db, [mock_project.id], ANY)
 
         # Project still deleted from DB, but no namespace call
         db.delete.assert_any_call(mock_project)
         db.delete.assert_any_call(mock_host)
 
-    def test_no_hosts(self):
+    def test_no_hosts(self, mock_retention):
         from app.api.providers import _cleanup_kubevirt_db_resources
 
         db = MagicMock()
@@ -1247,12 +1256,13 @@ class TestCleanupKubevirtDbResources:
         db.query.return_value.filter_by.return_value.all.return_value = []
 
         _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
+        mock_retention.assert_not_called()
 
         # No hosts means no projects queried, no deletes
         core_api.delete_namespace.assert_not_called()
         db.delete.assert_not_called()
 
-    def test_namespace_delete_failure_silenced(self):
+    def test_namespace_delete_failure_silenced(self, mock_retention):
         from app.api.providers import _cleanup_kubevirt_db_resources
 
         db = MagicMock()
@@ -1271,6 +1281,7 @@ class TestCleanupKubevirtDbResources:
 
         # Should not raise
         _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
+        mock_retention.assert_called_once_with(db, [mock_project.id], ANY)
 
         # Project and host still deleted even if namespace deletion failed
         db.delete.assert_any_call(mock_project)

@@ -9,7 +9,9 @@ Covers:
 """
 
 import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
+
+import pytest
 
 from app.core.auth import hash_password
 from app.models.project import Project
@@ -44,10 +46,19 @@ class TestNotify:
 
 
 class TestDeleteProject:
+    @pytest.fixture(autouse=True)
+    def mock_retention(self):
+        # DB is mocked here; real owner locks, charge retention and committing
+        # EIP interleavings remain covered in test_metering_attribution.
+        with patch("app.services.quota_accounting.retain_attributed_history") as retain:
+            yield retain
+
     @patch("app.services.project_timer._notify")
     @patch("app.core.redis.enqueue_job")
     @patch("app.services.deploy_service.stop_project_async")
-    def test_active_project_stops_first(self, mock_stop, mock_enqueue, mock_notify):
+    def test_active_project_stops_first(
+        self, mock_stop, mock_enqueue, mock_notify, mock_retention
+    ):
         s = MagicMock()
         project = MagicMock()
         project.id = "proj-del-active"
@@ -67,13 +78,16 @@ class TestDeleteProject:
         s.query.return_value.filter_by.return_value.all.return_value = []
 
         _delete_project(s, project)
+        assert mock_retention.call_args_list == [call(s, [project.id], ANY)] * 2
         mock_stop.assert_called_once_with("proj-del-active")
         s.delete.assert_called_once_with(project)
         s.commit.assert_called()
 
     @patch("app.services.project_timer._notify")
     @patch("app.core.redis.enqueue_job")
-    def test_stopped_project_enqueues_destroy(self, mock_enqueue, mock_notify):
+    def test_stopped_project_enqueues_destroy(
+        self, mock_enqueue, mock_notify, mock_retention
+    ):
         s = MagicMock()
         project = MagicMock()
         project.id = "proj-del-stopped"
@@ -87,12 +101,13 @@ class TestDeleteProject:
         s.query.return_value.filter_by.return_value.all.return_value = []
 
         _delete_project(s, project)
+        assert mock_retention.call_args_list == [call(s, [project.id], ANY)] * 2
         mock_enqueue.assert_called()
         s.delete.assert_called_once_with(project)
 
     @patch("app.services.project_timer._notify")
     @patch("app.services.eip_service.release_eip")
-    def test_releases_eips(self, mock_release, mock_notify):
+    def test_releases_eips(self, mock_release, mock_notify, mock_retention):
         s = MagicMock()
         project = MagicMock()
         project.id = "proj-del-eip"
@@ -103,11 +118,14 @@ class TestDeleteProject:
         s.query.return_value.filter_by.return_value.all.return_value = [eip]
 
         _delete_project(s, project)
+        assert mock_retention.call_args_list == [call(s, [project.id], ANY)] * 2
         mock_release.assert_called_once_with(s, eip)
 
     @patch("app.services.project_timer._notify")
     @patch("app.services.eip_service.release_eip", side_effect=Exception("err"))
-    def test_eip_release_failure_handled(self, mock_release, mock_notify):
+    def test_eip_release_failure_handled(
+        self, mock_release, mock_notify, mock_retention
+    ):
         s = MagicMock()
         project = MagicMock()
         project.id = "proj-del-eip2"
@@ -117,6 +135,7 @@ class TestDeleteProject:
         eip.public_ip = "5.6.7.8"
         s.query.return_value.filter_by.return_value.all.return_value = [eip]
         _delete_project(s, project)
+        assert mock_retention.call_args_list == [call(s, [project.id], ANY)] * 2
         s.delete.assert_called_once()
 
 

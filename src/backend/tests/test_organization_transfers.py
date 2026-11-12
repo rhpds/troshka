@@ -41,6 +41,23 @@ NOW = datetime(2026, 11, 11, 12, tzinfo=UTC)
 
 
 @pytest.fixture
+def isolated_api_quota_case(isolated_quota_database, monkeypatch, request):
+    """Give the enabled endpoint a complete, independent baseline inventory.
+
+    Legacy API suites intentionally retain unsupported projects in their shared
+    DB. Production readiness must still scan every project in the actual DB.
+    Rebind helpers' imported session aliases before constructing this case;
+    monkeypatch restores each alias after the dependent case tears down.
+    """
+    from tests import test_groups_api, test_metering_api, test_quota_permissions
+
+    for module in (test_groups_api, test_metering_api, test_quota_permissions):
+        monkeypatch.setattr(module, "TestSession", isolated_quota_database)
+    monkeypatch.setattr(f"{__name__}.TestSession", isolated_quota_database)
+    return request.getfixturevalue("quota_case")
+
+
+@pytest.fixture
 def api_quota_state():
     models = (
         QuotaReadiness,
@@ -756,12 +773,12 @@ def test_assignment_endpoint_exposes_org_and_enforces_platform_permission(
 
 @pytest.mark.parametrize("route", ["groups", "users"])
 def test_assignment_endpoint_denial_rolls_back_membership_and_returns_binding_capacity(
-    quota_case, api_quota_state, monkeypatch, route
+    isolated_api_quota_case, monkeypatch, route
 ):
     from tests.test_groups_api import make_group
     from tests.test_metering_api import _as_user, client
 
-    q = quota_case
+    q = isolated_api_quota_case
     destination = make_group(q.admin, q.manager, q.other)
     with TestSession.begin() as db:
         db.get(ManagedGroup, destination).is_organization = True
@@ -795,7 +812,7 @@ def test_assignment_endpoint_denial_rolls_back_membership_and_returns_binding_ca
         if route == "users"
         else client.put(f"/api/v1/groups/{destination}/members/{q.owner.id}")
     )
-    assert response.status_code == 409
+    assert response.status_code == 409, response.json()
     assert response.json()["detail"]["dimension"] == "cpu"
     with TestSession() as db:
         assert db.get(User, q.owner.id).organization_id == q.org

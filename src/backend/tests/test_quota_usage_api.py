@@ -1,4 +1,5 @@
 """Usage exposes authorized aggregates and exact values, never project rosters."""
+
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -176,7 +177,9 @@ def test_usage_visibility_and_collaborator_read_only(quota_case):
     )
 
 
-def test_group_count_authoritative_for_org_legacy_reporting_preserved(quota_case):
+def test_group_count_uses_authoritative_membership_and_ignores_legacy_rosters(
+    quota_case,
+):
     q = quota_case
     with TestSession() as db:
         db.add(ManagedGroupMember(group_id=q.org, user_id=q.reporter.id))
@@ -184,7 +187,11 @@ def test_group_count_authoritative_for_org_legacy_reporting_preserved(quota_case
     _as_user(q.admin)
     groups = {g["id"]: g for g in client.get("/api/v1/groups").json()}
     assert groups[q.org]["member_count"] == 1
-    assert groups[q.reporting]["member_count"] == 1
+    assert groups[q.reporting]["member_count"] == 0
+    with TestSession() as db:
+        # Both stale roster rows remain migration evidence, not current members.
+        assert db.get(ManagedGroupMember, (q.org, q.reporter.id)) is not None
+        assert db.get(ManagedGroupMember, (q.reporting, q.owner.id)) is not None
 
 
 def test_actual_monthly_vs_lifetime_charges_and_safe_failed_action_summary(
