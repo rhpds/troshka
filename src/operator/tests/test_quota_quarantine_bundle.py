@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import socket
 import ssl
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 from admission.bundle import render_bundle
+from admission.bundle_policy import control_policy
 from admission.models import ValidationError, parse_enrollments
 
 from tests.test_quota_quarantine import bundle, uid
@@ -27,6 +29,132 @@ ROLES = (
     "disruption",
 )
 TLS_NAME = "quarantine-tls"
+
+# Complete persisted Kubernetes v1.30 ObjectMeta except the two bookkeeping fields.
+# This is a structural/reference-model contract, not a CEL interpreter/API test.
+STATUS_METADATA = {
+    "name": "troshka-quarantine-a-b",
+    "generateName": "troshka-quarantine-a-",
+    "namespace": "quarantine-control",
+    "uid": uid(60),
+    "selfLink": "/legacy",
+    "generation": 10,
+    "creationTimestamp": "2026-11-12T00:00:00Z",
+    "deletionTimestamp": "2026-11-12T01:00:00Z",
+    "deletionGracePeriodSeconds": 30,
+    "labels": {"app.kubernetes.io/name": "troshka-quarantine"},
+    "annotations": {"example.com/note": "retained"},
+    "ownerReferences": [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "name": "troshka-quarantine-a",
+            "uid": uid(61),
+            "controller": True,
+        }
+    ],
+    "finalizers": ["example.com/cleanup"],
+}
+
+
+def status_contract():
+    spec = control_policy(
+        "quarantine-control",
+        TLS_NAME,
+        "config",
+        "example/operator:v1",
+        ["fixture-admin"],
+        {role: ["fixture-" + role] for role in ROLES},
+        ["fixture-node"],
+    )[0]["spec"]
+    variables = {item["name"]: item["expression"] for item in spec["variables"]}
+    expression = variables["statusMetadataUnchanged"]
+    # Recognize only the generated presence+equality grammar, then model it on
+    # JSON fixtures. Never eval CEL as Python or claim actual CEL execution.
+    pattern = (
+        r"\(has\(object\.metadata\.(\w+)\) == has\(oldObject\.metadata\.\1\) && "
+        r"\(!has\(object\.metadata\.\1\) \|\| "
+        r"object\.metadata\.\1 == oldObject\.metadata\.\1\)\)"
+    )
+    matches = list(re.finditer(pattern, expression))
+    assert " && ".join(match.group(0) for match in matches) == expression
+    fields = [match.group(1) for match in matches]
+    assert len(fields) == len(STATUS_METADATA) and set(fields) == set(STATUS_METADATA)
+    validation = spec["validations"][0]["expression"]
+    assert (
+        validation.count(
+            "variables.statusMetadataUnchanged && object.spec == oldObject.spec"
+        )
+        == 4
+    )
+    assert "object.metadata == oldObject.metadata" not in validation
+    return fields
+
+
+def status_reference_allows(fields, old, new):
+    return (
+        "spec" in old
+        and "spec" in new
+        and old["spec"] == new["spec"]
+        and all(
+            (field in old["metadata"]) == (field in new["metadata"])
+            and old["metadata"].get(field) == new["metadata"].get(field)
+            for field in fields
+        )
+    )
+
+
+def status_pair(existing_fields):
+    old = {
+        "metadata": deepcopy(STATUS_METADATA),
+        "spec": {"replicas": 2},
+        "status": {"readyReplicas": 0},
+    }
+    manager = {
+        "manager": "fixture-controller",
+        "operation": "Update",
+        "apiVersion": "v1",
+        "subresource": "status",
+        "fieldsType": "FieldsV1",
+        "fieldsV1": {"f:status": {"f:conditions": {}}},
+        "time": "2026-11-12T00:00:00Z",
+    }
+    if existing_fields:
+        old["metadata"]["managedFields"] = [deepcopy(manager)]
+    new = deepcopy(old)
+    new["status"] = {"readyReplicas": 2}
+    manager["time"] = "2026-11-12T00:01:00Z"
+    manager["fieldsV1"]["f:status"]["f:readyReplicas"] = {}
+    new["metadata"].update(resourceVersion="11", managedFields=[manager])
+    return old, new
+
+
+@pytest.mark.parametrize("existing_fields", [False, True])
+def test_status_metadata_bookkeeping_contract(existing_fields):
+    old, new = status_pair(existing_fields)
+    fields = status_contract()
+    assert status_reference_allows(fields, old, new)
+    # Missing optional fields on both sides remain equal.
+    old["metadata"] = {"uid": uid(60)}
+    new["metadata"] = {"uid": uid(60), "managedFields": []}
+    assert status_reference_allows(fields, old, new)
+
+
+@pytest.mark.parametrize("field", list(STATUS_METADATA) + ["spec"])
+@pytest.mark.parametrize("mutation", ["change", "remove", "add"])
+def test_status_metadata_and_spec_hitchhiking_contract(field, mutation):
+    old, new = status_pair(True)
+    before, after = (
+        (old, new) if field == "spec" else (old["metadata"], new["metadata"])
+    )
+    if mutation == "remove":
+        after.pop(field)
+    elif mutation == "add":
+        before.pop(field)
+    else:
+        after[field] = "changed"
+    fields = status_contract()
+    assert not status_reference_allows(fields, old, new)
 
 
 @pytest.fixture

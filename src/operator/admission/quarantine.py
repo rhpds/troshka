@@ -165,12 +165,14 @@ def _pair(request, kind):
     return old, new
 
 
-def _same_except(old, new, section, field):
+def _same_except(old, new, section, field, *, root_generation=False):
     pair = [deepcopy(old), deepcopy(new)]
     for value in pair:
         metadata = value["metadata"]
         metadata.pop("resourceVersion", None)
         metadata.pop("managedFields", None)
+        if root_generation:
+            metadata.pop("generation", None)
         if section is None:
             value.pop(field, None)
         elif type(value.get(section)) is dict:
@@ -203,7 +205,20 @@ def _finalizer_cleanup(old, new):
     )
 
 
-def _spec_delta(old, new, field, target):
+def _root_generation(old, new, changed):
+    """API strategies increment generation once for a changed root spec."""
+    before = old["metadata"].get("generation")
+    after = new["metadata"].get("generation")
+    return (
+        type(before) is int
+        and type(after) is int
+        and 0 < before < 2**63
+        and 0 < after < 2**63
+        and after == before + int(changed)
+    )
+
+
+def _spec_delta(old, new, field, target, *, root_generation=False):
     before, after = old.get("spec"), new.get("spec")
     if type(before) is not dict or type(after) is not dict:
         return False
@@ -211,7 +226,8 @@ def _spec_delta(old, new, field, target):
         _valid_old_field(before, field)
         and type(after.get(field)) is type(target)
         and after.get(field) == target
-        and _same_except(old, new, "spec", field)
+        and (not root_generation or _root_generation(old, new, before != after))
+        and _same_except(old, new, "spec", field, root_generation=root_generation)
     )
 
 
@@ -237,7 +253,7 @@ def _vm_cleanup(old, new):
         return False
     field = next(iter(modes))
     target = False if field == "running" else "Halted"
-    return _spec_delta(old, new, field, target)
+    return _spec_delta(old, new, field, target, root_generation=True)
 
 
 def _cleanup(request, resource, old, new):
@@ -249,9 +265,9 @@ def _cleanup(request, resource, old, new):
     if _finalizer_cleanup(old, new):
         return True
     if resource in _SCALABLE:
-        return _spec_delta(old, new, "replicas", 0)
+        return _spec_delta(old, new, "replicas", 0, root_generation=True)
     if resource == ("batch", "v1", "jobs"):
-        return _spec_delta(old, new, "suspend", True)
+        return _spec_delta(old, new, "suspend", True, root_generation=True)
     if resource == ("kubevirt.io", "v1", "virtualmachines"):
         return _vm_cleanup(old, new)
     return False

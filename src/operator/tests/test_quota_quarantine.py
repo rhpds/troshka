@@ -45,6 +45,7 @@ def obj(group="apps", version="v1", kind="Deployment"):
             "namespace": "isolated-project",
             "uid": uid(6),
             "resourceVersion": "10",
+            "generation": 10,
             "finalizers": ["example.com/cleanup"],
         },
         "spec": {
@@ -154,6 +155,8 @@ def test_replica_cleanup_only(resource, kind, scale):
     new["spec"]["replicas"] = 0
     new["metadata"]["resourceVersion"] = "11"
     new["metadata"]["managedFields"] = []
+    if not scale:
+        new["metadata"]["generation"] = 11
     assert allowed(
         envelope(
             old, new, resource=resource, subresource=subresource, kind=request_kind
@@ -178,7 +181,9 @@ def test_actual_operator_vm_and_job_cleanup():
         None,
     )
     vm["metadata"]["uid"] = uid(8)
+    vm["metadata"]["generation"] = 10
     halted = deepcopy(vm)
+    halted["metadata"]["generation"] = 11
     halted["spec"]["runStrategy"] = "Halted"
     assert allowed(
         envelope(vm, halted, group="kubevirt.io", resource="virtualmachines")
@@ -189,7 +194,9 @@ def test_actual_operator_vm_and_job_cleanup():
     )
     job = build_recert_job("recert", "isolated-project", "disk")
     job["metadata"]["uid"] = uid(9)
+    job["metadata"]["generation"] = 10
     suspended = deepcopy(job)
+    suspended["metadata"]["generation"] = 11
     suspended["spec"]["suspend"] = True
     assert allowed(envelope(job, suspended, group="batch", resource="jobs"))
 
@@ -200,6 +207,7 @@ def test_vm_power_mode_exclusive(strategy):
     old["spec"] = {strategy: True if strategy == "running" else "Always"}
     new = deepcopy(old)
     new["spec"][strategy] = False if strategy == "running" else "Halted"
+    new["metadata"]["generation"] = 11
     assert allowed(envelope(old, new, group="kubevirt.io", resource="virtualmachines"))
     new["spec"]["runStrategy" if strategy == "running" else "running"] = (
         "Halted" if strategy == "running" else False
@@ -207,6 +215,133 @@ def test_vm_power_mode_exclusive(strategy):
     assert not allowed(
         envelope(old, new, group="kubevirt.io", resource="virtualmachines")
     )
+
+
+ROOT_CLEANUPS = [
+    ("apps", "deployments", "Deployment", "replicas", 2, 0),
+    ("apps", "statefulsets", "StatefulSet", "replicas", 2, 0),
+    ("apps", "replicasets", "ReplicaSet", "replicas", 2, 0),
+    ("batch", "jobs", "Job", "suspend", False, True),
+    ("kubevirt.io", "virtualmachines", "VirtualMachine", "running", True, False),
+    (
+        "kubevirt.io",
+        "virtualmachines",
+        "VirtualMachine",
+        "runStrategy",
+        "Always",
+        "Halted",
+    ),
+]
+
+
+def root_cleanup(case):
+    group, resource, kind, field, before, after = case
+    old = obj(group, kind=kind)
+    old["spec"] = {field: before, "template": {"image": "safe:v1"}}
+    new = deepcopy(old)
+    new["spec"][field] = after
+    new["metadata"].update(generation=11, resourceVersion="11")
+    return envelope(old, new, group=group, resource=resource)
+
+
+@pytest.mark.parametrize("case", ROOT_CLEANUPS)
+def test_root_cleanup_generation_increment_and_noop(case):
+    document = root_cleanup(case)
+    assert allowed(document)
+    document["request"]["oldObject"] = deepcopy(document["request"]["object"])
+    assert allowed(document)  # Already stopped: no generation increment.
+    document["request"]["object"]["metadata"]["generation"] += 1
+    assert not allowed(document)
+
+
+@pytest.mark.parametrize("case", ROOT_CLEANUPS)
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        (10, 10),
+        (10, 9),
+        (10, 12),
+        (10, None),
+        (None, 11),
+        (None, None),
+        (0, 1),
+        (-1, 0),
+        (True, 2),
+        (1, True),
+        (10, "11"),
+        ("10", 11),
+        (2**63 - 1, 2**63),
+    ],
+)
+def test_root_cleanup_invalid_generation_denied(case, before, after):
+    document = root_cleanup(case)
+    for key, generation in (("oldObject", before), ("object", after)):
+        metadata = document["request"][key]["metadata"]
+        if generation is None:
+            metadata.pop("generation")
+        else:
+            metadata["generation"] = generation
+    assert not allowed(document)
+
+
+@pytest.mark.parametrize("case", ROOT_CLEANUPS)
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda n: n["metadata"].update(labels={"bypass": "yes"}),
+        lambda n: n["metadata"].update(annotations={"bypass": "yes"}),
+        lambda n: n["metadata"].update(ownerReferences=[]),
+        lambda n: n["metadata"].update(unknown="value"),
+        lambda n: n["metadata"].update(finalizers=[]),
+        lambda n: n["spec"]["template"].update(image="growth:v2"),
+        lambda n: n["spec"].update(unknown=True),
+        lambda n: n.update(unknown=True),
+        lambda n: n.update(status={"ready": True}),
+    ],
+)
+def test_each_root_cleanup_rejects_mixed_mutations(case, mutation):
+    document = root_cleanup(case)
+    mutation(document["request"]["object"])
+    assert not allowed(document)
+
+
+@pytest.mark.parametrize("cleanup", ["status", "scale", "finalizers"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda n: n["metadata"].update(generation=11),
+        lambda n: n["metadata"].update(labels={"bypass": "yes"}),
+        lambda n: n["metadata"].update(annotations={"bypass": "yes"}),
+        lambda n: n["metadata"].update(ownerReferences=[]),
+        lambda n: n["metadata"].update(unknown="value"),
+        lambda n: n.update(unknown=True),
+        lambda n: n["spec"].update(unknown=True),
+    ],
+)
+def test_nonroot_cleanup_keeps_generation_and_other_fields(cleanup, mutation):
+    old = obj("autoscaling", kind="Scale") if cleanup == "scale" else obj()
+    if cleanup == "finalizers":
+        old["metadata"]["deletionTimestamp"] = "2026-11-12T00:00:00Z"
+    new = deepcopy(old)
+    if cleanup == "finalizers":
+        new["metadata"]["finalizers"] = []
+    elif cleanup == "status":
+        new["status"] = {"replicas": 0}
+    else:
+        new["spec"]["replicas"] = 0
+    document = envelope(
+        old,
+        new,
+        subresource="" if cleanup == "finalizers" else cleanup,
+        kind=(
+            {"group": "autoscaling", "version": "v1", "kind": "Scale"}
+            if cleanup == "scale"
+            else None
+        ),
+    )
+    assert allowed(document)
+    mutation(document["request"]["object"])
+    assert not allowed(document)
 
 
 @pytest.mark.parametrize(
@@ -227,6 +362,7 @@ def test_cleanup_rejects_mixed_mutations(mutation):
     old = obj()
     new = deepcopy(old)
     new["spec"]["replicas"] = 0
+    new["metadata"]["generation"] = 11
     mutation(new)
     assert not allowed(envelope(old, new))
 

@@ -94,6 +94,12 @@ suspend true; kubevirt.io/v1 VirtualMachine Halted or running false. Status-only
 updates may be allowed only for explicitly enumerated built-in GVRs, not arbitrary
 custom controllers. Compare full objects after removing only the explicitly
 allowed changed fields and API-owned resourceVersion/managedFields metadata.
+For the enumerated root spec cleanup only, require positive signed-64-bit integer
+generation values: new generation equals old plus one when the allowed spec field
+changes, or equals old for an already-stopped no-op. Missing, boolean, noninteger,
+zero/negative, overflowing or other generation transitions deny. Remove generation
+from the full-object comparison only after this validation. Status, finalizer and
+scale-subresource comparisons retain generation equality without this exception.
 All other spec, labels, annotations, owner references, identity and unknown fields
 must remain equal. Reject cleanup combined with image, disk, template, metadata
 or unrelated status changes. If a transition cannot be safely expressed, deny it
@@ -125,6 +131,17 @@ usernames or blanket identity bypass. Never emit private keys or credentials, in
 cluster or modify existing manifests. Reject latest/main/production and digest-only
 image references. Group staged output into prerequisites/control protections and
 activation resources; no automatic apply. Refuse empty/wildcard enrollment.
+
+Controller status exceptions compare full spec and every persisted Kubernetes
+v1.30 ObjectMeta field except resourceVersion and managedFields. Require presence
+parity and value equality for name, generateName, namespace, selfLink, uid,
+generation, creationTimestamp, deletionTimestamp, deletionGracePeriodSeconds,
+labels, annotations, ownerReferences and finalizers. This field list targets the
+built-in API schema; unknown metadata is handled by that schema, not compared as
+arbitrary map keys by this policy. Target API type checking and real-controller
+status/rollout acceptance remain mandatory, including managedFields creation and
+timestamp/ownership updates paired with metadata/spec hitchhiking denials.
+
 Fixed resource names support one isolated first installation per cluster. Existing
 installation or tombstone history blocks the first-install runbook until cumulative
 history is independently reconciled. Offline rendering cannot preserve unseen
@@ -153,6 +170,13 @@ explicit remaining blockers. No fixed sleep proves propagation or settlement.
 Keep namespace tombstones through cleanup; do not provide a blanket uninstall
 that reopens previously quarantined writers. Roll back service code while
 preserving policy, enrollment and TLS protection.
+
+The metadata exceptions follow Kubernetes preparation before validating admission:
+[Job strategy](https://github.com/kubernetes/kubernetes/blob/v1.30.0/pkg/registry/batch/job/strategy.go),
+[Deployment strategy](https://github.com/kubernetes/kubernetes/blob/v1.30.0/pkg/registry/apps/deployment/strategy.go),
+[custom-resource strategy](https://github.com/kubernetes/kubernetes/blob/v1.30.0/staging/src/k8s.io/apiextensions-apiserver/pkg/registry/customresource/strategy.go),
+[managed-fields updater](https://github.com/kubernetes/apimachinery/blob/v0.30.0/pkg/util/managedfields/internal/managedfieldsupdater.go),
+and [ObjectMeta schema](https://github.com/kubernetes/apimachinery/blob/v0.30.0/pkg/apis/meta/v1/types.go).
 
 References: Kubernetes [dynamic admission](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)
 and [validating policies](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/).

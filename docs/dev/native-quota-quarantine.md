@@ -242,6 +242,13 @@ Require two ready replicas on the explicit eligible nodes, correct image, token
 automount false, HTTPS probes and healthy endpoints/disruption status. Inspect
 audit identity and exact operation for every policy-denied controller request.
 Never grant a blanket controller or bootstrap exemption to fix availability.
+Observe first status writes adding managedFields and subsequent writes changing
+its timestamp/ownership, with full spec and other metadata unchanged. Pair these
+with denied status writes that alter labels, annotations, owners, finalizers or
+spec. Policy comparison excludes only resourceVersion/managedFields bookkeeping;
+all other persisted ObjectMeta fields require equal presence and values. The
+built-in schema handles unknown metadata fields. Local structural/reference-model
+tests do not execute CEL or replace target API type checking and controller rollout.
 
 Controller scope: Deployment controller owns admission ReplicaSets and only the
 Deployment status; ReplicaSet controller creates/deletes shaped admission Pods
@@ -296,6 +303,14 @@ Record response operation/resource/subresource, reason and audit identity withou
 raw request bodies or credentials. For the fixture VM/Job, check `running:false`
 or `runStrategy:Halted` (exactly one power mode), Job `suspend:true`, supported
 status-only updates and removal-only finalizers on already-deleting objects.
+Independently test root Deployment/StatefulSet/ReplicaSet replica reductions;
+scale-subresource success alone is insufficient. Capture old/new generation for
+each root spec cleanup: a changed allowed field must increment positive integer
+generation exactly once; an already-stopped no-op must retain it. Generation is
+otherwise preserved by the status, finalizer and Scale-object comparisons. Do not
+client-edit generation to manufacture a passing request; inspect API-produced
+values. Root patches may first be tested with server dry-run while fixtures still
+have nonzero replicas, then verified with actual cleanup and persisted state.
 Paired image/disk/label/owner/unknown-field mutations must deny. Unsupported
 custom-controller status/finalizer changes are intentionally denied.
 

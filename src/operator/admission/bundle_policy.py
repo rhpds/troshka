@@ -114,7 +114,37 @@ def _class(group, resource, subresource, operations):
 def _status(group, resource, shape):
     return (
         f"({_class(group, resource, 'status', ['UPDATE'])} && {shape} && "
-        "object.metadata == oldObject.metadata && object.spec == oldObject.spec)"
+        "variables.statusMetadataUnchanged && object.spec == oldObject.spec)"
+    )
+
+
+def _status_metadata_unchanged():
+    """Compare ObjectMeta except API resourceVersion/managedFields bookkeeping.
+
+    These are all other persisted v1.30 ObjectMeta fields (clusterName was
+    removed). The API schema handles unknown metadata, not this field list.
+    Target API CEL type checking remains a required deployment gate.
+    """
+    fields = (
+        "name",
+        "generateName",
+        "namespace",
+        "selfLink",
+        "uid",
+        "generation",
+        "creationTimestamp",
+        "deletionTimestamp",
+        "deletionGracePeriodSeconds",
+        "labels",
+        "annotations",
+        "ownerReferences",
+        "finalizers",
+    )
+    return " && ".join(
+        f"(has(object.metadata.{field}) == has(oldObject.metadata.{field}) && "
+        f"(!has(object.metadata.{field}) || "
+        f"object.metadata.{field} == oldObject.metadata.{field}))"
+        for field in fields
     )
 
 
@@ -221,6 +251,7 @@ def control_policy(
     )
     variables = [
         ("target", 'request.operation == "DELETE" ? oldObject : object'),
+        ("statusMetadataUnchanged", _status_metadata_unchanged()),
         (
             "replicaSet",
             f"{_named(NAME)} && {_owner('apps/v1', 'Deployment', 'o.name == ' + literal(NAME))} && "

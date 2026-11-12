@@ -77,6 +77,7 @@ def test_server_review_health_and_safe_errors(caplog, tls_context):
             assert not (await response.json())["response"]["allowed"]
             document = envelope()
             document["request"]["object"]["spec"]["replicas"] = 0
+            document["request"]["object"]["metadata"]["generation"] = 11
             response = await client.post("/review", json=document, ssl=False)
             assert (await response.json())["response"]["allowed"]
             for body, status in [
