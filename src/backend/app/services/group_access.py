@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.managed_group import (
     ManagedGroup,
     ManagedGroupManager,
-    ManagedGroupMember,
 )
 from app.models.quota import QuotaAudit
 from app.models.user import User
@@ -19,19 +18,8 @@ def billing_owner_ids(db: Session, user: User) -> set[str] | None:
     if user.role == "admin":
         return None
     managed = db.query(ManagedGroupManager.group_id).filter_by(user_id=user.id)
-    organizations = db.query(ManagedGroup.id).filter(
-        ManagedGroup.id.in_(managed), ManagedGroup.is_organization.is_(True)
-    )
-    reporting = db.query(ManagedGroup.id).filter(
-        ManagedGroup.id.in_(managed), ManagedGroup.is_organization.is_(False)
-    )
-    members = (
-        db.query(ManagedGroupMember.user_id)
-        .filter(ManagedGroupMember.group_id.in_(reporting))
-        .all()
-    )
-    assigned = db.query(User.id).filter(User.organization_id.in_(organizations)).all()
-    return {user.id, *(row.user_id for row in members), *(row.id for row in assigned)}
+    assigned = db.query(User.id).filter(User.organization_id.in_(managed)).all()
+    return {user.id, *(row.id for row in assigned)}
 
 
 def require_billing_owner(db: Session, user: User, owner_id: str | None) -> None:

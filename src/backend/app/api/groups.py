@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.organization_assignments import commit_assignment
 from app.core.auth import get_current_user, require_role
 from app.core.database import get_db
 from app.models.managed_group import (
@@ -19,7 +20,6 @@ from app.models.quota import QuotaAllocation, QuotaAudit, QuotaReservation
 from app.models.user import User
 from app.schemas.managed_group import GroupCreate, GroupUpdate, ManagerAssignment
 from app.services.group_access import (
-    lock_assignment_user,
     prevent_last_manager_removal,
     require_managed_group,
 )
@@ -31,12 +31,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 def group_people(db: Session, group_id: str, association) -> list[dict]:
-    group = db.get(ManagedGroup, group_id)
-    if (
-        association is ManagedGroupMember
-        and group is not None
-        and group.is_organization
-    ):
+    if association is ManagedGroupMember:
         rows = (
             db.query(User)
             .filter_by(organization_id=group_id)
@@ -137,13 +132,6 @@ def _reject_in_use_organization(db: Session, group: ManagedGroup) -> None:
         )
 
 
-def _require_roster_authority(user: User, group: ManagedGroup) -> None:
-    if group.is_organization and user.role != "admin":
-        raise HTTPException(
-            403, "Platform administrator required for organization managers"
-        )
-
-
 @router.get("")
 def list_groups(user: CurrentUser, db: DbSession):
     query = db.query(ManagedGroup)
@@ -159,11 +147,7 @@ def list_groups(user: CurrentUser, db: DbSession):
             "description": g.description,
             "is_organization": g.is_organization,
             "cost_center_id": g.cost_center_id,
-            "member_count": (
-                db.query(User).filter_by(organization_id=g.id).count()
-                if g.is_organization
-                else db.query(ManagedGroupMember).filter_by(group_id=g.id).count()
-            ),
+            "member_count": db.query(User).filter_by(organization_id=g.id).count(),
             "manager_count": db.query(ManagedGroupManager)
             .filter_by(group_id=g.id)
             .count(),
@@ -199,8 +183,6 @@ def get_group(group_id: str, user: CurrentUser, db: DbSession):
 def update_group(group_id: str, body: GroupUpdate, user: AdminUser, db: DbSession):
     group = require_managed_group(db, user, group_id, lock=True)
     before = _organization_snapshot(group)
-    if body.is_organization is False and group.is_organization:
-        _reject_in_use_organization(db, group)
     if body.is_organization is not None:
         group.is_organization = body.is_organization
     if "cost_center_id" in body.model_fields_set:
@@ -240,27 +222,21 @@ def delete_group(group_id: str, user: AdminUser, db: DbSession):
 
 @router.put("/{group_id}/members/{user_id}")
 def add_member(group_id: str, user_id: str, user: AdminUser, db: DbSession):
-    lock_assignment_user(db, user_id)
-    group = require_managed_group(db, user, group_id, lock=True)
-    if db.get(ManagedGroupMember, (group_id, user_id)) is None:
-        db.add(ManagedGroupMember(group_id=group_id, user_id=user_id))
-    _save(db)
-    return group_detail(db, group)
+    group = require_managed_group(db, user, group_id)
+    result = commit_assignment(db, user, user_id, group.id)
+    return {**group_detail(db, group), "transfer": result}
 
 
 @router.delete("/{group_id}/members/{user_id}")
 def remove_member(group_id: str, user_id: str, user: AdminUser, db: DbSession):
-    group = require_managed_group(db, user, group_id, lock=True)
-    db.query(ManagedGroupMember).filter_by(group_id=group_id, user_id=user_id).delete()
-    db.commit()
-    return group_detail(db, group)
+    group = require_managed_group(db, user, group_id)
+    result = commit_assignment(db, user, user_id, None, expected_source=group.id)
+    return {**group_detail(db, group), "transfer": result}
 
 
 @router.post("/{group_id}/managers")
-def add_manager(
-    group_id: str, body: ManagerAssignment, user: CurrentUser, db: DbSession
-):
-    _require_roster_authority(user, require_managed_group(db, user, group_id))
+def add_manager(group_id: str, body: ManagerAssignment, user: AdminUser, db: DbSession):
+    require_managed_group(db, user, group_id)
     target = (
         db.query(User)
         .filter_by(email=body.email.strip())
@@ -271,7 +247,6 @@ def add_manager(
     if target is None:
         raise HTTPException(404, "User not found")
     group = require_managed_group(db, user, group_id, lock=True)
-    _require_roster_authority(user, group)
     if db.get(ManagedGroupManager, (group_id, target.id)) is None:
         before = {
             "manager_ids": [
@@ -293,9 +268,8 @@ def add_manager(
 
 
 @router.delete("/{group_id}/managers/{user_id}")
-def remove_manager(group_id: str, user_id: str, user: CurrentUser, db: DbSession):
+def remove_manager(group_id: str, user_id: str, user: AdminUser, db: DbSession):
     group = require_managed_group(db, user, group_id, lock=True)
-    _require_roster_authority(user, group)
     prevent_last_manager_removal(db, group_id, user_id)
     before = {
         "manager_ids": [

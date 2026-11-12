@@ -29,11 +29,25 @@ def quota_case():
     ]
     admin, manager, owner, reporter, other = users
     org = make_group(admin, manager, other)
-    reporting = make_group(admin, reporter, owner)
     with TestSession() as db:
-        from app.models.managed_group import ManagedGroup
+        from app.models.managed_group import (
+            ManagedGroup,
+            ManagedGroupManager,
+            ManagedGroupMember,
+        )
 
-        db.get(ManagedGroup, org).is_organization = True
+        # Legacy associations remain migration evidence, never current membership.
+        legacy = ManagedGroup(
+            name=uuid.uuid4().hex,
+            normalized_name=uuid.uuid4().hex,
+            is_organization=False,
+        )
+        db.add(legacy)
+        db.flush()
+        reporting = legacy.id
+        db.add(ManagedGroupManager(group_id=reporting, user_id=reporter.id))
+        db.add(ManagedGroupMember(group_id=reporting, user_id=owner.id))
+        db.get(User, other.id).organization_id = None
         db.get(User, owner.id).organization_id = org
         project = Project(
             name="Quota project", owner_id=owner.id, state="draft", budget_usd=12
@@ -86,7 +100,7 @@ def test_cross_organization_admin_cannot_change_user_policy(quota_case):
     q = quota_case
     from app.models.managed_group import ManagedGroup
 
-    other_org = make_group(q.admin, q.reporter, q.owner)
+    other_org = make_group(q.admin, q.reporter, q.other)
     with TestSession() as db:
         db.get(ManagedGroup, other_org).is_organization = True
         db.commit()
@@ -207,7 +221,7 @@ def test_org_manager_cannot_delegate_own_authority(quota_case):
             db.query(QuotaAudit)
             .filter_by(scope_id=q.org, action="organization_managers")
             .count()
-            == 1
+            == 2  # Initial assignment plus this platform-admin addition.
         )
 
 
@@ -222,7 +236,7 @@ def test_deleting_an_organization_administrator_audits_revocation(quota_case):
             .filter_by(scope_id=q.org, action="organization_managers")
             .all()
         )
-        assert len(audit) == 2
+        assert len(audit) == 3  # Initial assignment, addition and deletion.
         removed = next(
             row for row in audit if q.manager.id not in row.after["manager_ids"]
         )
@@ -271,7 +285,7 @@ def test_platform_admin_org_designation_cost_center_and_deletion_guard(quota_cas
         client.patch(
             f"/api/v1/groups/{q.org}", json={"is_organization": False}
         ).status_code
-        == 409
+        == 422
     )
     assert client.delete(f"/api/v1/groups/{q.org}").status_code == 409
 
@@ -299,7 +313,7 @@ def test_organization_with_ledger_allocation_cannot_be_deleted(quota_case):
         client.patch(
             f"/api/v1/groups/{org}", json={"is_organization": False}
         ).status_code
-        == 409
+        == 422
     )
 
 

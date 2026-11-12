@@ -76,8 +76,8 @@ def api_quota_state():
 
 
 @pytest.fixture
-def transfer_case(monkeypatch):
-    db = TestSession()
+def transfer_case(monkeypatch, isolated_quota_database):
+    db = isolated_quota_database()
     orgs = [
         ManagedGroup(
             name=uuid4().hex, normalized_name=uuid4().hex, is_organization=True
@@ -162,6 +162,12 @@ def transfer_case(monkeypatch):
     db.close()
 
 
+@pytest.fixture
+def enabled_transfer(transfer_case, monkeypatch):
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
+    return transfer_case
+
+
 def move(q, destination=True):
     return transfer_user(
         q.db, q.admin, q.owner.id, q.destination.id if destination else None, NOW
@@ -209,13 +215,255 @@ def test_transfer_moves_capacity_and_future_costs_without_resetting_any_history(
     assert audit.after["organization_id"] == q.destination.id
 
 
+def test_disabled_live_transfer_preserves_evidence_without_readiness_or_policy_actions(
+    transfer_case, monkeypatch
+):
+    q = transfer_case
+    baseline = q.db.get(QuotaReadiness, "baseline")
+    baseline.ready = False
+    baseline.details = {"accounting_ready": False, "native_capacity": "unknown"}
+    q.db.add_all(
+        [
+            QuotaPolicy(
+                scope="organization", scope_id=q.destination.id, cpu=0, spending_usd=0
+            ),
+            QuotaPolicy(scope="user", scope_id=q.owner.id, cpu=8, spending_usd=50),
+        ]
+    )
+    q.project.budget_usd = 30
+    q.project.topology = {"showroom": {"image": "unsupported"}}
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "Disabled transfer attempted provider/readiness/spending validation"
+        )
+
+    monkeypatch.setattr(accounting, "require_ready", forbidden)
+    monkeypatch.setattr(accounting, "spend", forbidden)
+    monkeypatch.setattr("app.services.metering_service.reconcile_project", forbidden)
+    result = move(q)
+    assert result["enforcement_state"] == "inactive"
+    assert result["capacity_state"] == result["accounting_state"] == "unverified"
+    assert result["spending_state"] == "inactive"
+    assert q.owner.organization_id == q.destination.id
+    assert baseline.ready is False
+    assert baseline.details == {"accounting_ready": False, "native_capacity": "unknown"}
+    assert q.db.query(QuotaReadiness).count() == 1
+    assert q.db.query(QuotaAllocation).count() == 1
+    assert (
+        q.allocation.organization_id
+        == q.reservation.organization_id
+        == q.destination.id
+    )
+    assert q.reservation.state == "reconciling"
+    assert q.reservation.dispatch_metadata == q.metadata
+    source, successor = (
+        q.db.query(MeteringInterval).order_by(MeteringInterval.started_at).all()
+    )
+    assert (
+        accounting.utc(source.ended_at) == accounting.utc(successor.started_at) == NOW
+    )
+    assert source.quota_attribution["organization_id"] == q.source.id
+    assert successor.quota_attribution["organization_id"] == q.destination.id
+    assert source.qty == successor.qty == 2
+    assert source.unit_rate == successor.unit_rate == 3
+    assert q.db.query(QuotaCharge).one().organization_id == q.source.id
+    assert (
+        q.db.query(QuotaPolicy).filter_by(scope="user", scope_id=q.owner.id).one().cpu
+        == 8
+    )
+    assert q.project.budget_usd == 30
+
+
+def test_disabled_transfer_retains_unknown_closed_history_without_guessing(
+    transfer_case,
+):
+    q = transfer_case
+    historic = MeteringInterval(
+        project_id=q.project.id,
+        kind="vcpu",
+        resource_id="old",
+        qty=1,
+        unit_rate=7,
+        started_at=NOW - timedelta(hours=3),
+        ended_at=NOW - timedelta(hours=2),
+    )
+    q.db.add(historic)
+    move(q)
+    assert historic.quota_attribution is None
+    assert q.db.query(QuotaCharge).filter_by(source_id=historic.id).count() == 0
+    assert (
+        q.db.query(QuotaCharge).filter_by(organization_id=q.destination.id).count() == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "unknown",
+        "malformed",
+        "wrong_owner",
+        "wrong_org",
+        "early_cursor",
+        "duplicate",
+        "overlap",
+    ],
+)
+def test_disabled_transfer_rejects_ambiguous_live_sources(transfer_case, invalid):
+    q = transfer_case
+    if invalid == "unknown":
+        q.interval.quota_attribution = None
+    elif invalid == "malformed":
+        q.interval.quota_attribution = {
+            "project_id": q.project.id,
+            "owner_id": q.owner.id,
+            "organization_id": q.source.id,
+        }
+    elif invalid == "early_cursor":
+        q.interval.quota_accrued_through = NOW - timedelta(hours=2)
+    elif invalid in {"duplicate", "overlap"}:
+        q.db.add(
+            MeteringInterval(
+                project_id=q.project.id,
+                kind=q.interval.kind,
+                resource_id=q.interval.resource_id,
+                qty=2,
+                unit_rate=3,
+                started_at=q.interval.started_at,
+                ended_at=NOW - timedelta(minutes=30) if invalid == "overlap" else None,
+                quota_attribution=q.interval.quota_attribution,
+            )
+        )
+    else:
+        key = "owner_id" if invalid == "wrong_owner" else "organization_id"
+        q.interval.quota_attribution = {
+            **q.interval.quota_attribution,
+            key: str(uuid4()),
+        }
+    with q.db.begin_nested() as savepoint:
+        with pytest.raises(AccountingUnavailable):
+            move(q)
+        savepoint.rollback()
+    assert q.owner.organization_id == q.source.id
+    assert q.interval.ended_at is None
+
+
+def test_disabled_transfer_rejects_inconsistent_confirmed_reservation(transfer_case):
+    q = transfer_case
+    q.reservation.state = "confirmed"
+    q.reservation.organization_id = q.destination.id
+    with pytest.raises(AccountingUnavailable, match="identity"):
+        move(q)
+    assert q.allocation.organization_id == q.source.id
+
+
+def test_multiple_transfers_preserve_closed_stamps_from_previous_groups(transfer_case):
+    q = transfer_case
+    move(q)
+    original_id = q.source.id
+    q.db.delete(q.source)  # Retained historical attribution needs no live group row.
+    third = ManagedGroup(name=uuid4().hex, normalized_name=uuid4().hex)
+    q.db.add(third)
+    q.db.flush()
+    transfer_user(q.db, q.admin, q.owner.id, third.id, NOW + timedelta(hours=1))
+    assert {r.organization_id: r.amount for r in q.db.query(QuotaCharge)} == {
+        original_id: Decimal(6),
+        q.destination.id: Decimal(6),
+    }
+    assert (
+        q.db.query(MeteringInterval)
+        .filter_by(ended_at=None)
+        .one()
+        .quota_attribution["organization_id"]
+        == third.id
+    )
+
+
+def test_failure_after_source_split_rolls_back_all_transfer_changes(
+    transfer_case, monkeypatch
+):
+    from app.services import organization_service
+
+    q = transfer_case
+
+    def fail_after_split(*args, **kwargs):
+        assert q.interval.ended_at is not None
+        assert q.db.query(QuotaCharge).count() == 1
+        raise RuntimeError("injected after source split")
+
+    monkeypatch.setattr(organization_service, "_move_ledger", fail_after_split)
+    with pytest.raises(RuntimeError, match="injected"):
+        with q.db.begin_nested():
+            move(q)
+    assert q.owner.organization_id == q.source.id
+    assert q.interval.ended_at is None
+    assert q.db.query(MeteringInterval).count() == 1
+    assert q.db.query(QuotaCharge).count() == 0
+    assert q.db.query(QuotaAudit).count() == 0
+    assert q.allocation.organization_id == q.reservation.organization_id == q.source.id
+
+
+@pytest.mark.parametrize("route", ["groups", "users"])
+@pytest.mark.parametrize("failure", [AccountingUnavailable, RuntimeError])
+def test_both_routes_roll_back_failures_after_source_split(
+    transfer_case, monkeypatch, route, failure
+):
+    from app.api.groups import add_member
+    from app.api.users import assign_organization
+    from app.schemas.user import OrganizationAssignment
+    from app.services import organization_service
+
+    q = transfer_case
+    ids = (q.owner.id, q.source.id, q.destination.id, q.project.id)
+    q.db.commit()
+
+    def fail_after_split(*args, **kwargs):
+        assert q.db.query(QuotaCharge).filter_by(project_id=ids[3]).count() == 1
+        raise failure("injected route failure")
+
+    monkeypatch.setattr(organization_service, "_move_ledger", fail_after_split)
+    with pytest.raises(
+        HTTPException if failure is AccountingUnavailable else RuntimeError
+    ) as exc:
+        if route == "groups":
+            add_member(ids[2], ids[0], q.admin, q.db)
+        else:
+            assign_organization(
+                ids[0], OrganizationAssignment(organization_id=ids[2]), q.admin, q.db
+            )
+    if failure is AccountingUnavailable:
+        assert exc.value.status_code == 503
+        assert exc.value.detail == {
+            "reason": "accounting_unavailable",
+            "message": "injected route failure",
+        }
+    q.db.expire_all()
+    assert q.db.get(User, ids[0]).organization_id == ids[1]
+    assert (
+        q.db.query(MeteringInterval).filter_by(project_id=ids[3]).one().ended_at is None
+    )
+    assert q.db.query(QuotaCharge).count() == 0
+    assert q.db.query(QuotaAudit).count() == 0
+    assert q.db.query(QuotaAllocation).one().organization_id == ids[1]
+    assert q.db.query(QuotaReservation).one().organization_id == ids[1]
+
+
+def test_expected_source_removal_cannot_unassign_a_new_membership(transfer_case):
+    q = transfer_case
+    move(q)
+    with pytest.raises(HTTPException) as exc:
+        transfer_user(q.db, q.admin, q.owner.id, None, NOW, expected_source=q.source.id)
+    assert exc.value.status_code == 409
+    assert q.owner.organization_id == q.destination.id
+
+
 @pytest.mark.parametrize(
     "dimension,limit", [("cpu", 5), ("storage_bytes", 19), ("projects", 0)]
 )
 def test_destination_includes_reserved_remainder_and_rejects_without_partial_changes(
-    transfer_case, dimension, limit
+    enabled_transfer, dimension, limit
 ):
-    q = transfer_case
+    q = enabled_transfer
     q.db.add(
         QuotaPolicy(
             scope="organization", scope_id=q.destination.id, **{dimension: limit}
@@ -245,9 +493,9 @@ def test_same_org_is_idempotent_even_if_current_limits_are_below_usage(transfer_
 
 
 def test_exhausted_destination_sets_durable_reevaluation_without_rejecting_transfer(
-    transfer_case,
+    enabled_transfer,
 ):
-    q = transfer_case
+    q = enabled_transfer
     q.db.add(
         QuotaPolicy(
             scope="organization", scope_id=q.destination.id, spending_usd=0, revision=7
@@ -306,8 +554,8 @@ def test_unassignment_accrues_closed_source_and_keeps_retained_attribution(
     assert accounting.charge_rows(q.db, "organization", q.source.id)[0].amount == 6
 
 
-def test_live_transfer_requires_authoritative_accounting(transfer_case):
-    q = transfer_case
+def test_live_transfer_requires_authoritative_accounting(enabled_transfer):
+    q = enabled_transfer
     q.db.get(QuotaReadiness, "baseline").ready = False
     with pytest.raises(AccountingUnavailable):
         move(q)
@@ -359,8 +607,10 @@ def test_organization_roster_and_billing_access_ignore_stale_reporting_rows(
     assert [u.id for u in scoped_members(q.db, q.destination.id)] == [q.owner.id]
     with pytest.raises(HTTPException):
         scoped_members(q.db, q.source.id, q.owner.id)
-    # An intentionally independent reporting group retains the legacy authority.
-    legacy = ManagedGroup(name=uuid4().hex, normalized_name=uuid4().hex)
+    # Retained legacy roster evidence cannot resurrect revoked access.
+    legacy = ManagedGroup(
+        name=uuid4().hex, normalized_name=uuid4().hex, is_organization=False
+    )
     q.db.add(legacy)
     q.db.flush()
     q.db.add_all(
@@ -370,7 +620,7 @@ def test_organization_roster_and_billing_access_ignore_stale_reporting_rows(
         ]
     )
     q.db.flush()
-    assert q.owner.id in billing_owner_ids(q.db, q.manager)
+    assert q.owner.id not in billing_owner_ids(q.db, q.manager)
 
 
 def test_org_reports_retain_former_member_costs_but_exclude_other_org_charges(
@@ -391,8 +641,8 @@ def test_org_reports_retain_former_member_costs_but_exclude_other_org_charges(
     assert Decimal(destination["active_projects"][0]["total_usd"]) == 6
 
 
-def test_destination_existing_usage_is_added_to_all_incoming_capacity(transfer_case):
-    q = transfer_case
+def test_destination_existing_usage_is_added_to_all_incoming_capacity(enabled_transfer):
+    q = enabled_transfer
     q.db.add_all(
         [
             QuotaPolicy(scope="organization", scope_id=q.destination.id, cpu=10),
@@ -443,8 +693,9 @@ def test_assignment_endpoint_exposes_org_and_enforces_platform_permission(
     assert client.get("/api/v1/auth/me").json()["organization_id"] == q.org
 
 
+@pytest.mark.parametrize("route", ["groups", "users"])
 def test_assignment_endpoint_denial_rolls_back_membership_and_returns_binding_capacity(
-    quota_case, api_quota_state
+    quota_case, api_quota_state, monkeypatch, route
 ):
     from tests.test_groups_api import make_group
     from tests.test_metering_api import _as_user, client
@@ -474,9 +725,14 @@ def test_assignment_endpoint_denial_rolls_back_membership_and_returns_binding_ca
             )
         )
     _as_user(q.admin)
-    response = client.put(
-        f"/api/v1/users/{q.owner.id}/organization",
-        json={"organization_id": destination},
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
+    response = (
+        client.put(
+            f"/api/v1/users/{q.owner.id}/organization",
+            json={"organization_id": destination},
+        )
+        if route == "users"
+        else client.put(f"/api/v1/groups/{destination}/members/{q.owner.id}")
     )
     assert response.status_code == 409
     assert response.json()["detail"]["dimension"] == "cpu"
@@ -499,6 +755,7 @@ def test_retiring_empty_organization_preserves_released_ledger_and_charge_identi
     organization = make_group(q.admin, q.manager, q.other)
     operation = uuid4().hex
     with TestSession.begin() as db:
+        db.get(User, q.other.id).organization_id = None
         db.get(ManagedGroup, organization).is_organization = True
         db.add(
             QuotaAllocation(
@@ -563,13 +820,16 @@ def test_retiring_empty_organization_preserves_released_ledger_and_charge_identi
     not os.getenv("QUOTA_TEST_POSTGRES_URL"),
     reason="disposable PostgreSQL URL not configured",
 )
-def test_opposite_transfers_serialize_without_deadlock_and_move_pending_work(postgres):
+def test_opposite_transfers_serialize_without_deadlock_and_move_pending_work(
+    postgres, monkeypatch
+):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
     from app.services.quota_admission import reserve, usage
 
     sessions, (projects, users, source, destination), _ = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     with sessions.begin() as db:
         db.get(User, users[1]).organization_id = destination
         db.query(QuotaPolicy).filter_by(
@@ -613,13 +873,16 @@ def test_opposite_transfers_serialize_without_deadlock_and_move_pending_work(pos
     not os.getenv("QUOTA_TEST_POSTGRES_URL"),
     reason="disposable PostgreSQL URL not configured",
 )
-def test_transfer_competes_atomically_with_another_users_admission(postgres):
+def test_transfer_competes_atomically_with_another_users_admission(
+    postgres, monkeypatch
+):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
     from app.services.quota_admission import reserve, usage
 
     sessions, (projects, users, source, destination), _ = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     with sessions.begin() as db:
         db.get(User, users[1]).organization_id = destination
         db.add(QuotaPolicy(scope="organization", scope_id=destination, cpu=10))
@@ -659,10 +922,12 @@ def test_transfer_competes_atomically_with_another_users_admission(postgres):
 )
 def test_cached_confirmation_refreshes_transferred_attribution_and_preserves_claim(
     postgres,
+    monkeypatch,
 ):
     from app.services.quota_admission import confirm, reserve
 
     sessions, (projects, users, _, destination), _ = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     with sessions.begin() as db:
         reserve(db, projects[0], "before-transfer", Resources(cpu=6), NOW)
         row = db.query(QuotaReservation).one()
@@ -698,7 +963,9 @@ def test_cached_confirmation_refreshes_transferred_attribution_and_preserves_cla
     not os.getenv("QUOTA_TEST_POSTGRES_URL"),
     reason="disposable PostgreSQL URL not configured",
 )
-def test_actual_transfer_fences_admission_resolved_before_membership_changed(postgres):
+def test_actual_transfer_fences_admission_resolved_before_membership_changed(
+    postgres, monkeypatch
+):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
@@ -708,6 +975,7 @@ def test_actual_transfer_fences_admission_resolved_before_membership_changed(pos
     from app.services.quota_locks import ScopeChanged
 
     sessions, (projects, users, _, destination), engine = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     resolving, transferred = Event(), Event()
     with sessions.begin() as db:
         db.add(QuotaPolicy(scope="organization", scope_id=destination, cpu=5))
@@ -749,3 +1017,149 @@ def test_actual_transfer_fences_admission_resolved_before_membership_changed(pos
     finally:
         transferred.set()
         event.remove(engine, "before_cursor_execute", pause_before_user_lock)
+
+
+@pytest.mark.skipif(
+    not os.getenv("QUOTA_TEST_POSTGRES_URL"),
+    reason="disposable PostgreSQL URL not configured",
+)
+def test_disabled_transfer_checks_stale_removal_after_waiting_for_user_lock(
+    postgres, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, get_ident
+
+    from sqlalchemy import event
+
+    sessions, (_, users, source, destination), engine = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: False)
+    attempted, finished = Event(), Event()
+    worker_ids = []
+
+    def deleting():
+        worker_ids.append(get_ident())
+        with sessions() as db:
+            cached = db.get(User, users[0])
+            assert cached.organization_id == source
+            try:
+                transfer_user(db, cached, users[0], None, NOW, expected_source=source)
+                db.commit()
+                return "removed"
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+            finally:
+                finished.set()
+
+    def observe(_conn, _cursor, statement, _parameters, _context, _many):
+        if (
+            worker_ids
+            and get_ident() == worker_ids[0]
+            and "FROM users" in statement
+            and "FOR UPDATE" in statement
+        ):
+            attempted.set()
+
+    event.listen(engine, "before_cursor_execute", observe)
+    try:
+        with sessions() as db, ThreadPoolExecutor(max_workers=1) as pool:
+            transfer_user(db, db.get(User, users[0]), users[0], destination, NOW)
+            pending = pool.submit(deleting)
+            try:
+                assert attempted.wait(3)
+                assert not finished.wait(0.2)
+                db.commit()
+            finally:
+                db.rollback()
+            assert pending.result(timeout=5) == 409
+        with sessions() as db:
+            assert db.get(User, users[0]).organization_id == destination
+            assert (
+                db.query(QuotaAudit).filter_by(action="organization_transfer").count()
+                == 1
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)
+
+
+@pytest.mark.skipif(
+    not os.getenv("QUOTA_TEST_POSTGRES_URL"),
+    reason="disposable PostgreSQL URL not configured",
+)
+def test_disabled_transfer_splits_sources_atomically_with_accrual(
+    postgres, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, get_ident
+
+    from sqlalchemy import event
+
+    from app.services.quota_locks import ScopeChanged
+
+    sessions, (projects, users, source, destination), engine = postgres
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: False)
+    with sessions.begin() as db:
+        db.get(QuotaReadiness, "baseline").ready = False
+        project = db.get(Project, projects[0])
+        project.state = "running"
+        db.add(
+            MeteringInterval(
+                project_id=project.id,
+                kind="vcpu",
+                resource_id="vm",
+                qty=2,
+                unit_rate=3,
+                started_at=NOW - timedelta(hours=1),
+                quota_attribution=accounting.attribution(db, project),
+            )
+        )
+    attempted, finished = Event(), Event()
+    worker_ids = []
+
+    def accruing():
+        worker_ids.append(get_ident())
+        with sessions() as db:
+            try:
+                accounting.accrue(db, projects[0], NOW + timedelta(hours=1))
+                db.commit()
+                return "unexpectedly committed"
+            except ScopeChanged:
+                db.rollback()
+                accounting.accrue(db, projects[0], NOW + timedelta(hours=1))
+                db.commit()
+                return "retried"
+            finally:
+                finished.set()
+
+    def observe(_conn, _cursor, statement, _parameters, _context, _many):
+        if worker_ids and get_ident() == worker_ids[0] and "FOR UPDATE" in statement:
+            attempted.set()
+
+    event.listen(engine, "before_cursor_execute", observe)
+    try:
+        with sessions() as db, ThreadPoolExecutor(max_workers=1) as pool:
+            result = transfer_user(
+                db, db.get(User, users[0]), users[0], destination, NOW
+            )
+            assert result["enforcement_state"] == "inactive"
+            pending = pool.submit(accruing)
+            try:
+                assert attempted.wait(3)
+                assert not finished.wait(0.2)
+                db.commit()
+            finally:
+                db.rollback()
+            assert pending.result(timeout=5) == "retried"
+        with sessions() as db:
+            assert db.get(QuotaReadiness, "baseline").ready is False
+            assert {r.organization_id: r.amount for r in db.query(QuotaCharge)} == {
+                source: Decimal(6),
+                destination: Decimal(6),
+            }
+            assert (
+                db.query(QuotaAllocation).count()
+                == db.query(QuotaReservation).count()
+                == 0
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)

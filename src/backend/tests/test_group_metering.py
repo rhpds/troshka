@@ -4,7 +4,11 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from app.models.managed_group import ManagedGroup
+from app.models.managed_group import (
+    ManagedGroup,
+    ManagedGroupManager,
+    ManagedGroupMember,
+)
 from app.models.metering import MeteringInterval, MonthlyStatement
 from app.models.project import Project
 from app.services.group_metering import group_report
@@ -17,6 +21,24 @@ START = datetime(2026, 11, 1, tzinfo=UTC)
 actors = group_actors
 NOW = datetime(2026, 11, 1, 2, tzinfo=UTC)
 END = datetime(2026, 12, 1, tzinfo=UTC)
+
+
+def legacy_group(manager, member):
+    """Retained legacy arithmetic fixture; new API groups are organizations.
+
+    Unified organization reporting replaces this coverage in the reporting task.
+    """
+    with TestSession.begin() as db:
+        group = ManagedGroup(
+            name=uuid.uuid4().hex,
+            normalized_name=uuid.uuid4().hex,
+            is_organization=False,
+        )
+        db.add(group)
+        db.flush()
+        db.add(ManagedGroupManager(group_id=group.id, user_id=manager.id))
+        db.add(ManagedGroupMember(group_id=group.id, user_id=member.id))
+        return group.id
 
 
 def setup_usage(db, owner):
@@ -40,7 +62,7 @@ def setup_usage(db, owner):
 
 def test_provisional_clipping_deleted_drafts_and_duplicate_suppression(actors):
     admin, manager, member, _, _ = actors
-    gid = make_group(admin, manager, member)
+    gid = legacy_group(manager, member)
     with TestSession() as db:
         project = setup_usage(db, member)
         db.add(
@@ -93,7 +115,7 @@ def test_provisional_clipping_deleted_drafts_and_duplicate_suppression(actors):
 
 def test_frozen_final_precedence_and_unavailable(actors):
     admin, manager, member, peer, _ = actors
-    gid = make_group(admin, manager, member)
+    gid = legacy_group(manager, member)
     with TestSession() as db:
         setup_usage(db, member)
         frozen = [
@@ -164,7 +186,7 @@ def test_group_documents_owner_filter_and_disabled_metering(actors):
 
 def test_empty_group_and_draft_zero(actors):
     admin, manager, member, _, _ = actors
-    gid = make_group(admin, manager, member)
+    gid = legacy_group(manager, member)
     with TestSession() as db:
         result = group_report(db, db.get(ManagedGroup, gid), [], 2026, 11, NOW)
         assert result["members"] == []
@@ -194,7 +216,7 @@ def test_empty_group_and_draft_zero(actors):
 
 def test_closed_intervals_quantity_units_and_zero_replacement(actors):
     admin, manager, member, _, _ = actors
-    gid = make_group(admin, manager, member)
+    gid = legacy_group(manager, member)
     with TestSession() as db:
         project = Project(name="Closed", owner_id=member.id, state="stopped")
         db.add(project)
@@ -241,7 +263,7 @@ def test_closed_intervals_quantity_units_and_zero_replacement(actors):
 
 def test_active_spend_distinguishes_missing_intervals_from_recorded_zero(actors):
     admin, manager, member, _, _ = actors
-    gid = make_group(admin, manager, member)
+    gid = legacy_group(manager, member)
     with TestSession() as db:
         missing = Project(
             name="No interval evidence", owner_id=member.id, state="active"

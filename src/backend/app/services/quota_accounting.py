@@ -198,10 +198,15 @@ def retain_attributed_history(db: Session, project_ids, through: datetime) -> No
 
 
 def split_attribution(
-    db: Session, project_id: str, through: datetime, organization_id: str
+    db: Session,
+    project_id: str,
+    through: datetime,
+    organization_id: str,
+    *,
+    attributed_only: bool = False,
 ) -> None:
     """Transfer hook: caller holds admission/membership locks, before changing membership."""
-    accrue(db, project_id, through)
+    accrue(db, project_id, through, attributed_only=attributed_only)
     project = db.get(Project, project_id)
     if project is None:
         raise AccountingUnavailable("Missing project during attribution transfer")

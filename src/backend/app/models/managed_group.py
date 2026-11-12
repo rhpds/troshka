@@ -22,7 +22,7 @@ class ManagedGroup(Base):
     )
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     is_organization: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false"
+        Boolean, default=True, server_default="true"
     )
     cost_center_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(

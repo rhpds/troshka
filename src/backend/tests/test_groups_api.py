@@ -52,6 +52,67 @@ def make_group(admin, manager, member):
     return gid
 
 
+def test_new_groups_are_organizations_and_reject_explicit_false(actors):
+    admin, manager, member, _, _ = actors
+    gid = make_group(admin, manager, member)
+    assert client.get(f"/api/v1/groups/{gid}").json()["is_organization"] is True
+    assert (
+        client.post(
+            "/api/v1/groups", json={"name": uuid.uuid4().hex, "is_organization": False}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            f"/api/v1/groups/{gid}", json={"is_organization": False}
+        ).status_code
+        == 422
+    )
+
+
+def test_group_routes_move_authoritative_membership_and_reject_stale_removal(actors):
+    from app.models.user import User
+
+    admin, manager, member, peer, _ = actors
+    first = make_group(admin, manager, member)
+    second = make_group(admin, peer, member)
+    assert client.get(f"/api/v1/groups/{first}").json()["members"] == []
+    assert [
+        row["id"] for row in client.get(f"/api/v1/groups/{second}").json()["members"]
+    ] == [member.id]
+    assert (
+        client.delete(f"/api/v1/groups/{first}/members/{member.id}").status_code == 409
+    )
+    with TestSession() as db:
+        assert db.get(User, member.id).organization_id == second
+    assert (
+        client.delete(f"/api/v1/groups/{second}/members/{member.id}").status_code == 200
+    )
+    with TestSession() as db:
+        assert db.get(User, member.id).organization_id is None
+
+
+def test_legacy_group_manager_cannot_change_any_roster(actors):
+    from app.models.managed_group import ManagedGroup
+
+    admin, manager, member, peer, _ = actors
+    gid = make_group(admin, manager, member)
+    with TestSession.begin() as db:
+        db.get(ManagedGroup, gid).is_organization = False
+    _as_user(manager)
+    assert (
+        client.post(
+            f"/api/v1/groups/{gid}/managers", json={"email": peer.email}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.delete(f"/api/v1/groups/{gid}/managers/{manager.id}").status_code == 403
+    )
+    assert client.put(f"/api/v1/groups/{gid}/members/{peer.id}").status_code == 403
+    assert client.delete(f"/api/v1/groups/{gid}/members/{member.id}").status_code == 403
+
+
 def test_group_access_delegation_and_revocation(actors):
     admin, manager, member, peer, operator = actors
     gid = make_group(admin, manager, member)
@@ -62,7 +123,7 @@ def test_group_access_delegation_and_revocation(actors):
     _as_user(manager)
     assert client.get(f"/api/v1/groups/{other}").status_code == 404
     assert (
-        client.delete(f"/api/v1/groups/{gid}/managers/{manager.id}").status_code == 409
+        client.delete(f"/api/v1/groups/{gid}/managers/{manager.id}").status_code == 403
     )
     assert client.get(f"/api/v1/metering/invoices/{invoice}").status_code == 200
     assert client.get(f"/api/v1/metering/statements/{statement}").status_code == 200
@@ -74,6 +135,13 @@ def test_group_access_delegation_and_revocation(actors):
     )
     assert client.get("/api/v1/users/").status_code == 403
     assert client.put("/api/v1/metering/rates", json={"rates": {}}).status_code == 403
+    assert (
+        client.post(
+            f"/api/v1/groups/{gid}/managers", json={"email": "missing@test.invalid"}
+        ).status_code
+        == 403
+    )
+    _as_user(admin)
     assert (
         client.post(
             f"/api/v1/groups/{gid}/managers", json={"email": "missing@test.invalid"}
@@ -91,6 +159,7 @@ def test_group_access_delegation_and_revocation(actors):
     assert (
         client.delete(f"/api/v1/groups/{gid}/managers/{manager.id}").status_code == 200
     )
+    _as_user(manager)
     assert client.get(f"/api/v1/metering/invoices/{invoice}").status_code == 403
     _as_user(member)
     assert client.get(f"/api/v1/groups/{gid}").status_code == 404
@@ -105,10 +174,12 @@ def test_group_access_delegation_and_revocation(actors):
     assert client.get(f"/api/v1/metering/invoices/{invoice}").status_code == 403
 
 
-def test_overlapping_groups_project_paths_and_member_revocation(actors):
+def test_single_membership_project_paths_and_member_revocation(actors):
     admin, manager, member, peer, _ = actors
     first = make_group(admin, manager, member)
     second = make_group(admin, manager, member)
+    assert client.get(f"/api/v1/groups/{first}").json()["members"] == []
+    assert len(client.get(f"/api/v1/groups/{second}").json()["members"]) == 1
     with TestSession() as db:
         project = Project(name="Scoped", owner_id=member.id, state="draft")
         db.add(project)
@@ -133,11 +204,15 @@ def test_overlapping_groups_project_paths_and_member_revocation(actors):
         == 404
     )
     _as_user(admin)
-    client.delete(f"/api/v1/groups/{first}/members/{member.id}")
+    assert (
+        client.delete(f"/api/v1/groups/{first}/members/{member.id}").status_code == 409
+    )
     _as_user(manager)
     assert client.get(f"/api/v1/metering/projects/{pid}").status_code == 200
     _as_user(admin)
-    client.delete(f"/api/v1/groups/{second}/members/{member.id}")
+    assert (
+        client.delete(f"/api/v1/groups/{second}/members/{member.id}").status_code == 200
+    )
     _as_user(manager)
     assert client.get(f"/api/v1/metering/projects/{pid}").status_code == 403
 
@@ -183,6 +258,8 @@ def test_admin_crud_duplicates_and_unmanaged_discovery(actors):
     assert (
         client.delete(f"/api/v1/groups/{gid}/managers/{manager.id}").status_code == 409
     )
+    assert client.delete(f"/api/v1/groups/{gid}").status_code == 409
+    assert client.delete(f"/api/v1/groups/{gid}/members/{member.id}").status_code == 200
     assert client.delete(f"/api/v1/groups/{gid}").status_code == 204
     _as_user(manager)
     assert client.get(f"/api/v1/groups/{gid}").status_code == 404
@@ -199,7 +276,7 @@ def test_manager_assignment_preserves_exact_email_identity(actors):
             {"auth_source": "openshift"}
         )
         db.commit()
-    _as_user(manager)
+    _as_user(admin)
     assigned = client.post(
         f"/api/v1/groups/{gid}/managers", json={"email": f"  {mixed.email}  "}
     )
