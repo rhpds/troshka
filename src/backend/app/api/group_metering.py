@@ -1,4 +1,4 @@
-"""Financial reports limited to the requested group's current members."""
+"""Attributed group usage and separately scoped current-owner documents."""
 
 from typing import Annotated
 
@@ -32,7 +32,7 @@ def report(
     return group_report(
         db,
         group,
-        scoped_members(db, group_id, owner_id),
+        scoped_members(db, group_id),
         year,
         month,
         owner_id=owner_id,
@@ -48,7 +48,10 @@ def _documents(db, user, group_id, owner_id, model, summary):
     if model is MonthlyStatement:
         query = query.filter(MonthlyStatement.status == "final")
     rows = query.order_by(model.period_end.desc()).all()
-    return [summary(row, emails[row.owner_id]) for row in rows]
+    return [
+        {**summary(row, emails[row.owner_id]), "billing_view": "owner_billing_history"}
+        for row in rows
+    ]
 
 
 @router.get("/{group_id}/invoices")

@@ -689,16 +689,17 @@ def test_org_reports_retain_former_member_costs_but_exclude_other_org_charges(
     q = transfer_case
     move(q)
     accounting.accrue(q.db, q.project.id, NOW + timedelta(hours=1))
-    monkeypatch.setattr("app.services.group_metering.quotas_enabled", lambda: True)
     source = group_report(q.db, q.source, [], 2026, 11, NOW + timedelta(hours=1))
     destination = group_report(
         q.db, q.destination, [q.owner], 2026, 11, NOW + timedelta(hours=1)
     )
-    assert Decimal(source["total_usd"]) == 6
+    assert Decimal(source["known_subtotal_usd"]) == 6
+    assert source["total_usd"] is None
     assert source["active_projects"] == []
-    assert Decimal(destination["total_usd"]) == 6
-    assert Decimal(destination["members"][0]["total_usd"]) == 6
-    assert Decimal(destination["active_projects"][0]["total_usd"]) == 6
+    assert Decimal(destination["known_subtotal_usd"]) == 6
+    assert destination["total_usd"] is None
+    assert Decimal(destination["members"][0]["known_subtotal_usd"]) == 6
+    assert Decimal(destination["active_projects"][0]["known_subtotal_usd"]) == 6
 
 
 def test_destination_existing_usage_is_added_to_all_incoming_capacity(enabled_transfer):
