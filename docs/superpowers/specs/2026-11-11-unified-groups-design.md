@@ -6,6 +6,18 @@ that appears to move a user but leaves their quota organization unchanged. This
 implements the original approved single-organization model; it does not require
 another model-selection approval.
 
+## Scope correction: fresh implementation
+
+The user waived historical data/cost migration. Start group accounting at a
+recorded rollout boundary; do not backfill or reconcile pre-rollout costs.
+Existing projects, images, patterns and their ownership must remain intact.
+Preserve asset IDs, owner IDs, personal libraries, sharing records, storage
+references and provider resources. Membership conversion must never delete or
+recreate assets or transfer their ownership. Existing billing documents can stay
+untouched without importing their costs. Transfers after rollout still preserve
+the attribution of charges created by the new implementation. This correction
+supersedes historical backfill requirements in the original plan.
+
 ## Invariants
 
 - `User.organization_id` is the sole current membership authority.
@@ -60,9 +72,8 @@ scoped to the requested group's attribution, never the owner's entire history.
 Keep owner invoices/statements unchanged and label their current-member document
 view as owner billing history. They may span multiple organizations; do not add
 them to group charge totals or relabel whole documents as employer charges.
-Preexisting Default-attributed history stays Default. Legacy unstamped history
-uses the established migration provenance rule, not the current reporting roster
-as proof of historical employer. Unknown/deleted-owner history stays unresolved.
+Pre-rollout history is outside new group totals. Do not backfill legacy unstamped
+history or infer historical employers. New accounting begins at the saved boundary.
 
 ## Migration and deployment
 
@@ -76,14 +87,16 @@ resolution. Preserve group IDs, managers, policies and legacy roster evidence.
 The observed production candidate has nine users in two nonoverlapping groups,
 all currently Default. Recheck before apply; this is evidence, not a hardcoded map.
 
-Deploy attribution-aware writers before membership changes. Drain/fence old API,
+Prepare attribution-aware writers before membership changes. Drain/fence old API,
 worker and metering writers during the conversion boundary; DB locks alone cannot
-fence old processes or already dispatched work. Preserve/backfill source identities
-before membership changes, split open sources, move actual ledger rows, audit and
-store receipt atomically. The full quota baseline's conditional cutover cannot be
-reused as this identity migration. Later baseline work must honor saved stamps.
-Resume only new writers and verify membership, permissions, unchanged historical
-charges/documents and truthful reports. Post-cutover rollback uses compensating
+fence old processes or already dispatched work. Close existing open sources at
+the boundary without accruing their past costs, then open successors under the
+authoritative membership with observed quantities/rates. Move actual ledger rows,
+audit and store the accounting start/receipt atomically. Verify asset ownership,
+sharing and storage-reference fingerprints unchanged. Do not use the full quota
+baseline as the conversion entry point or import legacy billing summaries.
+Resume only new writers and verify membership, permissions, preserved assets and
+ownership, and truthful reports starting at the boundary. Post-cutover rollback uses compensating
 transfers at a new boundary, never a historical dump restore over new activity.
 
 ## User interface
@@ -102,6 +115,6 @@ Cover disabled transfers with active projects, historical attribution, rollback,
 stale removal, limit preservation, permission revocation and enabled over-cap
 denial. Use disposable PostgreSQL to verify membership/metering lock races.
 Rehearse migration with nine users/two groups plus overlap/drift/cursor failures.
-Validate owner documents and pre-boundary charge amounts/identities unchanged,
-source split arithmetic unchanged, no invented capacity, and native unknowns
-remain unknown. UI tests cover creation and moving a member through Groups.
+Validate project/image/pattern/library ownership, sharing and storage references
+unchanged, no pre-boundary costs imported, no invented capacity, and native unknowns
+remaining unknown. UI tests cover creation and moving a member through Groups.

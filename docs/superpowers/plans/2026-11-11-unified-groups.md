@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-11-unified-groups-design.md`
 
+**Scope correction:** The user waived historical data and cost migration. Task5
+now starts accounting fresh and preserves all projects/images/patterns, ownership,
+sharing and storage references. Do not backfill old costs. Already completed
+transfer/report checks still protect normal activity after rollout.
+
 ## Global Constraints
 
 - `User.organization_id` is the sole current membership authority.
@@ -138,28 +143,31 @@ information-icon popover. Read frontend AGENTS and installed Next docs.
 - [ ] GREEN focused Vitest/typecheck/lint and desktop/mobile visual checks.
 - [ ] Hooks/commit/review; do not release UI before backend/cutover ready.
 
-### Task 5: Audited membership conversion
+### Task 5: Fresh accounting and membership conversion
 
 **Files:** new `services/group_migration.py`, `scripts/migrate_groups.py`, migration
 for true group defaults and receipt model if required; tests
 `test_group_migration.py`, `docs/dev/unified-groups-migration.md`.
 
 **Interfaces:** operator CLI has explicit DB target and dry-run/apply with expected
-inventory digest; durable receipt records boundary/mapping/digest. No implicit
+inventory digest; durable receipt records accounting start/mapping/digest. No implicit
 production target, credential output or live conversion inside Alembic. Preserve
 legacy association table as evidence. All-or-nothing apply and exact replay.
 
 - [ ] RED deterministic nine-user mapping, overlap/conflicting nondefault
-  rejection, stale inventory/cursor rejection, whole-transaction rollback,
-  replay idempotency, historical documents/charges unchanged.
+  rejection, stale inventory rejection, whole-transaction rollback,
+  replay idempotency, project/image/pattern/library ownership and storage intact.
   ```python
   assert applied_again.receipt_id == applied.receipt_id
   assert legacy_roster_after == legacy_roster_before
-  assert historical_charge_digest_after == historical_charge_digest_before
+  assert asset_ownership_digest_after == asset_ownership_digest_before
   ```
-- [ ] Implement identity attribution backfill and boundary split before mapping;
-  old unknown history uses documented Default provenance, never new employer
-  guesses. Preserve actual live ledger IDs and policies, leave readiness false.
+- [ ] Close pre-rollout open intervals at the boundary without accruing old costs,
+  update authoritative membership, open freshly stamped successors from observed
+  quantities/rates, and persist the fresh accounting start. Do not import invoices,
+  statements or old quota costs. Filter new group totals to the new accounting era.
+  Preserve actual live ledger IDs/policies and all asset owner/share/storage links;
+  leave capacity readiness false. A fresh start alone does not verify capacity.
 - [ ] Rehearse complete conversion in disposable PostgreSQL with adversarial
   failures, retain sanitized evidence, document writer fence/resume/rollback.
 - [ ] Hooks/commit/task review; full phase review of Tasks1–5.
@@ -173,6 +181,7 @@ legacy association table as evidence. All-or-nothing apply and exact replay.
 - [ ] Dry-run migration against current data; compare candidate mapping and digest.
   Stop on conflicts instead of selecting a group arbitrarily.
 - [ ] Apply reviewed utility at one boundary, resume new attribution-aware writers,
-  verify membership/report/permission/history invariants and app health.
+  verify membership/report/permissions, unchanged project/image/pattern ownership,
+  asset/storage/share fingerprints and app health.
 - [ ] Record actual deployment/migration evidence and remaining native accounting
   blockers. Quota enforcement stays disabled.
