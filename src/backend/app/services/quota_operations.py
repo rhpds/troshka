@@ -105,8 +105,41 @@ def digest(topology):
     ).hexdigest()
 
 
+def select_adapter(db, project, *, host=None):
+    """Select lifecycle semantics before any placement or provider mutation.
+
+    A renderable native demand or complete reporting snapshot is insufficient:
+    controller fencing, direct observations and native baseline are still absent.
+    No configuration flag or report can enable this adapter at this milestone.
+    """
+    from app.models.provider import Provider
+
+    if ((project.topology or {}).get("placement") or {}).get("requires_kubevirt"):
+        raise AccountingUnavailable(
+            "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
+        )
+    if host is None and project.host_id:
+        host = db.get(Host, project.host_id)
+    if host is not None and host.host_type == "kubevirt-cluster":
+        raise AccountingUnavailable(
+            "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
+        )
+    provider_ids = {project.provider_id, getattr(host, "provider_id", None)} - {None}
+    for provider_id in provider_ids:
+        provider = db.get(Provider, provider_id)
+        if provider and provider.type == "kubevirt":
+            raise AccountingUnavailable(
+                "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
+            )
+    return "nested"
+
+
 def supported(db, project, *, host_id=None, deployed=False):
     """Reject configurations whose actual allocations/power cannot be bounded."""
+    host = (
+        db.get(Host, host_id or project.host_id) if host_id or project.host_id else None
+    )
+    select_adapter(db, project, host=host)
     topology = (
         (project.deployed_topology if deployed else None) or project.topology or {}
     )

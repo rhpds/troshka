@@ -16,11 +16,11 @@ from helpers.k8s import (
     vm_disk_pvc_name,
 )
 from helpers.topology import (
+    build_vm_cr as _build_vm_cr,
     extract_networks,
     extract_vms,
     build_static_leases,
     resolve_vm_disks,
-    install_nics_for_vm,
     resolve_nic_networks,
     extract_containers,
     collect_container_disk_mounts,
@@ -2366,88 +2366,6 @@ def _resolve_disk_s3_path(disk):
         )
     return None, False
 
-
-def _build_vm_cr(
-    vm,
-    vm_disks_map,
-    vm_cdroms_map,
-    nic_network_map,
-    bastion_boot_pvc,
-    namespace,
-    name,
-    body,
-    topology=None,
-):
-    """Build a TroshkaVM CR dict for a single VM."""
-    vm_name = f"vm-{vm['id'][:8]}"
-    disk_specs = vm_disks_map.get(vm["id"], [])
-
-    nic_specs = []
-    deploy_nics = (
-        install_nics_for_vm(vm, nic_network_map, topology or {})
-        if topology is not None
-        else vm.get("nics", [])
-    )
-    for nic in deploy_nics:
-        nic_id = nic.get("id", "")
-        nic_specs.append(
-            {
-                "id": nic_id,
-                "mac": nic.get("mac", ""),
-                "model": nic.get("model", "virtio"),
-                "networkRef": nic_network_map.get(nic_id, ""),
-            }
-        )
-
-    vm_cr = {
-        "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
-        "kind": "TroshkaVM",
-        "metadata": {
-            "name": vm_name,
-            "namespace": namespace,
-            "ownerReferences": [owner_ref(body)],
-            "labels": {"troshka-project": name},
-        },
-        "spec": {
-            "vmId": vm["id"],
-            "name": vm["name"],
-            "cpus": vm["cpus"],
-            "memory": vm["memory"],
-            "firmware": vm.get("firmware", "bios"),
-            "smbiosUuid": vm.get("smbiosUuid", ""),
-            "os": vm.get("os", ""),
-            "powerOnAtDeploy": vm.get("powerOnAtDeploy", True),
-            "disks": disk_specs,
-            "nics": nic_specs,
-            "cloudInit": vm.get("cloudInit", {}),
-            "bmcEnabled": vm.get("bmcEnabled", False),
-            "bmcIp": vm.get("bmcIp", ""),
-            "bootOrder": vm.get("bootOrder", []),
-            "videoModel": vm.get("videoModel", "virtio"),
-            "inputModel": vm.get("inputModel", "virtio"),
-            "serialModel": vm.get("serialModel", "isa"),
-            "serialConsole": vm.get("serialConsole", True),
-            "serialExecType": vm.get("serialExecType", ""),
-        },
-    }
-    if vm.get("headless") is not None:
-        vm_cr["spec"]["headless"] = bool(vm.get("headless"))
-    if vm.get("legacyRootBus"):
-        vm_cr["spec"]["legacyRootBus"] = True
-    if vm.get("nestedVirt"):
-        vm_cr["spec"]["nestedVirt"] = True
-    if vm.get("cpuHostModel"):
-        vm_cr["spec"]["cpuHostModel"] = vm["cpuHostModel"]
-    cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")
-    if cdrom and cdrom.get("s3Path"):
-        vm_cr["spec"]["cdrom"] = cdrom
-    if vm.get("guestfishCommands"):
-        vm_cr["spec"]["guestfishCommands"] = vm["guestfishCommands"]
-    if vm.get("recertEnabled"):
-        vm_cr["spec"]["recertEnabled"] = True
-    if vm.get("os") == "rhcos" and bastion_boot_pvc:
-        vm_cr["spec"]["bastionPvc"] = bastion_boot_pvc
-    return vm_cr
 
 
 def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):

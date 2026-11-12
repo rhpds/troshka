@@ -8,10 +8,37 @@ virtual sizes and external/BMC power configurations deliberately fail closed.
 
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 
+from pydantic import ValidationError
+
 from app.schemas.quota import AccountingUnavailable, Resources
 
 GIB = 2**30
 MIB = 2**20
+
+
+def native_resources(plan) -> Resources:
+    """Convert only complete native plans; unknown demand is never zero.
+
+    Underlying helper millicores remain in the immutable plan. Whole-vCPU
+    admission rounds the aggregate concurrent envelope up exactly once.
+    """
+    if not plan.complete:
+        raise AccountingUnavailable("Native execution demand is incomplete")
+    try:
+        return Resources(
+            cpu=plan.cpu,
+            ram_bytes=sum(item.ram_bytes or 0 for item in plan.demands),
+            storage_bytes=sum(
+                item.initial_storage_bytes or 0
+                for item in plan.demands
+                if item.classification == "storage"
+            ),
+            projects=1,
+        )
+    except (ValidationError, ArithmeticError) as exc:
+        raise AccountingUnavailable(
+            "Native aggregate resource quantity is invalid"
+        ) from exc
 
 
 def _quantity(value, unit=1) -> Decimal:
@@ -104,7 +131,10 @@ def topology_resources(
         ):
             if by_id.get(disk, {}).get("type") == "storageNode" and by_id.get(
                 target, {}
-            ).get("type") in ("vmNode", "containerNode"):
+            ).get("type") in (
+                "vmNode",
+                "containerNode",
+            ):
                 consumers.setdefault(disk, set()).add(target)
     for node in nodes:
         for mount in (node.get("data") or {}).get("mounts", []):
