@@ -39,7 +39,7 @@ export default function TeamUsage({ report }: { report: TeamReport }) {
       {!report.members.length && <p>No attributed member usage.</p>}
       {report.members.map(member => <details className={styles.expandable} key={member.owner_id}><summary>{member.owner_email || member.display_name || "Unknown member"} — known subtotal {money(member.known_subtotal_usd)} · total {money(member.total_usd)}<span className={styles.muted}> · {member.accounting_status}{!member.current_member && " · Former member"}</span></summary><ProjectUsage projects={member.by_project} /></details>)}
     </CardBody></Card>
-    <details className={styles.expandable}><summary>Active project lifetime spend ({report.active_projects.length})</summary><Card><CardBody className={styles.cardContent}><p>Lifetime values are separate from monthly usage and documents. They are never added to the monthly total.</p>
+    <details className={styles.expandable}><summary>Active project spend attributed to this group ({report.active_projects.length})</summary><Card><CardBody className={styles.cardContent}><p>Values cover only spend attributed to this group since group accounting started. They are separate from the selected month&apos;s usage and owner documents, and are never added to the monthly total.</p>
       {!report.active_projects.length && <p>No active projects.</p>}
       {report.active_projects.map(project => <details className={styles.projectDetails} key={project.id}><summary>{project.name} — {project.owner_email} — {project.state} — known subtotal {money(project.known_subtotal_usd)} · total {money(project.total_usd)}</summary><ResourceUsage lines={project.line_items?.by_kind || []} /></details>)}
     </CardBody></Card></details>

@@ -117,7 +117,7 @@ describe("team billing", () => {
     overrides["/api/v1/metering/invoices/i"] = { detail: "Access revoked" }; statuses["/api/v1/metering/invoices/i"] = 403;
     await loaded(); fireEvent.click(screen.getByRole("tab", { name: "Invoices" })); fireEvent.click(screen.getByRole("button", { name: "View invoice i" }));
     await screen.findByText("Access revoked");
-    expect(screen.queryByText("Active project lifetime spend")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Active project spend attributed to this group/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
   });
   it("shows report failure without leaving an export", async () => {
