@@ -1,18 +1,32 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button } from "@patternfly/react-core";
 import { fetchUsage, isQuotaRevocation, QuotaUsageData, Scope } from "@/lib/quotas";
 import QuotaUsage from "./QuotaUsage";
 import QuotaEditor from "./QuotaEditor";
 import styles from "./quotas.module.css";
 import ModalBackdrop from "@/components/ModalBackdrop";
+import NativeStorageUsage from "./NativeStorageUsage";
 
-/** Mount with a scope/id key so navigation cannot retain another scope's draft. */
-export default function QuotaScope({ scope, id, onDenied, onUsage, dialog }: { scope: Scope; id: string; onDenied?: () => void; onUsage?: (usage: QuotaUsageData | null) => void; dialog?: { isOpen: boolean; onClose: () => void } }) {
+interface Props { scope: Scope; id: string; onDenied?: () => void; onUsage?: (usage: QuotaUsageData | null) => void; dialog?: { isOpen: boolean; onClose: () => void } }
+/** Navigation cannot retain another scope's data or draft, even without a caller key. */
+export default function QuotaScope(props: Props) {
+  return <QuotaScopeView key={`${props.scope}:${props.id}`} {...props} />;
+}
+
+function QuotaScopeView({ scope, id, onDenied, onUsage, dialog }: Props) {
   const [usage, setUsage] = useState<QuotaUsageData | null>(null), [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const callbacks = useRef({ onDenied, onUsage });
   const revoked = useRef(false);
+  const [denied, setDenied] = useState(false);
+  const isRevoked = useCallback(() => revoked.current, []);
+  const revoke = useCallback((message = "Quota access revoked") => {
+    if (revoked.current) return;
+    revoked.current = true;
+    setDenied(true); setUsage(null); setError(message);
+    callbacks.current.onUsage?.(null); callbacks.current.onDenied?.();
+  }, []);
   useEffect(() => { callbacks.current = { onDenied, onUsage }; }, [onDenied, onUsage]);
   useEffect(() => {
     let live = true;
@@ -21,16 +35,21 @@ export default function QuotaScope({ scope, id, onDenied, onUsage, dialog }: { s
       if (revoked.current) return;
       const current = ++request;
       try { const result = await fetchUsage(scope, id); if (live && current === request && !revoked.current) { setUsage(result); setError(""); callbacks.current.onUsage?.(result); } }
-      catch (e) { if (live && current === request) { setUsage(null); callbacks.current.onUsage?.(null); setError((e as Error).message); if (isQuotaRevocation(e)) { revoked.current = true; callbacks.current.onDenied?.(); } } }
+      catch (e) {
+        if (!live || revoked.current) return;
+        if (isQuotaRevocation(e)) { revoke((e as Error).message); return; }
+        if (current === request) { setUsage(null); callbacks.current.onUsage?.(null); setError((e as Error).message); }
+      }
     }
     void load(); const timer = setInterval(() => void load(), 15000);
     return () => { live = false; clearInterval(timer); };
-  }, [scope, id, revision]);
+  }, [scope, id, revision, revoke]);
   // Keep permission polling active even when project quota details are closed.
   if (dialog && !dialog.isOpen) return null;
-  const content = error ? <Alert isInline variant="warning" title={`Quota usage unavailable: ${error}`} />
+  const quotaContent = error ? <Alert isInline variant="warning" title={`Quota usage unavailable: ${error}`} />
     : !usage ? <p>Loading quota usage…</p>
-    : <div className={styles.scope}><QuotaUsage usage={usage} /><details className={styles.details}><summary>Quota limits</summary><QuotaEditor key={`${scope}:${id}:${usage.policy_revision}`} usage={usage} onSaved={() => setRevision(v => v + 1)} onDenied={() => { revoked.current = true; setUsage(null); callbacks.current.onUsage?.(null); setError("Quota access revoked"); callbacks.current.onDenied?.(); }} /></details><Button variant="link" isInline onClick={() => setRevision(v => v + 1)}>Refresh quotas</Button></div>;
+    : <div className={styles.scope}><QuotaUsage usage={usage} /><details className={styles.details}><summary>Quota limits</summary><QuotaEditor key={`${scope}:${id}:${usage.policy_revision}`} usage={usage} onSaved={() => setRevision(v => v + 1)} onDenied={revoke} /></details><Button variant="link" isInline onClick={() => setRevision(v => v + 1)}>Refresh quotas</Button></div>;
+  const content = <div className={styles.scope}>{quotaContent}{!denied && <NativeStorageUsage scope={scope} id={id} onDenied={revoke} isRevoked={isRevoked} />}</div>;
   if (!dialog) return content;
   return <ModalBackdrop label="Project quotas" className="start-order-overlay" onClose={dialog.onClose}>
     <div className={`start-order-modal ${styles.modal}`}>

@@ -30,5 +30,12 @@
 .memberSection { display: grid; gap: 1rem; padding-top: 1.5rem; border-top: 1px solid var(--pf-t--global--border--color--default); min-width: 0; }
 .modal { width: min(64rem, calc(100vw - 2rem)); max-width: 64rem; max-height: calc(100dvh - 2rem); }
 .modalBody { padding: 1.5rem; overflow-y: auto; min-height: 0; }
+.nativeStorage { display: grid; gap: .75rem; border-top: 1px solid var(--pf-t--global--border--color--default); padding-top: 1.25rem; min-width: 0; }
+.nativeStorage h3 { font-size: 1rem; font-weight: 600; }
+.nativeSummary { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(0, 2fr); gap: .75rem 1.5rem; }
+.nativeAmount { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.nativeDetails { font-size: .875rem; color: var(--pf-t--global--text--color--subtle); line-height: 1.6; overflow-wrap: anywhere; }
+.nativeDetails summary { cursor: pointer; }
+.nativeDetails p { margin-top: .5rem; }
 @media (max-width: 900px) { .overview { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 600px) { .directory { padding: 1rem; } .fields { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .directory { padding: 1rem; } .fields, .nativeSummary { grid-template-columns: minmax(0, 1fr); } }

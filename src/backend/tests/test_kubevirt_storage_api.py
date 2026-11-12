@@ -1,6 +1,8 @@
 """Native usage authorization and non-disclosing scope projections."""
 
+import json
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -235,3 +237,47 @@ def test_unrecognized_collector_reason_cannot_leak_backend_identity(native_clien
     response = client.get(url("user", q.owner_id))
     assert "private-backend-image-identifier" not in response.text
     assert "collection_incomplete" in response.json()["reason_codes"]
+
+
+def test_importer_api_ui_replay_and_transfer_keep_original_evidence(native_client):
+    """Replay sanitized child → private zero parent → golden through real SQLite."""
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.models.quota import QuotaReadiness, QuotaReservation
+
+    client, q = native_client
+    pid = str(q.report.project_roots[0].project_id)
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/lib/__fixtures__/native-storage-replay.json"
+    )
+    act(q, q.owner_id)
+    assert client.get(url("project", pid)).json() == json.loads(fixture.read_text())
+    with q.sessions() as db:
+        before = {row.id: row.payload for row in db.query(NativeStorageSnapshot)}
+        org = ManagedGroup(
+            name="Replay org", normalized_name="replay-org", is_organization=True
+        )
+        db.add(org)
+        db.flush()
+        org_id = org.id
+        db.get(User, q.owner_id).organization_id = org_id
+        db.get(User, q.admin_id).organization_id = org_id
+        db.commit()
+
+    act(q, q.admin_id)
+    organization = client.get(url("organization", org_id)).json()
+    assert organization["allocated_bytes"] == 80
+    assert organization["platform_bytes"] == 100  # one cache, never per project
+    assert organization["covered_projects"] == 2
+    with q.sessions() as db:
+        db.get(Project, pid).owner_id = q.admin_id
+        db.commit()
+    assert client.get(url("user", q.owner_id)).json()["allocated_bytes"] == 50
+    assert client.get(url("user", q.admin_id)).json()["allocated_bytes"] == 30
+    assert client.get(url("organization", org_id)).json()["allocated_bytes"] == 80
+    with q.sessions() as db:
+        assert {
+            row.id: row.payload for row in db.query(NativeStorageSnapshot)
+        } == before
+        assert db.get(QuotaReadiness, "baseline").ready is False
+        assert db.query(QuotaReservation).count() == 0

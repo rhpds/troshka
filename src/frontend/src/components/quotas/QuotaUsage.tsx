@@ -44,6 +44,7 @@ export default function QuotaUsage({ usage }: { usage: QuotaUsageData }) {
     <details className={styles.details}><summary>Enforcement and supported operations</summary><div className={styles.explanation}>
       {!usage.enforcement_enabled && <p>Saved hierarchy policies apply after enablement; existing project spending guardrails remain in place.</p>}
       <p>Current enforcement supports basic single-host nested VM whole-project operations on an existing shared billing host. Native providers, BMC, containers, OpenShift, snapshots and live growth are not supported while enforcement is enabled. Stop and cleanup remain available.</p>
+      <p>Native KubeVirt RBD allocation is reported separately below when evidence is available. It does not establish an enforcement baseline, change saved limits or reservations, or affect billing.</p>
       <p>Physical storage counts allocated filesystem blocks for project disks and retained files, even when stopped. Only local filesystem qcow2 storage with prewarmed shared bases is supported. Shared filesystem pools require a separate adapter. Guest disk growth is checked periodically; shutdown is best effort and writes may overshoot between polls. This is not a filesystem hard cap. Exhaustion preserves stored data and never restarts compute automatically.</p>
     </div></details>
   </section>;

@@ -1,4 +1,11 @@
 import type { QuotaUsageData } from "@/lib/quotas";
+import type { NativeStorageUsageData } from "@/lib/kubevirtStorage";
+export const nativeUsage: NativeStorageUsageData = {
+  scope: "project", scope_id: "p", metric: "rbd_allocated_extent_bytes", status: "complete",
+  allocated_bytes: 1073741824, known_allocated_bytes: 1073741824, provisioned_bytes: 2147483648,
+  observed_at: "2026-11-11T12:00:00Z", covered_projects: 1, expected_projects: 1,
+  reason_codes: [], enforcement_eligible: false,
+};
 export const exampleUsage: QuotaUsageData = {
   scope: "user", scope_id: "u", limits: { cpu: 0, ram_bytes: null, storage_bytes: null, projects: null, spending_usd: "100.123456789012" },
   used: { cpu: 2, ram_bytes: 1073741824, storage_bytes: 0, projects: 1 },
