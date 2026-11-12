@@ -19,6 +19,7 @@ from helpers.quota_fence import (
     CASConflict,
     FenceError,
     _integer,
+    _namespace,
     _text,
     validate_record,
 )
@@ -42,11 +43,17 @@ class CASStore(Protocol):
 
     All other failures are ambiguous and must propagate without automatic retry.
     Implementations must reject object replacement, including during CAS.
+    Capacity is fixed for the lifetime of a binding. ensure_capacity must validate
+    a proposed record with the same serializer and byte budget as compare_and_swap,
+    without writing it. The protocol reserves maximal completion state through
+    this explicit interface before issuing authority or returning a new grant.
     """
 
     def read(self) -> Snapshot: ...
 
     def compare_and_swap(self, snapshot: Snapshot, record: dict) -> None: ...
+
+    def ensure_capacity(self, record: dict) -> None: ...
 
 
 def _unique_fields(pairs):
@@ -58,10 +65,9 @@ def _unique_fields(pairs):
     return result
 
 
-def _kubernetes_name(value, *, namespace=False):
-    _text(value, 63 if namespace else 253)
-    parts = [value] if namespace else value.split(".")
-    for part in parts:
+def _kubernetes_name(value):
+    _text(value, 253)
+    for part in value.split("."):
         if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", part):
             raise FenceError("Invalid pinned Kubernetes name")
     return value
@@ -74,7 +80,7 @@ class KubernetesCASStore:
         self, api, *, namespace: str, name: str, uid: str, max_bytes=MAX_RECORD_BYTES
     ):
         self._api = api
-        self._namespace = _kubernetes_name(namespace, namespace=True)
+        self._namespace = _namespace(namespace)
         self._name = _kubernetes_name(name)
         self._uid = _text(uid, 128)
         self._max_bytes = _integer(max_bytes, minimum=256, maximum=MAX_RECORD_BYTES)
@@ -85,6 +91,16 @@ class KubernetesCASStore:
             or len(encoded.encode("utf-8")) > self._max_bytes
         ):
             raise FenceError("Issuance record exceeds storage bound")
+
+    def _encode_record(self, record):
+        validate_record(record)
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        self._check_size(encoded)
+        return encoded
+
+    def ensure_capacity(self, record: dict) -> None:
+        """Check exact CAS encoding without persisting the proposed record."""
+        self._encode_record(record)
 
     def read(self) -> Snapshot:
         try:
@@ -111,9 +127,7 @@ class KubernetesCASStore:
         if snapshot.uid != self._uid:
             raise StoreIdentityError("CAS snapshot belongs to another object")
         _text(snapshot.resource_version, 128)
-        validate_record(record)
-        encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        self._check_size(encoded)
+        encoded = self._encode_record(record)
         patch = [
             {"op": "test", "path": "/metadata/uid", "value": self._uid},
             {

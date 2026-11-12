@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from helpers.quota_fence import (
+    MAX_INT64,
     AuthorizationDenied,
     DuplicateIntent,
     FenceError,
@@ -484,3 +485,169 @@ def test_store_requires_valid_pinned_kubernetes_names(namespace, name):
         KubernetesCASStore(
             FakeAPI(), namespace=namespace, name=name, uid="original-uid"
         )
+
+
+class ExactBytesAPI(FakeAPI):
+    """Capacity probes read the exact string written by the real CAS adapter."""
+
+    def __init__(self):
+        super().__init__()
+        self.wire_record = json.dumps(self.record, separators=(",", ":"))
+
+    def read_namespaced_config_map(self, **kwargs):
+        obj = super().read_namespaced_config_map(**kwargs)
+        obj.data["record"] = self.wire_record
+        return obj
+
+    def patch_namespaced_config_map(self, **kwargs):
+        super().patch_namespaced_config_map(**kwargs)
+        self.wire_record = kwargs["body"][2]["value"]
+
+
+def bounded_coordinator(max_bytes):
+    api = ExactBytesAPI()
+    bounded = KubernetesCASStore(
+        api,
+        namespace="coordination",
+        name="generation",
+        uid=api.uid,
+        max_bytes=max_bytes,
+    )
+    TrustedIssuer(bounded).issue(authorization())
+    return api, NativeCoordinator(bounded, clock=lambda: 100)
+
+
+def test_small_budget_cannot_grant_unfinishable_intent():
+    api, coordinator = bounded_coordinator(974)
+    before = api.wire_record
+    with pytest.raises(FenceError, match="storage bound"):
+        coordinator.begin_intent(resource(), authorization())
+    assert api.wire_record == before
+    assert coordinator.acknowledge_fence(MAX_INT64).issuance_closed
+
+
+def test_conflicting_acceptance_rechecks_completion_capacity():
+    api, first = bounded_coordinator(1400)
+    second_store = KubernetesCASStore(
+        api, namespace="coordination", name="generation", uid=api.uid, max_bytes=1400
+    )
+    second = NativeCoordinator(second_store, clock=lambda: 100)
+    accepted = []
+    api.before_patch = lambda: accepted.append(
+        second.begin_intent(
+            resource(operation_key="other", name="vm-two"), authorization()
+        )
+    )
+    with pytest.raises(FenceError, match="storage bound"):
+        first.begin_intent(resource(), authorization())
+    assert first.status().unresolved_intents == tuple(accepted)
+    first.acknowledge_fence(MAX_INT64)
+    first.finish_intent(accepted[0], "u" * 128, "v" * 128)
+    assert len(api.record["intents"]) == 1
+    assert not first.status().unresolved_intents
+
+
+def test_exact_byte_boundary_reserves_all_receipt_and_epoch_growth():
+    # All allowed punctuation is ASCII and requires no escaping in JSON strings.
+    uid = ("u._:/-" * 22)[:128]
+    version = ("v._:/-" * 22)[:128]
+    probe, probe_coordinator = bounded_coordinator(4096)
+    intent = probe_coordinator.begin_intent(resource(), authorization())
+    probe_coordinator.finish_intent(intent, uid, version)
+    probe_coordinator.acknowledge_fence(MAX_INT64)
+    terminal_bytes = len(probe.wire_record.encode("utf-8"))
+
+    short_api, short_coordinator = bounded_coordinator(terminal_bytes - 1)
+    before = short_api.wire_record
+    with pytest.raises(FenceError, match="storage bound"):
+        short_coordinator.begin_intent(resource(), authorization())
+    assert short_api.wire_record == before
+
+    api, coordinator = bounded_coordinator(terminal_bytes)
+    intent = coordinator.begin_intent(resource(), authorization())
+    coordinator.acknowledge_fence(1000)
+    coordinator.finish_intent(intent, uid, version)
+    coordinator.acknowledge_fence(MAX_INT64)
+    assert len(api.wire_record.encode("utf-8")) == terminal_bytes
+    assert coordinator.status().unresolved_intents == ()
+    assert intent in api.record["intents"]
+
+
+def test_default_budget_every_granted_large_key_can_finish_and_fence():
+    api, coordinator = bounded_coordinator(128 * 1024)
+    intents = []
+    # Long original identities and legal namespace reach the real byte bound
+    # before the count bound. Every grant must leave room for all final receipts.
+    for index in range(64):
+        key = resource(
+            operation_key=f"{index:03d}" + "k" * 250,
+            api_version="a" * 253,
+            kind="k" * 253,
+            namespace="n" * 63,
+            name="v" * 253,
+            action="patch",
+            expected_uid="u" * 128,
+            expected_resource_version="v" * 128,
+        )
+        before = api.wire_record
+        try:
+            intents.append(coordinator.begin_intent(key, authorization()))
+        except FenceError:
+            assert api.wire_record == before
+            break
+    assert len(intents) > 1
+    assert set(api.record["intents"]) == set(intents)
+    for intent in intents:
+        coordinator.finish_intent(intent, "u" * 128, "v" * 128)
+    coordinator.acknowledge_fence(MAX_INT64)
+    assert len(intents) < 64
+    assert set(api.record["intents"]) == set(intents)
+    assert not coordinator.status().unresolved_intents
+    assert len(api.wire_record.encode("utf-8")) <= 128 * 1024
+
+
+def test_authority_issue_also_reserves_future_fence_bytes():
+    probe, _ = bounded_coordinator(4096)
+    open_bytes = len(probe.wire_record.encode("utf-8"))
+    api = ExactBytesAPI()
+    bounded = KubernetesCASStore(
+        api,
+        namespace="coordination",
+        name="generation",
+        uid=api.uid,
+        max_bytes=open_bytes,
+    )
+    with pytest.raises(FenceError, match="storage bound"):
+        TrustedIssuer(bounded).issue(authorization())
+    assert api.record["authorization"] is None
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    ["wrong/path", "UPPERCASE", "n" * 64, "ns.example", "trailing-", "-leading"],
+)
+def test_workload_namespace_is_a_dns_label(namespace):
+    with pytest.raises(FenceError):
+        resource(namespace=namespace)
+
+
+@pytest.mark.parametrize("namespace", ["wrong/path", "UPPERCASE", "n" * 64])
+def test_invalid_persisted_workload_namespace_is_not_repaired(initialized, namespace):
+    api, coordinator = initialized
+    intent = coordinator.begin_intent(resource(), authorization())
+    api.record["intents"][intent]["resource"]["namespace"] = namespace
+    before = copy.deepcopy(api.record)
+    with pytest.raises(FenceError):
+        coordinator.acknowledge_fence(2)
+    assert api.record == before
+
+
+@pytest.mark.parametrize("character", ['"', "\\", "\n", "é"])
+def test_receipt_alphabet_excludes_json_escaping_and_non_ascii(initialized, character):
+    api, coordinator = initialized
+    intent = coordinator.begin_intent(resource(), authorization())
+    before = copy.deepcopy(api.record)
+    for uid, version in [("u" * 127 + character, "v"), ("u", "v" * 127 + character)]:
+        with pytest.raises(FenceError):
+            coordinator.finish_intent(intent, uid, version)
+    assert api.record == before

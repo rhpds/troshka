@@ -57,6 +57,13 @@ def _text(value, maximum=253):
     return value
 
 
+def _namespace(value):
+    _text(value, 63)
+    if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", value):
+        raise FenceError("Invalid Kubernetes namespace")
+    return value
+
+
 def _digest(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
         raise FenceError("Invalid execution or request digest")
@@ -111,10 +118,10 @@ class ResourceKey:
             self.operation_key,
             self.api_version,
             self.kind,
-            self.namespace,
             self.name,
         ):
             _text(value)
+        _namespace(self.namespace)
         _digest(self.request_digest)
         if self.action not in ("create", "patch", "replace", "delete"):
             raise FenceError("Invalid resource action")
@@ -222,7 +229,28 @@ def validate_record(record):
         _validate_intent(key, intent, auth)
 
 
-def _transition(store, update):
+def _reserve_completion_capacity(store, record):
+    """Reserve a valid maximum-size completion, never persist synthetic receipts.
+
+    Receipt identities allow only ASCII characters that need no JSON escaping.
+    Every unresolved receipt can therefore use the full 128-byte UID/RV bound;
+    existing-object UIDs are fixed to their original value. Already recorded
+    receipts cannot change. Both mutable epoch fields may reach signed-int64 max.
+    The store checks this projection using the exact serializer used by CAS.
+    """
+    terminal = copy.deepcopy(record)
+    terminal["authorization"].update(desired_growth_state="fenced", epoch=MAX_INT64)
+    terminal["fence_epoch"] = MAX_INT64
+    for intent in terminal["intents"].values():
+        if intent["receipt"] is None:
+            intent["receipt"] = {
+                "uid": intent["resource"]["expected_uid"] or "u" * 128,
+                "resource_version": "v" * 128,
+            }
+    store.ensure_capacity(terminal)
+
+
+def _transition(store, update, *, reserve_capacity=False):
     """Retry only definitive CAS conflicts; ambiguous store failures propagate."""
     for _ in range(MAX_CAS_ATTEMPTS):
         snapshot = store.read()
@@ -230,6 +258,8 @@ def _transition(store, update):
         validate_record(record)
         result = update(record)
         validate_record(record)
+        if reserve_capacity:
+            _reserve_completion_capacity(store, record)
         if record == snapshot.record:
             return result
         try:
@@ -264,7 +294,7 @@ class TrustedIssuer:
                 )
             record["authorization"] = asdict(authorization)
 
-        _transition(self._store, update)
+        _transition(self._store, update, reserve_capacity=True)
 
 
 def _require_authorization(record, authorization):
@@ -333,7 +363,7 @@ class NativeCoordinator:
             }
             return key
 
-        return _transition(self._store, update)
+        return _transition(self._store, update, reserve_capacity=True)
 
     def finish_intent(self, intent_id: str, observed_uid: str, resource_version: str):
         """Persist an original request's response, never infer success from a name.
