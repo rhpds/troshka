@@ -12,6 +12,26 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 
 
+@pytest.fixture
+def _no_real_cluster_requests(monkeypatch):
+    """Make swallowed client errors observable without touching live clients."""
+    request = MagicMock(side_effect=AssertionError("unit_test_cluster_access"))
+    monkeypatch.setattr("kubernetes.client.ApiClient.call_api", request)
+    monkeypatch.setattr("kubernetes.config.load_incluster_config", MagicMock())
+    monkeypatch.setattr("kubernetes.config.load_kube_config", MagicMock())
+    yield
+    request.assert_not_called()
+
+
+@pytest.fixture
+def _no_recert_datavolumes(monkeypatch):
+    from kubernetes.client.exceptions import ApiException
+
+    custom = MagicMock()
+    custom.get_namespaced_custom_object.side_effect = ApiException(status=404)
+    monkeypatch.setattr("handlers.project.client.CustomObjectsApi", MagicMock(return_value=custom))
+
+
 # ---------------------------------------------------------------------------
 # helpers/k8s.py
 # ---------------------------------------------------------------------------
@@ -3484,6 +3504,7 @@ class TestRecertJobNameFromCfg:
         assert vm_label == "vm"
 
 
+@pytest.mark.usefixtures("_no_real_cluster_requests", "_no_recert_datavolumes")
 class TestCheckRecertPvcsReady:
     def test_all_bound(self):
         from handlers.project import _check_recert_pvcs_ready
@@ -6091,6 +6112,7 @@ class TestFindStaleVolumeAttachments:
         assert result == []
 
 
+@pytest.mark.usefixtures("_no_real_cluster_requests")
 class TestPollExportJobs:
     def test_all_done_returns_none(self):
         from handlers.project import _poll_export_jobs
@@ -6157,7 +6179,9 @@ class TestPollExportJobs:
         assert result is not None
         assert "timed out" in result
 
-    def test_deadline_scales_with_disk_size(self):
+    @patch("handlers.project._freeze_vmi", return_value=False)
+    @patch("handlers.project._thaw_vmi")
+    def test_deadline_scales_with_disk_size(self, _thaw, _freeze):
         from handlers.project import _snapshot_and_export_disk
 
         custom_api = MagicMock()
@@ -8321,6 +8345,7 @@ class TestRecertJobNameFromCfgExtended:
         assert vm_part == "vm"
 
 
+@pytest.mark.usefixtures("_no_real_cluster_requests", "_no_recert_datavolumes")
 class TestCheckRecertPvcsReadyExtended:
     """Cover _check_recert_pvcs_ready."""
 

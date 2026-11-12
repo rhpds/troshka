@@ -4,6 +4,8 @@ import logging
 import textwrap
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestCrdConstants:
     def test_crd_group(self):
@@ -61,6 +63,19 @@ _configure = _get_configure()
 
 class TestConfigureStartup:
     """Tests for the @kopf.on.startup() configure() function."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cluster_access(self, monkeypatch):
+        monkeypatch.setattr("kubernetes.config.load_incluster_config", MagicMock())
+        monkeypatch.setattr("kubernetes.config.load_kube_config", MagicMock())
+        core = MagicMock()
+        core.read_namespaced_secret.return_value.data = {}
+        core.read_namespaced_config_map.return_value.data = {}
+        monkeypatch.setattr("kubernetes.client.CoreV1Api", MagicMock(return_value=core))
+        real_request = MagicMock(side_effect=AssertionError("unit_test_cluster_access"))
+        monkeypatch.setattr("kubernetes.client.ApiClient.call_api", real_request)
+        yield
+        real_request.assert_not_called()
 
     def _make_settings(self):
         settings = MagicMock()
