@@ -403,3 +403,132 @@ def test_real_controller_transport_uses_exact_one_shot_endpoint(
         assert response.closed
     finally:
         api.close()
+
+
+def _raw_replica_set_list(cluster):
+    from kubernetes.client import (
+        ApiClient,
+        V1LabelSelector,
+        V1ObjectMeta,
+        V1OwnerReference,
+        V1ReplicaSet,
+        V1ReplicaSetList,
+        V1ReplicaSetSpec,
+    )
+
+    controller = cluster.objects["Deployment", "helper"]
+    rs = obj(
+        "ReplicaSet",
+        "listed",
+        controller,
+        replicas=1,
+        template={"spec": {"volumes": []}},
+    )
+    rs["apiVersion"] = "apps/v1"
+    cluster.objects["ReplicaSet", "listed"] = rs
+    ref = rs["metadata"]["ownerReferences"][0]
+    typed = V1ReplicaSet(
+        metadata=V1ObjectMeta(
+            name="listed",
+            namespace="project",
+            uid="listed-uid",
+            resource_version="7",
+            owner_references=[
+                V1OwnerReference(
+                    api_version=ref["apiVersion"],
+                    kind=ref["kind"],
+                    name=ref["name"],
+                    uid=ref["uid"],
+                    controller=True,
+                )
+            ],
+        ),
+        spec=V1ReplicaSetSpec(
+            replicas=1, selector=V1LabelSelector(match_labels={"fixture": "yes"})
+        ),
+    )
+    with ApiClient() as api:
+        payload = api.sanitize_for_serialization(
+            V1ReplicaSetList(
+                api_version="apps/v1", kind="ReplicaSetList", items=[typed]
+            )
+        )
+    payload["metadata"] = {"resourceVersion": "8"}
+    assert "kind" not in payload["items"][0]
+    assert "apiVersion" not in payload["items"][0]
+    return payload
+
+
+def test_real_typed_list_item_without_typemeta_uses_pinned_get(tmp_path):
+    cluster = Helpers()
+    payload = _raw_replica_set_list(cluster)
+    original = cluster.workloads
+    cluster.workloads = (
+        lambda kind, namespace: deepcopy(payload)
+        if kind == "ReplicaSet"
+        else original(kind, namespace)
+    )
+    report = execute(cluster, tmp_path)
+    assert report["status"] == "complete"
+    assert report["results"][0]["status"] == "dry_run_accepted"
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    ["explicit_kind", "explicit_api", "get_uid", "get_rv", "get_kind", "get_api"],
+)
+def test_list_typemeta_hydration_never_overrides_wrong_or_changed_identity(
+    tmp_path, hazard
+):
+    cluster = Helpers()
+    payload = _raw_replica_set_list(cluster)
+    item = payload["items"][0]
+    live = cluster.objects["ReplicaSet", "listed"]
+    if hazard == "explicit_kind":
+        item["kind"] = "Pod"
+    elif hazard == "explicit_api":
+        item["apiVersion"] = "evil/v1"
+    elif hazard == "get_uid":
+        live["metadata"]["uid"] = "changed"
+    elif hazard == "get_rv":
+        live["metadata"]["resourceVersion"] = "changed"
+    elif hazard == "get_kind":
+        live["kind"] = "Pod"
+    else:
+        live["apiVersion"] = "evil/v1"
+    original = cluster.workloads
+    cluster.workloads = (
+        lambda kind, namespace: deepcopy(payload)
+        if kind == "ReplicaSet"
+        else original(kind, namespace)
+    )
+    report = execute(cluster, tmp_path)
+    assert report["status"] == "blocked"
+    assert cluster.requests == []
+
+
+@pytest.mark.parametrize(
+    "kind,version",
+    [
+        ("Pod", "v1"),
+        ("ReplicaSet", "apps/v1"),
+        ("VirtualMachineInstance", "kubevirt.io/v1"),
+        ("PersistentVolumeClaim", "v1"),
+        ("DataVolume", "cdi.kubevirt.io/v1beta1"),
+    ],
+)
+def test_shared_vm_and_controller_runtime_lists_hydrate_exact_identity(kind, version):
+    from app.services.native_vm_halt import _runtime_rows
+
+    cluster = Cluster()
+    value = obj(kind, "typed-item")
+    value["apiVersion"] = version
+    cluster.objects[kind, "typed-item"] = value
+    listed = deepcopy(value)
+    del listed["kind"]
+    del listed["apiVersion"]
+    cluster.workloads = lambda expected, namespace: {
+        "metadata": {},
+        "items": [deepcopy(listed)],
+    }
+    assert _runtime_rows(cluster, kind, "project") == [value]

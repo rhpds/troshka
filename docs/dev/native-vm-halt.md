@@ -195,6 +195,11 @@ success. A new filename alone does not resolve an old attempt.
 
 GET and PATCH responses are capped at 4 MiB; redirects and HTTP retries are off.
 All lists use the observer's maximum-object bound and reject continuation. The
+API may omit `kind`/`apiVersion` on typed LIST items. Missing TypeMeta triggers an
+exact endpoint GET requiring the listed UID and resourceVersion and the expected
+kind/API version; explicit mismatches always block. No type is inferred from an
+unvalidated list envelope. These additional bounded GETs share the command's
+deadline; an intervening change or exhausted budget blocks the request. The
 default whole-command scan budget is 60 seconds (`--timeout-seconds` 1..300), and
 each request has at most 15 seconds remaining budget. Socket behavior can extend
 wall-clock duration; this is not a measured enforcement SLA. API versions are

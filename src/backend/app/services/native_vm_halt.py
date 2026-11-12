@@ -14,7 +14,11 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
-from app.services.native_workload_observations import _identity, observe_workloads
+from app.services.native_workload_observations import (
+    _ENDPOINTS,
+    _identity,
+    observe_workloads,
+)
 
 
 class UnsafeProfileError(ValueError):
@@ -183,7 +187,30 @@ def _runtime_rows(reader, kind, namespace):
     checked = cast(list[dict[str, Any]], rows)
     require(len({r["metadata"]["uid"] for r in checked}) == len(checked))
     require(all(r["metadata"].get("namespace") == namespace for r in checked))
-    return checked
+    return [_typed_runtime(reader, kind, namespace, value) for value in checked]
+
+
+def _typed_runtime(reader, kind, namespace, value):
+    # Typed Kubernetes LIST items may omit TypeMeta. Never infer it from an
+    # unvalidated envelope: obtain the same UID/RV through the exact GET endpoint.
+    prefix = _ENDPOINTS[kind][0]
+    version = prefix.removeprefix("/apis/").removeprefix("/api/")
+    require("kind" not in value or value["kind"] == kind, "runtime_type_mismatch")
+    require(
+        "apiVersion" not in value or value["apiVersion"] == version,
+        "runtime_type_mismatch",
+    )
+    if "kind" not in value or "apiVersion" not in value:
+        meta = value["metadata"]
+        require(all(meta.get(k) for k in ("name", "uid", "resourceVersion")))
+        exact = _object(reader, kind, namespace, meta["name"], meta["uid"])
+        require(exact.get("apiVersion") == version, "runtime_type_mismatch")
+        require(
+            exact["metadata"]["resourceVersion"] == meta["resourceVersion"],
+            "resource_version_changed",
+        )
+        return exact
+    return value
 
 
 def _references(value, uid):
