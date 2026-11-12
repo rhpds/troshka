@@ -109,6 +109,7 @@ def transfer_case(monkeypatch):
         qty=2,
         unit_rate=3,
         started_at=NOW - timedelta(hours=1),
+        quota_attribution=accounting.attribution(db, project),
     )
     metadata = {
         "generation_id": "generation",

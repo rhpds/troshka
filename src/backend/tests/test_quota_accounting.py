@@ -46,6 +46,7 @@ def ledger():
         unit_rate=3,
         started_at=start,
         ended_at=start + timedelta(hours=2),
+        quota_attribution=accounting.attribution(db, project),
     )
     db.add(row)
     db.flush()
@@ -106,6 +107,7 @@ def test_closed_retained_accrual_after_unassignment_is_idempotent(ledger):
 
 def test_retained_accrual_does_not_invent_missing_attribution(ledger):
     db, project, user, _, row = ledger
+    row.quota_attribution = None
     user.organization_id = None
     with pytest.raises(AccountingUnavailable):
         accounting.accrue(db, project.id, row.ended_at, retained=True)

@@ -86,7 +86,38 @@ def lock_project(
 
 
 def lock_metering_project(db: Session, project_id: str):
-    return lock_project(db, project_id, membership=False)
+    return lock_project(db, project_id, membership=False, require_organization=False)
+
+
+def lock_metering_projects(db: Session, project_ids) -> list[Project]:
+    """Lock a complete metering batch before any project locks are acquired.
+
+    Ordinary unassigned legacy sources remain billable without inventing a parent.
+    Batch callers must not acquire another organization's lock after this helper.
+    """
+    ids = sorted(set(project_ids))
+    query = (
+        db.query(Project.id, Project.owner_id, User.organization_id)
+        .join(User, Project.owner_id == User.id)
+        .filter(Project.id.in_(ids))
+        .order_by(Project.id)
+    )
+    initial = query.all()
+    if len(initial) != len(ids):
+        raise AccountingUnavailable("Metering batch requires retained owners")
+    lock_rows(
+        db,
+        organization_ids=[
+            row.organization_id for row in initial if row.organization_id
+        ],
+        project_ids=ids,
+    )
+    if query.all() != initial:
+        raise ScopeChanged("Quota identity changed; rollback and retry")
+    db.query(User).filter(
+        User.id.in_([row.owner_id for row in initial])
+    ).populate_existing().all()
+    return db.query(Project).filter(Project.id.in_(ids)).order_by(Project.id).all()
 
 
 def _retained_project_identity(db, project_id):

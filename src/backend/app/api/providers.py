@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -721,6 +722,11 @@ def _cleanup_kubevirt_db_resources(
     host_ids = [h.id for h in hosts]
     if host_ids:
         projects = db.query(Project).filter(Project.host_id.in_(host_ids)).all()
+        from app.services.quota_accounting import retain_attributed_history
+
+        retain_attributed_history(
+            db, [project.id for project in projects], datetime.now(UTC)
+        )
         for project in projects:
             try:
                 prefix = creds.get("project_prefix", "troshka-")

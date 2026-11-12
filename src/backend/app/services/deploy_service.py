@@ -13994,7 +13994,17 @@ def _delete_project_record(project_id: str):
         project = s.get(Project, project_id)
         if project:
             from app.services import quota_accounting
+            from app.services.quota_locks import lock_metering_project
 
+            project, _, _ = lock_metering_project(s, project_id)
+
+            if not quota_accounting.quotas_enabled():
+                quota_accounting.accrue(
+                    s,
+                    project_id,
+                    datetime.datetime.now(datetime.UTC),
+                    attributed_only=True,
+                )
             if quota_accounting.quotas_enabled():
                 from app.models.metering import MeteringInterval
                 from app.models.quota import QuotaReservation

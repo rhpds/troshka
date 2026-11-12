@@ -370,7 +370,10 @@ def _open_interval(
         started_at=now,
         ended_at=None,
     )
-    if quotas_enabled():
+    from app.models.user import User
+
+    owner = db.get(User, project.owner_id) if project.owner_id else None
+    if quotas_enabled() or (owner and owner.organization_id):
         from app.services.quota_accounting import attribution
 
         interval.quota_attribution = attribution(db, project)
@@ -468,6 +471,17 @@ def _reopen_changed_rates(
             open_keys.add(key)
 
 
+def _lock_reconciliation(db: Session, project: Project, quota_mode: bool) -> Project:
+    from app.services.quota_locks import lock_metering_project
+
+    project, _, _ = lock_metering_project(db, project.id)
+    if quota_mode:
+        from app.services.quota_accounting import attribution
+
+        attribution(db, project)
+    return project
+
+
 def reconcile_project(
     db: Session,
     project: Project,
@@ -480,10 +494,7 @@ def reconcile_project(
         return 0.0
     if quota_mode and not metering_enabled():
         raise AccountingUnavailable("Metering is disabled")
-    if quota_mode:
-        from app.services.quota_locks import lock_metering_project
-
-        project, _, _ = lock_metering_project(db, project.id)
+    project = _lock_reconciliation(db, project, quota_mode)
     now = now or _now()
     snap = snapshot if snapshot is not None else build_snapshot(db, project)
     if quota_mode:
@@ -675,12 +686,18 @@ def freeze_invoice(
     db: Session, project: Project, now: datetime | None = None
 ) -> ProjectInvoice:
     now = now or _now()
+    from app.services.quota_locks import lock_metering_project
+
+    project, _, _ = lock_metering_project(db, project.id)
     if quotas_enabled():
         return _freeze_quota_invoice(db, project, now)
     reconcile_project(db, project, now=now)
     for row in _open_rows(db, project.id):
         _close_interval(row, now)
     db.flush()
+    from app.services.quota_accounting import accrue
+
+    accrue(db, project.id, now, attributed_only=True)
     rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
     by_kind: dict[str, dict] = {}
     by_kind_spans: dict[str, list[dict]] = {}
@@ -898,12 +915,20 @@ def finalize_month(
         .filter(Project.state != "draft", Project.host_id.isnot(None))
         .all()
     )
+    from app.services.quota_locks import lock_metering_projects
+
+    lock_metering_projects(db, [project.id for project in projects])
     owners: set[str | None] = set()
     for project in projects:
         if not project.owner_id:
             continue
         owners.add(project.owner_id)
-        rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
+        rows = (
+            db.query(MeteringInterval)
+            .filter_by(project_id=project.id)
+            .populate_existing()
+            .all()
+        )
         if not rows:
             continue
         payload = _interval_payload(rows, now)
@@ -948,7 +973,10 @@ def _finalize_quota_month(
     start, end = month_bounds(year, month)
     if utc(now) < end:
         return []
-    for project in db.query(Project).all():
+    from app.services.quota_locks import lock_metering_projects
+
+    projects = lock_metering_projects(db, [pid for (pid,) in db.query(Project.id)])
+    for project in projects:
         refresh(db, "project", project.id, now)
     owners = {
         owner
@@ -1023,18 +1051,21 @@ def touch_metering(db: Session, project: Project) -> None:
 
 
 def safe_freeze_invoice(db: Session, project: Project) -> None:
+    from app.services.quota_locks import lock_metering_project
+
+    lock_metering_project(db, project.id)
     if quotas_enabled():
         # Metadata deletion must not discard intervals after a failed freeze.
         freeze_invoice(db, project)
         db.flush()
         return
     if not metering_enabled():
+        from app.services.quota_accounting import accrue
+
+        accrue(db, project.id, _now(), attributed_only=True)
         return
-    try:
-        freeze_invoice(db, project)
-        db.flush()
-    except Exception:
-        logger.exception("Metering invoice freeze failed for %s", project.id[:8])
+    freeze_invoice(db, project)
+    db.flush()
 
 
 _poll_started = False

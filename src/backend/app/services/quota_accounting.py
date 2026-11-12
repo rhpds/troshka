@@ -97,7 +97,7 @@ def _accrue_interval(
     if end <= start:
         return
     if row.quota_attribution is None:
-        row.quota_attribution = attribution(db, project)
+        raise AccountingUnavailable("Source attribution requires reviewed migration")
     quantity, rate = Decimal(str(row.qty)), Decimal(str(row.unit_rate))
     if not quantity.is_finite() or not rate.is_finite() or min(quantity, rate) < 0:
         raise AccountingUnavailable("Invalid metering quantity or snapshotted rate")
@@ -134,7 +134,12 @@ def _accrue_interval(
 
 
 def accrue(
-    db: Session, project_id: str, through: datetime, *, retained: bool = False
+    db: Session,
+    project_id: str,
+    through: datetime,
+    *,
+    retained: bool = False,
+    attributed_only: bool = False,
 ) -> None:
     """Accrue source stamps without polling/committing.
 
@@ -159,6 +164,8 @@ def accrue(
             .all()
         )
         for row in rows:
+            if attributed_only and row.quota_attribution is None:
+                continue  # Unknown legacy history stays available only in owner billing.
             if retained:
                 _require_closed_attribution(db, project, row, through)
             _accrue_interval(db, row, project, through)
@@ -175,9 +182,19 @@ def _require_closed_attribution(db, project, row, through):
     end = min(utc(through), utc(row.ended_at))
     start = utc(row.quota_accrued_through or row.started_at)
     if end > start and not row.quota_attribution:
-        # Preserve the normal first-accrual behavior for an assigned owner. An
-        # unassigned owner can only use identity already retained by the source.
-        row.quota_attribution = attribution(db, project)
+        raise AccountingUnavailable("Source attribution requires reviewed migration")
+
+
+def retain_attributed_history(db: Session, project_ids, through: datetime) -> None:
+    """Retain known monetary evidence before a legacy metadata deletion batch.
+
+    Identity tiers are acquired for the whole batch before any source is consumed.
+    This never polls providers, assigns unknown sources, or asserts coverage/readiness.
+    """
+    from app.services.quota_locks import lock_metering_projects
+
+    for project in lock_metering_projects(db, project_ids):
+        accrue(db, project.id, through, attributed_only=True)
 
 
 def split_attribution(
@@ -268,7 +285,11 @@ def refresh(db: Session, scope: Scope, scope_id: str, now: datetime) -> None:
         raise AccountingUnavailable(
             "Scope has no authoritative identity or accounting history"
         )
-    for project in _projects(db, scope, scope_id):
+    from app.services.quota_locks import lock_metering_projects
+
+    projects = _projects(db, scope, scope_id)
+    lock_metering_projects(db, [project.id for project in projects])
+    for project in projects:
         project, _, _ = lock_metering_project(db, project.id)
         from app.services.quota_operations import known_empty
 

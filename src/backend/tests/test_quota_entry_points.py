@@ -263,6 +263,7 @@ def test_confirmed_cleanup_closes_meters_and_retains_history(environment, monkey
         qty=2,
         unit_rate=1,
         started_at=start,
+        quota_attribution=quota_accounting.attribution(db, project),
     )
     db.add(row)
     db.flush()

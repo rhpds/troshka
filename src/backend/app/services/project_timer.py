@@ -276,6 +276,9 @@ def _delete_project(s, project):
         stop_project_async(project_id)
         s.refresh(project)
 
+    from app.services.quota_accounting import retain_attributed_history
+
+    retain_attributed_history(s, [project.id], datetime.datetime.now(datetime.UTC))
     _notify(project_id, {"type": "project-deleted"})
 
     if project.host_id and project.state in ("stopped", "error"):
