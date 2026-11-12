@@ -19,6 +19,7 @@ function QuotaScopeView({ scope, id, onDenied, onUsage, dialog }: Props) {
   const [revision, setRevision] = useState(0);
   const callbacks = useRef({ onDenied, onUsage });
   const revoked = useRef(false);
+  const mounted = useRef(false);
   const [denied, setDenied] = useState(false);
   const isRevoked = useCallback(() => revoked.current, []);
   const revoke = useCallback((message = "Quota access revoked") => {
@@ -27,6 +28,7 @@ function QuotaScopeView({ scope, id, onDenied, onUsage, dialog }: Props) {
     setDenied(true); setUsage(null); setError(message);
     callbacks.current.onUsage?.(null); callbacks.current.onDenied?.();
   }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { callbacks.current = { onDenied, onUsage }; }, [onDenied, onUsage]);
   useEffect(() => {
     let live = true;
@@ -36,9 +38,11 @@ function QuotaScopeView({ scope, id, onDenied, onUsage, dialog }: Props) {
       const current = ++request;
       try { const result = await fetchUsage(scope, id); if (live && current === request && !revoked.current) { setUsage(result); setError(""); callbacks.current.onUsage?.(result); } }
       catch (e) {
-        if (!live || revoked.current) return;
+        // Refresh/save retires successful responses, but a denial from any
+        // request for this still-mounted scope must revoke both datasets.
+        if (!mounted.current || revoked.current) return;
         if (isQuotaRevocation(e)) { revoke((e as Error).message); return; }
-        if (current === request) { setUsage(null); callbacks.current.onUsage?.(null); setError((e as Error).message); }
+        if (live && current === request) { setUsage(null); callbacks.current.onUsage?.(null); setError((e as Error).message); }
       }
     }
     void load(); const timer = setInterval(() => void load(), 15000);

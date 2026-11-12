@@ -17,13 +17,34 @@ it("shows complete zero, separate capacity, source UTC time, and report-only sem
   expect(screen.getByText(/Reporting only; native quota enforcement unavailable/)).toBeInTheDocument();
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
 });
-it.each(["partial", "stale", "unavailable"] as const)("keeps nullable %s totals distinct from measured subsets", async status => {
+it.each(["partial", "stale"] as const)("keeps nullable %s totals distinct from measured subsets", async status => {
   respond({ status, allocated_bytes: null, reason_codes: ["unsupported"] });
   render(<NativeStorageUsage scope="project" id="p" />);
   await screen.findByText(status === "stale" ? "Last measured" : "Measured subset");
   expect(screen.getByText("Scope total unavailable")).toBeInTheDocument();
   expect(screen.getByTitle("1073741824 bytes")).toHaveTextContent("1 GiB");
   expect(screen.getByText("Coverage details")).toBeInTheDocument();
+});
+it.each(["unavailable", "partial", "stale"] as const)("a %s scan timestamp does not turn an unverified zero accumulator into measured bytes", async status => {
+  respond({ status, allocated_bytes: null, known_allocated_bytes: 0, provisioned_bytes: null, covered_projects: 0, reason_codes: ["unsupported", ...(status === "stale" ? ["stale_evidence"] : [])] });
+  render(<NativeStorageUsage scope="project" id="p" />);
+  await screen.findByText("Scope total unavailable");
+  expect(screen.getByText("No verified measurement")).toBeInTheDocument();
+  expect(screen.queryByTitle("0 bytes")).not.toBeInTheDocument();
+  expect(screen.queryByText("Measured subset")).not.toBeInTheDocument();
+  expect(screen.queryByText("Last measured")).not.toBeInTheDocument();
+});
+it("retains a stale measured zero when age is the only completeness blocker", async () => {
+  respond({ status: "stale", allocated_bytes: null, known_allocated_bytes: 0, covered_projects: 0, reason_codes: ["stale_evidence"] });
+  render(<NativeStorageUsage scope="project" id="p" />);
+  expect(await screen.findByTitle("0 bytes")).toHaveTextContent("0 GiB");
+  expect(screen.getByText("Last measured")).toBeInTheDocument();
+});
+it("retains a partial measured zero supported by a covered project", async () => {
+  respond({ status: "partial", allocated_bytes: null, known_allocated_bytes: 0, covered_projects: 1, expected_projects: 2, reason_codes: ["expected_root_missing"] });
+  render(<NativeStorageUsage scope="project" id="p" />);
+  expect(await screen.findByTitle("0 bytes")).toHaveTextContent("0 GiB");
+  expect(screen.getByText("Measured subset")).toBeInTheDocument();
 });
 it("does not show no-native-projects as measured zero", async () => {
   respond({ status: "unavailable", allocated_bytes: null, known_allocated_bytes: 0, covered_projects: 0, expected_projects: 0, observed_at: null, reason_codes: ["no_native_projects"] });

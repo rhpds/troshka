@@ -48,14 +48,26 @@ function Bytes({ value }: { value: Quantity }) {
   return <span title={`${integerText(value)} bytes`} aria-label={`${integerText(value)} bytes`}>{roundedGiB(value)} GiB</span>;
 }
 
+function hasVerifiedMeasurement(data: NativeStorageUsageData): boolean {
+  if (data.status === "unavailable") return false;
+  if (data.status === "complete" && data.allocated_bytes !== null) return true;
+  if (BigInt(integerText(data.known_allocated_bytes)) > BigInt(0) || data.covered_projects > 0) return true;
+  // The API preserves every project completeness blocker, while covered_projects
+  // counts only fresh complete projects. Age alone can therefore hide a measured
+  // zero; an arbitrary scan timestamp or incomplete zero cannot establish one.
+  return data.status === "stale" && data.expected_projects > 0 && data.reason_codes.length === 1 && data.reason_codes[0] === "stale_evidence";
+}
+
 function NativeAmounts({ data }: { data: NativeStorageUsageData }) {
   if (data.expected_projects === 0) return <p className={styles.muted}>No native projects in this scope</p>;
   const complete = data.status === "complete" && data.allocated_bytes !== null;
+  const measured = hasVerifiedMeasurement(data);
+  const labels = { complete: "Scope total", partial: "Measured subset", stale: "Last measured", unavailable: "No verified measurement" };
   return <>
     <div className={styles.nativeSummary}>
       <div>{!complete && <p className={styles.muted}>Scope total unavailable</p>}
-        <p className={styles.muted}>{complete ? "Scope total" : data.status === "stale" ? "Last measured" : "Measured subset"}</p>
-        <p className={styles.nativeAmount}>{complete || data.observed_at ? <Bytes value={complete ? data.allocated_bytes! : data.known_allocated_bytes} /> : "Unavailable"}</p>
+        <p className={styles.muted}>{measured ? labels[data.status] : "No verified measurement"}</p>
+        <p className={styles.nativeAmount}>{measured ? <Bytes value={complete ? data.allocated_bytes! : data.known_allocated_bytes} /> : "Unavailable"}</p>
       </div>
       <div className={styles.muted}>
         <p>Provisioned PVC capacity: {data.provisioned_bytes === null ? "Unavailable" : <Bytes value={data.provisioned_bytes} />}</p>

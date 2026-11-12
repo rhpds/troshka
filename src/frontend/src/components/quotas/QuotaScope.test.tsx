@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import QuotaScope from "./QuotaScope";
 import { exampleUsage, nativeUsage } from "./test-fixtures";
@@ -100,4 +100,44 @@ it("an older quota denial revokes a newer successful quota response", async () =
   expect(onDenied).toHaveBeenCalledOnce();
   expect(screen.queryByTitle("1073741824 bytes")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("CPU limit")).not.toBeInTheDocument();
+});
+
+it.each([403, 404])("a pending %s denial survives a same-scope refresh and clears newer quota/native data", async status => {
+  let late: (response: Response) => void = () => {};
+  let poll: () => void = () => {};
+  let calls = 0;
+  vi.spyOn(globalThis, "setInterval").mockImplementation((callback, delay) => { if (delay === 15000) poll = callback as () => void; return 1 as unknown as ReturnType<typeof setInterval>; });
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url.endsWith("/native-storage")) return new Response(JSON.stringify(nativeUsage));
+    if (++calls === 2) return new Promise<Response>(resolve => { late = resolve; });
+    return new Response(JSON.stringify({ ...exampleUsage, cost_center_id: calls >= 3 ? "Refreshed" : null }));
+  }));
+  const onDenied = vi.fn();
+  render(<QuotaScope scope="user" id="u" onDenied={onDenied} />);
+  await screen.findByText("Cost center not assigned");
+  act(() => poll());
+  await waitFor(() => expect(calls).toBe(2));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh quotas" }));
+  await screen.findByText("Cost center: Refreshed");
+  await act(async () => late(new Response('{"detail":"Revoked"}', { status })));
+  expect(onDenied).toHaveBeenCalledOnce();
+  expect(screen.queryByText("Cost center: Refreshed")).not.toBeInTheDocument();
+  expect(screen.queryByTitle("1073741824 bytes")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("CPU limit")).not.toBeInTheDocument();
+});
+
+it("a pending previous-scope denial cannot revoke the replacement scope", async () => {
+  let late: (response: Response) => void = () => {};
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url.endsWith("/native-storage")) return new Response(JSON.stringify(nativeUsage));
+    if (url.includes("/u/")) return new Promise<Response>(resolve => { late = resolve; });
+    return new Response(JSON.stringify({ ...exampleUsage, scope_id: "v", cost_center_id: "Replacement" }));
+  }));
+  const onDenied = vi.fn();
+  const view = render(<QuotaScope scope="user" id="u" onDenied={onDenied} />);
+  view.rerender(<QuotaScope scope="user" id="v" onDenied={onDenied} />);
+  await screen.findByText("Cost center: Replacement");
+  await act(async () => late(new Response('{"detail":"Revoked"}', { status: 403 })));
+  expect(onDenied).not.toHaveBeenCalled();
+  expect(screen.getByText("Cost center: Replacement")).toBeInTheDocument();
 });
