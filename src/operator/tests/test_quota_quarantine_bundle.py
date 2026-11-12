@@ -201,7 +201,10 @@ def test_offline_deterministic_no_mutation(options, monkeypatch):
     assert source == bundle() and options == original
     assert "quota_enabled" not in json.dumps(result)
     assert ssl.PEM_cert_to_DER_cert(options["ca_pem"])
-    assert yaml.safe_load_all(yaml.safe_dump_all(result["00-protections"]))
+    assert (
+        list(yaml.safe_load_all(yaml.safe_dump_all(result["00-protections"])))
+        == result["00-protections"]
+    )
 
 
 def cli_module():

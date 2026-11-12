@@ -363,13 +363,89 @@ delete tombstone policy/binding to complete fixture cleanup.
 - Admission outage: non-DELETE cleanup also fails closed. Use independently
   reviewed storage-preserving stop paths and restore the admission service.
 
-Rollback service code to a known named release only with a matching reviewed
-control policy image constraint and unchanged enrollment/TLS protection. Preserve
-all API-local Namespace tombstones, Deny bindings, exact webhook scope and
-failurePolicy Fail. Keep DELETE authorization available. Do not remove the webhook
-as an availability fix or perform a blanket uninstall: that reopens old writers.
-The control namespace cannot be deleted even by bootstrap while this policy is
-active. Record unresolved writer drain/storage/settlement gates after rollback.
+### Ordered service release rollback
+
+The exact image predicate also governs ReplicaSet UPDATE and Pod/ReplicaSet DELETE.
+**Drain and retire the current revision under the still-current matching policy
+before changing that image predicate.** A rolling image/policy swap can strand old
+ReplicaSets and Pods because they no longer match the permitted retirement shape.
+Do not broaden controller exceptions or weaken those predicates to work around it.
+
+This is a separately reviewed existing-installation change, not reuse of the
+first-install procedure. It requires explicit authorization and independent
+cumulative-history reconciliation: preserve every enrollment/tombstone, including
+deleted namespace lifetimes. The offline renderer cannot discover that history.
+If the current inventory, policy pin or owner lineage is uncertain, stop.
+
+1. Preserve the current reviewed bundle and content hashes. Verify current control
+   Namespace UID, workload/owner UIDs and image against its still-active policy.
+   Inspect all Pods and ReplicaSets in the dedicated control namespace, including
+   retained revisions; each retirement target must match the current policy.
+   An older mismatched revision is a blocker requiring separate review.
+2. Render a new private `ROLLBACK_BUNDLE_DIR` with the known prior **named release**
+   using the same CLI and complete reconciled input inventory. Verify that release
+   contains the admission module. Review the diff before any write: only the
+   Deployment image and control-policy image predicates may change. Enrollment,
+   config name/content, control UID, node/identity lists, Service/TLS references,
+   CA, Namespace tombstones, Deny bindings and activation webhook must remain
+   identical. Server-dry-run the reviewed protection/workload artifacts. Do not
+   blindly apply regenerated inventory or use `oc rollout undo`.
+3. With bootstrap credentials, root-patch replicas to zero while keeping the
+   **current** policy. Wait for current Pods to disappear, then delete only the
+   admission Deployment with background cascading so the narrowly permitted
+   garbage collector can retire its ReplicaSets under that same current policy:
+
+   ```bash
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" patch deployment troshka-quarantine --type=merge -p '{"spec":{"replicas":0}}'
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" wait --for=delete pod \
+     -l app.kubernetes.io/name=troshka-quarantine --timeout=120s
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" delete deployment troshka-quarantine --cascade=background --wait=true --timeout=120s
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" wait --for=delete replicaset \
+     -l app.kubernetes.io/name=troshka-quarantine --timeout=120s
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" get pods,replicasets -o json \
+     | jq -e '.items | length == 0'
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" get endpoints troshka-quarantine -o json \
+     | jq -e '[.subsets[]?.addresses[]?] | length == 0'
+   ```
+
+   Require both final checks to return `true` and exit zero; an already-empty
+   selector alone is not retirement evidence. Any residual object, unavailable
+   inspection, blocked finalizer or timeout stops the transition. Do not change
+   the image pin, force deletion, or remove finalizers to get past this gate.
+   Preserve the Service, PDB, ServiceAccount, immutable config and TLS Secret.
+4. Only after retirement is proven, apply the reviewed rollback protection bundle
+   with unchanged lifetime/webhook protections and the prior image pin. Inspect
+   current policy status/type warnings. Then apply the reviewed workload bundle
+   to recreate the Deployment at its declared two replicas and verify readiness:
+
+   ```bash
+   export ROLLBACK_BUNDLE_DIR=/absolute/private/path/reviewed-quarantine-rollback
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" apply -f "$ROLLBACK_BUNDLE_DIR/00-protections.yaml"
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" get validatingadmissionpolicy troshka-quarantine-control -o json \
+     | jq '{generation:.metadata.generation,status:.status}'
+   # Proceed only after the reviewed pin and policy status are verified.
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" apply -f "$ROLLBACK_BUNDLE_DIR/10-workload.yaml"
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" rollout status deployment/troshka-quarantine --timeout=120s
+   oc --kubeconfig="$ACCEPTANCE_KUBECONFIG" -n "$CONTROL_NS" get pods,replicasets,endpoints,endpointslices -o wide
+   ```
+
+   Verify the prior named image, two ready replicas, expected nodes and HTTPS
+   endpoints, then repeat the enrolled denial/unrelated success checks. Leave the
+   existing activation webhook in place; do not reapply or remove it for rollback.
+
+This ordered transition deliberately causes a **fail-closed admission outage**
+between drain and verified recovery. Enrolled CREATE/UPDATE/CONNECT, including
+UPDATE cleanup, fail during that interval. Authorized enrolled DELETE remains
+outside the external webhook, and unrelated namespaces remain filtered out.
+Namespace tombstones/Deny bindings, TLS protection, exact enrollment and webhook
+`failurePolicy: Fail` stay active throughout. DELETE is not quota-release evidence.
+
+If the rollback release fails, retain those protections. Any subsequent release
+switch must again drain its current objects under their matching policy before
+changing the pin; never leave mixed revisions and flip policies back blindly.
+Do not remove the webhook as an availability fix or perform a blanket uninstall.
+The control namespace remains undeletable under the lifetime policy. Record all
+unresolved writer drain/storage/settlement gates after rollback.
 
 ## Reference
 
