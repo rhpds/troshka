@@ -357,6 +357,66 @@ def test_disabled_transfer_rejects_inconsistent_confirmed_reservation(transfer_c
     assert q.allocation.organization_id == q.source.id
 
 
+@pytest.mark.parametrize("ledger_kind", ["allocation", "reservation"])
+@pytest.mark.parametrize("draft_removal", [False, True])
+def test_wrong_owner_project_ledger_blocks_transfer_and_draft_unassignment(
+    transfer_case, ledger_kind, draft_removal
+):
+    from sqlalchemy.orm import Session
+
+    q = transfer_case
+    row = q.allocation if ledger_kind == "allocation" else q.reservation
+    other = q.reservation if ledger_kind == "allocation" else q.allocation
+    q.db.delete(other)
+    row.owner_id = q.manager.id
+    if draft_removal:
+        q.db.delete(q.interval)
+        q.project.state = "draft"
+    ids = (q.admin.id, q.owner.id, q.source.id, q.destination.id, q.project.id)
+    row_id, operation_id = row.id, row.operation_id
+    wrong_owner = q.manager.id
+    requested, observed = row.requested, row.observed
+    state, updated_at, observation_id = row.state, row.updated_at, row.observation_id
+    q.db.commit()
+    model = QuotaAllocation if ledger_kind == "allocation" else QuotaReservation
+
+    with pytest.raises(AccountingUnavailable, match="identity"):
+        with Session(q.db.get_bind()) as db, db.begin():
+            transfer_user(
+                db, db.get(User, ids[0]), ids[1], None if draft_removal else ids[3], NOW
+            )
+
+    with Session(q.db.get_bind()) as db:
+        assert db.get(User, ids[1]).organization_id == ids[2]
+        assert db.get(Project, ids[4]).state == (
+            "draft" if draft_removal else "running"
+        )
+        retained = db.get(model, row_id)
+        assert retained.owner_id == wrong_owner
+        assert retained.project_id == ids[4]
+        assert retained.organization_id == ids[2]
+        assert retained.operation_id == operation_id
+        assert retained.requested == requested
+        assert retained.observed == observed
+        assert (retained.state, retained.updated_at, retained.observation_id) == (
+            state,
+            updated_at,
+            observation_id,
+        )
+        if ledger_kind == "reservation":
+            assert retained.dispatch_metadata == q.metadata
+        assert db.query(QuotaAllocation).count() == (ledger_kind == "allocation")
+        assert db.query(QuotaReservation).count() == (ledger_kind == "reservation")
+        intervals = db.query(MeteringInterval).filter_by(project_id=ids[4]).all()
+        assert len(intervals) == (0 if draft_removal else 1)
+        if intervals:
+            assert intervals[0].ended_at is None
+            assert intervals[0].quota_attribution["organization_id"] == ids[2]
+            assert intervals[0].qty == 2
+            assert intervals[0].unit_rate == 3
+        assert db.query(QuotaCharge).count() == db.query(QuotaAudit).count() == 0
+
+
 def test_multiple_transfers_preserve_closed_stamps_from_previous_groups(transfer_case):
     q = transfer_case
     move(q)

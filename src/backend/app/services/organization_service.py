@@ -79,7 +79,7 @@ def _has_infrastructure(db, owner, projects):
 
 def _validate_live_ledger(db, owner, projects):
     project_ids = {project.id for project in projects}
-    allocations, reservations = _live_ledger(db, owner.id)
+    allocations, reservations = _live_ledger(db, owner.id, project_ids)
     for rows in (allocations, reservations):
         if any(
             row.project_id not in project_ids
@@ -194,11 +194,15 @@ def _split_sources(db, owner, projects, destination, now, enabled):
             )
 
 
-def _live_ledger(db, owner_id):
+def _live_ledger(db, owner_id, project_ids):
     allocations = (
         db.query(QuotaAllocation)
         .filter(
-            QuotaAllocation.owner_id == owner_id, QuotaAllocation.state != "released"
+            (
+                (QuotaAllocation.owner_id == owner_id)
+                | QuotaAllocation.project_id.in_(project_ids)
+            ),
+            QuotaAllocation.state != "released",
         )
         .populate_existing()
         .all()
@@ -209,7 +213,10 @@ def _live_ledger(db, owner_id):
         .filter(
             (
                 (
-                    (QuotaReservation.owner_id == owner_id)
+                    (
+                        (QuotaReservation.owner_id == owner_id)
+                        | QuotaReservation.project_id.in_(project_ids)
+                    )
                     & QuotaReservation.state.in_(PENDING)
                 )
                 | QuotaReservation.operation_id.in_(operations)
@@ -221,8 +228,8 @@ def _live_ledger(db, owner_id):
     return allocations, reservations
 
 
-def _move_ledger(db, owner_id, destination, now):
-    allocations, reservations = _live_ledger(db, owner_id)
+def _move_ledger(db, owner_id, destination, now, project_ids):
+    allocations, reservations = _live_ledger(db, owner_id, project_ids)
     for row in [*allocations, *reservations]:
         row.organization_id = destination
         row.updated_at = now
@@ -251,6 +258,8 @@ def _destination_spending(db, destination, now, live):
 
 
 def _validate_transfer(db, owner, projects, destination, now):
+    # Invalid project/owner stamps cannot hide behind an apparently empty draft.
+    _validate_live_ledger(db, owner, projects)
     live = _has_infrastructure(db, owner, projects)
     if destination is None and live:
         raise HTTPException(
@@ -261,7 +270,6 @@ def _validate_transfer(db, owner, projects, destination, now):
             raise AccountingUnavailable(
                 "Live unassigned resources require baseline reconciliation"
             )
-        _validate_live_ledger(db, owner, projects)
     _validate_sources(db, owner, projects, now)
     return live
 
@@ -315,7 +323,7 @@ def transfer_user(
         result["spending_state"] = "inactive"
     _split_sources(db, owner, projects, organization_id, now, enabled)
     if organization_id:
-        _move_ledger(db, owner.id, organization_id, now)
+        _move_ledger(db, owner.id, organization_id, now, [p.id for p in projects])
     owner.organization_id = organization_id
     db.add(
         QuotaAudit(
