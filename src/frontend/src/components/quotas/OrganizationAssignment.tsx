@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button } from "@patternfly/react-core";
+import { Alert, Button, Popover } from "@patternfly/react-core";
+import InfoCircleIcon from "@patternfly/react-icons/dist/esm/icons/info-circle-icon";
 import { Organization, quotaFetch } from "@/lib/quotas";
 
 export default function OrganizationAssignment({ user, organizations, onChanged }: { user: { id: string; email: string; organization_id?: string | null }; organizations: Organization[]; onChanged: (message: string) => void }) {
@@ -23,7 +24,12 @@ export default function OrganizationAssignment({ user, organizations, onChanged 
   return <div><p>Organization: {organizations.find(org => org.id === user.organization_id)?.name || (user.organization_id ? user.organization_id : "Unassigned")}</p>
     <label>Organization <select aria-label={`Organization for ${user.email}`} disabled={busy} value={selected} onChange={e => setSelected(e.target.value)}><option value="">Unassigned</option>{organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}</select></label>{" "}
     <Button variant="secondary" aria-label={`${user.organization_id ? "Transfer" : "Assign"} organization for ${user.email}`} isDisabled={busy || selected === (user.organization_id || "")} onClick={() => void assign()}>{user.organization_id ? "Transfer organization" : "Assign organization"}</Button>
-    {user.organization_id && <p>Transfers move live allocations and future charges, preserve user/project spending, and check destination capacity. Unassignment requires no retained infrastructure.</p>}
+    {user.organization_id && <Popover
+      headerContent="Organization transfers"
+      bodyContent="Transfers move live allocations and future charges, preserve user/project spending, and check destination capacity. Unassignment requires no retained infrastructure."
+    >
+      <Button variant="plain" aria-label="About organization transfers" icon={<InfoCircleIcon />} />
+    </Popover>}
     {error && <Alert isInline variant="danger" title={error} />}
   </div>;
 }
