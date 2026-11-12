@@ -28,18 +28,18 @@ export default function ManagerControls({ group, users, platformAdmin = false, o
       setError((e as Error).message);
     } finally { setBusy(false); }
   }
-  return <section aria-label="Group managers">
-    <p className={styles.muted}>{group.is_organization ? "Only platform administrators manage organization administrators. Organization users are assigned separately by a platform administrator." : "Managers can view billing and manage other managers. Add them as members separately to include their usage. At least one manager must remain."}</p>
+  return <section aria-label="Group administrators">
+    <p className={styles.muted}>Only platform administrators manage group administrators and membership. Group administrators view attributed usage and current members’ owner billing history, and manage their users’ delegated limits. This grants no project access.</p>
     {error && <Alert variant="danger" isInline title={error} />}
-    <ul className={styles.people}>{group.managers.map(person => <li className={styles.person} key={person.id}><span>{person.email}</span>{(!group.is_organization || platformAdmin) && <Button variant="plain" aria-label={`Remove manager ${person.email}`} title={`Remove manager ${person.email}`} icon={<TrashIcon />} isDisabled={busy} onClick={async () => {
-      if (await appConfirm({ title: "Remove manager", message: `Remove ${person.email} as a manager?`, variant: "danger" })) await mutate(`/${person.id}`, { method: "DELETE" });
+    <ul className={styles.people}>{group.managers.map(person => <li className={styles.person} key={person.id}><span>{person.email}</span>{platformAdmin && <Button variant="plain" aria-label={`Remove administrator ${person.email}`} title={`Remove administrator ${person.email}`} icon={<TrashIcon />} isDisabled={busy} onClick={async () => {
+      if (await appConfirm({ title: "Remove administrator", message: `Remove ${person.email} as a group administrator?`, variant: "danger" })) await mutate(`/${person.id}`, { method: "DELETE" });
     }} />}</li>)}</ul>
-    {(!group.is_organization || platformAdmin) && <>
+    {platformAdmin && <>
     <form className={styles.toolbar} onSubmit={e => { e.preventDefault(); if (!busy && email.trim()) void mutate("", jsonBody("POST", { email: email.trim() })); }}>
-      {users ? <UserPicker label="Manager to add" users={users.filter(person => !group.managers.some(manager => manager.id === person.id))}
+      {users ? <UserPicker label="Administrator to add" users={users.filter(person => !group.managers.some(manager => manager.id === person.id))}
         value={users.find(person => person.email === email)?.id || ""} onChange={person => setEmail(person?.email || "")} disabled={busy} />
-        : <label className={styles.field}>Existing user’s exact email <input aria-label="Manager email" type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label>}{" "}
-      <Button type="submit" isDisabled={busy || !email.trim()}>Add manager</Button>
+        : <label className={styles.field}>Existing user’s exact email <input aria-label="Administrator email" type="email" required value={email} onChange={e => setEmail(e.target.value)} /></label>}{" "}
+      <Button type="submit" isDisabled={busy || !email.trim()}>Add administrator</Button>
     </form></>}
   </section>;
 }

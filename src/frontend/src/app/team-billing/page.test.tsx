@@ -7,7 +7,7 @@ vi.mock("@/lib/confirm", () => ({ appConfirm: vi.fn(async () => true) }));
 const person = { id: "u", email: "Member@example.com", display_name: "Member" };
 const manager = { id: "m", email: "Manager@example.com", display_name: "Manager" };
 const group = (id = "a") => ({ id, name: id === "a" ? "Alpha" : "Beta", description: "Group", members: [person], managers: [manager] });
-const report = (id = "a") => ({ group: group(id), period_start: "2026-11-01T00:00:00Z", period_end: "2026-12-01T00:00:00Z", as_of: "2026-11-03T00:00:00Z", currency: "USD", total_usd: 3, members: [{ owner_id: "u", owner_email: person.email, status: "provisional", total_usd: 3, by_project: [{ project_id: "p", project_name: `${id}-project`, subtotal: 3, by_kind: [{ kind: "vcpu", qty_hours: 6, unit_rate: .5, subtotal: 3 }] }] }], active_projects: [] });
+const report = (id = "a") => ({ group: group(id), period_start: "2026-11-01T00:00:00Z", period_end: "2026-12-01T00:00:00Z", as_of: "2026-11-03T00:00:00Z", currency: "USD", billing_view: "organization_attributed_usage", capacity_state: "unverified", accounting_started_at: "2026-11-01T00:00:00Z", accounting_status: "partial", reason: "Full monetary source coverage has not been verified", known_subtotal_usd: "3.005", total_usd: null, members: [{ owner_id: "u", owner_email: person.email, display_name: "Member", current_member: true, status: "provisional", accounting_status: "partial", known_subtotal_usd: "3.005", total_usd: null, by_project: [{ project_id: "p", project_name: `${id}-project`, subtotal: "3.005", total_usd: null, known_subtotal_usd: "3.005", accounting_status: "partial", by_kind: [{ kind: "vcpu", subtotal: "3.005" }] }] }], active_projects: [] });
 const doc = { id: "i", project_name: "Invoice project", owner_id: "u", owner_email: person.email, period_start: "2026-11-01T00:00:00Z", period_end: "2026-11-02T00:00:00Z", total_usd: 3, currency: "USD", finalized_at: "2026-11-02T00:00:00Z" };
 let overrides: Record<string, unknown>;
 let statuses: Record<string, number>;
@@ -38,13 +38,13 @@ async function loaded() {
   await screen.findByRole("button", { name: "Download monthly CSV" });
 }
 describe("team billing", () => {
-  it("separates organization ceilings and authoritative user limits from billing month and reporting members", async () => {
+  it("separates group ceilings and user limits from the usage month", async () => {
     overrides["/api/v1/quotas/organizations"] = [{ id: "a", name: "Alpha organization", cost_center_id: null }];
     overrides["/api/v1/quotas/organizations/a/members"] = [{ id: "quota-user", email: "Assigned@example.com", display_name: null, organization_id: "a" }];
     overrides["/api/v1/quotas/organization/a/usage"] = { ...exampleUsage, scope: "organization", scope_id: "a", can_edit: false };
     overrides["/api/v1/quotas/user/quota-user/usage"] = { ...exampleUsage, scope_id: "quota-user" };
     await loaded();
-    fireEvent.change(await screen.findByLabelText("Quota organization"), { target: { value: "a" } });
+    fireEvent.change(await screen.findByLabelText("Quota group"), { target: { value: "a" } });
     expect(await screen.findByText("Cost center not assigned")).toBeVisible();
     expect(screen.getByLabelText("CPU limit")).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Organization user limits"), { target: { value: "quota-user" } });
@@ -58,7 +58,7 @@ describe("team billing", () => {
     await loaded();
     expect(screen.getByRole("tab", { name: "Usage", selected: true })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "View invoice i" })).not.toBeInTheDocument();
-    expect(screen.getByText("Manage group managers (1)").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Group administrators (1)").closest("details")).not.toHaveAttribute("open");
     fireEvent.click(screen.getByRole("tab", { name: "Statements" }));
     expect(screen.getByText("No statements for this selection.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
@@ -76,7 +76,7 @@ describe("team billing", () => {
   });
   it("filters owners/months in scoped requests and downloads summary and document CSV", async () => {
     await loaded();
-    fireEvent.change(screen.getByLabelText("Member"), { target: { value: "u" } });
+    fireEvent.change(screen.getByLabelText("Usage member"), { target: { value: "u" } });
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/metering/groups/a/report?year=2026&month=11&owner_id=u", undefined));
     fireEvent.click(await screen.findByRole("button", { name: "Download monthly CSV" }));
     expect(download).toHaveBeenCalledOnce();
@@ -106,7 +106,7 @@ describe("team billing", () => {
     overrides["/api/v1/metering/groups/a/report?year=2026&month=11"] = { ...unavailable, members: [{ ...unavailable.members[0], total_usd: null }] };
     await loaded();
     expect(screen.getByText(/Incomplete monthly total/)).toBeInTheDocument();
-    expect(screen.getByText(/This total excludes/)).toBeInTheDocument();
+    expect(screen.getByText(/Full monetary source coverage/)).toBeInTheDocument();
   });
   it("supports empty discovery and API errors", async () => {
     overrides["/api/v1/groups"] = [];
@@ -126,33 +126,33 @@ describe("team billing", () => {
     expect(await screen.findByText("Metering is disabled")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
   });
-  it("adds manager with exact email and reports last-manager conflict after confirmation", async () => {
+  it("shows administrators read-only for group administrators", async () => {
     await loaded();
-    fireEvent.click(screen.getByText("Manage group managers (1)"));
-    fireEvent.change(screen.getByLabelText("Manager email"), { target: { value: "Exact.Case@example.com" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/a/managers", expect.objectContaining({ body: '{"email":"Exact.Case@example.com"}', method: "POST" })));
-    overrides["/api/v1/groups/a/managers/m"] = { detail: "Cannot remove the last manager" }; statuses["/api/v1/groups/a/managers/m"] = 409;
-    fireEvent.click(screen.getByRole("button", { name: `Remove manager ${manager.email}` }));
-    expect(await screen.findByText("Cannot remove the last manager")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Group administrators (1)"));
+    expect(screen.getByText(manager.email)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Add administrator|Remove administrator/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download monthly CSV" })).toBeInTheDocument();
   });
-  it("clears billing when removing oneself loses group access", async () => {
+  it("filters former-member usage without requesting former-member owner documents", async () => {
+    const data = report();
+    overrides["/api/v1/metering/groups/a/report?year=2026&month=11"] = { ...data, members: [...data.members, { ...data.members[0], owner_id: "former", owner_email: null, display_name: "Immutable former name", current_member: false }] };
     await loaded();
-    fireEvent.click(screen.getByText("Manage group managers (1)"));
-    overrides["/api/v1/groups/a"] = { detail: "Group not found" }; statuses["/api/v1/groups/a"] = 404;
-    fireEvent.click(screen.getByRole("button", { name: `Remove manager ${manager.email}` }));
-    await screen.findByText("Group access is no longer available.");
-    expect(screen.queryByRole("button", { name: "Download monthly CSV" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Usage member"), { target: { value: "former" } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/metering/groups/a/report?year=2026&month=11&owner_id=former", undefined));
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => /\/(invoices|statements)\?owner_id=former/.test(String(url)))).toBe(false);
+    fireEvent.click(screen.getByRole("tab", { name: "Invoices" }));
+    expect(screen.getByLabelText("Owner documents")).not.toHaveTextContent("Immutable former name");
+    expect(screen.getByText(/Owner billing history/)).toBeVisible();
   });
-  it("keeps authorized billing for an unknown exact email", async () => {
+  it("shows known decimal costs separately from unknown totals and a fresh accounting boundary", async () => {
     await loaded();
-    fireEvent.click(screen.getByText("Manage group managers (1)"));
-    overrides["/api/v1/groups/a/managers"] = { detail: "User not found" }; statuses["/api/v1/groups/a/managers"] = 404;
-    fireEvent.change(screen.getByLabelText("Manager email"), { target: { value: "Unknown@example.com" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
-    await screen.findByText("User not found");
-    expect(screen.getByRole("button", { name: "Download monthly CSV" })).toBeInTheDocument();
+    expect(screen.getByText("Known subtotal: $3.01")).toBeVisible();
+    expect(screen.getByText(/Incomplete monthly total: Unavailable/)).toBeVisible();
+    expect(screen.getByText(/Group accounting started/)).toBeVisible();
+    fireEvent.click(screen.getByText(/Member@example.com —/));
+    fireEvent.click(screen.getByText(/a-project —/));
+    expect(screen.queryByText("NaN")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(1);
   });
   it("clears cached usage immediately when refreshing revoked group access", async () => {
     await loaded();

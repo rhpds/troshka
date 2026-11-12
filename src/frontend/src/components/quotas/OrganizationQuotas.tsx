@@ -24,6 +24,6 @@ export default function OrganizationQuotas({ id, onDenied }: { id: string; onDen
     {users?.length === 0 && <p>No users assigned to this organization.</p>}
     {selected && <QuotaScope key={`${id}:${selected}`} scope="user" id={selected} onDenied={onDenied} />}
     </div>
-    <details className={styles.details}><summary>Organization access and membership</summary><p className={styles.help}>Organization membership is authoritative and distinct from reporting groups. Platform administrators assign and transfer users. Organization administrators manage only their own users’ limits; this grants no project access.</p></details>
+    <details className={styles.details}><summary>Group access and membership</summary><p className={styles.help}>Group membership is shared by usage reporting and quotas. Platform administrators assign and transfer users. Group administrators manage only their own users’ delegated limits, within the group allowance; this grants no project access. Configured limits are inactive while enforcement is disabled.</p></details>
   </section>;
 }

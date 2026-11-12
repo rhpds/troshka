@@ -17,8 +17,8 @@ export default function OrganizationDirectory() {
   }, []);
   return <section className={styles.directory} aria-label="Organization quota administration">
     {error && <Alert isInline variant="warning" title={error} />}
-    {!!organizations.length && <><label className={`${styles.field} ${styles.selector}`}>Quota organization <select aria-label="Quota organization" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Select an organization</option>{organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}</select></label>
+    {!!organizations.length && <><label className={`${styles.field} ${styles.selector}`}>Quota group <select aria-label="Quota group" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Select a group</option>{organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}</select></label>
     {selected && <OrganizationQuotas key={selected} id={selected} onDenied={denied} />}</>}
-    {!organizations.length && !error && <p>No organizations available for delegated quota administration. Reporting group management alone grants no quota authority.</p>}
+    {!organizations.length && !error && <p>No groups available for delegated quota administration.</p>}
   </section>;
 }

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Popover } from "@patternfly/react-core";
 import InfoCircleIcon from "@patternfly/react-icons/dist/esm/icons/info-circle-icon";
 import { Organization, quotaFetch } from "@/lib/quotas";
+export const transferHelp = "Transfers preserve assets, ownership, user/project limits and lifetime spending. Future charges belong to the destination group; previously attributed charges stay with their group. Enabled quotas check destination capacity and budgets. Configured limits are inactive while enforcement is disabled; accounting and capacity still require verification. Unassignment requires no retained infrastructure.";
 
 export default function OrganizationAssignment({ user, organizations, onChanged }: { user: { id: string; email: string; organization_id?: string | null }; organizations: Organization[]; onChanged: (message: string) => void }) {
   const [selected, setSelected] = useState(user.organization_id || ""), [busy, setBusy] = useState(false);
@@ -26,7 +27,7 @@ export default function OrganizationAssignment({ user, organizations, onChanged 
     <Button variant="secondary" aria-label={`${user.organization_id ? "Transfer" : "Assign"} organization for ${user.email}`} isDisabled={busy || selected === (user.organization_id || "")} onClick={() => void assign()}>{user.organization_id ? "Transfer organization" : "Assign organization"}</Button>
     {user.organization_id && <Popover
       headerContent="Organization transfers"
-      bodyContent="Transfers move live allocations and future charges, preserve user/project spending, and check destination capacity. Unassignment requires no retained infrastructure."
+      bodyContent={transferHelp}
     >
       <Button variant="plain" aria-label="About organization transfers" icon={<InfoCircleIcon />} />
     </Popover>}

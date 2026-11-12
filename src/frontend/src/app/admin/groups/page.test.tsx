@@ -19,7 +19,7 @@ beforeEach(() => {
     if (url.endsWith("/users/")) return response([person, other]);
     if (url === "/api/v1/groups" && options?.method === "POST") { if (fail) return response({ detail: "Group name already exists" }, 409); current = { ...current, ...JSON.parse(options.body as string) }; return response(current, 201); }
     if (url === "/api/v1/groups") return response([current]);
-    if (url.endsWith("/members/u")) current = { ...current, members: options?.method === "PUT" ? [person] : [] };
+    if (url.endsWith("/members/u")) { if (fail) return response({ detail: "Transfer failed; membership unchanged" }, 409); current = { ...current, members: options?.method === "PUT" ? [person] : [] }; }
     if (url.endsWith("/groups/g") && options?.method === "PATCH") current = { ...current, ...JSON.parse(options.body as string) };
     if (url.endsWith("/groups/g") && options?.method === "DELETE") return response(null, 204);
     return response(current);
@@ -32,7 +32,7 @@ async function selected() {
   await screen.findByRole("tab", { name: "Members (0)" });
 }
 describe("group administration", () => {
-  it("designates organizations with optional cost center and authoritative quota controls", async () => {
+  it("offers members, administrators, quotas and settings for every group without a type choice", async () => {
     const previous = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (url, options) => {
       if (String(url).includes("/quotas/organizations/g/members")) return new Response(JSON.stringify([{ ...person, organization_id: "g" }]));
@@ -41,13 +41,14 @@ describe("group administration", () => {
     });
     await selected();
     fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
-    fireEvent.click(screen.getByLabelText("Quota organization"));
+    expect(screen.queryByLabelText("Quota organization")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Cost center (optional)"), { target: { value: "CC-42" } });
     fireEvent.click(screen.getByRole("button", { name: "Save group" }));
-    await waitFor(() => expect(current).toMatchObject({ is_organization: true, cost_center_id: "CC-42" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Organization quotas" }));
+    await waitFor(() => expect(current).toMatchObject({ cost_center_id: "CC-42" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Quotas" }));
     expect(await screen.findByLabelText("Organization user limits")).toHaveTextContent(person.email);
-    expect(screen.queryByRole("button", { name: "Add member" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Members (0)" }));
+    expect(screen.getByRole("button", { name: "Add member" })).toBeVisible();
   });
   it("starts with the group list and opens focused management tabs", async () => {
     render(<GroupsPage />);
@@ -56,8 +57,8 @@ describe("group administration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Engineering" }));
     expect(await screen.findByRole("tab", { name: "Members (0)", selected: true })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save group" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Managers (1)" }));
-    const remove = screen.getByRole("button", { name: "Remove manager User@example.com" });
+    fireEvent.click(screen.getByRole("tab", { name: "Administrators (1)" }));
+    const remove = screen.getByRole("button", { name: "Remove administrator User@example.com" });
     expect(remove.textContent).toBe("");
     fireEvent.click(screen.getByRole("button", { name: /Back to groups/ }));
     expect(screen.getByRole("table", { name: "Groups" })).toBeInTheDocument();
@@ -65,6 +66,7 @@ describe("group administration", () => {
   it("creates and edits a group, assigns and removes existing members", async () => {
     render(<GroupsPage />);
     fireEvent.click(await screen.findByRole("button", { name: "New group" }));
+    expect(screen.queryByLabelText("Quota organization")).not.toBeInTheDocument();
     fireEvent.change(await screen.findByLabelText("New group name"), { target: { value: "New group" } });
     fireEvent.click(screen.getByRole("button", { name: "Create group" }));
     fireEvent.click(await screen.findByRole("tab", { name: "Settings" }));
@@ -75,6 +77,8 @@ describe("group administration", () => {
     fireEvent.change(screen.getByLabelText("Member to add"), { target: { value: "user@" } });
     fireEvent.click(screen.getByRole("option", { name: "User — User@example.com" }));
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByRole("tab", { name: "Members (1)" })).toBeVisible();
+    expect(fetch).toHaveBeenCalledWith("/api/v1/groups/g/members/u", { method: "PUT" });
     fireEvent.click(await screen.findByRole("button", { name: "Remove member User@example.com" }));
     await waitFor(() => expect(current.members).toEqual([]));
     expect(appConfirm).toHaveBeenCalled();
@@ -86,11 +90,11 @@ describe("group administration", () => {
   });
   it("finds managers by display name and submits their exact stored email", async () => {
     await selected();
-    fireEvent.click(screen.getByRole("tab", { name: "Managers (1)" }));
-    fireEvent.change(screen.getByLabelText("Manager to add"), { target: { value: "SMITH" } });
-    expect(screen.getByRole("button", { name: "Add manager" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Administrators (1)" }));
+    fireEvent.change(screen.getByLabelText("Administrator to add"), { target: { value: "SMITH" } });
+    expect(screen.getByRole("button", { name: "Add administrator" })).toBeDisabled();
     fireEvent.click(screen.getByRole("option", { name: "Alice Smith — Alice@example.com" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add manager" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add administrator" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/groups/g/managers", expect.objectContaining({
       method: "POST", body: JSON.stringify({ email: "Alice@example.com" }),
     })));
@@ -117,6 +121,18 @@ describe("group administration", () => {
     fireEvent.change(await screen.findByLabelText("New group name"), { target: { value: "Duplicate" } });
     fireEvent.click(screen.getByRole("button", { name: "Create group" }));
     await screen.findByText("Group name already exists");
+  });
+  it("keeps the prior roster after a failed transfer", async () => {
+    current = { ...initial, members: [other] };
+    render(<GroupsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Engineering" }));
+    fireEvent.change(await screen.findByLabelText("Member to add"), { target: { value: "user@" } });
+    fireEvent.click(screen.getByRole("option", { name: "User — User@example.com" }));
+    fail = true;
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByText("Transfer failed; membership unchanged")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Members (1)" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Remove member Alice@example.com" })).toBeVisible();
   });
   it("denies ordinary managers without requesting users", async () => {
     role = "user"; render(<GroupsPage />);
