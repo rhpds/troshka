@@ -75,7 +75,7 @@ docs/dev/native-quota-quarantine.md; synthetic JSON under
 src/operator/tests/fixtures/quota_quarantine/ if useful.
 
 **Interfaces:** bundle.render_bundle(enrollments, *, control_namespace, image,
-tls_secret, ca_pem, bootstrap_users) returns staged Kubernetes resource documents.
+tls_secret, ca_pem, bootstrap_users, controller_users) returns staged Kubernetes resource documents.
 The CLI requires explicit input/output and every security-relevant argument;
 it only validates and writes an operator-owned directory with a content manifest.
 Use task1 parse_enrollments without silently changing its schema.
@@ -105,6 +105,12 @@ Use task1 parse_enrollments without silently changing its schema.
   deterministic output, safe permissions, no subprocess/network calls, overwrite
   refusal, and no changes to app quota flags or source fixtures. If a real local
   CEL compiler is unavailable, document syntax/type validation as a live gate.
+- [ ] Require effective-permission checks before TLS installation: existing operator
+  cluster-wide Secret reads, Rook nodes/proxy, bind/self-restoration, impersonation
+  and trusted-controller/bootstrap credential access are explicit production
+  blockers. Document a separate non-applied hardening proposal without modifying
+  existing role manifests. Synthetic isolated-writer tests are not production
+  identity isolation proof.
 - [ ] Write copyable isolated acceptance steps: explicit kubeconfig; fresh target
   namespace and full CR/UID verification; pre-existing TLS with correct SAN/CA;
   separate preview, server dry-run, policy/control rollout and activation; exact

@@ -64,6 +64,13 @@ groups, untrusted impersonation, service-account token theft and ordinary worker
 RBAC must not become a documented bypass. Admission-policy/webhook configuration
 is itself administrator-controlled. Effective isolation requires live acceptance.
 
+Repository inspection found existing cluster-wide Secret reads and Rook
+nodes/proxy permissions. Admission policies cannot deny GET. Production enrollment
+requires a separate effective-permission audit and reviewed hardening before TLS
+installation; this slice must not silently change those existing roles. The audit
+includes access to bootstrap/controller namespace credentials and ability to
+restore bindings. Synthetic-writer acceptance is not production isolation proof.
+
 ## Request decisions
 
 Strictly parse admission.k8s.io/v1 reviews, echo request UID, and validate operation,
@@ -100,7 +107,12 @@ An offline CLI renders immutable config, separate Deployment/Service, dedicated
 ServiceAccount with token automount disabled, disruption settings, a validating
 webhook and API-local policy/binding objects. Require explicit existing control
 namespace, named image release, TLS Secret reference, CA PEM and bootstrap
-principals. Never emit private keys or credentials, invoke kubectl, contact a
+principals plus explicit verified controller identities. Controller exceptions
+are restricted by resource, subresource and operation within the control namespace:
+Deployment/ReplicaSet reconciliation, scheduler Pod binding, kubelet Pod status,
+endpoint publication and disruption status. They never grant desired Deployment,
+Service, config, TLS Secret, ServiceAccount or RBAC mutation. No guessed controller
+usernames or blanket identity bypass. Never emit private keys or credentials, invoke kubectl, contact a
 cluster or modify existing manifests. Reject latest/main/production and digest-only
 image references. Group staged output into prerequisites/control protections and
 activation resources; no automatic apply. Refuse empty/wildcard enrollment.
