@@ -1,5 +1,8 @@
 # Native quota quarantine — isolated acceptance procedure
 
+For scoped shared-dev results and remaining enablement limits, see the
+[2026-11-12 acceptance record](native-quota-quarantine-acceptance-2026-11-12.md).
+
 ## Description of entry point
 
 Use this procedure to validate the inactive quarantine admission service against a
@@ -244,9 +247,15 @@ audit identity and exact operation for every policy-denied controller request.
 Never grant a blanket controller or bootstrap exemption to fix availability.
 Observe first status writes adding managedFields and subsequent writes changing
 its timestamp/ownership, with full spec and other metadata unchanged. Pair these
-with denied status writes that alter labels, annotations, owners, finalizers or
-spec. Policy comparison excludes only resourceVersion/managedFields bookkeeping;
-all other persisted ObjectMeta fields require equal presence and values. The
+with denied status writes that alter labels, unrelated annotations, owners,
+finalizers or spec. In addition to resourceVersion/managedFields bookkeeping,
+the exact Deployment-controller status path permits only the
+`deployment.kubernetes.io/revision` annotation to differ. The exact Pod-status
+path permits only `k8s.ovn.org/pod-networks` and
+`k8s.v1.cni.cncf.io/network-status`; platform identity restrictions still apply.
+Every other annotation and persisted ObjectMeta field requires equal presence
+and values. These exceptions concern the admission service's own controllers,
+not cleanup requests in enrolled project namespaces. The
 built-in schema handles unknown metadata fields. Local structural/reference-model
 tests do not execute CEL or replace target API type checking and controller rollout.
 
@@ -256,6 +265,13 @@ and updates ReplicaSet status; scheduler only binds matching names to explicit
 nodes; node/status identities only update Pod status; endpoint controllers only
 publish the admission Service; disruption controller only updates its PDB status;
 garbage collection only deletes matching Pods/ReplicaSets/EndpointSlices.
+Include any independently observed kubelet final-DELETE identity in the bounded
+cleanup mapping; do not assume generic garbage collection performs that request.
+For impersonated status tests, use audit-verified groups as well as username.
+Some controllers can UPDATE status but cannot GET the status endpoint: use a fresh
+root-object read and direct status PUT with `?dryRun=All`, rather than broadening
+RBAC to satisfy a CLI pre-read. Distinguish platform/RBAC rejection from a denial
+by the quarantine policy.
 Token requests, exec/attach, root Pod edits, RBAC and desired root configuration
 are denied to controllers. Bootstrap can manage exact named roots only.
 

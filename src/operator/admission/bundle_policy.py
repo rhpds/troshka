@@ -102,23 +102,29 @@ def _named(prefix):
 
 
 def _class(group, resource, subresource, operations):
+    # AdmissionRequest omits the optional subResource key for root requests.
+    subresource_match = (
+        f"(has(request.subResource) && request.subResource == {literal(subresource)})"
+        if subresource
+        else '(!has(request.subResource) || request.subResource == "")'
+    )
     return (
         f"request.resource.group == {literal(group)} && "
         'request.resource.version == "v1" && '
         f"request.resource.resource == {literal(resource)} && "
-        f"request.subResource == {literal(subresource)} && "
+        f"{subresource_match} && "
         f"request.operation in {literal(operations)}"
     )
 
 
-def _status(group, resource, shape):
+def _status(group, resource, shape, metadata="statusMetadataUnchanged"):
     return (
         f"({_class(group, resource, 'status', ['UPDATE'])} && {shape} && "
-        "variables.statusMetadataUnchanged && object.spec == oldObject.spec)"
+        f"variables.{metadata} && object.spec == oldObject.spec)"
     )
 
 
-def _status_metadata_unchanged():
+def _status_metadata_unchanged(*, annotations=True):
     """Compare ObjectMeta except API resourceVersion/managedFields bookkeeping.
 
     These are all other persisted v1.30 ObjectMeta fields (clusterName was
@@ -145,6 +151,20 @@ def _status_metadata_unchanged():
         f"(!has(object.metadata.{field}) || "
         f"object.metadata.{field} == oldObject.metadata.{field}))"
         for field in fields
+        if annotations or field != "annotations"
+    )
+
+
+def _status_annotations_unchanged(allowed):
+    """Only explicit controller-owned annotations may differ on status writes."""
+    keys = literal(allowed)
+    return (
+        "variables.statusNonAnnotationMetadataUnchanged && "
+        f"variables.oldAnnotations.all(k, k in {keys} || "
+        "(k in variables.newAnnotations && "
+        "variables.oldAnnotations[k] == variables.newAnnotations[k])) && "
+        f"variables.newAnnotations.all(k, k in {keys} || "
+        "k in variables.oldAnnotations)"
     )
 
 
@@ -163,7 +183,9 @@ def _controller_rules(users, scheduler_nodes):
     rules = {
         "deployment": [
             f"({_class('apps', 'replicasets', '', ['CREATE', 'UPDATE', 'DELETE'])} && {rs})",
-            _status("apps", "deployments", endpoint),
+            _status(
+                "apps", "deployments", endpoint, "deploymentStatusMetadataUnchanged"
+            ),
         ],
         "replicaset": [
             f"({_class('', 'pods', '', ['CREATE', 'DELETE'])} && {pod})",
@@ -176,7 +198,7 @@ def _controller_rules(users, scheduler_nodes):
                 f"variables.target.target.name in {literal(scheduler_nodes)})"
             )
         ],
-        "pod_status": [_status("", "pods", pod)],
+        "pod_status": [_status("", "pods", pod, "podStatusMetadataUnchanged")],
         "endpoints": [
             f"({_class('', 'endpoints', '', ['CREATE', 'UPDATE', 'DELETE'])} && {endpoint})"
         ],
@@ -252,6 +274,28 @@ def control_policy(
     variables = [
         ("target", 'request.operation == "DELETE" ? oldObject : object'),
         ("statusMetadataUnchanged", _status_metadata_unchanged()),
+        (
+            "statusNonAnnotationMetadataUnchanged",
+            _status_metadata_unchanged(annotations=False),
+        ),
+        (
+            "oldAnnotations",
+            "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}",
+        ),
+        (
+            "newAnnotations",
+            "has(object.metadata.annotations) ? object.metadata.annotations : {}",
+        ),
+        (
+            "deploymentStatusMetadataUnchanged",
+            _status_annotations_unchanged(["deployment.kubernetes.io/revision"]),
+        ),
+        (
+            "podStatusMetadataUnchanged",
+            _status_annotations_unchanged(
+                ["k8s.ovn.org/pod-networks", "k8s.v1.cni.cncf.io/network-status"]
+            ),
+        ),
         (
             "replicaSet",
             f"{_named(NAME)} && {_owner('apps/v1', 'Deployment', 'o.name == ' + literal(NAME))} && "

@@ -136,7 +136,16 @@ Controller status exceptions compare full spec and every persisted Kubernetes
 v1.30 ObjectMeta field except resourceVersion and managedFields. Require presence
 parity and value equality for name, generateName, namespace, selfLink, uid,
 generation, creationTimestamp, deletionTimestamp, deletionGracePeriodSeconds,
-labels, annotations, ownerReferences and finalizers. This field list targets the
+labels, annotations, ownerReferences and finalizers. Two control-workload status
+paths additionally permit specific controller-owned annotations: the verified
+Deployment controller may change `deployment.kubernetes.io/revision`; verified
+Pod status reporters may change `k8s.ovn.org/pod-networks` and
+`k8s.v1.cni.cncf.io/network-status`. All annotation keys outside that exact list
+must retain their presence and values. These exceptions do not apply to enrolled
+project cleanup, other resource classes, root Pod updates or arbitrary callers.
+Root admission requests may omit `subResource`; missing and empty both designate
+the root, while nonroot operations require a present exact subresource value.
+This field list targets the
 built-in API schema; unknown metadata is handled by that schema, not compared as
 arbitrary map keys by this policy. Target API type checking and real-controller
 status/rollout acceptance remain mandatory, including managedFields creation and

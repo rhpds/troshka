@@ -85,8 +85,12 @@ def status_contract():
         validation.count(
             "variables.statusMetadataUnchanged && object.spec == oldObject.spec"
         )
-        == 4
+        == 2
     )
+    for name in ("deploymentStatusMetadataUnchanged", "podStatusMetadataUnchanged"):
+        assert (
+            validation.count(f"variables.{name} && object.spec == oldObject.spec") == 1
+        )
     assert "object.metadata == oldObject.metadata" not in validation
     return fields
 
@@ -414,9 +418,24 @@ def test_cli_explicit_inputs_and_offline_render(options, tmp_path, monkeypatch):
 def test_named_roots_and_controller_bounds(options):
     spec = policies(render(options))["troshka-quarantine-control"]["spec"]
     text = spec["validations"][0]["expression"]
-    assert 'request.subResource == ""' in text
-    assert 'request.subResource == "binding"' in text
-    assert 'request.subResource == "status"' in text
+    assert '(!has(request.subResource) || request.subResource == "")' in text
+    assert '(has(request.subResource) && request.subResource == "binding")' in text
+    assert '(has(request.subResource) && request.subResource == "status")' in text
+    variables = {v["name"]: v["expression"] for v in spec["variables"]}
+    assert "variables.deploymentStatusMetadataUnchanged" in text
+    assert "variables.podStatusMetadataUnchanged" in text
+    assert (
+        "deployment.kubernetes.io/revision"
+        in variables["deploymentStatusMetadataUnchanged"]
+    )
+    assert "k8s.ovn.org/pod-networks" in variables["podStatusMetadataUnchanged"]
+    assert (
+        "k8s.v1.cni.cncf.io/network-status" in variables["podStatusMetadataUnchanged"]
+    )
+    for name in ("deploymentStatusMetadataUnchanged", "podStatusMetadataUnchanged"):
+        assert "variables.oldAnnotations.all" in variables[name]
+        assert "variables.newAnnotations.all" in variables[name]
+        assert "variables.statusNonAnnotationMetadataUnchanged" in variables[name]
     assert 'target.target.name in ["fixture-node"]' in text
     assert "request.userInfo.groups" not in text
     assert '"serviceaccounts/token"' not in text and '"roles"' not in text
