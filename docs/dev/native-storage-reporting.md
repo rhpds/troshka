@@ -45,15 +45,78 @@ cover every enrolled namespace/cluster alias sharing these physical pools. One
 domain owns each physical pool, including pools shared by multiple Kubernetes
 clusters. No second domain can enroll an overlapping pool.
 
-Create an operator-owned backend configuration JSON array. Each object has
-`ceph_fsid`, `pools` (the collector's `PoolConfig` schema), `ceph_conf` and
-`ceph_keyring` paths. The keyring is an independently provisioned read-only
-identity; this workflow does not provision credentials.
+Create an operator-owned backend configuration JSON array. Every object specifies
+`ceph_fsid`, `pools` (the collector's `PoolConfig` schema), and one transport mode.
+The configured physical FSID/pool IDs must exactly cover the pins document;
+duplicate FSID configurations are rejected. Replace all example identities and
+paths below with independently checked operator values. These examples contain
+no credentials.
+
+Direct mode requires both local paths to an independently provisioned read-only
+Ceph identity and local Ceph binaries. Existing direct documents that omit `mode`
+remain accepted. Missing paths never fall back to ambient Ceph credentials.
+
+```json
+[
+  {
+    "mode": "direct",
+    "ceph_fsid": "00000000-0000-4000-8000-000000000001",
+    "pools": [
+      {"pool_id": 1, "name": "rbd-pool", "csi_cluster_id": "openshift-storage"}
+    ],
+    "ceph_conf": "/operator/ceph/ceph.conf",
+    "ceph_keyring": "/operator/ceph/read-only.keyring"
+  }
+]
+```
+
+If the workstation has no local Ceph identity/binaries, toolbox mode reuses an
+**existing** `rook-ceph-tools-*` pod in `openshift-storage`. The operator must
+already hold access to GET the pinned pod and `kube-system` namespace and exec
+into that pod with local `oc`. Use an explicit absolute kubeconfig path; there is
+no default kubeconfig or in-cluster fallback. Pin the cluster's `kube-system` UID,
+pod UID, namespace, container, FSID and pool name allowlist. All toolbox fields
+shown below are required, including namespace and container. The FSID must match
+the outer backend FSID, and the allowlist must exactly match configured pool
+names. Direct credential paths are forbidden in toolbox mode.
+
+```json
+[
+  {
+    "mode": "toolbox",
+    "ceph_fsid": "00000000-0000-4000-8000-000000000001",
+    "pools": [
+      {"pool_id": 1, "name": "rbd-pool", "csi_cluster_id": "openshift-storage"}
+    ],
+    "kubeconfig": "/operator/kubeconfigs/storage-cluster.yaml",
+    "toolbox": {
+      "cluster_key": "00000000-0000-4000-8000-000000000002",
+      "namespace": "openshift-storage",
+      "pod_name": "rook-ceph-tools-example",
+      "pod_uid": "00000000-0000-4000-8000-000000000003",
+      "container": "rook-ceph-tools",
+      "ceph_fsid": "00000000-0000-4000-8000-000000000001",
+      "allowed_pools": ["rbd-pool"]
+    }
+  }
+]
+```
+
+Toolbox verification checks the cluster/pod/container pins before reads and
+rechecks them before each fixed Ceph operation. It first checks the existing
+container's `timeout --kill-after` capability; unsupported timeout behavior
+blocks verification. The only Ceph operations are `ceph fsid` and
+`ceph osd lspools --format json`, with numeric pool IDs checked against the
+configuration and independent pins. No image measurement is needed. This
+operator-only transport creates no pod, credential, RBAC or application exec
+capability. The existing toolbox identity must already meet the operator's
+read-only access requirements; this workflow does not provision credentials.
 
 ```sh
 src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
   --target-id <target-uuid> verify --request enrollment-request.json \
   --pins enrollment-pins.json --backend-config backend-identities.json \
+  --verification-timeout-seconds 600 --command-timeout-seconds 15 \
   --output verified-enrollment.json
 
 src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
@@ -70,6 +133,18 @@ user → organization → project identities, rechecks the prepared tuples and
 Changes while preparing/verifying require fresh preparation. Ordinary report
 imports do not compare project `updated_at`; display/topology writes do not alter
 immutable namespace ownership.
+
+Verification shares one finite deadline across provider API reads, toolbox
+identity reads, startup checks and Ceph commands. The default budget is 600
+seconds (allowed 1–7200); the command budget defaults to 15 seconds (allowed
+1–3600). Kubernetes reads also retain the collector's 15-second maximum.
+Requests and commands are not retried, all Kubernetes clients close on success
+or failure, and failures omit raw client errors, command stderr and credentials.
+Project-root ownership always uses the independently prepared target database
+request and the corresponding provider's configured API credentials, including
+when the toolbox is in another cluster. The operator kubeconfig cannot substitute
+for missing provider credentials. `verify` writes only the private output file;
+it does not enroll roots or write resource, quota or billing records.
 
 ## Import and read behavior
 
