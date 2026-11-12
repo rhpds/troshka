@@ -32,6 +32,25 @@ def utc(value: datetime) -> datetime:
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def accounting_started_at(db: Session) -> datetime | None:
+    """Immutable fresh-era receipt, independent of mutable capacity readiness."""
+    receipt = db.get(QuotaReadiness, "unified-groups-v1")
+    if receipt is None:
+        return None
+    try:
+        return utc(datetime.fromisoformat(receipt.details["accounting_started_at"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise AccountingUnavailable("Invalid fresh accounting receipt") from error
+
+
+def _pre_era_source(row, start):
+    if start is None or utc(row.started_at) >= start:
+        return False
+    if row.ended_at is not None and utc(row.ended_at) <= start:
+        return True
+    raise AccountingUnavailable("Unsplit pre-fresh source requires reconciliation")
+
+
 def require_ready(db: Session) -> None:
     baseline = db.get(QuotaReadiness, "baseline")
     if (
@@ -163,7 +182,10 @@ def accrue(
             .populate_existing()
             .all()
         )
+        era_start = accounting_started_at(db)
         for row in rows:
+            if _pre_era_source(row, era_start):
+                continue
             if attributed_only and row.quota_attribution is None:
                 continue  # Unknown legacy history stays available only in owner billing.
             if retained:
@@ -272,6 +294,9 @@ def charge_rows(
     if scope not in columns:
         raise AccountingUnavailable("Unknown accounting scope")
     query = db.query(QuotaCharge).filter(columns[scope] == scope_id)
+    era_start = accounting_started_at(db)
+    if era_start is not None:
+        query = query.filter(QuotaCharge.start_at >= era_start)
     if start is not None:
         query = query.filter(QuotaCharge.end_at > utc(start))
     if end is not None:
@@ -418,6 +443,10 @@ def import_legacy_charge(
     Baseline importer must hold its rollout lock. Summary imports never infer
     organization from reporting membership; deleted projects supply identity.
     """
+    if accounting_started_at(db) is not None:
+        raise AccountingUnavailable(
+            "Legacy import is disabled after fresh accounting conversion"
+        )
     if source not in {"invoice", "statement"} or utc(end) <= utc(start):
         raise AccountingUnavailable("Invalid legacy source coverage")
     source = f"legacy:{source}"

@@ -827,6 +827,10 @@ def run(db, *, evidence=None, now=None, apply=False):
         "checked_at": now.isoformat(),
     }
     try:
+        if accounting.accounting_started_at(db) is not None:
+            raise AccountingUnavailable(
+                "Legacy baseline is disabled after fresh accounting conversion; a fresh-era capacity baseline is required"
+            )
         _lock_baseline(db, evidence)
         actual_digest = inventory_digest(db)
         report["inventory_digest"] = _manifest_digest(db, evidence, actual_digest)

@@ -150,7 +150,10 @@ def _validate_sources(db, owner, projects, now):
         .all()
     )
     boundaries = {}
+    era_start = accounting.accounting_started_at(db)
     for row in rows:
+        if accounting._pre_era_source(row, era_start):
+            continue  # Old owner history is outside the new group's accounting era.
         _validate_source(row, owner, now)
         key = (row.project_id, row.kind, row.resource_id)
         if key in boundaries and boundaries[key] > accounting.utc(row.started_at):

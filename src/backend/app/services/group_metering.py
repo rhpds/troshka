@@ -22,7 +22,12 @@ from app.models.quota import QuotaAllocation, QuotaCharge, QuotaReservation
 from app.models.user import User
 from app.schemas.quota import AccountingUnavailable
 from app.services.metering_math import month_bounds
-from app.services.quota_accounting import interval_amount, summarize, utc
+from app.services.quota_accounting import (
+    accounting_started_at,
+    interval_amount,
+    summarize,
+    utc,
+)
 
 COVERAGE_REASON = "Full monetary source coverage has not been verified"
 STAMP_KEYS = {
@@ -382,6 +387,16 @@ def _member_report(member, owner_id, rows, start, end, empty, historical_name):
     }
 
 
+def _fresh_era_evidence(db, sources, charges):
+    start = accounting_started_at(db)
+    if start is None:
+        return sources, charges
+    return (
+        [row for row in sources if utc(row.started_at) >= start],
+        [row for row in charges if utc(row.start_at) >= start],
+    )
+
+
 def group_report(
     db: Session,
     group: ManagedGroup,
@@ -394,6 +409,8 @@ def group_report(
     now = utc(now or datetime.now(UTC))
     start, end = month_bounds(year, month)
     end_as_of = min(end, now)
+    era_start = accounting_started_at(db)
+    usage_start = max(start, era_start) if era_start else start
     # Never trust a caller's stale or legacy reporting roster.
     members = scoped_members(db, group.id)
     projects = (
@@ -403,6 +420,7 @@ def group_report(
         .all()
     )
     sources, charges = _source_snapshot(db, group.id, [p.id for p in projects])
+    sources, charges = _fresh_era_evidence(db, sources, charges)
     rows = _evidence(sources, charges, group.id, now)
     current = {member.id: member for member in members}
     historical = {
@@ -431,7 +449,7 @@ def group_report(
             current.get(oid),
             oid,
             owner_rows[oid],
-            start,
+            usage_start,
             end_as_of,
             oid not in nonempty,
             historical.get(oid),
@@ -441,7 +459,7 @@ def group_report(
     selected_rows = [row for row in rows if row.owner_id in selected]
     money = _money(
         selected_rows,
-        start,
+        usage_start,
         end_as_of,
         empty=not any(oid in nonempty for oid in selected),
     )
@@ -458,6 +476,7 @@ def group_report(
                 "owner_email": current[project.owner_id].email,
                 **_money(
                     [row for row in selected_rows if row.project_id == project.id],
+                    start=era_start,
                     end=now,
                 ),
             }
@@ -465,6 +484,7 @@ def group_report(
     return {
         "group": {"id": group.id, "name": group.name},
         "as_of": now.isoformat(),
+        "accounting_started_at": era_start.isoformat() if era_start else None,
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "currency": "USD",
