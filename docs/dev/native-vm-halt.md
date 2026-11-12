@@ -1,7 +1,7 @@
-# Native VM maintenance halt requests
+# Native VM and helper controller maintenance requests
 
 This standalone command sends an exact desired-state halt request for explicitly
-selected existing native VMs. It defaults to Kubernetes server dry-run. It is not
+selected existing native VMs or supported helper controllers. It defaults to Kubernetes server dry-run. It is not
 a project stop command, a controller fence, or proof that compute stopped.
 It does not integrate with admission, billing, quota enforcement or reservations.
 
@@ -15,7 +15,9 @@ It does not integrate with admission, billing, quota enforcement or reservations
   supplying a root manifest, or receiving dry-run success does not fence writers.
 - Credential permissions: the observer's GET/LIST permissions, plus GET on
   TroshkaVMs, PVCs, DataVolumes and cluster-scoped PVs, and PATCH on the selected
-  VirtualMachines. Dry-run still requires PATCH authorization. No Secret reads,
+  VirtualMachines and selected apps/v1 Deployments, ReplicaSets, StatefulSets or
+  batch/v1 Jobs. Controller profiles additionally GET TroshkaNetwork CRs.
+  Dry-run still requires PATCH authorization. No Secret reads,
   exec, storage-backend writes, delete permissions or credential changes are needed.
 - Obtain full project/namespace/cluster identity as described in the observation
   guide. For each authorized target obtain exact VM name, UID and resourceVersion:
@@ -46,8 +48,63 @@ ownership, runtime-owned PVCs and unknown launcher storage profiles block the
 whole initial preflight. Matching launcher Pods permit PVCs from the verified VM
 claim set plus emptyDir, Secret, ConfigMap, projected and downwardAPI volumes;
 generic ephemeral PVCs are rejected. Other VM profiles require separate design,
-not relaxed checks. The command never scales controllers, suspends Jobs, deletes
-VMIs/Pods, removes finalizers or uses force/grace-zero shutdown.
+not relaxed checks. The command never deletes VMIs/Pods, removes finalizers or
+uses force/grace-zero shutdown.
+
+## Supported helper controllers
+
+The same manifest and command accept an optional target `kind`: `Deployment`,
+`ReplicaSet`, `StatefulSet` or `Job`. Omitting it preserves the `VirtualMachine`
+profile. Select each controller by exact name, UID and resourceVersion, for example:
+
+```json
+{"kind": "Deployment", "name": "gateway-verified-namespace", "uid": "00000000-0000-4000-8000-000000000003", "resource_version": "12345"}
+```
+
+Deployments, ReplicaSets and StatefulSets receive only `spec.replicas=0`; Jobs
+receive only `spec.suspend=true`. An absent replicas/suspend field uses JSON Patch
+`add`; an existing field uses `replace`. UID/RV tests and the unchanged admission
+cleanup classifier verify every proposed and returned resource. Existing VM
+behavior and statuses are preserved. Mixed manifests preflight every target
+before the first request; each target is revalidated before its own request.
+
+Controllers must be owned directly by the pinned Project or through a verified
+TroshkaVM/TroshkaNetwork. ReplicaSets may additionally have a verified Deployment
+parent. These are exact API-version/name/UID/controller-reference chains, never
+label-based selection. Actual generated DHCP Deployment -> TroshkaNetwork ->
+Project and gateway/exec Deployment -> Project profiles are tested from their
+source builders. Guestfish Job -> TroshkaVM -> Project can use retained existing
+VM-owned claims. Rook/Ceph roots, CronJobs, DaemonSets and bare Pods are refused.
+Generated Showroom runs as a bare Pod and remains potentially active; this patch
+does not stop it.
+
+The bounded graph includes Deployment-owned ReplicaSets and their owned Pods,
+or directly owned Pods for other supported controllers. Every selected runtime
+owner is checked; deleting runtimes block the request. All current and historical
+ReplicaSet templates and runtime Pod volumes must use existing PVC references,
+emptyDir, Secret, ConfigMap, projected or downwardAPI sources. Unknown sources,
+hostPath and generic ephemeral claims are refused. Secret contents are never read.
+StatefulSets with nonempty `volumeClaimTemplates` or `whenScaled=Delete` are
+refused; only absent/Retain scale policy is supported. Controllers themselves
+remain present, including any `whenDeleted` retention setting.
+
+Every referenced PVC must be bound, nondeleting and retained by the verified
+controller, generated CR or Project, optionally through one DataVolume. Its PV
+claim identity and lack of owner references are checked. Additionally, complete
+bounded namespace PVC and DataVolume lists must prove known owner ancestry to
+the pinned Project; runtime-owned, ownerless, unknown or cyclic ancestry blocks
+the request even when unmounted. Traversal allows at most six links per object,
+caches ancestor GETs, and caps cached nodes at eight times `--max-objects` within
+the command deadline. This conservatively blocks unrelated unsupported storage
+in the same project namespace. No fallback to deletion is implemented.
+
+Scaling and Job suspension can delete runtime Pods through Kubernetes controllers.
+Retention checks address this indirect storage garbage-collection risk; they do
+not prove physical stop or prevent a still-authorized operator/HPA from restoring
+desired state. The independently verified writer maintenance prerequisite remains
+mandatory. The command changes no storage, owner references, images, patterns or
+sharing settings. Separate reads cannot guarantee preservation against concurrent
+privileged changes or arbitrary external-controller side effects.
 
 Separate Kubernetes reads cannot atomically lock all storage ownership against
 other privileged writers. External admission, controllers or guest shutdown
@@ -118,6 +175,8 @@ post-operation evidence, including paused VMIs and other live workloads.
 | `dry_run_accepted` | API accepted the dry-run and returned the exact supported cleanup delta. No persisted halt is claimed. |
 | `desired_halt_observed` | API accepted the apply request and a fresh GET observed the same VM UID with desired halt. Compute may still run. |
 | `halt_request_accepted` | API returned the expected applied resource; follow-up desired-state evidence was unavailable or changed. Processing stops. |
+| `desired_stop_observed` | API accepted the controller apply request and a fresh GET saw the same UID with replicas zero or suspend true. Pods can still run. |
+| `stop_request_accepted` | API returned the expected controller resource; follow-up desired-state evidence was unavailable or changed. Processing stops. |
 | `ambiguous` | Request outcome or response cannot be trusted, including conflict, rejection, transport loss or altered response. Processing stops; no automatic retry. |
 | `blocked` summary | Initial or fresh preflight failed. Earlier per-target records, if any, still describe already attempted actions. |
 
@@ -144,6 +203,7 @@ explicit, with no compatibility fallback. Fresh evidence may still be non-atomic
 Every summary unconditionally leaves `settlement_verified`,
 `physical_stop_verified`, `capacity_release_allowed` and
 `storage_absence_verified` false. Paused or terminating VMIs remain potentially
-active. Installer/Showroom Pods, DaemonSets, Jobs and other writers are observed
-but not stopped here. No ledger release, storage absence or complete project
+active. Bare installer/Showroom Pods, DaemonSets, unsupported Jobs and other writers
+remain observed. Supported controllers only receive desired-state requests; their
+runtime absence is unproven. No ledger release, storage absence or complete project
 shutdown can be inferred from this command.

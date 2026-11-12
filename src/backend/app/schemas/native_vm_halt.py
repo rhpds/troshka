@@ -1,6 +1,6 @@
 """Explicit operator maintenance targets, never quota dispatch authority."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -13,6 +13,9 @@ Name = Annotated[
 
 
 class HaltTarget(Evidence):
+    kind: Literal[
+        "VirtualMachine", "Deployment", "ReplicaSet", "StatefulSet", "Job"
+    ] = "VirtualMachine"
     name: Name
     uid: Text
     resource_version: Text
@@ -25,7 +28,7 @@ class HaltManifest(Evidence):
 
     @model_validator(mode="after")
     def unique_targets(self):
-        if len({t.name for t in self.targets}) != len(self.targets) or len(
+        if len({(t.kind, t.name) for t in self.targets}) != len(self.targets) or len(
             {t.uid for t in self.targets}
         ) != len(self.targets):
             raise ValueError("duplicate target")

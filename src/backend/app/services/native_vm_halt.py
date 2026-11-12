@@ -2,7 +2,7 @@
 
 The admission import is provided by the standalone CLI's operator source path.
 Separate reads are not an atomic retention fence; apply requires external writer
-maintenance. No method here deletes or changes storage, ownership, or controllers.
+maintenance. No method here deletes or changes storage or ownership.
 """
 
 import json
@@ -237,13 +237,19 @@ def _runtime(reader, namespace, vm, claims):
 def _verify_cleanup(vm, new, namespace):
     # Only the repository entry point adds operator sources to the import path.
     review = import_module("admission.quarantine").review
+    from app.services.native_controller_halt import CONTROLLERS
+
+    version, resource = CONTROLLERS.get(
+        vm["kind"], ("kubevirt.io/v1", "virtualmachines")
+    )
+    group, version = version.split("/")
     request = {
         "uid": str(uuid4()),
-        "kind": {"group": "kubevirt.io", "version": "v1", "kind": "VirtualMachine"},
+        "kind": {"group": group, "version": version, "kind": vm["kind"]},
         "resource": {
-            "group": "kubevirt.io",
-            "version": "v1",
-            "resource": "virtualmachines",
+            "group": group,
+            "version": version,
+            "resource": resource,
         },
         "name": vm["metadata"]["name"],
         "namespace": namespace,
@@ -263,15 +269,10 @@ def _verify_cleanup(vm, new, namespace):
     require(decision["response"]["allowed"], "cleanup_classifier_denied")
 
 
-def _cleanup_patch(vm, namespace):
-    modes = {"running", "runStrategy"}.intersection(vm["spec"])
-    require(len(modes) == 1, "unsupported_vm_mode")
-    field = next(iter(modes))
-    value = False if field == "running" else "Halted"
+def _desired_patch(vm, namespace, field, value):
     new = deepcopy(vm)
     new["spec"][field] = value
     changed = new["spec"] != vm["spec"]
-    # Admission sees API-server generation preparation, not the submitted patch.
     new["metadata"]["generation"] += int(changed)
     _verify_cleanup(vm, new, namespace)
     return [
@@ -281,13 +282,31 @@ def _cleanup_patch(vm, namespace):
             "path": "/metadata/resourceVersion",
             "value": vm["metadata"]["resourceVersion"],
         },
-        {"op": "replace", "path": "/spec/" + field, "value": value},
+        {
+            "op": "replace" if field in vm["spec"] else "add",
+            "path": "/spec/" + field,
+            "value": value,
+        },
     ]
+
+
+def _cleanup_patch(vm, namespace):
+    modes = {"running", "runStrategy"}.intersection(vm["spec"])
+    require(len(modes) == 1, "unsupported_vm_mode")
+    field = next(iter(modes))
+    value = False if field == "running" else "Halted"
+    return _desired_patch(vm, namespace, field, value)
 
 
 def preflight(reader, manifest, target):
     namespace = manifest.root.namespace
     project = _root(reader, manifest.root)
+    if target.kind != "VirtualMachine":
+        from app.services.native_controller_halt import preflight_controller
+
+        controller = preflight_controller(reader, namespace, target, project)
+        field, value = ("suspend", True) if target.kind == "Job" else ("replicas", 0)
+        return controller, _desired_patch(controller, namespace, field, value)
     vm = _object(reader, "VirtualMachine", namespace, target.name, target.uid)
     require(
         vm["metadata"]["resourceVersion"] == target.resource_version,
@@ -316,9 +335,18 @@ def _request(reader, manifest, target, journal, apply):
         mode="apply" if apply else "server_dry_run",
     )
     try:
-        returned = reader.patch_vm(
-            manifest.root.namespace, target.name, patch, dry_run=not apply
-        )
+        if target.kind == "VirtualMachine":
+            returned = reader.patch_vm(
+                manifest.root.namespace, target.name, patch, dry_run=not apply
+            )
+        else:
+            returned = reader.patch_controller(
+                target.kind,
+                manifest.root.namespace,
+                target.name,
+                patch,
+                dry_run=not apply,
+            )
         _verify_returned(returned, manifest.root.namespace, target, patch)
         _verify_cleanup(vm, returned, manifest.root.namespace)
     except Exception:
@@ -327,27 +355,30 @@ def _request(reader, manifest, target, journal, apply):
         return {"target": target.model_dump(), "status": "ambiguous"}
     if not apply:
         return {"target": target.model_dump(), "status": "dry_run_accepted"}
-    status = "halt_request_accepted"
+    controller = target.kind != "VirtualMachine"
+    status = "stop_request_accepted" if controller else "halt_request_accepted"
     try:
         _root(reader, manifest.root)
         vm = _object(
-            reader, "VirtualMachine", manifest.root.namespace, target.name, target.uid
+            reader, target.kind, manifest.root.namespace, target.name, target.uid
         )
         field = patch[-1]["path"].split("/")[-1]
         if (
             type(vm["spec"].get(field)) is type(patch[-1]["value"])
             and vm["spec"].get(field) == patch[-1]["value"]
         ):
-            status = "desired_halt_observed"
+            status = "desired_stop_observed" if controller else "desired_halt_observed"
     except Exception:
         pass
     return {"target": target.model_dump(), "status": status}
 
 
 def _verify_returned(returned, namespace, target, patch):
+    from app.services.native_controller_halt import CONTROLLERS
+
+    version = CONTROLLERS.get(target.kind, ("kubevirt.io/v1", "virtualmachines"))[0]
     require(
-        returned.get("apiVersion") == "kubevirt.io/v1"
-        and returned.get("kind") == "VirtualMachine"
+        returned.get("apiVersion") == version and returned.get("kind") == target.kind
     )
     meta = returned["metadata"]
     require(
@@ -390,13 +421,22 @@ def halt_vms(reader, manifest, journal, *, apply=False):
             # Any journal failure escapes; leave the preceding attempt unresolved.
             journal.append("result", **result)
             report["results"].append(result)
-            if result["status"] not in {"dry_run_accepted", "desired_halt_observed"}:
+            if result["status"] not in {
+                "dry_run_accepted",
+                "desired_halt_observed",
+                "desired_stop_observed",
+            }:
                 break
         report["status"] = (
             "complete"
             if len(report["results"]) == len(manifest.targets)
             and all(
-                r["status"] in {"dry_run_accepted", "desired_halt_observed"}
+                r["status"]
+                in {
+                    "dry_run_accepted",
+                    "desired_halt_observed",
+                    "desired_stop_observed",
+                }
                 for r in report["results"]
             )
             else "incomplete"

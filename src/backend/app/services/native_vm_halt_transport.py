@@ -10,6 +10,7 @@ from app.services.native_workload_observations import _ENDPOINTS, WorkloadReader
 _READ_ENDPOINTS = {
     **_ENDPOINTS,
     "TroshkaVM": ("/apis/troshka.redhat.com/v1alpha1", "troshkavms"),
+    "TroshkaNetwork": ("/apis/troshka.redhat.com/v1alpha1", "troshkanetworks"),
     "PersistentVolume": ("/api/v1", "persistentvolumes"),
 }
 
@@ -23,10 +24,24 @@ class HaltClient(WorkloadReader):
         return self._get(f"{prefix}{scope}/{resource}/{quote(name, safe='')}")
 
     def patch_vm(self, namespace, name, patch, *, dry_run):
+        return self._patch("VirtualMachine", namespace, name, patch, dry_run=dry_run)
+
+    def patch_controller(self, kind, namespace, name, patch, *, dry_run):
+        from app.services.native_controller_halt import CONTROLLERS
+
+        if kind not in CONTROLLERS:
+            raise ValueError("unsupported controller")
+        return self._patch(kind, namespace, name, patch, dry_run=dry_run)
+
+    def _patch(self, kind, namespace, name, patch, *, dry_run):
+        prefix, resource = _READ_ENDPOINTS[kind]
         path = (
-            "/apis/kubevirt.io/v1/namespaces/"
+            prefix
+            + "/namespaces/"
             + quote(namespace, safe="")
-            + "/virtualmachines/"
+            + "/"
+            + resource
+            + "/"
             + quote(name, safe="")
         )
         if dry_run:
