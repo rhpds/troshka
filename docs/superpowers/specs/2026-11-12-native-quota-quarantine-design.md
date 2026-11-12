@@ -49,6 +49,11 @@ conflicts, invalid identities, extra fields and unsupported modes. Limit a bundl
 to 32 enrolled lifetimes. Input is operator-owned evidence, not an API payload.
 The offline renderer cannot verify live ownership: the runbook must require
 independent current UID verification and a writer-maintenance boundary before apply.
+The renderer also requires `control_namespace_uid` and `scheduler_nodes`: a full
+verified existing control Namespace UUID and a bounded nonempty list of exact
+eligible node names. Control Namespace CREATE/DELETE always deny; UPDATE requires
+the pinned UID and a bootstrap username. Pod binding targets and node affinity
+use the explicit node names, never inferred usernames or mutable node labels.
 
 The webhook uses exact request.namespace matchConditions and Namespaced scope.
 It must not use namespaceSelector or objectSelector as an opt-in boundary.
@@ -70,6 +75,10 @@ requires a separate effective-permission audit and reviewed hardening before TLS
 installation; this slice must not silently change those existing roles. The audit
 includes access to bootstrap/controller namespace credentials and ability to
 restore bindings. Synthetic-writer acceptance is not production isolation proof.
+Kubernetes VAP cannot match ValidatingAdmissionPolicy or its Binding resources
+([API restriction](https://kubernetes.io/docs/reference/kubernetes-api/admissionregistration/validating-admission-policy-v1/)).
+Their protection therefore requires independently verified effective RBAC and
+credential isolation; this slice does not introduce another admission technology.
 
 ## Request decisions
 
@@ -116,6 +125,10 @@ usernames or blanket identity bypass. Never emit private keys or credentials, in
 cluster or modify existing manifests. Reject latest/main/production and digest-only
 image references. Group staged output into prerequisites/control protections and
 activation resources; no automatic apply. Refuse empty/wildcard enrollment.
+Fixed resource names support one isolated first installation per cluster. Existing
+installation or tombstone history blocks the first-install runbook until cumulative
+history is independently reconciled. Offline rendering cannot preserve unseen
+enrollments and is not an automatic upgrade/uninstall path.
 
 Set failurePolicy Fail, sideEffects None, timeoutSeconds 3, admissionReviewVersions
 v1, matchPolicy Equivalent and exact namespace matchConditions. Intercept CREATE,

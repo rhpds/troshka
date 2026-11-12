@@ -466,6 +466,11 @@ def test_invalid_config_files_are_content_free(tmp_path):
 def test_admission_imports_cannot_reach_authority_or_ledger_modules():
     directory = Path(models.__file__).parent
     for path in directory.glob("*.py"):
+        offline_imports = (
+            {"base64", "hashlib", "bundle_policy"}
+            if path.name in {"bundle.py", "bundle_policy.py"}
+            else set()
+        )
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -476,7 +481,8 @@ def test_admission_imports_cannot_reach_authority_or_ledger_modules():
                 continue
             assert all(
                 name.split(".")[0]
-                in {
+                in offline_imports
+                | {
                     "dataclasses",
                     "json",
                     "pathlib",

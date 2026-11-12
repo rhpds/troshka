@@ -69,13 +69,18 @@ requires --config, --tls-cert, --tls-key and binds port 8443 by default.
 
 ### Task 2: Explicit offline bundle and isolated deployment acceptance
 
-**Files:** Create src/operator/admission/bundle.py;
+**Files:** Create src/operator/admission/{bundle,bundle_policy}.py;
 scripts/render_native_quarantine.py; src/operator/tests/test_quota_quarantine_bundle.py;
 docs/dev/native-quota-quarantine.md; synthetic JSON under
 src/operator/tests/fixtures/quota_quarantine/ if useful.
 
-**Interfaces:** bundle.render_bundle(enrollments, *, control_namespace, image,
-tls_secret, ca_pem, bootstrap_users, controller_users) returns staged Kubernetes resource documents.
+**Interfaces:** bundle.render_bundle(enrollments, *, control_namespace,
+control_namespace_uid, image, tls_secret, ca_pem, bootstrap_users,
+controller_users, scheduler_nodes) returns staged Kubernetes resource documents.
+The explicit existing control UID pins namespace lifetime; exact verified node
+names constrain Pod binding and node affinity. CEL construction is a separate
+focused module. VAP/binding protection itself requires effective RBAC because
+Kubernetes forbids VAP self-matching; no second admission technology is added.
 The CLI requires explicit input/output and every security-relevant argument;
 it only validates and writes an operator-owned directory with a content manifest.
 Use task1 parse_enrollments without silently changing its schema.
