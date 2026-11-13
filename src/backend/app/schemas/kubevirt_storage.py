@@ -47,6 +47,13 @@ class PoolKey(Evidence):
     pool_id: Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 
 
+class BackendScope(Evidence):
+    """Observed enrollment scope, never a claim that a shared pool is empty."""
+
+    cluster_keys: list[Text] = Field(min_length=1, max_length=100)
+    pool_keys: list[PoolKey] = Field(min_length=1, max_length=100)
+
+
 class CloneReference(Evidence):
     lineage_id: UUID
     digest: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -268,6 +275,7 @@ class CSISnapshotEvidence(Evidence):
 
 
 class NativeInventory(Evidence):
+    backend_scope: BackendScope | None = None
     clone_references: list[CloneReference] = Field(
         default_factory=list, max_length=10000
     )
@@ -275,6 +283,8 @@ class NativeInventory(Evidence):
     @model_serializer(mode="wrap")
     def serialize_clone_references(self, handler):
         data = handler(self)
+        if data.get("backend_scope") is None:
+            data.pop("backend_scope", None)
         if not data.get("clone_references"):
             data.pop("clone_references", None)
         return data
@@ -371,6 +381,7 @@ class AttributionResult(Evidence):
 
 
 class NativeStorageReport(AttributionResult):
+    backend_scope: BackendScope | None = None
     clone_references: list[CloneReference] = Field(
         default_factory=list, max_length=10000
     )
@@ -400,6 +411,8 @@ class NativeStorageReport(AttributionResult):
     @model_serializer(mode="wrap")
     def serialize_initialization(self, handler):
         data = handler(self)
+        if data.get("backend_scope") is None:
+            data.pop("backend_scope", None)
         if not data.get("clone_references"):
             data.pop("clone_references", None)
         if data.get("initialization_observation") is None:

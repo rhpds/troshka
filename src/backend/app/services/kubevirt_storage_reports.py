@@ -42,6 +42,7 @@ def report_inventory(report):
         snapshot_evidence=report.snapshot_evidence,
         retiring_roots=report.retiring_roots,
         clone_references=report.clone_references,
+        backend_scope=report.backend_scope,
     )
 
 
@@ -158,6 +159,7 @@ def _domain_errors(report, manifest, roots):
     pools = set(manifest.pins.pool_keys)
     if not set(report.cluster_keys) <= clusters or not set(report.pool_keys) <= pools:
         errors.add("collection_domain_mismatch")
+    errors |= _backend_scope_errors(report, manifest, clusters, pools)
     identities = [
         b.image_key
         for b in report.volume_bindings
@@ -178,6 +180,24 @@ def _domain_errors(report, manifest, roots):
         if saved is None or saved.payload != root_identity(evidence.root):
             errors.add("unenrolled_snapshot_root")
     return errors
+
+
+def _backend_scope_errors(report, manifest, clusters, pools):
+    scope = report.backend_scope
+    if scope is None:
+        return (
+            {"collection_backend_scope_mismatch"}
+            if manifest.request.empty_domain_bootstrap is not None
+            else set()
+        )
+    if (
+        set(scope.cluster_keys) != clusters
+        or set(scope.pool_keys) != pools
+        or set(report.cluster_keys) != clusters
+        or set(report.pool_keys) != pools
+    ):
+        return {"collection_backend_scope_mismatch"}
+    return set()
 
 
 def _binding_discovery_complete(project_id, blockers, *, live=False):

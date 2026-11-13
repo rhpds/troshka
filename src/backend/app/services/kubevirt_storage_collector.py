@@ -171,6 +171,23 @@ def _observe(reader, key, pools, capability_ok, version, clock, limits):
         )
 
 
+def _backend_identity(inventory, identity, pools):
+    expected = {
+        b.image_key.ceph_fsid
+        for b in inventory.volume_bindings
+        + inventory.retained_bindings
+        + inventory.cache_bindings
+    }
+    scope = inventory.backend_scope
+    if scope is not None:
+        expected |= {p.ceph_fsid for p in scope.pool_keys}
+        actual = {p["poolnum"] for p in pools}
+        if any(p.pool_id not in actual for p in scope.pool_keys):
+            raise _ReadFailure("identity_changed")
+    if expected != {identity}:
+        raise _ReadFailure("identity_changed")
+
+
 def _backend_profile(inventory, rbd_reader, errors):
     pools, version, capability_ok = [], "unavailable", False
     try:
@@ -178,14 +195,7 @@ def _backend_profile(inventory, rbd_reader, errors):
         pools_result = _call(rbd_reader.pool_identity)
         pools = pools_result.value
         actual_version = _call(rbd_reader.command_version).value
-        expected_fsids = {
-            b.image_key.ceph_fsid
-            for b in inventory.volume_bindings
-            + inventory.retained_bindings
-            + inventory.cache_bindings
-        }
-        if expected_fsids != {identity.value}:
-            raise _ReadFailure("identity_changed")
+        _backend_identity(inventory, identity.value, pools)
         profile = rbd_reader.capability
         version = (
             actual_version
@@ -198,7 +208,7 @@ def _backend_profile(inventory, rbd_reader, errors):
             and profile.command_version == version
             and profile.semantics_version == "kubevirt-rbd-allocated-v1"
         )
-    except (AttributeError, _ReadFailure, ValueError, TypeError):
+    except (AttributeError, _ReadFailure, ValueError, TypeError, KeyError):
         errors.append(Blocker(code="backend_identity_or_capability_unavailable"))
     return pools, version, capability_ok
 
@@ -316,14 +326,8 @@ def _retiring_image(reader, key, version, limits, clock):
 def _final_checks(inventory, rbd_reader, errors):
     try:
         final_identity = _call(rbd_reader.cluster_identity)
-        _call(rbd_reader.pool_identity)
-        if final_identity.value not in {
-            b.image_key.ceph_fsid
-            for b in inventory.volume_bindings
-            + inventory.retained_bindings
-            + inventory.cache_bindings
-        }:
-            errors.append(Blocker(code="backend_identity_changed"))
+        final_pools = _call(rbd_reader.pool_identity)
+        _backend_identity(inventory, final_identity.value, final_pools.value)
     except Exception:
         errors.append(Blocker(code="backend_identity_recheck_unavailable"))
     try:
@@ -453,14 +457,26 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         started_at=started,
         completed_at=clock(),
         inventory_digest=inventory_digest(inventory),
+        backend_scope=inventory.backend_scope,
         cluster_keys=sorted(
             {r.cluster_key for r in inventory.project_roots}
             | {b.cluster_key for b in inventory.cache_bindings}
+            | set(
+                inventory.backend_scope.cluster_keys if inventory.backend_scope else []
+            )
         ),
         pool_keys=[
             PoolKey(ceph_fsid=fsid, pool_id=pool_id)
             for fsid, pool_id in sorted(
                 {(i.key.ceph_fsid, i.key.pool_id) for i in images}
+                | {
+                    (p.ceph_fsid, p.pool_id)
+                    for p in (
+                        inventory.backend_scope.pool_keys
+                        if inventory.backend_scope
+                        else []
+                    )
+                }
             )
         ],
         project_roots=inventory.project_roots,

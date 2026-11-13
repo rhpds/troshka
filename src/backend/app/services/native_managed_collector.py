@@ -191,6 +191,7 @@ def verify_new_roots(work, readers, backend):
     pins = manifest.pins.model_copy(
         update={
             "project_roots": work["roots"],
+            "empty_domain_bootstrap": None,
             "domain_extension": DomainExtension(
                 version="native-domain-extension-v1",
                 previous_enrollment_id=work["enrollment_id"],
@@ -236,6 +237,8 @@ def failed_report(manifest, collector_id, started):
         Blocker(code="project_discovery_unavailable", project_id=r.project_id)
         for r in manifest.pins.project_roots
     ]
+    if not blockers:
+        blockers = [Blocker(code="project_discovery_unavailable")]
     inventory = NativeInventory(
         collector_id=collector_id,
         project_roots=manifest.pins.project_roots,

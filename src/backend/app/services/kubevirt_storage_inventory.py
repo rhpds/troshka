@@ -45,6 +45,8 @@ def inventory_digest(inventory):
         )
         for name in fields
     }
+    if inventory.backend_scope is not None:
+        data["backend_scope"] = inventory.backend_scope.model_dump(mode="json")
     return hashlib.sha256(
         json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -363,6 +365,7 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         contents = {c["metadata"]["name"]: c for c in kube_reader.snapshot_contents()}
     except Exception:
         return NativeInventory(
+            collector_id=getattr(kube_reader, "collector_id", "standalone"),
             project_roots=roots,
             retained_bindings=retained_bindings,
             blockers=[Blocker(code="kubernetes_discovery_unavailable")],

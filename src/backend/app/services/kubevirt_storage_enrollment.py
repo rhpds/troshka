@@ -24,6 +24,7 @@ from app.models.user import User
 from app.schemas.kubevirt_storage_enrollment import (
     DatabaseProjectIdentity,
     EnrollmentRequest,
+    VerificationPins,
     VerifiedEnrollment,
 )
 from app.services.quota_locks import lock_rows
@@ -88,7 +89,7 @@ def _database_identity(db, project_id):
     )
 
 
-def prepare_native_enrollment(db, project_ids):
+def prepare_native_enrollment(db, project_ids, *, empty_domain_pins=None):
     target = db.get(NativeReportingTarget, 1)
     if target is None:
         raise ValueError("explicit reporting target UUID must be configured first")
@@ -96,8 +97,16 @@ def prepare_native_enrollment(db, project_ids):
         _database_identity(db, identity) for identity in sorted(set(project_ids))
     ]
     request = EnrollmentRequest(
-        target_id=target.target_id, request_id=uuid4(), projects=identities
+        target_id=target.target_id,
+        request_id=uuid4(),
+        projects=identities,
+        empty_domain_bootstrap=(
+            empty_domain_pins.empty_domain_bootstrap if empty_domain_pins else None
+        ),
     )
+    if empty_domain_pins is not None:
+        _validate_bootstrap(request, empty_domain_pins)
+        _bootstrap_provider(db, request)
     db.add(
         NativeEnrollmentRequest(
             id=str(request.request_id),
@@ -109,24 +118,85 @@ def prepare_native_enrollment(db, project_ids):
     return request
 
 
+def authorize_empty_domain(payload):
+    """Build the explicit admin-only pins envelope; never infer from inventory."""
+    profile = payload.get("initialization_evidence")
+    if not profile or payload.get("empty_domain_bootstrap") is not None:
+        raise ValueError(
+            "fresh empty pins and explicit initialization profile required"
+        )
+    authorization = {
+        "version": "native-empty-domain-bootstrap-v1",
+        "domain_id": payload["domain_id"],
+        "provider_id": profile["target"]["provider_id"],
+        "profile_digest": digest(profile),
+        "pins_digest": "0" * 64,
+    }
+    pins = VerificationPins.model_validate(
+        {**payload, "empty_domain_bootstrap": authorization}
+    )
+    authorization["profile_digest"] = digest(pins.initialization_evidence)
+    authorization["pins_digest"] = digest(
+        pins.model_dump(mode="json", exclude={"empty_domain_bootstrap"})
+    )
+    return VerificationPins.model_validate(
+        {**payload, "empty_domain_bootstrap": authorization}
+    )
+
+
+def _bootstrap_provider(db, request):
+    bootstrap = request.empty_domain_bootstrap
+    if bootstrap is None:
+        return
+    provider = db.get(Provider, str(bootstrap.provider_id))
+    if provider is None or provider.type != "kubevirt":
+        raise ValueError("empty bootstrap requires an existing native provider")
+
+
+def _validate_bootstrap(request, pins):
+    bootstrap = request.empty_domain_bootstrap
+    if bootstrap != pins.empty_domain_bootstrap:
+        raise ValueError("prepared empty bootstrap authorization mismatch")
+    if bootstrap is None:
+        return
+    from app.services.native_initialization import implementation
+
+    if bootstrap.pins_digest != digest(
+        pins.model_dump(mode="json", exclude={"empty_domain_bootstrap"})
+    ) or bootstrap.profile_digest != digest(pins.initialization_evidence):
+        raise ValueError("prepared empty bootstrap pins/profile mismatch")
+    implementation(pins.initialization_evidence)
+
+
+def requested_providers(request):
+    if request.empty_domain_bootstrap is not None:
+        return {str(request.empty_domain_bootstrap.provider_id)}
+    return {str(p.provider_id) for p in request.projects}
+
+
 def _verify_roots(request, pins, readers):
+    _validate_bootstrap(request, pins)
     projects = {str(p.project_id): p for p in request.projects}
     if {str(r.project_id) for r in pins.project_roots} != set(projects):
         raise ValueError("verification roots must exactly cover requested projects")
     aliases = {str(p.provider_id): p.cluster_key for p in pins.provider_clusters}
     if len(aliases) != len(pins.provider_clusters):
         raise ValueError("duplicate provider alias")
-    if set(aliases) != {str(p.provider_id) for p in request.projects}:
+    if set(aliases) != requested_providers(request):
         raise ValueError("provider aliases must exactly cover requested dependencies")
+    for provider_id, cluster in aliases.items():
+        if readers[provider_id].cluster_identity() != cluster:
+            raise ValueError("cluster identity mismatch")
     for root in pins.project_roots:
         provider_id = str(projects[str(root.project_id)].provider_id)
         kube = readers[provider_id]
-        if (
-            aliases[provider_id] != root.cluster_key
-            or kube.cluster_identity() != root.cluster_key
-        ):
+        if aliases[provider_id] != root.cluster_key:
             raise ValueError("cluster identity mismatch")
         _verify_project(kube, root)
+    _verify_cache_roots(pins, readers, aliases)
+
+
+def _verify_cache_roots(pins, readers, aliases):
     for cache in pins.cache_roots:
         providers = [
             p for p, cluster in aliases.items() if cluster == cache.cluster_key
@@ -176,6 +246,16 @@ def verify_native_enrollment(request, kube_readers, backend_identity_reader, *, 
     """Read only independently selected API identities; never consume a report."""
     _verify_roots(request, pins, kube_readers)
     _verify_pools(pins, backend_identity_reader)
+    if request.empty_domain_bootstrap is not None:
+        from app.services.native_initialization import observe
+
+        profile = pins.initialization_evidence
+        backend = (
+            backend_identity_reader[profile.target.ceph_fsid]
+            if isinstance(backend_identity_reader, dict)
+            else backend_identity_reader
+        )
+        observe(profile, kube_readers[str(profile.target.provider_id)], backend)
     manifest = VerifiedEnrollment(
         request=request, pins=pins, verified_at=datetime.now(UTC), digest="0" * 64
     )
@@ -202,6 +282,8 @@ def _validate_manifest(db, manifest, expected_target_id):
     prepared = db.get(NativeEnrollmentRequest, str(manifest.request.request_id))
     if prepared is None or prepared.digest != digest(manifest.request):
         raise ValueError("enrollment was not independently prepared for this database")
+    _validate_bootstrap(manifest.request, manifest.pins)
+    _bootstrap_provider(db, manifest.request)
     identities = manifest.request.projects
     lock_rows(
         db,
@@ -476,6 +558,10 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
     )
     if previous:
         return previous.id
+    if manifest.request.empty_domain_bootstrap is not None and not (
+        0 <= (datetime.now(UTC) - utc(manifest.verified_at)).total_seconds() <= 60
+    ):
+        raise ValueError("empty bootstrap verification must be fresh")
     enrollment_id, domain_id = str(uuid4()), str(manifest.pins.domain_id)
     domain = (
         db.query(NativeCollectionDomain)
@@ -484,6 +570,7 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
         .populate_existing()
         .one_or_none()
     )
+    _fresh_bootstrap_domain(db, manifest, domain)
     _extension_predecessor(db, manifest, domain)
     _enroll_pool_claims(db, manifest)
     _enroll_roots(db, manifest, enrollment_id)
@@ -505,3 +592,24 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
         domain.conflicted = False
     db.flush()
     return enrollment_id
+
+
+def _fresh_bootstrap_domain(db, manifest, domain):
+    if manifest.request.empty_domain_bootstrap is None or domain is not None:
+        return
+    from app.models.kubevirt_cache_birth import NativeCacheBirth
+    from app.models.kubevirt_storage import NativeRetainedBinding, NativeStorageSnapshot
+    from app.models.native_clone_lineage import NativeCloneLineage
+
+    domain_id = str(manifest.pins.domain_id)
+    for model in (
+        NativeEnrollment,
+        NativeProjectRoot,
+        NativeRetainedBinding,
+        NativePoolClaim,
+        NativeStorageSnapshot,
+        NativeCacheBirth,
+        NativeCloneLineage,
+    ):
+        if db.query(model).filter_by(domain_id=domain_id).first() is not None:
+            raise ValueError("empty bootstrap cannot adopt existing domain accounting")

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "backend"))
 from app.models.kubevirt_storage import NativeEnrollmentRequest, NativeReportingTarget
 from app.models.provider import Provider
 from app.schemas.kubevirt_storage import (
+    BackendScope,
     CollectionLimits,
     Evidence,
     NativeStorageReport,
@@ -32,9 +33,11 @@ from app.schemas.kubevirt_storage_enrollment import (
     VerifiedEnrollment,
 )
 from app.services.kubevirt_storage_enrollment import (
+    authorize_empty_domain,
     digest,
     enroll_native_roots,
     prepare_native_enrollment,
+    requested_providers,
     verify_native_enrollment,
 )
 from app.services.kubevirt_storage_inventory import (
@@ -224,19 +227,31 @@ class ProviderReader:
         return result["items"]
 
     def _identity_dependencies(self, read, namespace, workloads, pods):
+        from app.services.native_initialization_observer import (
+            priority_class_identity,
+            service_account_identity,
+        )
         from kubernetes import client
-        from app.services.native_initialization_observer import service_account_identity, priority_class_identity
 
         dependencies = {}
         for role, workload in workloads.items():
             spec = workload["spec"]["template"]["spec"]
             selected = {}
-            if "imagePullSecrets" not in spec and any(p["spec"].get("imagePullSecrets") for p in pods[role]):
+            if "imagePullSecrets" not in spec and any(
+                p["spec"].get("imagePullSecrets") for p in pods[role]
+            ):
                 name = spec.get("serviceAccountName", "default")
-                selected["service_account"] = service_account_identity(read(self.core.read_namespaced_service_account, name, namespace), namespace, name)
+                selected["service_account"] = service_account_identity(
+                    read(self.core.read_namespaced_service_account, name, namespace),
+                    namespace,
+                    name,
+                )
             name = spec.get("priorityClassName")
             if name:
-                selected["priority_class"] = priority_class_identity(read(client.SchedulingV1Api(self.api).read_priority_class, name), name)
+                selected["priority_class"] = priority_class_identity(
+                    read(client.SchedulingV1Api(self.api).read_priority_class, name),
+                    name,
+                )
             if selected:
                 dependencies[role] = selected
         return dependencies
@@ -293,13 +308,13 @@ class ProviderReader:
                 ),
             }
             value["admission_dependencies"] = self._identity_dependencies(
-                read, namespace, {"controller": controller, "node": node},
+                read,
+                namespace,
+                {"controller": controller, "node": node},
                 {"controller": value["controller_pods"], "node": value["node_pods"]},
             )
             return ReadResult(status="complete", collected_at=started, value=value)
-        except (
-            Exception
-        ):  # noqa: BLE001 - sanitize API/transport failures at reader boundary
+        except Exception:  # noqa: BLE001 -- sanitize transport errors
             return ReadResult(status="unavailable", collected_at=started)
 
 
@@ -329,7 +344,7 @@ def _verify(db, args):
     }
     with ExitStack() as cleanup:
         readers = {}
-        for identity in {str(p.provider_id) for p in request.projects}:
+        for identity in requested_providers(request):
             provider = db.get(Provider, identity)
             if provider is None or provider.type != "kubevirt":
                 raise ValueError("native provider missing")
@@ -401,6 +416,11 @@ def _parser():
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--project-id", action="append", required=True)
     prepare.add_argument("--output", required=True)
+    empty = commands.add_parser(
+        "prepare-empty-domain", help="Explicit trusted-admin fresh zero-root bootstrap"
+    )
+    for name in ("pins", "pins-output", "output"):
+        empty.add_argument("--" + name, required=True)
     verify = commands.add_parser(
         "verify", help="Read-only cluster/backend verification, independent of reports"
     )
@@ -435,6 +455,12 @@ def _dispatch(db, args):
         return target.target_id
     if args.command == "prepare":
         request = prepare_native_enrollment(db, args.project_id)
+        atomic_report(args.output, request)
+        return str(request.request_id)
+    if args.command == "prepare-empty-domain":
+        pins = authorize_empty_domain(read_operator_file(args.pins))
+        request = prepare_native_enrollment(db, [], empty_domain_pins=pins)
+        atomic_report(args.pins_output, pins)
         atomic_report(args.output, request)
         return str(request.request_id)
     if args.command == "verify":
@@ -483,7 +509,11 @@ def _managed_inputs(args):
 def _managed_cycle(db, args):
     from app.services.kubevirt_storage_collector import collect_report
     from app.services.kubevirt_storage_inventory import discover_inventory
-    from app.services.native_managed_collector import cycle, retained_inputs, retiring_inputs
+    from app.services.native_managed_collector import (
+        cycle,
+        retained_inputs,
+        retiring_inputs,
+    )
     from sqlalchemy.orm import sessionmaker
 
     pins, config, backend_config = _managed_inputs(args)
@@ -531,14 +561,28 @@ def _managed_cycle(db, args):
             retiring, retired = retiring_inputs(sessions, manifest.pins.domain_id)
             from app.services.kubevirt_storage_enrollment import root_key
 
-            roots = [r for r in manifest.pins.project_roots if root_key(r) not in retired]
+            roots = [
+                r for r in manifest.pins.project_roots if root_key(r) not in retired
+            ]
             kube.scan_started_at = backend.scan_started_at = started
             kube.retained_cache_bindings = caches
             kube.retiring_intents = retiring
-            inventory = discover_inventory(kube, retained, roots)
-            backend.recheck_inventory = lambda: discover_inventory(
-                kube, retained, roots
-            )
+
+            def discover():
+                inventory = discover_inventory(kube, retained, roots)
+                return inventory.model_copy(
+                    update={
+                        "backend_scope": BackendScope(
+                            cluster_keys=sorted(
+                                {p.cluster_key for p in manifest.pins.provider_clusters}
+                            ),
+                            pool_keys=manifest.pins.pool_keys,
+                        )
+                    }
+                )
+
+            inventory = discover()
+            backend.recheck_inventory = discover
             return collect_report(
                 inventory, backend, limits=limits, clock=lambda: datetime.now(UTC)
             )
