@@ -16,6 +16,366 @@ from app.services.kubevirt_storage_transport import PoolConfig, RbdReader, comma
 from tests.test_native_initialization_evidence import synthetic_profile
 
 
+@pytest.fixture
+def admitted_defaults(installed, monkeypatch):
+    from kubernetes import client
+
+    q = installed
+    q.data["service_accounts"], q.data["priority_classes"] = {}, {}
+    identities = {}
+    q.admission_dependencies = {}
+    for role, pods in [("controller", "ctrl_pods"), ("node", "node_pods")]:
+        workload = q.data[role]
+        name, priority = role + "-sa", 2000000000 + (1000 if role == "node" else 0)
+        class_name = role + "-critical"
+        spec = workload["spec"]["template"]["spec"]
+        spec.update(
+            hostNetwork=True, serviceAccountName=name, priorityClassName=class_name
+        )
+        spec["containers"][0].update(
+            ports=[{"containerPort": 9070, "protocol": "TCP"}],
+            resources={"requests": {"cpu": "100m"}},
+        )
+        sa = {
+            "metadata": {
+                "name": name,
+                "namespace": "openshift-storage",
+                "uid": name + "-uid",
+            },
+            "imagePullSecrets": [{"name": name + "-dockercfg"}],
+        }
+        pc = {
+            "metadata": {"name": class_name, "uid": class_name + "-uid"},
+            "value": priority,
+            "preemptionPolicy": "PreemptLowerPriority",
+        }
+        q.data["service_accounts"][name], q.data["priority_classes"][class_name] = (
+            sa,
+            pc,
+        )
+        dependencies = {
+            "service_account": {
+                "namespace": "openshift-storage",
+                "name": name,
+                "uid": name + "-uid",
+                "image_pull_secrets": sa["imagePullSecrets"],
+            },
+            "priority_class": {
+                "name": class_name,
+                "uid": class_name + "-uid",
+                "value": priority,
+                "preemption_policy": "PreemptLowerPriority",
+            },
+        }
+        q.admission_dependencies[role] = deepcopy(dependencies)
+        identities[role] = q.profile.target.csi_installation.model_dump()[role]
+        identities[role]["spec_sha256"] = digest(
+            {"spec": workload["spec"], "admission_dependencies": dependencies}
+        )
+        for pod in q.data[pods]:
+            pod["spec"] = deepcopy(spec)
+            pod["spec"]["containers"][0]["ports"][0]["hostPort"] = 9070
+            pod["spec"].update(
+                priority=priority, imagePullSecrets=deepcopy(sa["imagePullSecrets"])
+            )
+            pod["spec"]["tolerations"] = [
+                {
+                    "key": "node.kubernetes.io/memory-pressure",
+                    "operator": "Exists",
+                    "effect": "NoSchedule",
+                }
+            ]
+    q.data["rs"][0]["spec"]["template"] = deepcopy(
+        q.data["controller"]["spec"]["template"]
+    )
+    installation = q.profile.target.csi_installation.model_copy(
+        update={
+            role: type(q.profile.target.csi_installation.controller).model_validate(
+                value
+            )
+            for role, value in identities.items()
+        }
+    )
+    q.profile = q.profile.model_copy(
+        update={
+            "target": q.profile.target.model_copy(
+                update={"csi_installation": installation}
+            )
+        }
+    )
+
+    def sa_read(name, namespace, **kwargs):
+        assert namespace == "openshift-storage" and 0 < kwargs["_request_timeout"] <= 15
+        q.calls.append(("service_account", name))
+        return deepcopy(q.data["service_accounts"][name])
+
+    def priority_read(name, **kwargs):
+        assert 0 < kwargs["_request_timeout"] <= 15
+        q.calls.append(("priority_class", name))
+        return deepcopy(q.data["priority_classes"][name])
+
+    q.reader.core.read_namespaced_service_account = sa_read
+    monkeypatch.setattr(
+        client,
+        "SchedulingV1Api",
+        lambda api: SimpleNamespace(read_priority_class=priority_read),
+    )
+    return q
+
+
+def repin_workload_defaults(q, role, dependencies):
+    installation = q.profile.target.csi_installation
+    identity = getattr(installation, role).model_copy(
+        update={
+            "spec_sha256": digest(
+                {"spec": q.data[role]["spec"], "admission_dependencies": dependencies}
+            )
+        }
+    )
+    q.profile = q.profile.model_copy(
+        update={
+            "target": q.profile.target.model_copy(
+                update={
+                    "csi_installation": installation.model_copy(update={role: identity})
+                }
+            )
+        }
+    )
+
+
+def test_explicit_template_pull_secrets_remain_exact_without_service_account_excuse(
+    admitted_defaults,
+):
+    q = admitted_defaults
+    refs = [{"name": "explicit-reference"}]
+    q.data["controller"]["spec"]["template"]["spec"]["imagePullSecrets"] = deepcopy(
+        refs
+    )
+    q.data["ctrl_pods"][0]["spec"]["imagePullSecrets"] = deepcopy(refs)
+    q.data["rs"][0]["spec"]["template"] = deepcopy(
+        q.data["controller"]["spec"]["template"]
+    )
+    repin_workload_defaults(
+        q,
+        "controller",
+        {"priority_class": q.admission_dependencies["controller"]["priority_class"]},
+    )
+    assert (
+        initialization.observe(q.profile, q.reader, q.backend).target
+        == q.profile.target
+    )
+    assert not any(
+        v[0] == "service_account" and v[1] == "controller-sa" for v in q.calls
+    )
+
+
+@pytest.mark.parametrize("configured", [None, "Never", "PreemptLowerPriority"])
+@pytest.mark.parametrize("running", ["Never", "PreemptLowerPriority"])
+def test_named_never_priority_policy_is_derived_only_when_template_omits_it(
+    admitted_defaults, configured, running
+):
+    q = admitted_defaults
+    q.data["priority_classes"]["controller-critical"]["preemptionPolicy"] = "Never"
+    q.admission_dependencies["controller"]["priority_class"][
+        "preemption_policy"
+    ] = "Never"
+    if configured is not None:
+        q.data["controller"]["spec"]["template"]["spec"][
+            "preemptionPolicy"
+        ] = configured
+    q.data["ctrl_pods"][0]["spec"]["preemptionPolicy"] = running
+    q.data["rs"][0]["spec"]["template"] = deepcopy(
+        q.data["controller"]["spec"]["template"]
+    )
+    repin_workload_defaults(q, "controller", q.admission_dependencies["controller"])
+    if running == "Never" and configured in {None, "Never"}:
+        assert (
+            initialization.observe(q.profile, q.reader, q.backend).target
+            == q.profile.target
+        )
+    else:
+        with pytest.raises(AccountingUnavailable):
+            initialization.observe(q.profile, q.reader, q.backend)
+
+
+@pytest.mark.parametrize(
+    "role,pods", [("controller", "ctrl_pods"), ("node", "node_pods")]
+)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "absent-valid",
+        "absent-invalid",
+        "prefix",
+        "configured-match",
+        "configured-mismatch",
+    ],
+)
+def test_scc_subject_bookkeeping_is_exact_and_never_overrides_template(
+    installed, role, pods, change
+):
+    q = installed
+    key = "security.openshift.io/validated-scc-subject-type"
+    actual_key = key + ".other" if change == "prefix" else key
+    actual = (
+        "user" if change in {"absent-invalid", "configured-match"} else "serviceaccount"
+    )
+    q.data[pods][0]["metadata"]["annotations"] = {actual_key: actual}
+    if change.startswith("configured"):
+        q.data[role]["spec"]["template"].setdefault("metadata", {})["annotations"] = {
+            key: "user"
+        }
+        installation = q.profile.target.csi_installation
+        identity = getattr(installation, role).model_copy(
+            update={"spec_sha256": digest(q.data[role]["spec"])}
+        )
+        q.profile = q.profile.model_copy(
+            update={
+                "target": q.profile.target.model_copy(
+                    update={
+                        "csi_installation": installation.model_copy(
+                            update={role: identity}
+                        )
+                    }
+                )
+            }
+        )
+        if role == "controller":
+            q.data["rs"][0]["spec"]["template"] = deepcopy(
+                q.data[role]["spec"]["template"]
+            )
+    if change in {"absent-valid", "configured-match"}:
+        assert (
+            initialization.observe(q.profile, q.reader, q.backend).target
+            == q.profile.target
+        )
+    else:
+        with pytest.raises(AccountingUnavailable):
+            initialization.observe(q.profile, q.reader, q.backend)
+
+
+def test_exact_admission_defaults_are_independently_derived_and_pinned(
+    admitted_defaults,
+):
+    q = admitted_defaults
+    assert (
+        initialization.observe(q.profile, q.reader, q.backend).target
+        == q.profile.target
+    )
+    assert len([v for v in q.calls if v[0] == "service_account"]) == 4
+    assert len([v for v in q.calls if v[0] == "priority_class"]) == 4
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "host-port",
+        "host-network",
+        "host-network-disabled",
+        "priority",
+        "unknown-class",
+        "class-uid",
+        "class-value",
+        "sa-uid",
+        "sa-refs",
+        "duplicate-sa-refs",
+        "extra-sa-ref-field",
+        "pod-refs",
+        "duplicate-pod-refs",
+        "explicit-pull-secret",
+        "best-effort",
+        "zero-resource",
+        "duplicate-toleration",
+        "wrong-toleration",
+    ],
+)
+def test_admission_defaults_never_hide_unproved_mutation(admitted_defaults, change):
+    q = admitted_defaults
+    pod = q.data["ctrl_pods"][0]["spec"]
+    template = q.data["controller"]["spec"]["template"]["spec"]
+    sa, pc = (
+        q.data["service_accounts"]["controller-sa"],
+        q.data["priority_classes"]["controller-critical"],
+    )
+    if change == "host-port":
+        pod["containers"][0]["ports"][0]["hostPort"] = 9071
+    elif change == "host-network":
+        pod["hostNetwork"] = False
+    elif change == "host-network-disabled":
+        template["hostNetwork"] = False
+        pod["hostNetwork"] = False
+    elif change == "priority":
+        pod["priority"] += 1
+    elif change == "unknown-class":
+        q.data["priority_classes"].clear()
+    elif change == "class-uid":
+        pc["metadata"]["uid"] = "replacement"
+    elif change == "class-value":
+        pc["value"] += 1
+        pod["priority"] += 1
+    elif change == "sa-uid":
+        sa["metadata"]["uid"] = "replacement"
+    elif change == "sa-refs":
+        sa["imagePullSecrets"] = [{"name": "changed"}]
+        pod["imagePullSecrets"] = deepcopy(sa["imagePullSecrets"])
+    elif change == "duplicate-sa-refs":
+        sa["imagePullSecrets"] *= 2
+        pod["imagePullSecrets"] = deepcopy(sa["imagePullSecrets"])
+    elif change == "extra-sa-ref-field":
+        sa["imagePullSecrets"][0]["optional"] = True
+        pod["imagePullSecrets"] = deepcopy(sa["imagePullSecrets"])
+    elif change == "pod-refs":
+        pod["imagePullSecrets"] = [{"name": "foreign"}]
+    elif change == "duplicate-pod-refs":
+        pod["imagePullSecrets"] *= 2
+    elif change == "explicit-pull-secret":
+        template["imagePullSecrets"] = [{"name": "explicit"}]
+    elif change in {"best-effort", "zero-resource"}:
+        template["containers"][0]["resources"] = (
+            {} if change == "best-effort" else {"requests": {"cpu": "0"}}
+        )
+        pod["containers"][0]["resources"] = deepcopy(
+            template["containers"][0]["resources"]
+        )
+    elif change == "duplicate-toleration":
+        pod["tolerations"] *= 2
+    else:
+        pod["tolerations"][0]["effect"] = "NoExecute"
+    q.data["rs"][0]["spec"]["template"] = deepcopy(
+        q.data["controller"]["spec"]["template"]
+    )
+    if change in {
+        "best-effort",
+        "zero-resource",
+        "host-network-disabled",
+        "explicit-pull-secret",
+    }:
+        dependencies = deepcopy(q.admission_dependencies["controller"])
+        if change == "explicit-pull-secret":
+            dependencies.pop("service_account")
+        repin_workload_defaults(q, "controller", dependencies)
+    with pytest.raises(AccountingUnavailable):
+        initialization.observe(q.profile, q.reader, q.backend)
+
+
+def test_admission_dependency_replacement_during_independent_reads_rejects(
+    admitted_defaults,
+):
+    q = admitted_defaults
+    original = q.reader.core.read_namespaced_service_account
+    calls = []
+
+    def replaced(name, namespace, **kwargs):
+        calls.append(name)
+        if len(calls) == 3:
+            q.data["service_accounts"][name]["metadata"]["uid"] = "replacement"
+        return original(name, namespace, **kwargs)
+
+    q.reader.core.read_namespaced_service_account = replaced
+    with pytest.raises(AccountingUnavailable):
+        initialization.observe(q.profile, q.reader, q.backend)
+
+
 def test_public_observer_commands_are_fixed_and_read_only():
     assert command_argv("server_versions") == ["ceph", "versions", "--format", "json"]
     assert command_argv("namespaces", pool="tenant") == [

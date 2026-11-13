@@ -279,6 +279,155 @@ def remove_token_injection(actual, expected):
     actual["volumes"] = [v for v in actual["volumes"] if v["name"] != name]
 
 
+def pull_secret_references(value):
+    require(
+        isinstance(value, list) and len(value) <= 32,
+        "unsupported pull secret references",
+    )
+    names = []
+    for ref in value:
+        require(
+            isinstance(ref, dict) and set(ref) == {"name"},
+            "unsupported pull secret reference",
+        )
+        name = ref["name"]
+        require(
+            isinstance(name, str)
+            and 0 < len(name) <= 253
+            and re.fullmatch(
+                r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*",
+                name,
+            )
+            is not None,
+            "unsupported pull secret name",
+        )
+        names.append(name)
+    require(len(names) == len(set(names)), "duplicate pull secret references")
+    return value
+
+
+def dependency_metadata(value, name, namespace=None):
+    metadata = value["metadata"]
+    require(
+        metadata["name"] == name
+        and not metadata.get("deletionTimestamp")
+        and isinstance(metadata["uid"], str)
+        and 0 < len(metadata["uid"]) <= 256,
+        "admission dependency identity changed",
+    )
+    require(
+        namespace is None or metadata.get("namespace") == namespace,
+        "admission dependency namespace changed",
+    )
+    return metadata
+
+
+def service_account_identity(value, namespace, name):
+    metadata = dependency_metadata(value, name, namespace)
+    return {
+        "namespace": namespace,
+        "name": name,
+        "uid": metadata["uid"],
+        "image_pull_secrets": pull_secret_references(value.get("imagePullSecrets", [])),
+    }
+
+
+def priority_class_identity(value, name):
+    metadata = dependency_metadata(value, name)
+    priority = value["value"]
+    require(
+        type(priority) is int and -(2**31) <= priority < 2**31,
+        "unsupported priority value",
+    )
+    policy = value.get("preemptionPolicy", "PreemptLowerPriority")
+    require(
+        policy in {"PreemptLowerPriority", "Never"},
+        "unsupported priority preemption policy",
+    )
+    return {
+        "name": name,
+        "uid": metadata["uid"],
+        "value": priority,
+        "preemption_policy": policy,
+    }
+
+
+def remove_admission_dependencies(actual, raw, dependencies):
+    pull_secret_references(actual.get("imagePullSecrets", []))
+    pull_secret_references(raw.get("imagePullSecrets", []))
+    account = dependencies.get("service_account")
+    if account is not None:
+        require(
+            "imagePullSecrets" not in raw
+            and account["name"] == raw.get("serviceAccountName", "default"),
+            "unexpected service account dependency",
+        )
+        require(
+            actual.get("imagePullSecrets", [])
+            == pull_secret_references(account["image_pull_secrets"]),
+            "service account pull secret injection differs",
+        )
+        actual.pop("imagePullSecrets", None)
+    priority = dependencies.get("priority_class")
+    require(
+        bool(raw.get("priorityClassName")) == (priority is not None),
+        "priority class dependency unavailable",
+    )
+    if priority is not None:
+        require(
+            priority["name"] == raw["priorityClassName"]
+            and actual.get("priority") == priority["value"],
+            "priority class injection differs",
+        )
+        require(
+            actual.get("preemptionPolicy", "PreemptLowerPriority")
+            == priority["preemption_policy"],
+            "priority class policy differs",
+        )
+        if "priority" not in raw:
+            actual.pop("priority", None)
+        if "preemptionPolicy" not in raw:
+            actual.pop("preemptionPolicy", None)
+
+
+def remove_host_network_ports(actual, expected):
+    if expected.get("hostNetwork") is not True:
+        return
+    configured = {c["name"]: c for c in expected["containers"]}
+    for container in actual["containers"]:
+        original = configured.get(container["name"], {})
+        for port, planned in zip(container.get("ports", []), original.get("ports", [])):
+            if "hostPort" not in planned and port.get("hostPort") == planned.get(
+                "containerPort"
+            ):
+                port.pop("hostPort", None)
+
+
+def non_best_effort(spec):
+    from kubernetes.utils.quantity import parse_quantity
+
+    return any(
+        parse_quantity(value) > 0
+        for container in spec["containers"]
+        for group in ("requests", "limits")
+        for key, value in container.get("resources", {}).get(group, {}).items()
+        if key in {"cpu", "memory"}
+    )
+
+
+def remove_memory_pressure_toleration(actual, expected):
+    default = {
+        "key": "node.kubernetes.io/memory-pressure",
+        "operator": "Exists",
+        "effect": "NoSchedule",
+    }
+    tolerations = actual.get("tolerations", [])
+    if default not in expected.get("tolerations", []) and non_best_effort(expected):
+        require(tolerations.count(default) <= 1, "duplicate memory pressure toleration")
+        if default in tolerations:
+            tolerations.remove(default)
+
+
 def remove_toleration_injection(actual, expected, kind):
     if kind == "DaemonSet":
         defaults = [
@@ -350,9 +499,14 @@ def remove_node_assignment(actual, expected, kind):
         actual.pop("nodeName", None)
 
 
-def require_pod_configuration(workload, pod, kind):
+def require_pod_configuration(workload, pod, kind, dependencies=None):
     expected = template_configuration(workload["spec"]["template"])
     actual = deepcopy(pod["spec"])
+    remove_admission_dependencies(
+        actual, workload["spec"]["template"]["spec"], dependencies or {}
+    )
+    remove_host_network_ports(actual, expected["spec"])
+    remove_memory_pressure_toleration(actual, expected["spec"])
     remove_token_injection(actual, expected["spec"])
     remove_toleration_injection(actual, expected["spec"], kind)
     remove_node_assignment(actual, expected["spec"], kind)
@@ -376,6 +530,12 @@ def require_pod_configuration(workload, pod, kind):
     ):
         if key not in expected["metadata"]["annotations"]:
             annotations.pop(key, None)
+    subject_key = "security.openshift.io/validated-scc-subject-type"
+    if (
+        subject_key not in expected["metadata"]["annotations"]
+        and annotations.get(subject_key) == "serviceaccount"
+    ):
+        annotations.pop(subject_key)
     require(
         labels == expected["metadata"]["labels"]
         and annotations == expected["metadata"]["annotations"],
@@ -383,7 +543,7 @@ def require_pod_configuration(workload, pod, kind):
     )
 
 
-def workload_identity(workload, kind, pods, replica_sets):
+def workload_identity(workload, kind, pods, replica_sets, dependencies=None):
     count = ready_count(workload, kind)
     uid = workload["metadata"]["uid"]
     if kind == "Deployment":
@@ -397,7 +557,7 @@ def workload_identity(workload, kind, pods, replica_sets):
         len(selected) == len(pods) == count, "CSI pod inventory differs from workload"
     )
     for pod in selected:
-        require_pod_configuration(workload, pod, kind)
+        require_pod_configuration(workload, pod, kind, dependencies)
     images = [image_ids(p) for p in selected]
     require(all(value == images[0] for value in images), "mixed CSI images")
     expected = {
@@ -414,7 +574,13 @@ def workload_identity(workload, kind, pods, replica_sets):
         "CSI configured image is not immutable",
     )
     return CsiWorkloadIdentity(
-        uid=uid, spec_sha256=digest(workload["spec"]), images=images[0]
+        uid=uid,
+        spec_sha256=digest(
+            {"spec": workload["spec"], "admission_dependencies": dependencies}
+        )
+        if dependencies
+        else digest(workload["spec"]),
+        images=images[0],
     )
 
 
@@ -433,9 +599,19 @@ def csi_identity(bundle):
         driver_uid=bundle["driver"]["metadata"]["uid"],
         driver_spec_sha256=digest(bundle["driver"]["spec"]),
         controller=workload_identity(
-            controller, "Deployment", bundle["controller_pods"], bundle["replica_sets"]
+            controller,
+            "Deployment",
+            bundle["controller_pods"],
+            bundle["replica_sets"],
+            bundle.get("admission_dependencies", {}).get("controller"),
         ),
-        node=workload_identity(node, "DaemonSet", bundle["node_pods"], []),
+        node=workload_identity(
+            node,
+            "DaemonSet",
+            bundle["node_pods"],
+            [],
+            bundle.get("admission_dependencies", {}).get("node"),
+        ),
     )
     require(
         installation.controller.images["csi-rbdplugin"]

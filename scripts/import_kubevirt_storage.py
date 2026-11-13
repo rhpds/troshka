@@ -223,6 +223,24 @@ class ProviderReader:
             raise ValueError("CSI inventory exceeds bound")
         return result["items"]
 
+    def _identity_dependencies(self, read, namespace, workloads, pods):
+        from kubernetes import client
+        from app.services.native_initialization_observer import service_account_identity, priority_class_identity
+
+        dependencies = {}
+        for role, workload in workloads.items():
+            spec = workload["spec"]["template"]["spec"]
+            selected = {}
+            if "imagePullSecrets" not in spec and any(p["spec"].get("imagePullSecrets") for p in pods[role]):
+                name = spec.get("serviceAccountName", "default")
+                selected["service_account"] = service_account_identity(read(self.core.read_namespaced_service_account, name, namespace), namespace, name)
+            name = spec.get("priorityClassName")
+            if name:
+                selected["priority_class"] = priority_class_identity(read(client.SchedulingV1Api(self.api).read_priority_class, name), name)
+            if selected:
+                dependencies[role] = selected
+        return dependencies
+
     def initialization_identity(self, storage_class_name):
         from kubernetes import client
 
@@ -274,6 +292,10 @@ class ProviderReader:
                     self.core.list_namespaced_pod, namespace, node["spec"]["selector"]
                 ),
             }
+            value["admission_dependencies"] = self._identity_dependencies(
+                read, namespace, {"controller": controller, "node": node},
+                {"controller": value["controller_pods"], "node": value["node_pods"]},
+            )
             return ReadResult(status="complete", collected_at=started, value=value)
         except (
             Exception

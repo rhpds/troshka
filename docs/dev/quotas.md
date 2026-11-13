@@ -232,7 +232,28 @@ DaemonSet node-affinity injection. Arguments, environment, security contexts,
 mounts and every other spec field remain exact. Only named controller hash labels
 and network-status/SCC metadata annotations are excluded from pod metadata
 comparison; an SCC annotation never excuses a changed security specification.
-Unrecognized admission mutations, derived priority changes, init/ephemeral
+The observer also derives only exact host-network hostPort defaults, named
+PriorityClass values, non-BestEffort memory-pressure tolerations proven from
+configured CPU/memory quantities, and ServiceAccount imagePullSecret references
+when the installed template omits them. Selected ServiceAccounts and named
+PriorityClasses are freshly read without Secret data; their UID and used
+configuration participate in the stable first/last observation and protected
+workload configuration digest. Explicit template pull-secret references remain
+exact and cannot be excused by the ServiceAccount.
+Omitted preemption policy is derived from that same fresh named PriorityClass;
+explicit template policy remains exact. Only an absent-template annotation
+`security.openshift.io/validated-scc-subject-type=serviceaccount` is recognized as
+SCC admission bookkeeping; configured annotations and all other values remain
+subject to exact comparison.
+
+When these dependencies are used, `spec_sha256` hashes the canonical envelope
+`{spec, admission_dependencies}` rather than the workload spec alone. Dependencies
+include exact SA namespace/name/UID/pull-secret references and PriorityClass
+name/UID/value/preemption policy. Absent dependencies retain the prior spec-only
+digest. Changing a used dependency therefore changes observed target identity;
+existing dependent pins must be deliberately reviewed and repinned. No profile
+or physical bound is activated by this compatibility support.
+Unrecognized admission mutations, unproved priority changes, init/ephemeral
 containers and DaemonSet templates with required node affinity reject as
 unsupported. The observer does not claim these shapes were accepted on live ODF.
 
