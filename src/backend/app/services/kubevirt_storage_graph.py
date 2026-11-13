@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from app.schemas.kubevirt_storage import (
     AttributionResult,
+    Blocker,
     PoolAllocation,
     PoolKey,
     ProjectAllocation,
@@ -247,7 +248,18 @@ def attribute_graph(inventory, images, *, max_parent_depth=32, clone_lineages=()
     authorized_absence = {
         key for root in inventory.retiring_roots for key in root.owned_images
     }
+    authorized_absence.update(
+        b.image_key
+        for b in inventory.absent_cache_bindings
+        if b in inventory.cache_bindings
+    )
     if any(i.absence is not None and i.key not in authorized_absence for i in images):
+        inventory = inventory.model_copy(
+            update={
+                "blockers": inventory.blockers
+                + [Blocker(code="unapproved_image_absence")]
+            }
+        )
         for root in inventory.project_roots:
             failures[root.project_id].add("unapproved_image_absence")
     all_members = set().union(*project_nodes.values()) if project_nodes else set()

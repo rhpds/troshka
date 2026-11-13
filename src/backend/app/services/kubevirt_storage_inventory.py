@@ -36,6 +36,8 @@ def inventory_digest(inventory):
         fields += ("snapshot_evidence",)
     if inventory.retiring_roots:
         fields += ("retiring_roots",)
+    if inventory.absent_cache_bindings:
+        fields += ("absent_cache_bindings",)
     if inventory.clone_references:
         fields += ("clone_references",)
     data = {
@@ -304,8 +306,27 @@ def _retained_cache(kube, enrolled, cache):
     return result
 
 
-def _cache_discovery(kube, cluster, pvs):
-    cache, blockers = [], []
+def _cache_objects_absent(previous, pvs, contents):
+    # A surviving PV or snapshot content is uncertainty even if its claim is gone.
+    for pv in pvs.values():
+        spec = pv.get("spec", {})
+        if (
+            pv.get("metadata", {}).get("uid") == previous.pv_uid
+            or spec.get("claimRef", {}).get("uid") == previous.pvc_uid
+            or spec.get("csi", {}).get("volumeHandle") == previous.volume_handle
+        ):
+            return False
+    return not any(
+        c.get("spec", {}).get("volumeSnapshotRef", {}).get("namespace")
+        == previous.namespace
+        or c.get("spec", {}).get("source", {}).get("volumeHandle")
+        == previous.volume_handle
+        for c in contents.values()
+    )
+
+
+def _cache_discovery(kube, cluster, pvs, contents):
+    cache, blockers, absent = [], [], []
     for enrolled in getattr(kube, "cache_roots", []):
         if _expired(kube):
             blockers.append(Blocker(code="scan_limit"))
@@ -318,10 +339,18 @@ def _cache_discovery(kube, cluster, pvs):
             ):
                 raise ValueError("cache identity")
             records = _cache_pvcs(kube, enrolled, pvs)
-            cache.extend(records + _retained_cache(kube, enrolled, records))
+            retained = _retained_cache(kube, enrolled, records)
+            cache.extend(records + retained)
+            live_images = {b.image_key for b in records}
+            absent.extend(
+                b
+                for b in retained
+                if b.image_key not in live_images
+                and _cache_objects_absent(b, pvs, contents)
+            )
         except Exception:
             blockers.append(Blocker(code="cache_discovery_unavailable"))
-    return cache, blockers
+    return cache, blockers, absent
 
 
 def _cache_pvcs(kube, enrolled, pvs):
@@ -398,7 +427,7 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         bindings.extend(found)
         snapshots.extend(snapshot_records)
         blockers.extend(problems)
-    cache, cache_errors = _cache_discovery(kube_reader, cluster, pvs)
+    cache, cache_errors, absent = _cache_discovery(kube_reader, cluster, pvs, contents)
     blockers.extend(
         cache_errors + _retained_conflicts(retained_bindings, roots, bindings)
     )
@@ -407,6 +436,7 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         project_roots=roots,
         volume_bindings=bindings,
         cache_bindings=cache,
+        absent_cache_bindings=absent,
         retained_bindings=retained_bindings,
         snapshot_evidence=snapshots,
         retiring_roots=retiring,

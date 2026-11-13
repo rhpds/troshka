@@ -248,6 +248,11 @@ def _collect_images(
     retiring_keys = {
         key for root in inventory.retiring_roots for key in root.owned_images
     }
+    retiring_keys.update(
+        b.image_key
+        for b in inventory.absent_cache_bindings
+        if b in inventory.cache_bindings
+    )
     queue.extend((key, 0) for key in retiring_keys)
     checked_pools = {}
     while queue:
@@ -482,6 +487,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         project_roots=inventory.project_roots,
         volume_bindings=inventory.volume_bindings,
         cache_bindings=inventory.cache_bindings,
+        absent_cache_bindings=inventory.absent_cache_bindings,
         retained_bindings=inventory.retained_bindings,
         snapshot_evidence=inventory.snapshot_evidence,
         retiring_roots=inventory.retiring_roots,

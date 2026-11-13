@@ -36,6 +36,7 @@ def report_inventory(report):
         volume_bindings=report.volume_bindings,
         retained_bindings=report.retained_bindings,
         cache_bindings=report.cache_bindings,
+        absent_cache_bindings=report.absent_cache_bindings,
         blockers=report.inventory_blockers
         if report.inventory_blockers is not None
         else report.collection_errors,
@@ -242,6 +243,7 @@ def _binding_errors(report, manifest, roots, retained):
             binding.namespace_uid,
         ) not in cache_roots:
             errors.add("unenrolled_cache_namespace")
+    errors |= _cache_absence_errors(report, saved, discovery_blockers)
     identities = dict(saved)
     for binding in (
         report.volume_bindings + report.retained_bindings + report.cache_bindings
@@ -251,6 +253,17 @@ def _binding_errors(report, manifest, roots, retained):
         if previous != identity:
             errors.add("retained_binding_identity_changed")
     return errors
+
+
+def _cache_absence_errors(report, saved, discovery_blockers):
+    if any(
+        binding not in report.cache_bindings
+        or saved.get(binding_key(binding)) != _binding_identity(binding)
+        or not _binding_discovery_complete(None, discovery_blockers)
+        for binding in report.absent_cache_bindings
+    ):
+        return {"cache_absence_requires_retained_identity_and_complete_discovery"}
+    return set()
 
 
 def _receipt_cache_identities(db, references):

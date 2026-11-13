@@ -275,6 +275,9 @@ class CSISnapshotEvidence(Evidence):
 
 
 class NativeInventory(Evidence):
+    absent_cache_bindings: list[CacheBinding] = Field(
+        default_factory=list, max_length=10000
+    )
     backend_scope: BackendScope | None = None
     clone_references: list[CloneReference] = Field(
         default_factory=list, max_length=10000
@@ -283,6 +286,8 @@ class NativeInventory(Evidence):
     @model_serializer(mode="wrap")
     def serialize_clone_references(self, handler):
         data = handler(self)
+        if not data.get("absent_cache_bindings"):
+            data.pop("absent_cache_bindings", None)
         if data.get("backend_scope") is None:
             data.pop("backend_scope", None)
         if not data.get("clone_references"):
@@ -381,6 +386,9 @@ class AttributionResult(Evidence):
 
 
 class NativeStorageReport(AttributionResult):
+    absent_cache_bindings: list[CacheBinding] = Field(
+        default_factory=list, max_length=10000
+    )
     backend_scope: BackendScope | None = None
     clone_references: list[CloneReference] = Field(
         default_factory=list, max_length=10000
@@ -411,6 +419,8 @@ class NativeStorageReport(AttributionResult):
     @model_serializer(mode="wrap")
     def serialize_initialization(self, handler):
         data = handler(self)
+        if not data.get("absent_cache_bindings"):
+            data.pop("absent_cache_bindings", None)
         if data.get("backend_scope") is None:
             data.pop("backend_scope", None)
         if not data.get("clone_references"):
