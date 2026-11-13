@@ -1133,6 +1133,12 @@ async def vm_resume(meta, status, patch, **_):
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_create(meta, namespace, name, body, patch, **_):
+    from helpers.namespaced_rbac import (
+        ensure_managed_base_namespace_grants,
+        preflight_external_base_namespace_grants,
+    )
+
+    preflight_external_base_namespace_grants(namespace)
     body = _ensure_cpu_host_model(body, namespace)
     spec = body["spec"]
     logger.info(f"Creating VM {name} in {namespace}")
@@ -1144,16 +1150,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
     # Ensure the provider SA can exec into this project's virt-launcher pods
     # (console/serial VM exec) — scoped SCC-use RoleBinding, idempotent.
     _ensure_provider_exec_rbac(namespace)
-    try:
-        from helpers.namespaced_rbac import ensure_troshka_namespaced_rbac
-
-        ensure_troshka_namespaced_rbac(namespace)
-    except Exception:
-        logger.warning(
-            "Failed to ensure namespaced RBAC in %s (continuing)",
-            namespace,
-            exc_info=True,
-        )
+    ensure_managed_base_namespace_grants(namespace)
 
     s3_config = _get_s3_config_from_project(namespace)
     central_s3_config = _get_central_s3_config_from_project(namespace)

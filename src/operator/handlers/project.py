@@ -2587,19 +2587,16 @@ def _create_vm_crs(
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_create(spec, meta, namespace, name, body, patch, **_):
+    from helpers.namespaced_rbac import (
+        ensure_managed_base_namespace_grants,
+        preflight_external_base_namespace_grants,
+    )
+
+    preflight_external_base_namespace_grants(namespace)
     action = spec.get("action", "deploy")
     logger.info(f"TroshkaProject {name} created with action={action}")
 
-    try:
-        from helpers.namespaced_rbac import ensure_troshka_namespaced_rbac
-
-        ensure_troshka_namespaced_rbac(namespace)
-    except Exception:
-        logger.warning(
-            "Failed to ensure namespaced RBAC in %s (continuing)",
-            namespace,
-            exc_info=True,
-        )
+    ensure_managed_base_namespace_grants(namespace)
 
     if action == "capture":
         capture_config = {

@@ -43,6 +43,11 @@ aws:
   default_region: "us-east-1"
   default_instance_type: "m8i.xlarge"
 
+kubevirt:
+  # Only the two provider/operator base namespace RoleBindings. External mode
+  # requires administrator-prepared namespaces/grants; it is not a writer fence.
+  base_namespace_grants_mode: managed
+
 defaults:
   run_timer_hours: 8
   lifetime_days: 30

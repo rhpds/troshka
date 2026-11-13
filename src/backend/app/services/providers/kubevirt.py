@@ -8,6 +8,13 @@ import yaml
 from app.core.logging_utils import sanitize_log
 from app.services import quota_operations
 from app.services.providers.base import ProviderDriver
+from app.services.providers.base_namespace_grants import (
+    BaseNamespaceGrantsError,
+    BaseNamespaceGrantsModeError,
+    base_namespace_grants_mode,
+    verify_base_binding,
+    verify_existing_namespace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1304,6 +1311,7 @@ def _ensure_namespaced_rolebinding(
     """Idempotent RoleBinding granting a ClusterRole in one namespace."""
     from kubernetes.client.exceptions import ApiException
 
+    mode = base_namespace_grants_mode()
     body = _rolebinding_body(
         binding_name=binding_name,
         namespace=namespace,
@@ -1311,6 +1319,9 @@ def _ensure_namespaced_rolebinding(
         sa_name=sa_name,
         sa_namespace=sa_namespace,
     )
+    if mode == "external":
+        verify_base_binding(rbac_api, namespace, body)
+        return
     try:
         rbac_api.create_namespaced_role_binding(namespace=namespace, body=body)
     except ApiException as e:
@@ -1350,11 +1361,17 @@ def _ensure_provider_rbac(provider) -> None:
     """
     from kubernetes import client
 
+    mode = base_namespace_grants_mode()
     _, core_api, api_client = _get_k8s_clients(provider)
     rbac_api = client.RbacAuthorizationV1Api(api_client)
     apps_api = client.AppsV1Api(api_client)
 
-    for doc in _load_provider_rbac_docs():
+    docs = _load_provider_rbac_docs()
+    if mode == "external":
+        _verify_external_provider_rbac(provider, core_api, rbac_api, docs)
+        return
+
+    for doc in docs:
         kind = doc.get("kind")
         if kind == "SecurityContextConstraints":
             continue
@@ -1370,8 +1387,24 @@ def _ensure_provider_rbac(provider) -> None:
     for ns in ("troshka", CACHE_NAMESPACE, operator_ns):
         try:
             ensure_troshka_namespaced_rbac(rbac_api, ns)
+        except (BaseNamespaceGrantsError, BaseNamespaceGrantsModeError):
+            raise
         except Exception:
             logger.warning(_NS_RBAC_CONTINUE_MSG, ns, exc_info=True)
+
+
+def _verify_external_provider_rbac(provider, core_api, rbac_api, docs) -> None:
+    for ns in ("troshka", CACHE_NAMESPACE, _operator_ns(provider)):
+        verify_existing_namespace(core_api, ns)
+        ensure_troshka_namespaced_rbac(rbac_api, ns)
+    for doc in docs:
+        if doc.get("kind") in ("ClusterRole", "ClusterRoleBinding"):
+            try:
+                _verify_cluster_rbac(rbac_api, doc["kind"], doc["metadata"]["name"])
+            except Exception:
+                raise BaseNamespaceGrantsError(
+                    "Cannot verify administrator-prepared cluster RBAC"
+                ) from None
 
 
 def _handle_create_conflict(kind, name, ns, body, apps_api):
@@ -1428,6 +1461,12 @@ def _apply_one_operator_manifest(body, operator_ns, rbac_api, core_api, apps_api
 
 
 def _deploy_operator(provider):
+    if base_namespace_grants_mode() == "external":
+        raise BaseNamespaceGrantsError(
+            "External base namespace grants require an independently administered "
+            "operator installation; automatic installation and new host bootstrap "
+            "are unavailable"
+        )
     from kubernetes import client
 
     _ensure_provider_rbac(provider)
@@ -1466,6 +1505,8 @@ def _deploy_operator(provider):
     # Operator + provider namespaced mutate bindings in the operator NS.
     try:
         ensure_troshka_namespaced_rbac(rbac_api, operator_ns)
+    except (BaseNamespaceGrantsError, BaseNamespaceGrantsModeError):
+        raise
     except Exception:
         logger.warning(_NS_RBAC_CONTINUE_MSG, operator_ns, exc_info=True)
 
@@ -1958,6 +1999,12 @@ def _route_apps_domain(custom_api, core_api, provider, namespace: str, project_i
 def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None:
     from kubernetes import client as k8s_client
 
+    if base_namespace_grants_mode() == "external":
+        verify_existing_namespace(core_api, namespace)
+        rbac_api = k8s_client.RbacAuthorizationV1Api(core_api.api_client)
+        ensure_troshka_namespaced_rbac(rbac_api, namespace)
+        return
+
     labels = _project_namespace_labels(project_id)
     try:
         core_api.create_namespace(
@@ -1983,6 +2030,8 @@ def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None
     try:
         rbac_api = k8s_client.RbacAuthorizationV1Api(core_api.api_client)
         ensure_troshka_namespaced_rbac(rbac_api, namespace)
+    except (BaseNamespaceGrantsError, BaseNamespaceGrantsModeError):
+        raise
     except Exception:
         logger.warning(_NS_RBAC_CONTINUE_MSG, namespace, exc_info=True)
 
