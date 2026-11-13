@@ -2,6 +2,8 @@
 
 Scoped development validation is recorded in the
 [2026-11-12 controller acceptance report](native-controller-stop-acceptance-2026-11-12.md).
+Bare Pod validation, including a failed initial dry-run and its corrected retest,
+is recorded in the [Pod acceptance report](native-pod-stop-acceptance-2026-11-12.md).
 
 This standalone command sends an exact desired-state halt request for explicitly
 selected existing native VMs, supported helper controllers or bare Project-owned
