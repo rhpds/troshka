@@ -237,6 +237,7 @@ def prepare_database():
     import app.models  # noqa: F401
     from alembic import command
     from app.core.database import Base, engine
+    from app.services.quota_foundation import initialize
 
     root = Path(__file__).resolve().parents[2]
     migration_config = Config(str(root / "alembic.ini"))
@@ -246,6 +247,7 @@ def prepare_database():
         command.stamp(migration_config, "head")
     else:
         command.upgrade(migration_config, "head")
+    initialize(engine)
 
 
 if __name__ == "__main__":

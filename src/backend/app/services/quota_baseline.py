@@ -35,10 +35,10 @@ from app.services import quota_accounting as accounting
 from app.services import quota_admission as admission
 from app.services import quota_operations as operations
 from app.services.metering_math import desired_resources
+from app.services.quota_foundation import DEFAULT_ORGANIZATION_ID
 from app.services.quota_locks import lock_rows
 from app.services.quota_resources import topology_resources
 
-DEFAULT_ORGANIZATION_ID = "dc591874-9d97-4bf5-ab31-581bb95cc645"
 VERSION = "operator-baseline-v2-allocated"
 # Include all source, identity and resource tables; omit derived quota rows so
 # the same manifest can be replayed idempotently. Values never leave the digest.
