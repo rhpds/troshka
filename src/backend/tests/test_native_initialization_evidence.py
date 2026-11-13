@@ -49,6 +49,8 @@ def synthetic_profile():
         "maximum_capacity_bytes": 4096,
         "preallocation": "disabled",
         "initial_storage_bound_bytes": 32,
+        "reservation_semantics": "measured-startup-allowance-v1",
+        "vnc_image": "quay.io/redhat-gpte/troshka-vnc-proxy:v0-synthetic-acceptance",
     }
 
 
@@ -91,6 +93,11 @@ def test_synthetic_initialization_envelope_roundtrips_without_certifying_physics
         ("validation_sha256", "not-a-digest"),
         ("initial_storage_bound_bytes", True),
         ("initial_storage_bound_bytes", -1),
+        ("initial_storage_bound_bytes", 0),
+        ("reservation_semantics", "physical-upper-bound-v1"),
+        ("vnc_image", "quay.io/redhat-gpte/troshka-vnc-proxy:latest"),
+        ("vnc_image", "quay.io/redhat-gpte/troshka-vnc-proxy@sha256:" + "a" * 64),
+        ("vnc_image", "quay.io/foreign/troshka-vnc-proxy:v1"),
         ("minimum_capacity_bytes", 0),
         ("minimum_capacity_bytes", 8192),
         ("preallocation", "enabled"),
@@ -106,6 +113,16 @@ def test_invalid_initialization_evidence_is_not_a_candidate(field, value):
 def test_report_or_source_fields_cannot_be_smuggled_into_blank_profile():
     supplied = synthetic_profile()
     supplied["source_image"] = {"image_id": "warm-source"}
+    with pytest.raises(ValidationError):
+        capability(supplied)
+
+
+@pytest.mark.parametrize(
+    "field", ["reservation_semantics", "vnc_image", "initial_storage_bound_bytes"]
+)
+def test_legacy_profile_cannot_implicitly_authorize_startup_overage(field):
+    supplied = synthetic_profile()
+    supplied.pop(field)
     with pytest.raises(ValidationError):
         capability(supplied)
 

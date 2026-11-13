@@ -1,11 +1,12 @@
-"""Pinned initialization authority and fresh collector evidence, never calibration.
+"""Protected blank-PVC startup allowances and fresh installed identity evidence.
 
-Production installation observation is available independently of activation.
-No real physical capability is enabled: exact physical acceptance must precede
-opening the closed selector. Synthetic lifecycle tests inject their capability.
+Creation may exceed the explicit allowance. Every measured byte remains charged;
+runtime requires complete writer-free observation within that allowance.
 """
 
+import re
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from app.models.kubevirt_storage import (
     NativeCollectionDomain,
@@ -18,8 +19,36 @@ from app.services.kubevirt_storage_enrollment import digest, utc, validated_enro
 
 
 def implementation(profile):
-    raise AccountingUnavailable(
-        "Native initialization requires independently reviewed physical acceptance"
+    from app.services.native_initialization_observer import OBSERVER_VERSION
+
+    target = profile.target
+    if (
+        profile.profile_name != "odf-rbd-blank-startup-allowance-v1"
+        or profile.reservation_semantics != "measured-startup-allowance-v1"
+        or target.csi_version != OBSERVER_VERSION
+        or target.csi_installation is None
+        or target.storage_class_options is None
+        or target.provisioner != "openshift-storage.rbd.csi.ceph.com"
+        or not re.match(r"^ceph version 19\.2\.1(?:[- (])", target.ceph_version)
+        or target.rbd_command_version != target.ceph_version
+        or not supported_blank_storage(target)
+    ):
+        raise AccountingUnavailable(
+            "Native initialization requires explicit supported startup allowance; "
+            "legacy physical acceptance profiles remain unsupported"
+        )
+    return SimpleNamespace(vnc_image=profile.vnc_image)
+
+
+def supported_blank_storage(target):
+    params = target.storage_class_parameters
+    return (
+        params.get("imageFormat") == "2"
+        and params.get("thickProvision", "false") == "false"
+        and params.get("radosNamespace", "") == target.rbd_namespace
+        and params.get("journalPool", params.get("pool")) == params.get("pool")
+        and bool(params.get("pool"))
+        and params.get("clusterID") == "openshift-storage"
     )
 
 

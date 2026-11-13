@@ -1,6 +1,6 @@
 """Bounded native first-deployment operation, with collector-owned enrollment.
 
-Physical capability is closed by native_initialization. Provider I/O runs outside
+Explicit startup allowance is selected by native_initialization. Provider I/O runs outside
 ledger locks; durable intent is never redispatched after an ambiguous handoff.
 """
 
@@ -17,7 +17,7 @@ from app.models.provider import Provider
 from app.models.quota import QuotaReservation
 from app.models.user import User
 from app.schemas.kubevirt_storage import ProjectRoot
-from app.schemas.quota import AccountingUnavailable, Resources
+from app.schemas.quota import AccountingUnavailable, QuotaDenied, Resources
 from app.services import native_initialization as initialization
 from app.services import native_managed_power as power
 from app.services import quota_admission as admission
@@ -776,6 +776,23 @@ def release_probe(api, target, operation_id):
     return observe(api, target, operation_id)
 
 
+def revalidate_initialized(db, row):
+    """Expected policy denial retains already validated off/storage evidence."""
+    try:
+        admission.revalidate(db, row.operation_id, operations.now())
+    except QuotaDenied as error:
+        update(row, blocker="initialization_quota_denied")
+        db.commit()
+        raise AccountingUnavailable(
+            "Native runtime release blocked by current quota policy"
+        ) from error
+    if (
+        row.dispatch_metadata["native_deploy"].get("blocker")
+        == "initialization_quota_denied"
+    ):
+        update(row, blocker=None)
+
+
 def release_runtime(project_id, operation_id, target, provider):
     """One admitted CAS. Durable ambiguous handoffs are observed, never retried."""
     from app.core.database import SessionLocal
@@ -797,14 +814,25 @@ def release_runtime(project_id, operation_id, target, provider):
             db, project, [row], operations.now()
         )
         power.validate_storage_inventory(db, project, proof, measurement)
+        # This later complete report can contain more bytes than the original
+        # initialization report. Charge it even when runtime cannot be released.
+        quota_storage.apply_measurement(
+            db, project, [row], measurement, operations.now()
+        )
+        if not measured_blank_initialization(db, project.id, measurement):
+            update(row, blocker="initialization_not_blank")
+            db.commit()
+            raise AccountingUnavailable("Native initialization is no longer blank")
         if measurement.allocated_bytes > target["initial_bound"]:
+            update(row, blocker="initialization_bound_exceeded")
+            db.commit()
             raise AccountingUnavailable(
-                "Native runtime release exceeds initialization bound"
+                "Native runtime release exceeds startup allowance"
             )
         update(row, release_off_proof=proof)
         token = _release_recheck.set(operation_id)
         try:
-            admission.revalidate(db, operation_id, operations.now())
+            revalidate_initialized(db, row)
         finally:
             _release_recheck.reset(token)
         update(row, release_handoff=True)
@@ -814,6 +842,34 @@ def release_runtime(project_id, operation_id, target, provider):
         provider, publish, target, operation_id, target["runtime_request"]
     )
     return target
+
+
+def blank_initialization(source, project_id):
+    """Only original blank images may pass first initialization, never COW import."""
+    extra = source["retained_bindings"] + source.get("snapshot_evidence", [])
+    if any(v["root"]["project_id"] == project_id for v in extra):
+        return False
+    keys = {
+        digest(v["image_key"])
+        for v in source["volume_bindings"]
+        if v["root"]["project_id"] == project_id
+    }
+    images = [v for v in source["images"] if digest(v["key"]) in keys]
+    return (
+        bool(keys)
+        and len(images) == len(keys)
+        and all(
+            not (v.get("parent") or v.get("snapshots") or v.get("children"))
+            for v in images
+        )
+    )
+
+
+def measured_blank_initialization(db, project_id, measurement):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+
+    source = db.get(NativeStorageSnapshot, measurement.report_id)
+    return source is not None and blank_initialization(source.payload, project_id)
 
 
 def enroll_ready(project_id, operation_id, target):
@@ -878,6 +934,10 @@ def admit_runtime(project_id, operation_id, target, proof):
             now=operations.now(),
             snapshot=power.billing_snapshot(db, project, [row]),
         )
+        if not measured_blank_initialization(db, project.id, measurement):
+            update(row, blocker="initialization_not_blank")
+            db.commit()  # Complete measured allocation stays charged, runtime stays off.
+            return
         if measurement.allocated_bytes > target["initial_bound"]:
             update(row, blocker="initialization_bound_exceeded")
             db.commit()  # Count every observed byte, retain assets and block runtime.
@@ -886,7 +946,7 @@ def admit_runtime(project_id, operation_id, target, proof):
             **row.dispatch_metadata,
             "native_initialization_consumed": admission.initialization_reference(row),
         }
-        admission.revalidate(db, operation_id, operations.now())
+        revalidate_initialized(db, row)
         request = marker(target, operation_id, "runtime", profile)
         request.update(
             initializationDigest=proof["initialization_digest"],

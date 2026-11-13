@@ -655,6 +655,46 @@ def test_real_readers_independently_observe_exact_installation(installed):
         initialization.implementation(q.profile)
 
 
+def allowance_profile(q):
+    """Synthetic protected configuration, never a deployed acceptance certificate."""
+    body = q.profile.model_dump(mode="json")
+    body["profile_name"] = "odf-rbd-blank-startup-allowance-v1"
+    return InitializationEvidence.model_validate(body)
+
+
+def test_explicit_protected_startup_allowance_selects_named_helper(installed):
+    profile = allowance_profile(installed)
+    selected = initialization.implementation(profile)
+    assert selected.vnc_image == profile.vnc_image
+    # Logical capacity is applicability only, not quota demand or physical proof.
+    assert profile.initial_storage_bound_bytes < profile.minimum_capacity_bytes
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("csi_version", "unknown-observer-v2"),
+        ("csi_installation", None),
+        ("storage_class_options", None),
+        ("provisioner", "foreign.rbd.csi.ceph.com"),
+        ("ceph_version", "ceph version 20.1.0 (stable)"),
+        ("rbd_command_version", "ceph version 18.2.0 (stable)"),
+        ("storage_class_parameters", {"imageFormat": "2", "thickProvision": "true"}),
+        ("storage_class_parameters", {"imageFormat": "1"}),
+        ("storage_class_parameters", {"imageFormat": "2", "radosNamespace": "other"}),
+        (
+            "storage_class_parameters",
+            {"imageFormat": "2", "pool": "one", "journalPool": "two"},
+        ),
+    ],
+)
+def test_startup_allowance_unsupported_target_remains_closed(installed, field, value):
+    body = allowance_profile(installed).model_dump(mode="json")
+    body["target"][field] = value
+    with pytest.raises(AccountingUnavailable):
+        initialization.implementation(InitializationEvidence.model_validate(body))
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

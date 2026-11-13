@@ -64,7 +64,7 @@ resume_case = resume_case_fixture
 class SyntheticInitialization:
     """Test-only implementation selected by monkeypatch, never a real profile."""
 
-    vnc_image = "quay.io/redhat-gpte/troshka-vnc-proxy:synthetic-acceptance-v1"
+    vnc_image = synthetic_profile()["vnc_image"]
     headroom_semantics = "synthetic-allocated-extents-headroom-v1"
     headroom = 1000000
 
@@ -929,11 +929,12 @@ def test_real_first_deploy_admission_pending_and_automatic_enrollment(
         stop_and_resume(q, operation_id, cpu, physical, monkeypatch)
 
 
-def initialized(q, amount=16):
+def initialized(q, amount=16, report_change=None):
     operation_id = start(q)
 
     def collect(manifest, previous, started):
-        return report_for(q, manifest, amount)
+        report = report_for(q, manifest, amount)
+        return report_change(report) if report_change else report
 
     advance_clock()
     collector.cycle(
@@ -960,6 +961,142 @@ def initialized(q, amount=16):
         collect,
     )
     return operation_id
+
+
+def test_startup_allowance_reserves_protected_amount_not_virtual_capacity(deploy_case):
+    q = deploy_case
+    with q.sessions() as db:
+        project = db.get(Project, q.new_id)
+        operation_id = operations.prepare(db, project, "deploy", host_id=q.host_id)
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert (
+            row.requested["storage_bytes"]
+            == q.profile.initial_storage_bound_bytes
+            == 32
+        )
+        target = row.dispatch_metadata["native_deploy"]
+        assert target["initial_bound"] == 32
+        assert target["profile_digest"] == digest(q.profile)
+        planned = deploy.helpers().render(
+            {
+                **target["payload"],
+                "metadata": {**target["payload"]["metadata"], "uid": "pending"},
+            },
+            q.profile.target.storage_class_name,
+        )
+        claims = [v for v in planned if v["kind"] == "PersistentVolumeClaim"]
+        assert [v["spec"]["resources"]["requests"]["storage"] for v in claims] == [
+            "1Gi"
+        ]
+        db.rollback()
+    assert not q.apis[q.new_id].calls
+
+
+@pytest.mark.parametrize("authorization", ["missing", "old", "current"])
+def test_startup_allowance_changes_require_protected_enrollment_authorization(
+    deploy_case, authorization
+):
+    from app.services.kubevirt_storage_enrollment import validated_enrollment
+
+    q = deploy_case
+    with q.sessions() as db:
+        old = db.get(NativeEnrollment, q.enrollment_id)
+        manifest = validated_enrollment(old)
+        changed = q.profile.model_copy(update={"initial_storage_bound_bytes": 64})
+        reference = {
+            "missing": None,
+            "old": digest(q.profile),
+            "current": digest(changed),
+        }[authorization]
+        pins = manifest.pins.model_copy(
+            update={
+                "initialization_evidence": changed,
+                "domain_extension": DomainExtension(
+                    version="native-domain-extension-v1",
+                    previous_enrollment_id=old.id,
+                    previous_enrollment_digest=old.digest,
+                    initialization_authorization_digest=reference,
+                ),
+            }
+        )
+        approved = verify_native_enrollment(
+            prepare_native_enrollment(db, q.project_ids),
+            {q.provider_id: q.reader},
+            q.backend,
+            pins=pins,
+        )
+        if authorization == "current":
+            record = enroll_native_roots(db, approved, expected_target_id=q.target_id)
+            assert (
+                validated_enrollment(
+                    db.get(NativeEnrollment, record)
+                ).pins.initialization_evidence
+                == changed
+            )
+        else:
+            with pytest.raises(ValueError, match="authorization"):
+                enroll_native_roots(db, approved, expected_target_id=q.target_id)
+        db.rollback()
+
+
+def test_first_initialization_rejects_retained_source_but_charges_all_bytes(
+    deploy_case,
+):
+    q = deploy_case
+
+    def retained(report):
+        bindings = [
+            b for b in report.volume_bindings if str(b.root.project_id) == q.new_id
+        ]
+        return revised(report, retained_bindings=[*report.retained_bindings, *bindings])
+
+    operation_id = initialized(q, report_change=retained)
+    deploy.reconcile(q.new_id)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert row.observed["storage_bytes"] == 16 and row.observed["cpu"] == 0
+        assert (
+            row.dispatch_metadata["native_deploy"]["blocker"]
+            == "initialization_not_blank"
+        )
+        assert "native_initialization_consumed" not in row.dispatch_metadata
+    api = q.apis[q.new_id]
+    assert not api.rows("Pod", None)
+    assert api.rows("Deployment", None)[0]["spec"]["replicas"] == 0
+
+
+def test_first_initialization_blank_guard_checks_current_image_graph(deploy_case):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+
+    q = deploy_case
+    operation_id = initialized(q)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        from app.services import quota_storage
+
+        measurement = quota_storage._native_measurement(
+            db, db.get(Project, q.new_id), [row], operations.now()
+        )
+        source = db.get(NativeStorageSnapshot, measurement.report_id).payload
+    assert deploy.blank_initialization(source, q.new_id)
+    binding = next(
+        b for b in source["volume_bindings"] if b["root"]["project_id"] == q.new_id
+    )
+    for field in ("parent", "snapshots", "children"):
+        changed = deepcopy(source)
+        image = next(i for i in changed["images"] if i["key"] == binding["image_key"])
+        image[field] = (
+            {"unexpected": True} if field == "parent" else [{"unexpected": True}]
+        )
+        assert not deploy.blank_initialization(changed, q.new_id)
+    changed = deepcopy(source)
+    changed["snapshot_evidence"] = [{"root": binding["root"]}]
+    assert not deploy.blank_initialization(changed, q.new_id)
+    changed = deepcopy(source)
+    changed["images"] = [
+        i for i in changed["images"] if i["key"] != binding["image_key"]
+    ]
+    assert not deploy.blank_initialization(changed, q.new_id)
 
 
 def test_above_bound_storage_held_and_billed_once_without_compute(deploy_case):
@@ -1138,7 +1275,7 @@ def test_latest_incomplete_evidence_blocks_initialization_release(deploy_case, f
 
 
 @pytest.mark.parametrize(
-    "change", ["fresh", "partial", "stale", "above", "profile", "limit"]
+    "change", ["fresh", "partial", "stale", "above", "profile", "limit", "retained"]
 )
 def test_delayed_first_runtime_publication_rechecks_exact_operation(
     deploy_case, change
@@ -1150,22 +1287,56 @@ def test_delayed_first_runtime_publication_rechecks_exact_operation(
     deploy.reconcile(q.new_id)
     api = q.apis[q.new_id]
     advance_clock()
-    if change in {"fresh", "above", "partial"}:
+    if change in {"fresh", "above", "partial", "retained"}:
 
         def collect(manifest, previous, started):
             if change == "partial":
                 raise ValueError("synthetic failed attempt")
-            return report_for(q, manifest, 48 if change == "above" else 16)
+            report = report_for(q, manifest, 48 if change == "above" else 16)
+            if change == "retained":
+                extra = [
+                    b
+                    for b in report.volume_bindings
+                    if str(b.root.project_id) == q.new_id
+                ]
+                report = revised(
+                    report, retained_bindings=[*report.retained_bindings, *extra]
+                )
+            return report
 
-        collector.cycle(
-            q.sessions,
-            q.pins,
-            q.target_id,
-            q.report.collector_id,
-            {q.provider_id: q.reader},
-            q.backend,
-            collect,
-        )
+        if change == "above":
+            # Real report import can precede ledger reconciliation. The delayed
+            # coordinator must charge this report itself before rejecting release.
+            from app.services.kubevirt_storage_enrollment import validated_enrollment
+
+            with q.sessions() as db:
+                domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+                enrollment = db.get(NativeEnrollment, domain.enrollment_id)
+                manifest = validated_enrollment(enrollment)
+                import_report(
+                    db,
+                    collect(manifest, None, FixedDatetime.current),
+                    enrollment_id=enrollment.id,
+                    expected_enrollment_digest=enrollment.digest,
+                    now=FixedDatetime.current,
+                )
+                db.commit()
+                row = (
+                    db.query(QuotaReservation)
+                    .filter_by(operation_id=operation_id)
+                    .one()
+                )
+                assert row.observed["storage_bytes"] == 16
+        else:
+            collector.cycle(
+                q.sessions,
+                q.pins,
+                q.target_id,
+                q.report.collector_id,
+                {q.provider_id: q.reader},
+                q.backend,
+                collect,
+            )
     elif change == "stale":
         FixedDatetime.current += timedelta(seconds=61)
     with q.sessions() as db:
@@ -1195,6 +1366,30 @@ def test_delayed_first_runtime_publication_rechecks_exact_operation(
             == "initializing"
         )
         assert not current_target(q, operation_id).get("release_handoff")
+        if change == "above":
+            from app.models.quota import QuotaAllocation
+
+            with q.sessions() as db:
+                row = (
+                    db.query(QuotaReservation)
+                    .filter_by(operation_id=operation_id)
+                    .one()
+                )
+                allocation = (
+                    db.query(QuotaAllocation).filter_by(operation_id=operation_id).one()
+                )
+                assert (
+                    row.observed["storage_bytes"]
+                    == allocation.observed["storage_bytes"]
+                    == 48
+                )
+                assert row.observed["cpu"] == 0
+                assert (
+                    row.dispatch_metadata["native_deploy"]["blocker"]
+                    == "initialization_bound_exceeded"
+                )
+            assert not api.rows("Pod", None)
+            assert api.rows("Deployment", None)[0]["spec"]["replicas"] == 0
     assert deploy._release_recheck.get() is None
 
 
@@ -1202,6 +1397,107 @@ def current_target(q, operation_id):
     with q.sessions() as db:
         row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
         return deepcopy(row.dispatch_metadata["native_deploy"])
+
+
+@pytest.mark.parametrize("denial", ["quota", "unexpected"])
+@pytest.mark.parametrize("stage", ["initialize", "release"])
+def test_runtime_policy_denial_preserves_validated_measurement(
+    deploy_case, monkeypatch, denial, stage
+):
+    from app.models.quota import QuotaAllocation, QuotaPolicy
+    from app.schemas.quota import AccountingUnavailable
+    from app.services.kubevirt_storage_enrollment import validated_enrollment
+
+    q = deploy_case
+    operation_id = initialized(q)
+    if stage == "release":
+        deploy.reconcile(q.new_id)
+    api = q.apis[q.new_id]
+    advance_clock()
+    with q.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+        enrollment = db.get(NativeEnrollment, domain.enrollment_id)
+        manifest = validated_enrollment(enrollment)
+        report = report_for(q, manifest, 24)
+        import_report(
+            db,
+            report,
+            enrollment_id=enrollment.id,
+            expected_enrollment_digest=enrollment.digest,
+            now=FixedDatetime.current,
+        )
+        db.add(QuotaPolicy(scope="project", scope_id=q.new_id, storage_bytes=20))
+        db.commit()
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert row.observed["storage_bytes"] == 16
+        assert row.requested["storage_bytes"] == 32
+    # The imported domain also contains existing projects. Reconcile those real
+    # retained ledgers so their freshness does not mask this operation's quota check.
+    from app.services import quota_storage
+
+    for project_id in q.project_ids:
+        if project_id != q.new_id:
+            quota_storage.reconcile_project(project_id)
+    if denial == "unexpected":
+
+        def fail(*args, **kwargs):
+            raise ValueError("unexpected revalidation failure")
+
+        monkeypatch.setattr(deploy.admission, "revalidate", fail)
+    calls = deepcopy(api.calls)
+
+    def attempt():
+        target = current_target(q, operation_id)
+        if stage == "release":
+            deploy.release_runtime(q.new_id, operation_id, target, SimpleNamespace())
+        else:
+            proof = deploy.observe(api, target, operation_id)
+            deploy.admit_runtime(q.new_id, operation_id, target, proof)
+
+    for _ in range(2):
+        expected = AccountingUnavailable if denial == "quota" else ValueError
+        with pytest.raises(expected) as failure:
+            attempt()
+        with q.sessions() as db:
+            row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+            allocation = (
+                db.query(QuotaAllocation).filter_by(operation_id=operation_id).one()
+            )
+            amount = 24 if denial == "quota" else 16
+            assert (
+                row.observed["storage_bytes"]
+                == allocation.observed["storage_bytes"]
+                == amount
+            ), str(failure.value)
+            assert row.observed["cpu"] == 0
+            target = row.dispatch_metadata["native_deploy"]
+            assert not target.get("release_handoff")
+            if denial == "quota":
+                assert target["blocker"] == "initialization_quota_denied"
+            else:
+                assert "blocker" not in target
+        assert deploy._release_recheck.get() is None
+        assert api.calls == calls  # Original-root reads only, no runtime publication.
+        assert not api.rows("Pod", None)
+        assert api.rows("Deployment", None)[0]["spec"]["replicas"] == 0
+
+    if denial == "quota":
+        assert deploy.reconcile(q.new_id) is True
+        assert not current_target(q, operation_id).get("release_handoff")
+        assert api.calls == calls
+        with q.sessions() as db:
+            policy = (
+                db.query(QuotaPolicy)
+                .filter_by(scope="project", scope_id=q.new_id)
+                .one()
+            )
+            policy.storage_bytes = 64
+            db.commit()
+        attempt()
+        target = current_target(q, operation_id)
+        assert not target.get("blocker")
+        assert target["phase"] == "runtime-intent"
+        assert bool(target.get("release_handoff")) == (stage == "release")
 
 
 def test_ambiguous_accepted_runtime_cas_is_only_observed(deploy_case, monkeypatch):

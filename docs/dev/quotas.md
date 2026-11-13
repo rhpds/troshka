@@ -174,7 +174,7 @@ An empty never-deployed draft still uses the existing confirmed-empty path.
 Native disk wipe is also rejected even when automatic restart is false, because
 the wipe helper may power on a stopped VM before touching its disk.
 
-### Managed first native deployment (increment 4B; real activation closed)
+### Managed first native deployment (explicit startup allowance)
 
 The code integrates admission, immutable payload/rendered-plan and helper-image
 pins, one claimed pending CR handoff, full UID binding, automated roots-only
@@ -201,12 +201,36 @@ views, independently of current capacity readiness. New-era documents already
 freeze ledger totals when created; reading historical documents does not rebuild
 pre-cutover charges from the fresh ledger.
 
-`native_initialization.implementation()` deliberately accepts **no real profile**.
-Synthetic transport tests prove code integration only. Real activation requires
-independent physical acceptance of the exact CSI/Ceph/StorageClass profile and its
-initialization bound, followed by an explicit
-supported implementation selector. Protected enrollment pins remain the authority;
-a report, a boolean certificate, PVC Bound status or calibration cannot enable it.
+`native_initialization.implementation()` supports only the explicit
+`odf-rbd-blank-startup-allowance-v1` profile with the supported ODF installation
+observer, Ceph server/client 19.2.1, format-2 non-thick blank PVCs and one exact
+protected target. It requires `reservation_semantics: measured-startup-allowance-v1`
+and a positive, operator-configured `initial_storage_bound_bytes` **per new PVC**.
+Despite its legacy field name, that amount is a startup allowance, not a physical
+maximum. There is no numeric default and no capacity-sized tenant reservation.
+PVC logical capacity remains an applicability/CSI input; a large thin disk can
+reserve a small allowance and subsequently settle to its measured allocated bytes.
+
+This policy explicitly accepts temporary storage overage during creation. Every
+complete measured byte stays charged. Allocation above the allowance retains the
+assets and keeps workloads off; below it, fresh complete writer-free evidence and
+quota revalidation permit runtime. Pending concurrent creates each reserve their
+allowance. These reservations do not bound aggregate physical overage. Legacy
+profiles lacking the explicit policy or helper reference reject validation and
+cannot silently authorize overage. Synthetic transport tests prove integration,
+not live deployment acceptance or a physical upper bound.
+
+The profile's required `vnc_image` is a named version tag in
+`quay.io/redhat-gpte/troshka-vnc-proxy:v...`; `latest`, digest references and other
+repositories reject. The operator must verify the chosen tag exists before
+authorizing it. `validation_reference`, `validation_sha256` and
+`bound_justification` record the reviewed installation evidence, explicit policy
+decision and allowance rationale; they do not certify a maximum. Protected
+enrollment pins remain the authority for the amount, helper and exact target;
+changing them requires the existing explicit enrollment authorization digest.
+A collector report, PVC Bound status or the observed zero-byte sample cannot
+authorize a profile. No real enrollment, scheduler or enforcement is enabled by
+this source change.
 
 Native admission uses measured project, owner and organization usage plus pending
 tenant reservations. It does not reserve pool-wide free space or promise a
@@ -262,15 +286,20 @@ Their legacy `csi_version` slot must contain the explicit discriminator
 `odf-rbd-installation-v1`: it identifies this observation contract, **not a CSI
 vendor version**. ODF release labels and expected profile strings are never copied
 into observed versions. Legacy serialized profiles/reports retain their digest
-shape, but legacy-only profiles have no production observer. No real profile or
-bound is configured. Independent installed identity is executable observation
-code; it does not certify a physical initialization upper bound, image geometry,
-filesystem work, CSI defaults or the no-tenant-writer boundary. Those still need
-reviewed exact-target physical acceptance before activation can open.
+shape, but legacy-only profiles have no production observer or startup policy.
+No real profile or numeric allowance is configured by this source. Installed
+identity observation does not certify a physical initialization upper bound.
+The blank-only first-deploy path separately verifies no tenant Pods/VMIs or
+ReplicaSets, halted VMs, zero-replica helpers, exact original PVC inventory and
+fresh complete physical evidence before runtime. Its release also rejects parent
+images, snapshots, children, retained bindings and snapshot evidence. Unsupported
+or incomplete graphs remain unavailable. This does not fence external cluster
+administrators or backend writers; controlled installation/credentials remain
+prerequisites for acceptance.
 
-Initial storage bounds remain reserved until exact complete initialization evidence
+Startup storage allowances remain reserved until exact complete initialization evidence
 consumes only that storage remainder. Original requests remain immutable. Every
-measured byte stays charged, including above-bound allocation, which retains
+measured byte stays charged, including above-allowance allocation, which retains
 assets and blocks runtime. Provisioned GiB-hour disk billing opens once at verified
 initialization; configured VM/container compute billing opens only after complete
 running proof. Fixed VNC support uses the existing namespace permissions and joins
@@ -279,7 +308,8 @@ Stale/partial attempts block release and growth. Ambiguous creates/releases are
 observed without redispatch or adoption/deletion of unrelated objects.
 
 The privileged collector needs one-time scheduling/configuration, not a manual
-administrator enrollment step for each project. After physical acceptance, run the
+administrator enrollment step for each project. After reviewed installed-target
+and managed-lifecycle acceptance and explicit allowance authorization, run the
 following existing CLI cycle from its existing protected credential environment
 on a periodic scheduler within evidence freshness bounds (for example every 20
 seconds). Configure the explicit reporting DB target, protected pins, backend
