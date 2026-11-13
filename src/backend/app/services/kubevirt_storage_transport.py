@@ -10,9 +10,10 @@ import time
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from app.schemas.kubevirt_storage import Bytes, Evidence, ImageKey, ReadResult
+from app.schemas.kubevirt_storage_initialization import InitializationEvidence
 
 
 def utcnow():
@@ -186,6 +187,14 @@ class CapabilityProfile(Evidence):
     merge_snapshots_validated: bool = False
     validation_reference: str | None = Field(default=None, max_length=256)
     semantics_version: str = "kubevirt-rbd-allocated-v1"
+    initialization_evidence: InitializationEvidence | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_initialization(self, handler):
+        data = handler(self)
+        if data.get("initialization_evidence") is None:
+            data.pop("initialization_evidence", None)
+        return data
 
 
 class PoolConfig(Evidence):

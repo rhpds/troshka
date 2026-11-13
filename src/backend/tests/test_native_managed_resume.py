@@ -825,6 +825,132 @@ def test_current_physical_reports_reconcile_independently_during_resume(resume_c
         )
 
 
+def test_domain_extension_preserves_claimed_resume_target_and_confirms_once(
+    resume_case,
+):
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.schemas.quota import AccountingUnavailable
+    from app.services import quota_storage
+    from app.services.kubevirt_storage_enrollment import enroll_native_roots
+    from app.services.kubevirt_storage_reports import import_report
+    from tests.test_quota_native_storage import extension_manifest, revised
+
+    q = resume_case
+    operation_id = start_worker(q)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        target = deepcopy(row.dispatch_metadata["native_resume"])
+        originals = deepcopy(row.dispatch_metadata["native_originals"])
+        old_enrollment = deepcopy(db.get(NativeEnrollment, q.enrollment_id).payload)
+        manifest, new_root = extension_manifest(db, q)
+        enrollment_id = enroll_native_roots(
+            db, manifest, expected_target_id=q.target_id
+        )
+        db.commit()
+        with pytest.raises(AccountingUnavailable):
+            quota_storage.scope_evidence(db, "user", q.owner_id, FixedDatetime.current)
+        assert db.get(NativeEnrollment, q.enrollment_id).payload == old_enrollment
+    FixedDatetime.current += timedelta(seconds=2)
+    observed = FixedDatetime.current - timedelta(seconds=1)
+    report = revised(
+        q.report,
+        project_roots=[*q.report.project_roots, new_root],
+        started_at=observed,
+        completed_at=observed,
+        images=[
+            i.model_copy(update={"collected_at": observed}) for i in q.report.images
+        ],
+    )
+    with q.sessions() as db:
+        import_report(
+            db,
+            report,
+            enrollment_id=enrollment_id,
+            expected_enrollment_digest=manifest.digest,
+            now=FixedDatetime.current,
+        )
+        db.commit()
+    for project_id in q.project_ids:
+        quota_storage.reconcile_project(project_id)
+    settle_running(q, q.project_ids[0])
+    operations.reconcile(q.project_ids[0])
+    operations.reconcile(q.project_ids[0])
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert row.state == "confirmed"
+        assert row.dispatch_metadata["native_resume"] == target
+        assert row.dispatch_metadata["native_originals"] == originals
+        assert row.observed["cpu"] == 3 and row.observed["storage_bytes"] == 0
+        assert (
+            db.query(MeteringInterval)
+            .filter_by(project_id=q.project_ids[0], kind="vm")
+            .count()
+            == 0
+        )
+
+
+@pytest.mark.parametrize("missing_extension", [False, True])
+def test_concurrent_domain_extensions_compare_current_pointer(
+    native_ledger, isolated_quota_database, missing_extension
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from sqlalchemy import text
+
+    from app.models.kubevirt_storage import NativeCollectionDomain, NativeEnrollment
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from app.services.kubevirt_storage_enrollment import digest, enroll_native_roots
+    from tests.test_quota_native_storage import extension_manifest
+
+    q = native_ledger
+    with q.sessions() as db:
+        if db.get_bind().dialect.name != "postgresql":
+            pytest.skip("row-lock concurrency requires disposable PostgreSQL")
+        manifests = []
+        for _ in range(2):
+            manifest, _ = extension_manifest(db, q)
+            if missing_extension:
+                body = manifest.model_dump(mode="json", exclude={"digest"})
+                body["pins"].pop("domain_extension")
+                manifest = VerifiedEnrollment.model_validate(
+                    {**body, "digest": digest(body)}
+                )
+            manifests.append(manifest)
+        db.commit()
+    barrier = Barrier(2)
+
+    def apply(manifest):
+        with q.sessions() as db:
+            db.execute(text("SET LOCAL statement_timeout = '8000ms'"))
+            cached = db.get(NativeCollectionDomain, str(manifest.pins.domain_id))
+            assert cached.enrollment_id == q.enrollment_id
+            barrier.wait(timeout=5)
+            try:
+                result = enroll_native_roots(
+                    db, manifest, expected_target_id=q.target_id
+                )
+                db.commit()
+                return result
+            except ValueError as error:
+                db.rollback()
+                assert (
+                    "explicit domain extension"
+                    if missing_extension
+                    else "no longer current"
+                ) in str(error)
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, manifests))
+    assert sum(result is not None for result in results) == (
+        0 if missing_extension else 1
+    )
+    with q.sessions() as db:
+        assert db.query(NativeEnrollment).count() == (1 if missing_extension else 2)
+        assert db.query(QuotaReservation).count() == 2
+
+
 def current_meters(db):
     return sorted(
         (m.id, m.kind, m.resource_id, str(m.qty), str(m.unit_rate), m.ended_at)

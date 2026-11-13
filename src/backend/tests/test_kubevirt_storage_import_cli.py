@@ -464,6 +464,81 @@ def test_verify_short_budget_applies_to_both_kubernetes_identities(verification_
     )  # Remote command plus transport shutdown allowance.
 
 
+def test_protected_pins_carry_explicit_initialization_authorization(
+    verification_case, cli, tmp_path
+):
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.models.quota import QuotaReservation
+    from app.services.kubevirt_storage_enrollment import digest
+    from tests.test_native_initialization_evidence import synthetic_profile
+
+    s = verification_case
+    pins = s.case.pins.model_dump(mode="json")
+    profile = synthetic_profile()
+    profile["target"].update(
+        provider_id=str(s.case.request.projects[0].provider_id),
+        cluster_key="cluster",
+        ceph_fsid=s.case.pins.pool_keys[0].ceph_fsid,
+    )
+    pins["initialization_evidence"] = profile
+    pins["domain_extension"] = {
+        "version": "native-domain-extension-v1",
+        "previous_enrollment_id": s.case.enrollment_id,
+        "previous_enrollment_digest": s.case.digest,
+        "initialization_authorization_digest": digest(profile),
+    }
+    pins_path = tmp_path / "pins.json"
+    pins_path.write_text(json.dumps(pins))
+    pins_path.chmod(0o600)
+    assert s.verify() == 0
+    body = json.loads(s.output.read_text())
+    assert body["pins"]["domain_extension"] == pins["domain_extension"]
+    assert body["pins"]["initialization_evidence"] == profile
+    assert (
+        cli.main(
+            ["--target-id", s.case.target_id, "enroll", "--enrollment", str(s.output)]
+        )
+        == 0
+    )
+    with s.case.sessions() as db:
+        assert db.query(NativeEnrollment).count() == 2
+        assert db.query(QuotaReservation).count() == 0
+
+
+def test_protected_enroll_rejects_omitted_domain_extension(
+    verification_case, cli, tmp_path
+):
+    from app.models.kubevirt_storage import (
+        NativeCollectionDomain,
+        NativeEnrollment,
+        NativeProjectRoot,
+    )
+    from tests.test_quota_native_storage import extension_manifest
+
+    s, q = verification_case, verification_case.case
+    q.project_ids = [str(root.project_id) for root in q.report.project_roots]
+    with q.sessions() as db:
+        manifest, _ = extension_manifest(db, q)
+        db.commit()
+    s.case.pins = manifest.pins
+    (tmp_path / "request.json").write_text(manifest.request.model_dump_json())
+    body = manifest.pins.model_dump(mode="json")
+    body.pop("domain_extension")
+    (tmp_path / "pins.json").write_text(json.dumps(body))
+    assert s.verify() == 0
+    assert (
+        cli.main(["--target-id", q.target_id, "enroll", "--enrollment", str(s.output)])
+        == 1
+    )
+    with q.sessions() as db:
+        assert (
+            db.get(NativeCollectionDomain, str(q.pins.domain_id)).enrollment_id
+            == q.enrollment_id
+        )
+        assert db.query(NativeEnrollment).count() == 1
+        assert db.query(NativeProjectRoot).count() == 2
+
+
 def test_verify_direct_requires_explicit_credentials(verification_case):
     s = verification_case
     s.backend = {key: s.backend[key] for key in ("ceph_fsid", "pools")}

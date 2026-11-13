@@ -24,6 +24,7 @@ from app.services.kubevirt_storage_enrollment import (
 )
 from app.services.kubevirt_storage_inventory import inventory_digest
 from app.services.kubevirt_storage_reports import import_report, report_inventory
+from tests.test_kubevirt_storage_reports import make_native_case
 from tests.test_kubevirt_storage_reports import native_case as native_case_fixture
 
 native_case = native_case_fixture
@@ -40,52 +41,30 @@ def revised(report, **updates):
 
 @pytest.fixture
 def native_ledger(request, monkeypatch):
-    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
-
-    q = request.getfixturevalue("native_case")
     monkeypatch.setattr(accounting, "quotas_enabled", lambda: True)
     monkeypatch.setattr(accounting, "spend", lambda *args: 0)
     monkeypatch.setattr(operations, "now", lambda: NOW)
     monkeypatch.setattr(enforcement, "_now", lambda: NOW)
+    from tests.kubevirt_storage_helpers import report_fixture
+
+    report = report_fixture("zero-private-parent.json")
     roots = [
-        r.model_copy(update={"deployment_generation": 7})
-        for r in q.report.project_roots
+        r.model_copy(update={"deployment_generation": 7}) for r in report.project_roots
     ]
-    q.report = revised(
-        q.report,
+    report = revised(
+        report,
         project_roots=roots,
         volume_bindings=[
             b.model_copy(update={"root": r})
-            for b, r in zip(q.report.volume_bindings, roots)
+            for b, r in zip(report.volume_bindings, roots)
         ],
     )
+    q = make_native_case(
+        request.getfixturevalue("isolated_quota_database"),
+        report=report,
+        organization=True,
+    )
     with q.sessions() as db:
-        org = ManagedGroup(
-            name="native-org", normalized_name="native-org", is_organization=True
-        )
-        db.add(org)
-        db.flush()
-        db.get(User, q.owner_id).organization_id = org.id
-        db.flush()
-        request = prepare_native_enrollment(db, [str(r.project_id) for r in roots])
-        original = VerifiedEnrollment.model_validate(
-            db.get(NativeEnrollment, q.enrollment_id).payload
-        )
-        manifest = original.model_copy(
-            update={
-                "request": request,
-                "pins": original.pins.model_copy(update={"project_roots": roots}),
-            }
-        )
-        manifest = manifest.model_copy(
-            update={
-                "digest": digest(manifest.model_dump(mode="json", exclude={"digest"}))
-            }
-        )
-        q.enrollment_id = enroll_native_roots(
-            db, manifest, expected_target_id=q.target_id
-        )
-        q.digest, q.org_id = manifest.digest, org.id
         q.project_ids = [str(r.project_id) for r in roots]
         for index, root in enumerate(roots):
             project = db.get(Project, str(root.project_id))
@@ -100,7 +79,7 @@ def native_ledger(request, monkeypatch):
                         operation_id=operation_id,
                         project_id=project.id,
                         owner_id=q.owner_id,
-                        organization_id=org.id,
+                        organization_id=q.org_id,
                         state="confirmed",
                         requested=vector,
                         observed=vector,
@@ -114,10 +93,12 @@ def native_ledger(request, monkeypatch):
                                 q.report.started_at - timedelta(seconds=1)
                             ).isoformat(),
                             "native_storage_identity": {
-                                "domain_id": str(manifest.pins.domain_id),
+                                "domain_id": str(q.pins.domain_id),
                                 "enrollment_id": q.enrollment_id,
                                 "host_id": project.host_id,
-                                "provider_id": str(request.projects[index].provider_id),
+                                "provider_id": str(
+                                    q.request.projects[index].provider_id
+                                ),
                                 "root": root.model_dump(mode="json"),
                             },
                         },
@@ -126,7 +107,7 @@ def native_ledger(request, monkeypatch):
                         operation_id=operation_id,
                         project_id=project.id,
                         owner_id=q.owner_id,
-                        organization_id=org.id,
+                        organization_id=q.org_id,
                         state="active",
                         requested=vector,
                         observed=vector,
@@ -159,6 +140,452 @@ def reconcile(q):
 
 def root_row(db, q, index=0):
     return db.query(QuotaReservation).filter_by(project_id=q.project_ids[index]).one()
+
+
+def extension_manifest(db, q, *, previous=None):
+    """Trusted synthetic extension, never a physical initialization profile."""
+    from app.schemas.kubevirt_storage import ProjectRoot
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+
+    previous = previous or db.get(NativeEnrollment, q.enrollment_id)
+    manifest = VerifiedEnrollment.model_validate(previous.payload)
+    project = Project(
+        name="new-draft",
+        owner_id=q.owner_id,
+        host_id=db.get(Project, q.project_ids[0]).host_id,
+    )
+    db.add(project)
+    db.flush()
+    root = ProjectRoot(
+        project_id=project.id,
+        cluster_key="cluster",
+        namespace="new-draft",
+        namespace_uid="new-namespace-" + project.id,
+        project_cr_uid="new-cr-" + project.id,
+        deployment_generation=1,
+    )
+    request = prepare_native_enrollment(
+        db, [str(r.project_id) for r in manifest.pins.project_roots] + [project.id]
+    )
+    payload = manifest.model_dump(mode="json", exclude={"digest"})
+    payload["request"] = request.model_dump(mode="json")
+    payload["pins"]["project_roots"].append(root.model_dump(mode="json"))
+    payload["pins"]["domain_extension"] = {
+        "version": "native-domain-extension-v1",
+        "previous_enrollment_id": previous.id,
+        "previous_enrollment_digest": previous.digest,
+    }
+    return (
+        VerifiedEnrollment.model_validate({**payload, "digest": digest(payload)}),
+        root,
+    )
+
+
+def test_expanded_domain_retains_old_allocations_until_complete_current_report(
+    native_ledger,
+):
+    from copy import deepcopy
+
+    q = native_ledger
+    ingest(q)
+    reconcile(q)
+    with q.sessions() as db:
+        original = {
+            r.operation_id: deepcopy(r.dispatch_metadata)
+            for r in db.query(QuotaReservation)
+        }
+        manifest, new_root = extension_manifest(db, q)
+        enrollment_id = enroll_native_roots(
+            db, manifest, expected_target_id=q.target_id
+        )
+        db.commit()
+        assert admission.usage(db, "user", q.owner_id)[0].storage_bytes == 80
+        assert {
+            r.operation_id: r.dispatch_metadata for r in db.query(QuotaReservation)
+        } == original
+        with pytest.raises(AccountingUnavailable):
+            storage.scope_evidence(db, "user", q.owner_id, NOW)
+    with pytest.raises(AccountingUnavailable):
+        reconcile(q)
+    report = revised(
+        q.report,
+        project_roots=[*q.report.project_roots, new_root],
+        started_at=q.report.started_at + timedelta(seconds=1),
+        completed_at=q.report.completed_at + timedelta(seconds=1),
+        images=[
+            i.model_copy(update={"collected_at": i.collected_at + timedelta(seconds=1)})
+            for i in q.report.images
+        ],
+    )
+    q.enrollment_id, q.digest = enrollment_id, manifest.digest
+    ingest(q, report)
+    reconcile(q)
+    with q.sessions() as db:
+        storage.scope_evidence(db, "user", q.owner_id, NOW)
+        assert admission.usage(db, "user", q.owner_id)[0].storage_bytes == 80
+        for row in db.query(QuotaReservation):
+            assert (
+                row.dispatch_metadata["native_storage_identity"]
+                == original[row.operation_id]["native_storage_identity"]
+            )
+            assert (
+                row.dispatch_metadata["native_storage_evidence"][
+                    "current_enrollment_id"
+                ]
+                == enrollment_id
+            )
+    from app.schemas.kubevirt_storage import Blocker
+
+    ingest(
+        q,
+        revised(
+            report,
+            started_at=report.started_at + timedelta(seconds=1),
+            completed_at=report.completed_at + timedelta(seconds=1),
+            collection_errors=[Blocker(code="backend_graph_recheck_unavailable")],
+        ),
+    )
+    ingest(q, revised(report))
+    with pytest.raises(AccountingUnavailable):
+        reconcile(q)
+    with q.sessions() as db:
+        assert admission.usage(db, "user", q.owner_id)[0].storage_bytes == 80
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["root", "pool", "collector", "cache", "provider", "predecessor", "owner"],
+)
+def test_domain_extension_rejects_identity_loss_or_preparation_drift(
+    native_ledger, failure
+):
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+
+    q = native_ledger
+    with q.sessions() as db:
+        manifest, _ = extension_manifest(db, q)
+        payload = manifest.model_dump(mode="json", exclude={"digest"})
+        if failure in {"root", "pool", "collector", "cache", "provider"}:
+            key = {
+                "root": "project_roots",
+                "pool": "pool_keys",
+                "collector": "collector_ids",
+                "cache": "cache_roots",
+                "provider": "provider_clusters",
+            }[failure]
+            payload["pins"][key] = payload["pins"][key][1:]
+            # Keep nonempty schema lists valid while replacing an identity.
+            if not payload["pins"][key] and failure != "cache":
+                payload["pins"][key] = manifest.model_dump(mode="json")["pins"][key]
+                if failure == "pool":
+                    payload["pins"][key][0]["pool_id"] = 99
+                elif failure == "collector":
+                    payload["pins"][key][0] = "foreign-collector"
+                elif failure == "provider":
+                    payload["pins"][key][0]["cluster_key"] = "foreign-cluster"
+        elif failure == "predecessor":
+            payload["pins"]["domain_extension"]["previous_enrollment_id"] = str(uuid4())
+        else:
+            db.get(Project, q.project_ids[0]).owner_id = q.admin_id
+            db.flush()
+        changed = VerifiedEnrollment.model_validate(
+            {**payload, "digest": digest(payload)}
+        )
+        with pytest.raises(ValueError):
+            enroll_native_roots(db, changed, expected_target_id=q.target_id)
+
+
+def test_domain_extension_replay_and_competing_predecessor_preserve_history(
+    native_ledger,
+):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+
+    q = native_ledger
+    ingest(q)
+    with q.sessions() as db:
+        old = db.get(NativeEnrollment, q.enrollment_id)
+        # Legacy evidence roundtrips byte-for-byte at the JSON/digest boundary.
+        assert (
+            VerifiedEnrollment.model_validate(old.payload).model_dump(mode="json")
+            == old.payload
+        )
+        assert "domain_extension" not in old.payload["pins"]
+        original_payload = old.payload
+        first, _ = extension_manifest(db, q)
+        second, _ = extension_manifest(db, q)
+        new_id = enroll_native_roots(db, first, expected_target_id=q.target_id)
+        assert enroll_native_roots(db, first, expected_target_id=q.target_id) == new_id
+        with pytest.raises(ValueError, match="no longer current"):
+            enroll_native_roots(db, second, expected_target_id=q.target_id)
+        assert db.get(NativeEnrollment, q.enrollment_id).payload == original_payload
+        assert db.query(NativeStorageSnapshot).count() == 1
+        assert (
+            db.query(NativeEnrollment).count() == 2
+        )  # initial enrollment + explicit extension
+
+
+@pytest.mark.parametrize("advance_first", [False, True])
+def test_omitted_extension_cannot_advance_or_replace_current_domain(
+    native_ledger, advance_first
+):
+    from copy import deepcopy
+
+    from app.models.kubevirt_storage import NativeCollectionDomain, NativeProjectRoot
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+
+    q = native_ledger
+    ingest(q)
+    reconcile(q)
+    with q.sessions() as db:
+        first, _ = extension_manifest(db, q)
+        omitted, _ = extension_manifest(db, q)
+        body = omitted.model_dump(mode="json", exclude={"digest"})
+        body["pins"].pop("domain_extension")
+        omitted = VerifiedEnrollment.model_validate({**body, "digest": digest(body)})
+        if advance_first:
+            enroll_native_roots(db, first, expected_target_id=q.target_id)
+        domain = db.get(NativeCollectionDomain, str(first.pins.domain_id))
+        pointer = domain.enrollment_id
+        roots = {r.key for r in db.query(NativeProjectRoot)}
+        original = {
+            r.operation_id: deepcopy(r.dispatch_metadata)
+            for r in db.query(QuotaReservation)
+        }
+        count = db.query(NativeEnrollment).count()
+        with pytest.raises(ValueError, match="explicit domain extension"):
+            enroll_native_roots(db, omitted, expected_target_id=q.target_id)
+        assert domain.enrollment_id == pointer
+        assert {r.key for r in db.query(NativeProjectRoot)} == roots
+        assert db.query(NativeEnrollment).count() == count
+        assert {
+            r.operation_id: r.dispatch_metadata for r in db.query(QuotaReservation)
+        } == original
+        assert admission.usage(db, "user", q.owner_id)[0].storage_bytes == 80
+
+
+def test_domain_extension_does_not_revert_an_authorized_org_transfer(native_ledger):
+    q = native_ledger
+    with q.sessions() as db:
+        destination = ManagedGroup(
+            name="transferred", normalized_name="transferred", is_organization=True
+        )
+        db.add(destination)
+        db.flush()
+        db.get(User, q.owner_id).organization_id = destination.id
+        for model in (QuotaReservation, QuotaAllocation):
+            for row in db.query(model).filter_by(owner_id=q.owner_id):
+                row.organization_id = destination.id
+        manifest, _ = extension_manifest(db, q)
+        enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+        assert all(
+            row.organization_id == destination.id for row in db.query(QuotaReservation)
+        )
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "digest", "cycle", "root", "pool", "semantics"]
+)
+def test_malformed_extension_chain_never_equates_old_enrollment(native_ledger, failure):
+    from app.models.kubevirt_storage import NativeCollectionDomain
+    from app.services.kubevirt_storage_enrollment import retained_enrollment
+    from tests.test_native_initialization_evidence import synthetic_profile
+
+    q = native_ledger
+    with q.sessions() as db:
+        identity = root_row(db, q).dispatch_metadata["native_storage_identity"]
+        manifest, _ = extension_manifest(db, q)
+        new_id = enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+        row = db.get(NativeEnrollment, new_id)
+        payload = row.payload.copy()
+        if failure == "missing":
+            payload["pins"] = {
+                k: v for k, v in payload["pins"].items() if k != "domain_extension"
+            }
+        elif failure == "digest":
+            payload["digest"] = "b" * 64
+        elif failure == "cycle":
+            payload["pins"] = {
+                **payload["pins"],
+                "domain_extension": {
+                    **payload["pins"]["domain_extension"],
+                    "previous_enrollment_id": new_id,
+                },
+            }
+        elif failure == "root":
+            payload["pins"] = {
+                **payload["pins"],
+                "project_roots": [
+                    {**root, "namespace_uid": "changed"}
+                    if root["project_id"] == q.project_ids[0]
+                    else root
+                    for root in payload["pins"]["project_roots"]
+                ],
+            }
+        elif failure == "pool":
+            payload["pins"] = {
+                **payload["pins"],
+                "pool_keys": [{"ceph_fsid": "foreign", "pool_id": 1}],
+            }
+        else:
+            payload["pins"] = {
+                **payload["pins"],
+                "initialization_evidence": synthetic_profile(),
+            }
+        if failure != "digest":
+            payload["digest"] = digest(
+                {k: v for k, v in payload.items() if k != "digest"}
+            )
+        row.payload, row.digest = payload, payload["digest"]
+        db.flush()
+        with pytest.raises(ValueError):
+            retained_enrollment(
+                db, db.get(NativeCollectionDomain, identity["domain_id"]), identity
+            )
+
+
+def test_extension_depth_limit_rejects_before_advancing_domain(native_ledger):
+    from app.models.kubevirt_storage import NativeCollectionDomain
+
+    q = native_ledger
+    with q.sessions() as db:
+        original = root_row(db, q).dispatch_metadata["native_storage_identity"]
+        previous = db.get(NativeEnrollment, q.enrollment_id)
+        for _ in range(63):
+            manifest, _ = extension_manifest(db, q, previous=previous)
+            current_id = enroll_native_roots(
+                db, manifest, expected_target_id=q.target_id
+            )
+            previous = db.get(NativeEnrollment, current_id)
+        manifest, _ = extension_manifest(db, q, previous=previous)
+        with pytest.raises(ValueError, match="depth"):
+            enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+        assert (
+            db.get(NativeCollectionDomain, original["domain_id"]).enrollment_id
+            == previous.id
+        )
+        assert root_row(db, q).observed["storage_bytes"] == 10
+
+
+def test_explicit_profile_authorization_preserves_old_measurement_identity(
+    native_ledger,
+):
+    from copy import deepcopy
+
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from tests.test_native_initialization_evidence import synthetic_profile
+
+    q = native_ledger
+    ingest(q)
+    reconcile(q)
+    with q.sessions() as db:
+        old = db.get(NativeEnrollment, q.enrollment_id)
+        original = deepcopy(old.payload)
+        identity = deepcopy(
+            root_row(db, q).dispatch_metadata["native_storage_identity"]
+        )
+        payload = deepcopy(original)
+        payload["request"] = prepare_native_enrollment(db, q.project_ids).model_dump(
+            mode="json"
+        )
+        profile = synthetic_profile()
+        profile["target"].update(
+            provider_id=str(q.request.projects[0].provider_id),
+            cluster_key="cluster",
+            ceph_fsid=q.pins.pool_keys[0].ceph_fsid,
+        )
+        payload["pins"]["initialization_evidence"] = profile
+        payload["pins"]["domain_extension"] = {
+            "version": "native-domain-extension-v1",
+            "previous_enrollment_id": old.id,
+            "previous_enrollment_digest": old.digest,
+            "initialization_authorization_digest": digest(profile),
+        }
+        payload["digest"] = digest({k: v for k, v in payload.items() if k != "digest"})
+        manifest = VerifiedEnrollment.model_validate(payload)
+        new_id = enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+        db.commit()
+        assert db.get(NativeEnrollment, q.enrollment_id).payload == original
+        assert root_row(db, q).dispatch_metadata["native_storage_identity"] == identity
+    q.enrollment_id, q.digest = new_id, manifest.digest
+    later = revised(
+        q.report,
+        started_at=q.report.started_at + timedelta(seconds=1),
+        completed_at=q.report.completed_at + timedelta(seconds=1),
+        images=[
+            i.model_copy(update={"collected_at": i.collected_at + timedelta(seconds=1)})
+            for i in q.report.images
+        ],
+    )
+    ingest(q, later)
+    reconcile(q)
+    with q.sessions() as db:
+        assert root_row(db, q).observed["storage_bytes"] == 30
+        assert root_row(db, q).dispatch_metadata["native_storage_identity"] == identity
+
+
+@pytest.mark.parametrize("change", ["unreviewed", "wrong_digest", "unchanged"])
+def test_root_expansion_cannot_promote_or_reuse_initialization_authority(
+    native_ledger, change
+):
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from tests.test_native_initialization_evidence import synthetic_profile
+
+    q = native_ledger
+    with q.sessions() as db:
+        manifest, _ = extension_manifest(db, q)
+        payload = manifest.model_dump(mode="json")
+        profile = synthetic_profile()
+        profile["target"].update(
+            provider_id=str(q.request.projects[0].provider_id),
+            cluster_key="cluster",
+            ceph_fsid=q.pins.pool_keys[0].ceph_fsid,
+        )
+        if change != "unchanged":
+            payload["pins"]["initialization_evidence"] = profile
+        if change != "unreviewed":
+            payload["pins"]["domain_extension"][
+                "initialization_authorization_digest"
+            ] = ("b" * 64)
+        payload["digest"] = digest({k: v for k, v in payload.items() if k != "digest"})
+        with pytest.raises(ValueError, match="initialization"):
+            enroll_native_roots(
+                db,
+                VerifiedEnrollment.model_validate(payload),
+                expected_target_id=q.target_id,
+            )
+
+
+def test_model_copy_cannot_bypass_strict_initialization_bound_validation(native_ledger):
+    from app.schemas.kubevirt_storage_initialization import InitializationEvidence
+    from tests.test_native_initialization_evidence import synthetic_profile
+
+    q = native_ledger
+    with q.sessions() as db:
+        manifest, _ = extension_manifest(db, q)
+        supplied = synthetic_profile()
+        supplied["target"].update(
+            provider_id=str(q.request.projects[0].provider_id),
+            cluster_key="cluster",
+            ceph_fsid=q.pins.pool_keys[0].ceph_fsid,
+        )
+        invalid = InitializationEvidence.model_validate(supplied).model_copy(
+            update={"minimum_capacity_bytes": 0}
+        )
+        extension = manifest.pins.domain_extension.model_copy(
+            update={"initialization_authorization_digest": digest(invalid)}
+        )
+        pins = manifest.pins.model_copy(
+            update={"initialization_evidence": invalid, "domain_extension": extension}
+        )
+        manifest = manifest.model_copy(update={"pins": pins})
+        manifest = manifest.model_copy(
+            update={
+                "digest": digest(manifest.model_dump(mode="json", exclude={"digest"}))
+            }
+        )
+        with pytest.raises(ValueError):
+            enroll_native_roots(db, manifest, expected_target_id=q.target_id)
 
 
 def test_import_reconcile_and_evaluate_exact_boundary_idempotently(native_ledger):

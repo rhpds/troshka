@@ -267,8 +267,131 @@ def _enroll_roots(db, manifest, enrollment_id):
         )
 
 
+def validated_enrollment(row):
+    manifest = VerifiedEnrollment.model_validate(row.payload)
+    if (
+        manifest.version != "native-enrollment-v1"
+        or str(manifest.pins.domain_id) != row.domain_id
+        or manifest.digest != row.digest
+        or manifest.digest
+        != digest(manifest.model_dump(mode="json", exclude={"digest"}))
+    ):
+        raise ValueError("enrollment content identity mismatch")
+    return manifest
+
+
+def validate_domain_extension(previous, current):
+    """Preserve measurement identity; initialization authority is separately explicit."""
+    old, new = previous.pins, current.pins
+    old_roots = {str(r.project_id): r for r in old.project_roots}
+    new_roots = {str(r.project_id): r for r in new.project_roots}
+    if (
+        old.domain_id != new.domain_id
+        or previous.request.target_id != current.request.target_id
+        or len(old_roots) != len(old.project_roots)
+        or len(new_roots) != len(new.project_roots)
+        or not set(old_roots) <= set(new_roots)
+        or any(new_roots.get(key) != value for key, value in old_roots.items())
+        or {str(p.project_id) for p in current.request.projects} != set(new_roots)
+    ):
+        raise ValueError("domain extension must retain every exact old root")
+    for field in ("collector_ids", "provider_clusters", "cache_roots", "pool_keys"):
+        before, after = getattr(old, field), getattr(new, field)
+        if sorted(map(digest, before)) != sorted(map(digest, after)):
+            raise ValueError("domain extension cannot change collection identities")
+    _validate_initialization_authorization(old, new)
+    before = {str(p.project_id): p for p in previous.request.projects}
+    after = {str(p.project_id): p for p in current.request.projects}
+    for project_id, identity in before.items():
+        # Authorized owner/org transfers remain governed by live operation checks.
+        fields = ("host_id", "provider_id", "project_provider_id")
+        if project_id not in after or any(
+            getattr(identity, key) != getattr(after[project_id], key) for key in fields
+        ):
+            raise ValueError("domain extension changed retained provider placement")
+
+
+def _validate_initialization_authorization(old, new):
+    extension = new.domain_extension
+    authorization = extension.initialization_authorization_digest if extension else None
+    changed = old.initialization_evidence != new.initialization_evidence
+    if authorization is None:
+        if changed:
+            raise ValueError(
+                "root extension cannot change initialization authorization"
+            )
+        if set(old.project_roots) == set(new.project_roots):
+            raise ValueError("root extension must add a new project root")
+        return
+    if (
+        not changed
+        or new.initialization_evidence is None
+        or digest(new.initialization_evidence) != authorization
+    ):
+        raise ValueError("explicit reviewed initialization authorization mismatch")
+
+
+def _extension_predecessor(db, manifest, domain):
+    extension = manifest.pins.domain_extension
+    if extension is None:
+        if domain is not None:
+            raise ValueError(
+                "existing domain advancement requires an explicit domain extension"
+            )
+        return
+    if domain is None or domain.enrollment_id != str(extension.previous_enrollment_id):
+        raise ValueError("domain extension predecessor is no longer current")
+    previous = db.get(NativeEnrollment, domain.enrollment_id)
+    if previous is None or previous.digest != extension.previous_enrollment_digest:
+        raise ValueError("domain extension predecessor digest mismatch")
+    original = validated_enrollment(previous)
+    validate_domain_extension(original, manifest)
+    # Reject before advancing a version that would orphan an oldest operation.
+    list(_enrollment_chain(db, domain, previous.id, maximum=63))
+    stored = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
+    if {r.key for r in stored} != {root_key(r) for r in original.pins.project_roots}:
+        raise ValueError("domain extension does not cover retained domain roots")
+
+
+def _enrollment_chain(db, domain, enrollment_id, *, maximum=64):
+    current = db.get(NativeEnrollment, enrollment_id)
+    seen = set()
+    for _ in range(maximum):
+        if current is None or current.id in seen or current.domain_id != domain.id:
+            raise ValueError("invalid domain extension ancestry")
+        seen.add(current.id)
+        manifest = validated_enrollment(current)
+        yield current, manifest
+        extension = manifest.pins.domain_extension
+        if extension is None:
+            return
+        previous = db.get(NativeEnrollment, str(extension.previous_enrollment_id))
+        if previous is None or previous.digest != extension.previous_enrollment_digest:
+            raise ValueError("domain extension predecessor unavailable")
+        original = validated_enrollment(previous)
+        validate_domain_extension(original, manifest)
+        current = previous
+    raise ValueError("domain extension depth limit exceeded")
+
+
+def retained_enrollment(db, domain, identity):
+    """Resolve only an explicit bounded chain; never equate unrelated enrollments."""
+    for current, manifest in _enrollment_chain(db, domain, domain.enrollment_id):
+        if current.id == identity.get("enrollment_id"):
+            pinned = [r.model_dump(mode="json") for r in manifest.pins.project_roots]
+            if identity.get("root") not in pinned:
+                raise ValueError("original retained root identity changed")
+            return
+    raise ValueError("native enrollment changed without a supported domain extension")
+
+
 def enroll_native_roots(db, manifest, *, expected_target_id):
     """Recheck prepared DB identities under canonical user -> org -> project locks."""
+    # model_copy is not validation. Preserve strict bool/int distinctions while
+    # rechecking the entire trusted document before any enrollment write.
+    manifest = VerifiedEnrollment.model_validate(
+        manifest.model_dump(mode="python", warnings=False)
+    )
     _validate_manifest(db, manifest, expected_target_id)
     previous = (
         db.query(NativeEnrollment).filter_by(digest=manifest.digest).one_or_none()
@@ -280,8 +403,10 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
         db.query(NativeCollectionDomain)
         .filter_by(id=domain_id)
         .with_for_update()
+        .populate_existing()
         .one_or_none()
     )
+    _extension_predecessor(db, manifest, domain)
     _enroll_pool_claims(db, manifest)
     _enroll_roots(db, manifest, enrollment_id)
     db.add(

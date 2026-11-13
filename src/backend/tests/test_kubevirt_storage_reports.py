@@ -16,7 +16,13 @@ from tests.kubevirt_storage_helpers import report_fixture
 
 @pytest.fixture
 def native_case(isolated_quota_database):
+    return make_native_case(isolated_quota_database)
+
+
+def make_native_case(sessions, *, report=None, organization=False):
+    """Create final bootstrap identities before the first trusted enrollment."""
     from app.models.kubevirt_storage import NativeReportingTarget
+    from app.models.managed_group import ManagedGroup
     from app.schemas.kubevirt_storage import ReadResult
     from app.schemas.kubevirt_storage_enrollment import (
         ProviderCluster,
@@ -28,11 +34,20 @@ def native_case(isolated_quota_database):
         verify_native_enrollment,
     )
 
-    sessions = isolated_quota_database
-    report = report_fixture("zero-private-parent.json")
+    report = (
+        report if report is not None else report_fixture("zero-private-parent.json")
+    )
     target_id = str(uuid4())
     with sessions() as db:
-        owner = User(email="native@test.invalid", role="user")
+        org = None
+        if organization:
+            org = ManagedGroup(
+                name="native-org", normalized_name="native-org", is_organization=True
+            )
+            db.add(org)
+            db.flush()
+        org_id = org.id if org else None
+        owner = User(email="native@test.invalid", role="user", organization_id=org_id)
         admin = User(email="native-admin@test.invalid", role="admin")
         provider = Provider(name="native", type="kubevirt")
         db.add_all(
@@ -129,6 +144,7 @@ def native_case(isolated_quota_database):
         admin_id=admin_id,
         pins=pins,
         request=request,
+        org_id=org_id,
     )
 
 
@@ -922,7 +938,10 @@ def test_scope_overflow_does_not_round_or_expose_out_of_range_integer(native_cas
     assert "aggregation_overflow" in result.reason_codes
 
 
-def test_explicit_new_cr_enrollment_retains_old_root_identity(native_case):
+@pytest.mark.parametrize("explicit_extension", [False, True])
+def test_changed_cr_enrollment_requires_supported_extension_and_retains_history(
+    native_case, explicit_extension
+):
     from app.models.kubevirt_storage import NativeEnrollment, NativeProjectRoot
     from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
     from app.services.kubevirt_storage_enrollment import digest, enroll_native_roots
@@ -938,20 +957,58 @@ def test_explicit_new_cr_enrollment_retains_old_root_identity(native_case):
         pins = manifest.pins.model_copy(
             update={"project_roots": [replacement, q.report.project_roots[1]]}
         )
+        if explicit_extension:
+            from app.schemas.kubevirt_storage_enrollment import DomainExtension
+
+            pins = pins.model_copy(
+                update={
+                    "domain_extension": DomainExtension(
+                        version="native-domain-extension-v1",
+                        previous_enrollment_id=q.enrollment_id,
+                        previous_enrollment_digest=q.digest,
+                    )
+                }
+            )
         manifest = manifest.model_copy(update={"pins": pins})
         manifest = manifest.model_copy(
             update={
                 "digest": digest(manifest.model_dump(mode="json", exclude={"digest"}))
             }
         )
-        enroll_native_roots(db, manifest, expected_target_id=q.target_id)
-        db.commit()
-        assert db.query(NativeProjectRoot).count() == 3
+        message = (
+            "retain every exact old root"
+            if explicit_extension
+            else "explicit domain extension"
+        )
+        with pytest.raises(ValueError, match=message):
+            enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+        assert db.query(NativeProjectRoot).count() == 2
         assert {r.payload["project_cr_uid"] for r in db.query(NativeProjectRoot)} == {
             "cr-1",
             "cr-2",
-            "explicitly-verified-new-cr",
         }
+        assert db.query(NativeEnrollment).count() == 1
+
+
+def test_legacy_initial_enrollment_replays_without_invalidating_report(native_case):
+    from app.models.kubevirt_storage import NativeCollectionDomain, NativeEnrollment
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from app.services.kubevirt_storage_enrollment import enroll_native_roots
+
+    q = native_case
+    report_id = ingest(q)
+    with q.sessions() as db:
+        original = db.get(NativeEnrollment, q.enrollment_id)
+        manifest = VerifiedEnrollment.model_validate(original.payload)
+        assert manifest.pins.domain_extension is None
+        assert (
+            enroll_native_roots(db, manifest, expected_target_id=q.target_id)
+            == q.enrollment_id
+        )
+        domain = db.get(NativeCollectionDomain, str(manifest.pins.domain_id))
+        assert domain.enrollment_id == q.enrollment_id
+        assert domain.latest_report_id == report_id
+        assert db.query(NativeEnrollment).count() == 1
 
 
 @pytest.mark.parametrize("source", ["live", "retained", "live-retained", "cache"])

@@ -40,9 +40,10 @@ class NativeStorageMeasurement:
     observed_at: datetime
     pools: tuple[tuple[str, int], ...]
     allocated_bytes: int
+    current_enrollment_id: str | None = None
 
     def evidence(self):
-        return {
+        value = {
             "version": MEASUREMENT_VERSION,
             "metric": METRIC,
             "project_id": self.project_id,
@@ -57,6 +58,9 @@ class NativeStorageMeasurement:
             "pools": [list(pool) for pool in self.pools],
             "allocated_bytes": self.allocated_bytes,
         }
+        if self.current_enrollment_id is not None:
+            value["current_enrollment_id"] = self.current_enrollment_id
+        return value
 
 
 def _measurement_domain(db, project_id, identity):
@@ -76,7 +80,12 @@ def _measurement_domain(db, project_id, identity):
     if domain is None or identity.get("domain_id") != domain.id:
         raise AccountingUnavailable("Native storage collection domain changed")
     if identity.get("enrollment_id") != domain.enrollment_id:
-        raise AccountingUnavailable("Native storage enrollment changed")
+        from app.services.kubevirt_storage_enrollment import retained_enrollment
+
+        try:
+            retained_enrollment(db, domain, identity)
+        except (ValueError, KeyError, TypeError) as error:
+            raise AccountingUnavailable("Native storage enrollment changed") from error
     return root, domain
 
 
@@ -230,6 +239,9 @@ def storage_measurement(db, project, generation_id, identity, now):
             observed,
             pools,
             amount,
+            domain.enrollment_id
+            if domain.enrollment_id != identity.get("enrollment_id")
+            else None,
         )
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         raise AccountingUnavailable("Malformed native storage evidence") from error
