@@ -14,7 +14,7 @@ Name = Annotated[
 
 class HaltTarget(Evidence):
     kind: Literal[
-        "VirtualMachine", "Deployment", "ReplicaSet", "StatefulSet", "Job"
+        "VirtualMachine", "Deployment", "ReplicaSet", "StatefulSet", "Job", "Pod"
     ] = "VirtualMachine"
     name: Name
     uid: Text

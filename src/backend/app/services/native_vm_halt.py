@@ -328,6 +328,10 @@ def _cleanup_patch(vm, namespace):
 def preflight(reader, manifest, target):
     namespace = manifest.root.namespace
     project = _root(reader, manifest.root)
+    if target.kind == "Pod":
+        from app.services.native_pod_halt import preflight_pod
+
+        return preflight_pod(reader, namespace, target, project)
     if target.kind != "VirtualMachine":
         from app.services.native_controller_halt import preflight_controller
 
@@ -361,6 +365,11 @@ def _request(reader, manifest, target, journal, apply):
         target=target.model_dump(),
         mode="apply" if apply else "server_dry_run",
     )
+    if target.kind == "Pod":
+        from app.services.native_pod_halt import request_pod
+
+        return request_pod(reader, manifest, target, patch, apply=apply)
+    patch = cast(list[dict[str, Any]], patch)
     try:
         if target.kind == "VirtualMachine":
             returned = reader.patch_vm(
@@ -452,6 +461,7 @@ def halt_vms(reader, manifest, journal, *, apply=False):
                 "dry_run_accepted",
                 "desired_halt_observed",
                 "desired_stop_observed",
+                "absence_observed",
             }:
                 break
         report["status"] = (
@@ -463,6 +473,7 @@ def halt_vms(reader, manifest, journal, *, apply=False):
                     "dry_run_accepted",
                     "desired_halt_observed",
                     "desired_stop_observed",
+                    "absence_observed",
                 }
                 for r in report["results"]
             )

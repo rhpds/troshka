@@ -1,6 +1,6 @@
-"""Request desired VM/controller stop during maintenance; default server dry-run.
+"""Request VM/controller stop or bare Pod deletion; default server dry-run.
 
-Never proves actual shutdown, fences writers, deletes resources, or releases quota.
+Never proves physical shutdown, fences writers, or releases quota.
 """
 
 import argparse

@@ -1,10 +1,11 @@
-# Native VM and helper controller maintenance requests
+# Native VM, helper controller and bare Pod maintenance requests
 
 Scoped development validation is recorded in the
 [2026-11-12 controller acceptance report](native-controller-stop-acceptance-2026-11-12.md).
 
 This standalone command sends an exact desired-state halt request for explicitly
-selected existing native VMs or supported helper controllers. It defaults to Kubernetes server dry-run. It is not
+selected existing native VMs, supported helper controllers or bare Project-owned
+Pods. It defaults to Kubernetes server dry-run. It is not
 a project stop command, a controller fence, or proof that compute stopped.
 It does not integrate with admission, billing, quota enforcement or reservations.
 
@@ -20,8 +21,9 @@ It does not integrate with admission, billing, quota enforcement or reservations
   TroshkaVMs, PVCs, DataVolumes and cluster-scoped PVs, and PATCH on the selected
   VirtualMachines and selected apps/v1 Deployments, ReplicaSets, StatefulSets or
   batch/v1 Jobs. Controller profiles additionally GET TroshkaNetwork CRs.
-  Dry-run still requires PATCH authorization. No Secret reads,
-  exec, storage-backend writes, delete permissions or credential changes are needed.
+  Bare Pod targets additionally require DELETE on selected Pods (including for
+  dry-run). Dry-run still requires the relevant write authorization. No Secret
+  reads, exec, storage-backend writes or credential changes are needed.
 - Obtain full project/namespace/cluster identity as described in the observation
   guide. For each authorized target obtain exact VM name, UID and resourceVersion:
 
@@ -44,15 +46,15 @@ verified TroshkaVM or project, or by a verified DataVolume owned by that Troshka
 Its nondeleting PV must have the exact PVC claim UID/name/namespace and no owner
 references. No disk, PVC, PV, DataVolume, image, pattern, owner or sharing setting
 is changed by the command. A PV reclaim policy of Delete is not a reason to delete
-its PVC; this command never issues deletion.
+its PVC; this command never deletes persistent assets.
 
 DataVolume templates, ephemeral VM volumes, hotplug requests, unknown/mixed
 ownership, runtime-owned PVCs and unknown launcher storage profiles block the
 whole initial preflight. Matching launcher Pods permit PVCs from the verified VM
 claim set plus emptyDir, Secret, ConfigMap, projected and downwardAPI volumes;
 generic ephemeral PVCs are rejected. Other VM profiles require separate design,
-not relaxed checks. The command never deletes VMIs/Pods, removes finalizers or
-uses force/grace-zero shutdown.
+not relaxed checks. The VM profile never deletes VMIs/Pods. No profile removes
+finalizers or uses force/grace-zero shutdown.
 
 ## Supported helper controllers
 
@@ -77,9 +79,8 @@ parent. These are exact API-version/name/UID/controller-reference chains, never
 label-based selection. Actual generated DHCP Deployment -> TroshkaNetwork ->
 Project and gateway/exec Deployment -> Project profiles are tested from their
 source builders. Guestfish Job -> TroshkaVM -> Project can use retained existing
-VM-owned claims. Rook/Ceph roots, CronJobs, DaemonSets and bare Pods are refused.
-Generated Showroom runs as a bare Pod and remains potentially active; this patch
-does not stop it.
+VM-owned claims. Rook/Ceph roots, CronJobs and DaemonSets are refused. Bare Pods
+use the separate explicit profile below.
 
 The bounded graph includes Deployment-owned ReplicaSets and their owned Pods,
 or directly owned Pods for other supported controllers. Every selected runtime
@@ -99,13 +100,13 @@ the pinned Project; runtime-owned, ownerless, unknown or cyclic ancestry blocks
 the request even when unmounted. Traversal allows at most six links per object,
 caches ancestor GETs, and caps cached nodes at eight times `--max-objects` within
 the command deadline. This conservatively blocks unrelated unsupported storage
-in the same project namespace. No fallback to deletion is implemented.
+in the same project namespace. No controller deletion fallback is implemented.
 
 Scaling and Job suspension can delete runtime Pods through Kubernetes controllers.
 Retention checks address this indirect storage garbage-collection risk; they do
 not prove physical stop or prevent a still-authorized operator/HPA from restoring
 desired state. The independently verified writer maintenance prerequisite remains
-mandatory. The command changes no storage, owner references, images, patterns or
+mandatory. The command changes no persistent storage, owner references, images, patterns or
 sharing settings. Separate reads cannot guarantee preservation against concurrent
 privileged changes or arbitrary external-controller side effects.
 
@@ -115,6 +116,42 @@ behavior may have effects beyond this request. The preservation checks are an
 observed supported profile under verified maintenance, **not** an unconditional
 storage-preservation guarantee under concurrent mutation. Full Task 5b writer
 mediation and Task 6 quiescence remain prerequisites to native quota enablement.
+
+## Supported bare Project-owned Pods
+
+Select an existing bare Pod explicitly with `"kind": "Pod"`, exact name, UID and
+resourceVersion. This includes the single-container and Pod-group builders used
+by Showroom. The only supported owner is the exact pinned TroshkaProject, through
+one controller owner reference with matching API version/name/UID. Controller-owned
+Pods and VM launchers are refused; labels and name prefixes confer no authority.
+
+The command sends one graceful DELETE with `apiVersion: v1`, `kind: DeleteOptions`
+and `preconditions: {uid: <selected UID>, resourceVersion: <selected RV>}`. Grace
+and propagation are omitted, preserving API defaults. There is no force, grace
+zero, orphan override, finalizer removal, controller DELETE or namespace DELETE.
+Server dry-run adds `dryRun=All`; explicit apply uses the same profile checks.
+
+Pod volumes use the controller allowlist above. Each referenced PVC must be
+bound and retained by the Project (optionally through a DataVolume), with exact
+nondeleting PV claim identity and no PV owner references. The complete bounded
+namespace PVC/DataVolume ancestry graph is checked with the selected Pod UID
+unsafe: Pod-owned persistent assets block deletion even if unmounted or reached
+indirectly through a DataVolume. Unknown storage, hostPath and generic ephemeral
+volumes are refused. The command never deletes PVCs, DataVolumes or PVs.
+
+Intentional Pod deletion can lose emptyDir contents, writable container layers
+and other volatile data. Retention checks make no persistent-asset claim for that
+volatile data. Back up anything needed independently before an intentional stop.
+The writer maintenance prerequisite is essential: an active operator may recreate
+the Pod, and separate reads cannot provide an atomic storage ownership fence.
+
+The API must return the exact selected Pod identity or a successful v1 Status
+with exact Pod name/UID/resource kind. Only a fresh exact-name Pod GET returning a
+bounded structured Pod NotFound, between successful root/namespace lifetime
+checks, yields `absence_observed`. A namespace NotFound never qualifies. A
+same-name replacement UID yields `ambiguous`; a still-terminating same-UID Pod or
+unavailable follow-up leaves `delete_request_accepted`. No response or subsequent
+API object absence proves that the process on a node physically stopped.
 
 ## Run
 
@@ -180,10 +217,12 @@ post-operation evidence, including paused VMIs and other live workloads.
 | `halt_request_accepted` | API returned the expected applied resource; follow-up desired-state evidence was unavailable or changed. Processing stops. |
 | `desired_stop_observed` | API accepted the controller apply request and a fresh GET saw the same UID with replicas zero or suspend true. Pods can still run. |
 | `stop_request_accepted` | API returned the expected controller resource; follow-up desired-state evidence was unavailable or changed. Processing stops. |
+| `delete_request_accepted` | API accepted the exact bare Pod deletion; same-UID Pod remains or fresh identity/absence evidence is unavailable. Processing stops. |
+| `absence_observed` | API accepted bare Pod deletion and a fresh GET observed exact-name Pod absence under the same verified root/namespace lifetime. Physical stop is unproven. |
 | `ambiguous` | Request outcome or response cannot be trusted, including conflict, rejection, transport loss or altered response. Processing stops; no automatic retry. |
 | `blocked` summary | Initial or fresh preflight failed. Earlier per-target records, if any, still describe already attempted actions. |
 
-Exit 0 means all selected requests reached their documented dry-run/desired-state
+Exit 0 means all selected requests reached their documented dry-run/desired-state/Pod-absence
 result; it never means shutdown is complete. Exit 2 means blocked/incomplete. Exit
 1 means input, client, journal or other command failure. Argument errors also use
 exit 2 with usage and no report.
@@ -196,7 +235,7 @@ new explicit target selection before any further deliberate operation. A journal
 write failure stops the process; an unrecorded response is not retrospective
 success. A new filename alone does not resolve an old attempt.
 
-GET and PATCH responses are capped at 4 MiB; redirects and HTTP retries are off.
+GET, PATCH and DELETE responses are capped at 4 MiB; redirects and HTTP retries are off.
 All lists use the observer's maximum-object bound and reject continuation. The
 API may omit `kind`/`apiVersion` on typed LIST items. Missing TypeMeta triggers an
 exact endpoint GET requiring the listed UID and resourceVersion and the expected
@@ -211,7 +250,8 @@ explicit, with no compatibility fallback. Fresh evidence may still be non-atomic
 Every summary unconditionally leaves `settlement_verified`,
 `physical_stop_verified`, `capacity_release_allowed` and
 `storage_absence_verified` false. Paused or terminating VMIs remain potentially
-active. Bare installer/Showroom Pods, DaemonSets, unsupported Jobs and other writers
-remain observed. Supported controllers only receive desired-state requests; their
+active. Unselected or unsupported installer/Showroom Pods, DaemonSets, unsupported
+Jobs and other writers remain observed. Selected bare Pods only receive deletion
+requests; observed API absence does not prove physical stop. Supported controllers only receive desired-state requests; their
 runtime absence is unproven. No ledger release, storage absence or complete project
 shutdown can be inferred from this command.

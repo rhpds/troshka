@@ -214,7 +214,7 @@ def test_returned_controller_spec_tampering_is_ambiguous(tmp_path):
 def test_controller_manifest_default_preserves_vm_and_kind_identity():
     data = manifest()
     assert HaltManifest.model_validate(data).targets[0].kind == "VirtualMachine"
-    data["targets"][0]["kind"] = "Pod"
+    data["targets"][0]["kind"] = "DaemonSet"
     with pytest.raises(ValueError):
         HaltManifest.model_validate(data)
 
