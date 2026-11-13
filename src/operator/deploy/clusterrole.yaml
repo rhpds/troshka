@@ -96,6 +96,13 @@ kind: ClusterRole
 metadata:
   name: troshka-operator-namespaced
 rules:
+  # Managed shutdown must prove absence of unsupported producers as well.
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list"]
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects", "troshkanetworks", "troshkavms", "troshkancephs"]
     verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]

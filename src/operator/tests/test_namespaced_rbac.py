@@ -207,6 +207,7 @@ def _create_handler(module, name):
 
 @pytest.mark.parametrize("handler", ["project", "vm"])
 @pytest.mark.parametrize("mode", ["external", "invalid"])
+@pytest.mark.usefixtures("legacy_producer_context")
 def test_create_preflight_failure_prevents_status_and_writes(
     monkeypatch, handler, mode
 ):
@@ -243,6 +244,7 @@ def test_create_preflight_failure_prevents_status_and_writes(
     )
 
 
+@pytest.mark.usefixtures("legacy_producer_context")
 def test_external_vm_success_still_reaches_supplementary_exec_grant(monkeypatch):
     import asyncio
 
@@ -279,6 +281,7 @@ def test_external_vm_success_still_reaches_supplementary_exec_grant(monkeypatch)
 
 
 @pytest.mark.parametrize("mode", ["managed", "external"])
+@pytest.mark.usefixtures("legacy_producer_context")
 def test_project_capture_continues_after_valid_external_or_failed_managed_grants(
     monkeypatch, mode
 ):

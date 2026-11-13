@@ -2,6 +2,8 @@ import asyncio
 import datetime
 import kopf
 import logging
+from helpers.managed_power import checked_await as managed_await
+from helpers.managed_power import producer as managed_producer
 from kubernetes import client
 from helpers.k8s import (
     CRD_GROUP,
@@ -117,6 +119,7 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkanetworks")
+@managed_producer()
 async def network_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"Creating network {name} in {namespace}")
 
@@ -135,13 +138,13 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             raise
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    await _patch_scc_users(
+    await managed_await(_patch_scc_users(
         custom_api,
         sa_ref,
         ("troshka-network-pods", "troshka-gateway"),
         "add",
         namespace,
-    )
+    ))
 
     nad = build_nad(body)
     try:
@@ -176,9 +179,9 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     _cleanup_legacy_pod(api, namespace, dep_name)
 
     dnsmasq_dep = build_dnsmasq_deployment(body)
-    await _create_deployment_with_stale_cleanup(
+    await managed_await(_create_deployment_with_stale_cleanup(
         apps_api, namespace, dep_name, dnsmasq_dep
-    )
+    ))
 
     patch.status["ready"] = True
     patch.status["nadName"] = f"{name}-nad"
@@ -186,12 +189,12 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     patch.status["gatewayPodReady"] = True
     if network_allow_nested_macs(spec):
         try:
-            await asyncio.to_thread(
+            await managed_await(asyncio.to_thread(
                 ensure_nested_mac_port_security,
                 api,
                 nad_name=f"{name}-nad",
                 namespace=namespace,
-            )
+            ))
         except Exception as e:
             logger.warning(
                 "Initial nested-MAC OVN clear failed for %s/%s: %s",
@@ -203,6 +206,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkanetworks", field="spec")
+@managed_producer()
 async def network_update(spec, meta, namespace, name, body, patch, **_):
     """Reconcile dnsmasq config when network spec changes (e.g. DNS records added)."""
     logger.info(f"Updating network {name} in {namespace}")
@@ -270,12 +274,12 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
 
     if network_allow_nested_macs(spec):
         try:
-            await asyncio.to_thread(
+            await managed_await(asyncio.to_thread(
                 ensure_nested_mac_port_security,
                 api,
                 nad_name=nad_name,
                 namespace=namespace,
-            )
+            ))
         except Exception as e:
             logger.warning(
                 "Nested-MAC OVN clear after update failed for %s/%s: %s",

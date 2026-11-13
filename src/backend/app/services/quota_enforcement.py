@@ -574,17 +574,15 @@ def _prepare_stop(db, run, now):
         return False
     current, _unavailable = _evaluate_project(db, project, now, {})
     causes = [row for row in _stops(db, project.id) if _cause_key(row) in current]
-    if not causes:
+    if not causes and not run.details.get("managed_stop_id"):
         run.state = "cancelled"
         return False
     from app.services.quota_storage import nested_runtime_ready
 
     if not nested_runtime_ready(db, project, rows):
-        run.last_error = (
-            "Native managed shutdown and completion observation unavailable"
-        )
-        return False
-    if _complete_noncreation(db, project, rows, now) or _confirm_off(
+        if not _prepare_native(db, project, run, rows):
+            return False
+    elif _complete_noncreation(db, project, rows, now) or _confirm_off(
         db, project, run, rows, now
     ):
         _complete(run, causes, now)
@@ -593,16 +591,40 @@ def _prepare_stop(db, run, now):
         now
     ):
         return False
+    if run.details.get("managed_context"):
+        run.details = {
+            **run.details,
+            "managed_stop_id": run.details.get("managed_stop_id") or str(uuid4()),
+        }
     _fence(rows)
     run.state, run.attempts, run.updated_at = "issued", run.attempts + 1, now
     run.operation_id = f"quota-stop:{uuid4()}"
     run.details = {
+        **run.details,
         "cause_ids": [row.id for row in causes],
         "issued_at": now.isoformat(),
     }
     run.next_attempt_at = now + timedelta(seconds=_backoff(run.attempts))
     for cause in causes:
         cause.state, cause.operation_id = "issued", None
+    return True
+
+
+def _prepare_native(db, project, run, rows):
+    from app.services import native_managed_power as native
+
+    try:
+        context = native.retained_context(db, project, rows)
+    except (accounting.AccountingUnavailable, ValueError, KeyError, TypeError):
+        run.last_error = (
+            "Native managed shutdown and completion observation unavailable"
+        )
+        return False
+    previous = run.details.get("managed_context")
+    if previous is not None and previous != context:
+        run.last_error = "Native managed allocation changed during shutdown"
+        return False
+    run.details = {**run.details, "managed_context": context}
     return True
 
 
@@ -678,8 +700,12 @@ def _reconcile_locked(db, action_id, now):
         return
     dispatch = _prepare_stop(db, run, now)
     project_id, token = run.project_id, run.operation_id
+    native_work = _native_work(db, run) if dispatch else None
     db.commit()
     if not dispatch:
+        return
+    if native_work:
+        _reconcile_native(db, action_id, token, native_work)
         return
     error = None
     try:
@@ -706,6 +732,92 @@ def _reconcile_locked(db, action_id, now):
         run.state = "failed" if error else "issued"
         run.details = {**run.details, "stop_finished_at": _now().isoformat()}
     db.commit()
+
+
+def _native_work(db, run):
+    context = run.details.get("managed_context")
+    if context is None:
+        return None
+    from app.models.provider import Provider
+
+    provider = db.get(Provider, context["provider_id"])
+    # Keep only this detached, already loaded credential record across I/O.
+    db.expunge(provider)
+    return provider, context, run.details["managed_stop_id"]
+
+
+def _reconcile_native(db, action_id, token, work):
+    from app.services import native_managed_power as native
+
+    provider, context, request_id = work
+    proof, error, event = None, None, None
+    try:
+        proof = native.execute(provider, context, request_id)
+    except Exception:
+        # Transport exceptions may contain tokens or API response bodies.
+        error = "Managed shutdown incomplete or unavailable; awaiting fresh observation"
+    run = db.query(QuotaAction).filter_by(id=action_id).populate_existing().one()
+    rows = _lock_action_project(db, run.project_id)
+    project = db.get(Project, run.project_id)
+    if run.operation_id == token:
+        run.state, run.last_error = ("failed" if error else "issued"), error
+        if proof and _native_proof_matches(db, project, run, rows, proof):
+            from app.services.deploy_service import (
+                _mark_project_stopped,
+                _stopped_project_message,
+            )
+            from app.services.metering_service import confirm_managed_compute_off
+
+            observed_at = datetime.fromisoformat(proof["observed_at"])
+            _mark_project_stopped(project)
+            confirm_managed_compute_off(db, project, observed_at)
+            _fence(rows)
+            for row in rows:
+                admission.confirm(
+                    db,
+                    row.operation_id,
+                    _off_vector(db, row),
+                    "managed-off:" + request_id,
+                    observed_at,
+                )
+            causes = [
+                c
+                for c in _stops(db, run.project_id)
+                if c.id in run.details["cause_ids"]
+            ]
+            _complete(run, causes, _now())
+            run.details = {**run.details, "managed_off_proof": proof}
+            event = _stopped_project_message(project)
+    project_id = run.project_id
+    db.commit()
+    if event:
+        _publish_native_stop(project_id, event)
+
+
+def _publish_native_stop(project_id, event):
+    from app.services.ws_pubsub import notify_project
+
+    try:
+        notify_project(project_id, event)
+    except Exception:
+        logger.warning("Managed stop state notification unavailable for %s", project_id)
+
+
+def _native_proof_matches(db, project, run, rows, proof):
+    from app.services import native_managed_power as native
+
+    context = native.retained_context(db, project, rows)
+    observed = datetime.fromisoformat(proof["observed_at"])
+    started = datetime.fromisoformat(proof["started_at"])
+    age = (accounting.utc(_now()) - accounting.utc(observed)).total_seconds()
+    return (
+        context == run.details["managed_context"]
+        and proof["request_id"] == run.details["managed_stop_id"]
+        and proof["generation"] == context["generation"]
+        and 0 <= age <= 60
+        and _after_dispatch(run, started)
+        and all(_finished(row, started) for row in rows)
+    )
 
 
 def _deliver_warnings(db):
@@ -836,12 +948,13 @@ def fence_action(db, action_id, now):
         db.commit()
         return False
     current, _unavailable = _evaluate_project(db, project, now, {})
-    if current:
+    active_native_stop = bool(run.details.get("managed_stop_id") and run.attempts)
+    if current or active_native_stop:
         _fence(rows)
     else:
         run.state = "cancelled"
     db.commit()
-    return bool(current)
+    return bool(current) or active_native_stop
 
 
 def _schedule_action(db, identity, now):

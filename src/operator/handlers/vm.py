@@ -5,6 +5,8 @@ import time
 from typing import cast
 
 import kopf
+from helpers.managed_power import checked_await as managed_await
+from helpers.managed_power import producer as managed_producer
 from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
@@ -1132,6 +1134,7 @@ async def vm_resume(meta, status, patch, **_):
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
+@managed_producer()
 async def vm_create(meta, namespace, name, body, patch, **_):
     from helpers.namespaced_rbac import (
         ensure_managed_base_namespace_grants,
@@ -1155,7 +1158,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
     s3_config = _get_s3_config_from_project(namespace)
     central_s3_config = _get_central_s3_config_from_project(namespace)
 
-    disk_pvcs = await _provision_disk_pvcs(
+    disk_pvcs = await managed_await(_provision_disk_pvcs(
         spec,
         name,
         namespace,
@@ -1165,9 +1168,9 @@ async def vm_create(meta, namespace, name, body, patch, **_):
         s3_config,
         central_s3_config,
         patch,
-    )
+    ))
 
-    cdrom_pvc = await _provision_cdrom(
+    cdrom_pvc = await managed_await(_provision_cdrom(
         spec,
         name,
         namespace,
@@ -1176,7 +1179,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
         custom_api,
         s3_config,
         central_s3_config,
-    )
+    ))
     if cdrom_pvc:
         disk_pvcs["cdrom"] = cdrom_pvc
 
@@ -1194,7 +1197,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
             if e.status != 409:
                 raise
 
-    await _run_guestfish_job(spec, name, namespace, body, disk_pvcs)
+    await managed_await(_run_guestfish_job(spec, name, namespace, body, disk_pvcs))
 
     _backfill_vm_nic_network_refs(body, custom_api, namespace, name)
     _raise_on_missing_network_refs(spec, patch)
@@ -1219,7 +1222,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
 
     kv_vm_name = kv_vm["metadata"]["name"]
     existing_kv_name = body.get("status", {}).get("kubevirtVmName", "")
-    await _create_or_adopt_kubevirt_vm(
+    await managed_await(_create_or_adopt_kubevirt_vm(
         custom_api,
         namespace,
         kv_vm,
@@ -1227,7 +1230,7 @@ async def vm_create(meta, namespace, name, body, patch, **_):
         existing_kv_name,
         patch=patch,
         proactive_warnings=proactive_warnings,
-    )
+    ))
 
     # Read back the KubeVirt VM's UID as the domain UUID (same pattern as
     # troshkad reading domain_uuid from virsh define)
@@ -1584,6 +1587,7 @@ async def _reconcile_disks(
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkavms")
+@managed_producer()
 async def vm_update(
     spec, old, new, diff, status, meta, namespace, name, body, patch, **_
 ):
@@ -1604,9 +1608,9 @@ async def vm_update(
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
-    await _stop_kubevirt_vm(custom_api, namespace, kv_name)
+    await managed_await(_stop_kubevirt_vm(custom_api, namespace, kv_name))
 
-    disk_pvcs = await _reconcile_disks(
+    disk_pvcs = await managed_await(_reconcile_disks(
         old_spec,
         new_spec,
         name,
@@ -1615,9 +1619,9 @@ async def vm_update(
         core_api,
         custom_api,
         patch,
-    )
+    ))
 
-    await _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_name)
+    await managed_await(_delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_name))
 
     nad_refs = _resolve_nad_refs(custom_api, namespace)
     cloudinit_secret_name = _upsert_cloudinit_secret(body, namespace, core_api)

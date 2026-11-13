@@ -53,6 +53,10 @@ def configure(settings: kopf.OperatorSettings, **_):
             group=CRD_GROUP, version=CRD_VERSION, plural="troshkaprojects"
         )
         for proj in dict(projects).get("items", []):  # type: ignore[call-overload]
+            from helpers.managed_power import ANNOTATION
+
+            if ANNOTATION in proj.get("metadata", {}).get("annotations", {}):
+                continue
             status = proj.get("status", {})
             ns = proj.get("metadata", {}).get("namespace", "")
             cr_name = proj.get("metadata", {}).get("name", "")

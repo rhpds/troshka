@@ -1039,6 +1039,32 @@ def reconcile_all_projects(db: Session) -> None:
             logger.exception("Metering reconcile failed for %s", project.id[:8])
 
 
+def confirm_managed_compute_off(
+    db: Session, project: Project, observed_at: datetime
+) -> None:
+    """Close compute after independent managed proof; caller commits atomically.
+
+    Do not rebuild VM-cache snapshots here. Native container/helper proof covers
+    the complete project, and retained storage/other meters keep their old rates.
+    """
+    from app.services.quota_accounting import accrue, utc
+
+    project = _lock_reconciliation(db, project, True)
+    for row in _open_rows(db, project.id):
+        if row.kind in {"vcpu", "ram"}:
+            if any(
+                utc(value) > utc(observed_at)
+                for value in (row.started_at, row.quota_accrued_through)
+                if value
+            ):
+                raise AccountingUnavailable(
+                    "Metering advanced beyond managed observation; refresh proof"
+                )
+            _close_interval(row, observed_at)
+    db.flush()
+    accrue(db, project.id, observed_at)
+
+
 def touch_metering(db: Session, project: Project) -> None:
     if not metering_enabled() or not project.host_id:
         return

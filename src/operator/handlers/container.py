@@ -1,4 +1,5 @@
 import logging
+from helpers.managed_power import assert_running
 
 # Preserve existing handler imports for callers while rendering stays pure.
 from helpers.containers import (  # noqa: F401
@@ -23,10 +24,12 @@ logger = logging.getLogger(__name__)
 def create_container_pods(
     namespace, containers, nad_refs, owner_reference, disk_pvcs=None
 ):
+    assert_running(namespace, owner_reference.get("uid"))
     core_api = client.CoreV1Api()
     disk_pvcs = disk_pvcs or {}
 
     for ctr in containers:
+        assert_running(namespace, owner_reference.get("uid"))
         is_pod = ctr.get("isPod", False)
 
         if is_pod:

@@ -2507,8 +2507,9 @@ class TestCreatePodGroup:
 
 
 class TestCreateContainerPods:
+    @patch("handlers.container.assert_running")
     @patch("handlers.container.client")
-    def test_dispatches_single_and_pod(self, mock_client):
+    def test_dispatches_single_and_pod(self, mock_client, mock_assert_running):
         from handlers.container import create_container_pods
 
         mock_core = MagicMock()
@@ -2537,6 +2538,7 @@ class TestCreateContainerPods:
         create_container_pods("ns1", containers, {}, {})
 
         assert mock_core.create_namespaced_pod.call_count == 2
+        assert mock_assert_running.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -10852,7 +10854,9 @@ class TestProjectUpdateHandler:
         for call_args in reversed(decorator_mock.call_args_list):
             fn = call_args[0][0]
             if asyncio.iscoroutinefunction(fn) and fn.__name__ == "project_update":
-                return fn
+                # These tests exercise capture parsing after the shared producer
+                # boundary. test_managed_power covers that boundary separately.
+                return fn.__wrapped__
         raise RuntimeError("Could not find project_update in kopf mock call args")
 
     @patch("handlers.project._handle_capture")

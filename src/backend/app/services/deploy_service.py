@@ -13505,9 +13505,8 @@ def _apply_off_action_kubevirt(s, host, project_id, vms, off_action):
     return succeeded
 
 
-def _finalize_project_stopped(s, project, project_id):
-    """Set project to stopped and notify — shared by the stop and hibernate
-    off_actions (hibernate reaches the same end state for Start-button UX)."""
+def _mark_project_stopped(project):
+    """Shared stopped-state transition; caller owns evidence and transaction."""
     # BMC, networks, and EIPs stay intact on stop — only torn down on delete
     project.state = "stopped"
     project.deploy_error = None
@@ -13517,25 +13516,30 @@ def _finalize_project_stopped(s, project, project_id):
     project.auto_stop_expires_at = None
     project.auto_stop_warned = False
 
+
+def _finalize_project_stopped(s, project, project_id):
+    """Set project to stopped and notify — shared by stop and hibernate."""
+    _mark_project_stopped(project)
     s.commit()
     from app.services.metering_service import touch_metering
 
     touch_metering(s, project)
-    notify_project(
-        project_id,
-        {
-            "type": "project-state",
-            "state": "stopped",
-            "deploy_error": None,
-            "auto_stopped": project.auto_stopped,
-            "auto_stop_expires_at": None,
-            "lifetime_expires_at": (
-                project.lifetime_expires_at.isoformat()
-                if project.lifetime_expires_at
-                else None
-            ),
-        },
-    )
+    notify_project(project_id, _stopped_project_message(project))
+
+
+def _stopped_project_message(project):
+    return {
+        "type": "project-state",
+        "state": "stopped",
+        "deploy_error": None,
+        "auto_stopped": project.auto_stopped,
+        "auto_stop_expires_at": None,
+        "lifetime_expires_at": (
+            project.lifetime_expires_at.isoformat()
+            if project.lifetime_expires_at
+            else None
+        ),
+    }
 
 
 def _finalize_project_paused(s, project, project_id, vms):

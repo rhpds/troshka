@@ -117,6 +117,13 @@ kind: ClusterRole
 metadata:
   name: troshka-provider-namespaced
 rules:
+  # Independent managed-off proof includes controller recreation inventory.
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list"]
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachines"]
     verbs: ["create", "delete", "get", "list", "patch"]

@@ -15,6 +15,8 @@ from helpers.k8s import (
     ensure_kubemacpool_opt_out,
     vm_disk_pvc_name,
 )
+from helpers.managed_power import checked_await as managed_await
+from helpers.managed_power import producer as managed_producer
 from helpers.topology import (
     build_vm_cr as _build_vm_cr,
     extract_networks,
@@ -2586,6 +2588,7 @@ def _create_vm_crs(
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkaprojects")
+@managed_producer(project=True)
 async def project_create(spec, meta, namespace, name, body, patch, **_):
     from helpers.namespaced_rbac import (
         ensure_managed_base_namespace_grants,
@@ -2605,7 +2608,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "disks": spec.get("captureDisks", []),
             "cephDevices": spec.get("cephDevices", []),
         }
-        await _handle_capture(capture_config, namespace, name, patch)
+        await managed_await(_handle_capture(capture_config, namespace, name, patch))
         return
 
     if action not in ("deploy",):
@@ -2641,13 +2644,13 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     _create_network_crs(
         custom_api, networks, static_leases, namespace, name, body, patch
     )
-    await _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
+    await managed_await(_create_ceph_cr(custom_api, topology, namespace, name, body, patch))
 
     apps_api = client.AppsV1Api()
-    await _setup_gateway(core_api, apps_api, networks, namespace, name, body)
-    await _setup_exec_pod(
+    await managed_await(_setup_gateway(core_api, apps_api, networks, namespace, name, body))
+    await managed_await(_setup_exec_pod(
         core_api, apps_api, spec, meta, networks, namespace, name, body
-    )
+    ))
 
     vms = extract_vms(topology)
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
@@ -3477,6 +3480,7 @@ def _handle_deploying_phase(
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
+@managed_producer(project=True, reconcile=True)
 async def project_status_check(spec, status, namespace, name, body, patch, **_):
     phase = status.get("phase", "")
     if phase not in ("Deploying", "Running"):
@@ -3507,7 +3511,11 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     )
     vm_items = vms.get("items", [])
     if not vm_items:
-        if phase == "Deploying":
+        if extract_containers(spec.get("topology", {})):
+            _ensure_project_containers(spec, status, namespace, name, body, patch)
+            if status.get("containersStarted") or patch.status.get("containersStarted"):
+                patch.status["phase"] = "Running"
+        elif phase == "Deploying":
             _check_deploy_failure(status, namespace, patch, custom_api)
         return
 
@@ -4024,6 +4032,7 @@ async def project_delete(namespace, name, **_):
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkaprojects")
+@managed_producer(project=True, reconcile=True)
 async def project_update(status, meta, namespace, name, patch, **_):
     annotations = meta.get("annotations", {}) or {}
 
@@ -4057,3 +4066,9 @@ async def project_update(status, meta, namespace, name, patch, **_):
         return
 
     await _handle_capture(capture_config, namespace, name, patch)
+
+
+@kopf.on.resume(CRD_GROUP, CRD_VERSION, "troshkaprojects")
+@managed_producer(project=True, reconcile=True)
+async def project_managed_power_resume(body, namespace, **_):
+    """Recover durable stop intent before any timer or child producer runs."""

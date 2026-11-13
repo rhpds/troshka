@@ -1185,6 +1185,7 @@ class TestStorageQuantityGi:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("legacy_producer_context")
 class TestVmUpdate:
     @staticmethod
     def _get_vm_update_fn():
@@ -1278,6 +1279,7 @@ class TestVmUpdate:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("legacy_producer_context")
 class TestVmObservedGeneration:
     @staticmethod
     def _get_handler(name):

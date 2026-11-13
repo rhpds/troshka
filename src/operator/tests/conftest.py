@@ -12,6 +12,20 @@ import pytest
 sys.modules["kopf"] = MagicMock()
 
 
+@pytest.fixture
+def legacy_producer_context(monkeypatch):
+    """Legacy inner-handler tests receive an explicit nonquota producer root.
+
+    Real UID lookup, serialization and stopped-intent behavior are covered by
+    test_managed_power. Keep ambient credential/API denial active in these tests.
+    """
+    from helpers import managed_power
+
+    root = {"kind": "TroshkaProject", "metadata": {"name": "legacy", "uid": "legacy-uid"}}
+    monkeypatch.setattr(managed_power, "PowerClient", lambda: object())
+    monkeypatch.setattr(managed_power, "root_for", lambda *args: root)
+
+
 @pytest.fixture(autouse=True)
 def _deny_real_kubernetes_access(monkeypatch):
     """Unit tests never load ambient credentials or invoke real cluster APIs.
