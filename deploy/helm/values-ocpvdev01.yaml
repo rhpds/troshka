@@ -1,0 +1,39 @@
+# Isolated development app; application source: 500edb408d7ded5616867d0d4887947106d0a09d.
+# Supply auth.initialAdmin explicitly on first installation; never put secrets here.
+namespace:
+  create: false
+  name: troshka-dev
+backend:
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-backend
+    tag: v2026.11.13-170117-dev
+frontend:
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-frontend
+    tag: v2026.11.13-170117-dev
+route:
+  host: troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com
+auth:
+  oauthEnabled: true
+  oauthImage: image-registry.openshift-image-registry.svc:5000/troshka-dev/oauth-proxy:v2026.11.13-170117-dev
+postgres:
+  deploy: true
+  image: image-registry.openshift-image-registry.svc:5000/troshka-dev/postgres:v2026.11.13-170117-dev
+  storageSize: 10Gi
+redis:
+  deploy: true
+  image: image-registry.openshift-image-registry.svc:5000/troshka-dev/redis:v2026.11.13-170117-dev
+s4:
+  deploy: true
+  image: image-registry.openshift-image-registry.svc:5000/troshka-dev/s4:v2026.11.13-170117-dev-compatible
+  storageSize: 50Gi
+worker:
+  replicas: 2
+tunnel:
+  replicas: 1
+  hpa:
+    enabled: false
+affinity:
+  avoidNodes: []
+appUpdate:
+  mode: disabled

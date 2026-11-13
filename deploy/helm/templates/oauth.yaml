@@ -76,7 +76,7 @@ spec:
       serviceAccountName: troshka-oauth
       containers:
         - name: oauth-proxy
-          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:latest
+          image: {{ .Values.auth.oauthImage | default "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:latest" | quote }}
           ports:
             - containerPort: 8443
               name: proxy
