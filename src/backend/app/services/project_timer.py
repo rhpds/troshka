@@ -12,6 +12,29 @@ _TRANSITIONAL_STATES = frozenset(
 )
 
 
+def _timer_quota_preflight(s, project, action):
+    """A known unsupported native action must not starve unrelated timers."""
+    from fastapi import HTTPException
+
+    from app.services.quota_cleanup import guard_supported_cleanup
+    from app.services.quota_enforcement import request_native_stop
+
+    try:
+        if action == "stop":
+            request_native_stop(s, project, project.off_action or "stop")
+        else:
+            guard_supported_cleanup(s, project)
+    except HTTPException as error:
+        if error.status_code != 409:
+            raise
+        s.rollback()
+        logger.warning(
+            "Auto-%s unavailable for project %s; assets retained", action, project.id
+        )
+        return False
+    return True
+
+
 def _process_expired_timers(s, now, result, _dry_run):
     """Handle expired auto-stop and auto-delete timers."""
     from app.models.project import Project
@@ -30,6 +53,8 @@ def _process_expired_timers(s, now, result, _dry_run):
         if _dry_run:
             continue
         logger.info("Auto-stop fired for project %s (%s)", p.name, p.id[:8])
+        if not _timer_quota_preflight(s, p, "stop"):
+            continue
         p.state = "stopping"
         p.auto_stopped = True
         p.auto_stop_started_at = None
@@ -53,6 +78,8 @@ def _process_expired_timers(s, now, result, _dry_run):
             continue
         result["auto_delete"].append(p.id)
         if _dry_run:
+            continue
+        if not _timer_quota_preflight(s, p, "delete"):
             continue
         logger.info("Auto-delete fired for project %s (%s)", p.name, p.id[:8])
         _notify(p.id, {"type": "timer_fired", "timer": "auto_delete"})
@@ -159,6 +186,20 @@ def _mark_project_error(s, project, job_info, clear_job_ref, result) -> None:
 def _recover_one_stuck_project(
     s, project, result, dry_run, *, get_job_info, get_progress, clear_job_ref
 ) -> None:
+    from app.models.quota import QuotaAction
+
+    if project.state == "stopping":
+        run = (
+            s.query(QuotaAction)
+            .filter_by(project_id=project.id, kind="stop_run")
+            .first()
+        )
+        if (
+            run
+            and run.state in {"pending", "issued", "failed"}
+            and run.details.get("managed_context")
+        ):
+            return  # Durable managed observation/retry is the active job.
     job_info = get_job_info(project.id)
     status = (job_info or {}).get("status") or ""
     if status in ("queued", "started"):
@@ -262,6 +303,10 @@ def _spawn_stop(project_id):
 
 def _delete_project(s, project):
     import copy
+
+    from app.services.quota_cleanup import guard_supported_cleanup
+
+    guard_supported_cleanup(s, project)
 
     from app.services.deploy_service import (
         destroy_project_sync,

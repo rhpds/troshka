@@ -34,6 +34,36 @@ native_case = native_case_fixture
 native_ledger = native_ledger_fixture
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("condition", ["ready", "stale", "partial"])
+def test_usage_matches_active_fresh_baseline(
+    resume_case, monkeypatch, enabled, condition
+):
+    from app.models.quota import QuotaReadiness
+    from app.models.user import User
+    from app.services import quota_usage
+
+    q = resume_case
+    monkeypatch.setattr(accounting, "quotas_enabled", lambda: enabled)
+    if condition == "stale":
+        FixedDatetime.current += timedelta(hours=2)
+    with q.sessions() as db:
+        if condition == "partial":
+            marker = db.get(QuotaReadiness, "baseline")
+            marker.details = {**marker.details, "capacity_ready": False}
+            db.commit()
+        ready = capacity.check_ready(db)["ready"]
+        assert ready == (condition == "ready")
+        actor = db.get(User, q.owner_id)
+        body = quota_usage.read_usage(
+            db, actor, "project", q.project_ids[0], FixedDatetime.current
+        )
+        assert body.baseline_ready == ready
+        assert body.enforcement_status == (
+            "disabled" if not enabled else "active" if ready else "baseline_unready"
+        )
+
+
 @pytest.fixture(params=["sqlite", "postgres"])
 def isolated_quota_database(request, tmp_path, monkeypatch):
     from sqlalchemy import create_engine, event, text
@@ -197,8 +227,9 @@ def builder_inventory(project, identity, generation, support, binding):
 
 
 @pytest.fixture
-def resume_case(native_ledger, isolated_quota_database, monkeypatch):
+def resume_case(native_ledger, isolated_quota_database, monkeypatch, request):
     q = native_ledger
+    q.vm_only = getattr(request, "param", None) == "vm-only"
     FixedDatetime.current = NOW
     support = support_module()
     monkeypatch.setattr(accounting, "spend", REAL_SPEND)
@@ -251,6 +282,15 @@ def resume_case(native_ledger, isolated_quota_database, monkeypatch):
                 ],
                 "edges": [],
             }
+            if q.vm_only:
+                project.topology = {
+                    **project.topology,
+                    "nodes": [
+                        n
+                        for n in project.topology["nodes"]
+                        if n["type"] != "containerNode"
+                    ],
+                }
         db.commit()
         fresh(db, NOW)
     ingest(q)
@@ -304,8 +344,20 @@ def resume_case(native_ledger, isolated_quota_database, monkeypatch):
 
             raise AssertionError(json.dumps(report, indent=2, default=str))
         db.commit()
+
+    class LifecycleAPI(support.FakeAPI):
+        def request(self, method, kind, namespace, name, body):
+            value = super().request(method, kind, namespace, name, body)
+            if method == "POST" and kind == "Pod":
+                # Kubernetes creates a new UID on every recreation. The shared
+                # one-cycle fixture deliberately uses a fixed restored UID.
+                key = kind, value["metadata"]["name"]
+                value["metadata"]["uid"] = str(uuid4())
+                self.values[key] = deepcopy(value)
+            return value
+
     for project_id, supplied in inventories.items():
-        apis[project_id] = support.FakeAPI(
+        apis[project_id] = LifecycleAPI(
             [v for values in supplied.values() for v in values]
         )
 
@@ -333,8 +385,8 @@ def start_worker(q, expected_state="starting"):
         operation_id = operations.prepare(db, project, "start")
         row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
         assert row.requested == {
-            "cpu": 3,
-            "ram_bytes": 1280 * 2**20,
+            "cpu": 2 if q.vm_only else 3,
+            "ram_bytes": (1024 if q.vm_only else 1280) * 2**20,
             "storage_bytes": 0,
             "projects": 0,
         }
@@ -369,7 +421,7 @@ def settle_running(q, project_id):
     root = api.rows("TroshkaProject", None)[0]
     power.reconcile_stop(api, root)
     state = api.get("TroshkaProject", None, "project")["status"]["managedPower"]
-    assert state["state"] == "restoring", state
+    assert state["state"] == "restoring", state.get("reason", state)
     ready = {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}
     for value in list(api.values.values()):
         if value["kind"] == "Pod":
@@ -648,7 +700,12 @@ def test_missing_future_compute_rate_denies_start_without_repricing(
         ] == before
 
 
-def test_next_overage_stop_retains_storage_and_original_power(resume_case, monkeypatch):
+@pytest.mark.parametrize("trigger", ["overage", "api", "force", "timer"])
+@pytest.mark.parametrize("failed_observation", [False, True])
+@pytest.mark.parametrize("resume_case", ["mixed", "vm-only"], indirect=True)
+def test_next_overage_stop_retains_storage_and_original_power(
+    resume_case, monkeypatch, trigger, failed_observation
+):
     from app.models.quota import QuotaAction
     from app.services import quota_enforcement as enforcement
 
@@ -683,17 +740,77 @@ def test_next_overage_stop_retains_storage_and_original_power(resume_case, monke
 
     monkeypatch.setattr(native, "execute", execute)
     monkeypatch.setattr(enforcement, "_now", lambda: FixedDatetime.current)
+    if failed_observation:
+
+        def unavailable(*args):
+            raise accounting.AccountingUnavailable("synthetic observation failure")
+
+        monkeypatch.setattr(native, "execute", unavailable)
     with q.sessions() as db:
         project = db.get(Project, q.project_ids[0])
-        project.budget_usd = 0
-        db.commit()
-        enforcement.evaluate(db, FixedDatetime.current)
-        db.commit()
+        if trigger == "overage":
+            project.budget_usd = 0
+            db.commit()
+            enforcement.evaluate(db, FixedDatetime.current)
+            db.commit()
+        else:
+            from app.api import projects
+            from app.models.user import User
+            from app.services import project_timer
+
+            queued = []
+            monkeypatch.setattr(
+                "app.core.redis.enqueue_job",
+                lambda fn, *args, **kwargs: queued.append((fn, args)),
+            )
+            if trigger == "timer":
+                project.auto_stop_expires_at = FixedDatetime.current - timedelta(
+                    seconds=1
+                )
+                db.commit()
+                project_timer._process_expired_timers(
+                    db,
+                    FixedDatetime.current,
+                    {"auto_stop": [], "auto_delete": []},
+                    False,
+                )
+            else:
+                route = (
+                    projects.force_stop_project
+                    if trigger == "force"
+                    else projects.stop_project
+                )
+                route(project.id, db.get(User, q.owner_id), db)
+            for fn, args in queued:
+                fn(*args)
+            db.expire_all()
         action = (
             db.query(QuotaAction)
             .filter_by(project_id=project.id, kind="stop_run")
             .one()
         )
+        if failed_observation and trigger != "overage":
+            db.refresh(project)
+            assert project.state == "stopping"
+            project_timer._recover_one_stuck_project(
+                db,
+                project,
+                {},
+                False,
+                get_job_info=lambda *args: None,
+                get_progress=lambda *args: None,
+                clear_job_ref=lambda *args: None,
+            )
+            assert project.state == "stopping"
+            db.refresh(action)
+            assert action.state == "failed" and action.last_error
+            rows = operations.current_generation(operations._rows(db, project.id))
+            assert sum(r.observed["cpu"] for r in rows) == (2 if q.vm_only else 3)
+            assert sum(r.observed["storage_bytes"] for r in rows) == 30
+            assert enforcement.fence_action(db, action.id, FixedDatetime.current)
+            action.next_attempt_at = None
+            db.commit()
+        monkeypatch.setattr(native, "execute", execute)
         enforcement.reconcile_action(db, action.id, FixedDatetime.current)
         db.refresh(action)
         assert action.state == "completed", action.last_error
@@ -707,6 +824,53 @@ def test_next_overage_stop_retains_storage_and_original_power(resume_case, monke
     snapshot = api.get("TroshkaProject", None, "project")["status"]["managedPower"]
     halted = next(t for t in snapshot["targets"] if "halted" in t["name"])
     assert halted["desired"] == {"runStrategy": "Halted"}
+    if trigger != "overage":
+        FixedDatetime.current += timedelta(seconds=1)
+        operations.reconcile(q.project_ids[0])
+        restart_id = start_worker(q)
+        assert restart_id != operation_id
+        FixedDatetime.current += timedelta(seconds=1)
+        settle_running(q, q.project_ids[0])
+        operations.reconcile(q.project_ids[0])
+        with q.sessions() as db:
+            assert db.get(Project, q.project_ids[0]).state == "active"
+
+
+def test_concurrent_user_native_stops_share_one_durable_episode(
+    resume_case, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.services import quota_enforcement as enforcement
+
+    q = resume_case
+    with q.sessions() as db:
+        if db.get_bind().dialect.name != "postgresql":
+            pytest.skip("PostgreSQL operation/identity locking contract")
+    start_worker(q)
+    FixedDatetime.current += timedelta(seconds=1)
+    settle_running(q, q.project_ids[0])
+    operations.reconcile(q.project_ids[0])
+    monkeypatch.setattr(enforcement, "_now", lambda: FixedDatetime.current)
+    barrier = Barrier(2)
+
+    def request_stop():
+        with q.sessions() as db:
+            project = db.get(Project, q.project_ids[0])
+            barrier.wait(timeout=10)
+            action_id = enforcement.request_native_stop(db, project)
+            db.commit()
+            return action_id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(request_stop) for _ in range(2)]
+        assert len({f.result(timeout=15) for f in futures}) == 1
+    with q.sessions() as db:
+        rows = operations.current_generation(operations._rows(db, q.project_ids[0]))
+        assert all(r.dispatch_metadata.get("cancelled") for r in rows)
+        assert sum(r.observed["cpu"] for r in rows) == 3
+        assert sum(r.observed["storage_bytes"] for r in rows) == 30
 
 
 def test_pending_resume_has_dedicated_stop_context_and_preserves_original_targets(

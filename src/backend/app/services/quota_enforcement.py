@@ -339,6 +339,42 @@ def _ensure_run(db, project, cause_ids, now):
         run.details = {}
 
 
+def request_native_stop(db, project, off_action="stop"):
+    """Persist an ordinary native stop using the existing retry/proof contract.
+
+    Caller commits before dispatch. The explicit request survives policy
+    corrections and process loss, just like an already issued overage stop.
+    """
+    if (
+        not accounting.quotas_enabled()
+        or operations.select_adapter(db, project) != "kubevirt"
+    ):
+        return None
+    if off_action != "stop":
+        operations.deny_unsupported("Native pause/hibernate (use project Stop)")
+    from app.services import native_managed_power as native
+
+    try:
+        rows = _lock_action_project(db, project.id)
+        context = native.stop_context(db, project, rows)
+    except accounting.AccountingUnavailable as error:
+        raise operations._http_denial(error) from error
+    run = _action(
+        db, "project", project.id, 0, "current", "stop_run", 100, _now(), project.id
+    )
+    if run.state in {"completed", "cancelled"} and _has_compute(db, project.id):
+        run.details = {}
+    if run.state in {"completed", "cancelled"}:
+        # A repeated stop of already off compute reobserves the same episode.
+        run.state, run.next_attempt_at = "pending", None
+    previous = run.details.get("managed_context")
+    if previous is not None and previous != context:
+        operations.unavailable("Native managed stop allocation changed")
+    run.details = {**run.details, "explicit_stop": True, "managed_context": context}
+    _fence(rows)
+    return run.id
+
+
 def _has_compute(db, project_id):
     return any(
         (
@@ -574,7 +610,11 @@ def _prepare_stop(db, run, now):
         return False
     current, _unavailable = _evaluate_project(db, project, now, {})
     causes = [row for row in _stops(db, project.id) if _cause_key(row) in current]
-    if not causes and not run.details.get("managed_stop_id"):
+    if (
+        not causes
+        and not run.details.get("managed_stop_id")
+        and not run.details.get("explicit_stop")
+    ):
         run.state = "cancelled"
         return False
     from app.services.quota_storage import nested_runtime_ready
@@ -963,7 +1003,10 @@ def fence_action(db, action_id, now):
         db.commit()
         return False
     current, _unavailable = _evaluate_project(db, project, now, {})
-    active_native_stop = bool(run.details.get("managed_stop_id") and run.attempts)
+    active_native_stop = bool(
+        run.details.get("explicit_stop")
+        or (run.details.get("managed_stop_id") and run.attempts)
+    )
     if current or active_native_stop:
         _fence(rows)
     else:

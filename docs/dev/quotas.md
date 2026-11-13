@@ -113,6 +113,28 @@ the bounded lifecycle reconciler acts, preventing new topology growth or acciden
 starts of intentionally halted VMs. A newer managed stop supersedes restore and
 retains disk/PVC/image/pattern ownership and storage charges.
 
+Ordinary project Stop, Force stop and auto-stop timers use that same durable
+full-inventory managed shutdown. A request remains pending or failed until a
+fresh complete observation proves tenant and helper compute off and recreation
+suppressed. CPU/RAM allocation is retained until that proof; storage and the
+environment slot remain charged afterward. Native pause/hibernate are rejected
+before mutation with quotas enabled. The stop coordinator survives worker loss
+and does not use a deployment job reference as its completion proof.
+
+**Native Delete and Undeploy are currently unsupported with quotas enabled for
+retained/deployed projects.** Both routes reject before EIP release, credentials
+revocation, cancellation, state changes or namespace destruction; the destroy
+worker and lifetime timer also guard teardown. An empty never-deployed draft
+without a host or operation history can still be removed/reset. Use managed Stop
+to turn off compute while preserving assets. This is a material functionality
+boundary, not completed native deletion support: a future narrow cleanup adapter
+must prove absence of the original resource generation, settle any unresolved
+producer work, and account for retained backend COW images/snapshots independently
+of namespace disappearance. The existing collector has no deletion settlement
+receipt; missing namespace/PVC/root evidence must never imply zero storage.
+Native disk wipe is also rejected even when automatic restart is false, because
+the wipe helper may power on a stopped VM before touching its disk.
+
 ### Managed first native deployment (increment 4B; real activation closed)
 
 The code integrates admission, immutable payload/rendered-plan and helper-image
@@ -124,6 +146,21 @@ and actual new blank PVCs within the protected capacity applicability. Custom
 `networkNode`, pod groups, installers, BMC, UEFI/TPM, active imports, Ceph appliances,
 multi-host and topology growth remain unsupported. A pending operation cannot
 switch profile, payload, owner/organization or target after reservation.
+
+The pending create handoff establishes the two existing provider/operator namespace
+RoleBindings before posting the project CR. Managed grant mode creates the
+namespace and bindings; external mode verifies the existing namespace and exact
+externally administered bindings without writes. The original namespace UID is
+retained durably and checked again after grants and during CR binding. An ambiguous
+handoff is observed rather than replayed; no cluster-wide write grant is added.
+
+Usage readiness runs the same active baseline selection/checks as admission,
+including fresh-capacity receipt, completeness and freshness. Disabled enforcement
+still reports `disabled` regardless of baseline readiness. Frozen invoices and
+final statements always show their stored amounts and lines in owner and group
+views, independently of current capacity readiness. New-era documents already
+freeze ledger totals when created; reading historical documents does not rebuild
+pre-cutover charges from the fresh ledger.
 
 `native_initialization.implementation()` deliberately accepts **no real profile**.
 Synthetic transport tests prove code integration only. Real activation requires

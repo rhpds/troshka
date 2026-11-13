@@ -7,6 +7,23 @@ from app.services import quota_admission as admission
 from app.services import quota_operations as operations
 
 
+def guard_supported_cleanup(db, project):
+    """Native deletion has no backend-retention settlement receipt yet.
+
+    Reject before credentials, EIPs, runtime, or ledger fences change. A native
+    draft with no host or operation history still uses complete_empty normally.
+    """
+    if (
+        not accounting.quotas_enabled()
+        or operations.select_adapter(db, project) != "kubevirt"
+    ):
+        return
+    if project.host_id or project.state != "draft" or operations._rows(db, project.id):
+        operations.deny_unsupported(
+            "Native Delete/Undeploy requires original-generation absence and retained backend-storage settlement; use managed Stop to retain assets"
+        )
+
+
 def fence(db, project_id):
     """Prevent every unclaimed/next provider dispatch before cleanup begins."""
     rows = db.query(QuotaReservation).filter_by(project_id=project_id).all()

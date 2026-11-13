@@ -2,7 +2,7 @@
 from fastapi import HTTPException
 
 from app.models.managed_group import ManagedGroup
-from app.models.quota import QuotaAction, QuotaPolicy, QuotaReadiness
+from app.models.quota import QuotaAction, QuotaPolicy
 from app.models.user import User
 from app.schemas.quota import AccountingUnavailable, Usage
 from app.services import quota_accounting as accounting
@@ -115,17 +115,13 @@ def read_usage(db, actor, scope, identity, now):
     target = authorize_policy(db, actor, scope, identity)
     editable = can_edit_policy(db, actor, scope, target.id)
     limits = get_limits(db, scope, target.id)
+    try:
+        accounting.require_ready(db)
+        ready = True
+    except AccountingUnavailable:
+        ready = False
     spent = _spending(db, scope, target.id, now)
     used, reserved = usage(db, scope, target.id)
-    baseline = db.get(QuotaReadiness, "baseline")
-    from app.services.quota_baseline import VERSION
-
-    ready = bool(
-        baseline
-        and baseline.ready
-        and baseline.baseline_version == VERSION
-        and (baseline.details or {}).get("accounting_ready")
-    )
     enabled = accounting.quotas_enabled()
     policy = db.query(QuotaPolicy).filter_by(scope=scope, scope_id=target.id).first()
     state = "accounting_unavailable" if spent is None else "within_budget"

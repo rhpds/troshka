@@ -307,7 +307,10 @@ def dispatch(db, project):
 
 def create_pending(provider, project_id):
     from app.core.database import SessionLocal
-    from app.services.providers.kubevirt import _get_k8s_clients
+    from app.services.providers.kubevirt import (
+        _get_k8s_clients,
+        base_namespace_grants_mode,
+    )
 
     operation_id = operations.current_operation.get()
     with SessionLocal() as db:
@@ -322,7 +325,8 @@ def create_pending(provider, project_id):
         # The handoff flag is committed before even Namespace creation.
         if target.get("create_handoff"):
             raise AccountingUnavailable("Ambiguous native creation must be read back")
-        update(row, create_handoff=True)
+        mode = base_namespace_grants_mode()
+        update(row, create_handoff=True, base_grants_mode=mode)
         payload = deepcopy(target["payload"])
         payload["metadata"]["annotations"] = {
             power.helpers().ANNOTATION: json.dumps(
@@ -330,7 +334,7 @@ def create_pending(provider, project_id):
             )
         }
         db.commit()
-    _, _, client = _get_k8s_clients(provider)
+    _, core_api, client = _get_k8s_clients(provider)
     try:
         api = power.helpers().PowerClient(client)
         if (
@@ -341,7 +345,29 @@ def create_pending(provider, project_id):
                 "Native provider cluster changed before creation"
             )
         namespace = payload["metadata"]["namespace"]
-        api.request(
+        establish_namespace(
+            api, core_api, client, namespace, project_id, operation_id, mode
+        )
+        api.request("POST", "TroshkaProject", namespace, None, payload)
+    finally:
+        client.close()
+
+
+def establish_namespace(
+    api, core_api, client, namespace, project_id, operation_id, mode
+):
+    """Base grants belong to the original create handoff, before CR creation."""
+    from kubernetes import client as k8s
+
+    from app.core.database import SessionLocal
+    from app.services.providers.base_namespace_grants import verify_existing_namespace
+    from app.services.providers.kubevirt import ensure_troshka_namespaced_rbac
+
+    created = None
+    if mode == "external":
+        verify_existing_namespace(core_api, namespace)
+    else:
+        created = api.request(
             "POST",
             "Namespace",
             None,
@@ -358,9 +384,32 @@ def create_pending(provider, project_id):
                 },
             },
         )
-        api.request("POST", "TroshkaProject", namespace, None, payload)
-    finally:
-        client.close()
+    original = api.get("Namespace", None, namespace)["metadata"]
+    if original.get("deletionTimestamp") or not original.get("uid"):
+        raise AccountingUnavailable("Native create namespace is unavailable")
+    if created is not None and (
+        original["uid"] != created["metadata"]["uid"]
+        or original.get("annotations", {}).get("troshka.redhat.com/operation")
+        != operation_id
+        or original.get("annotations", {}).get("troshka.redhat.com/project-id")
+        != project_id
+    ):
+        raise AccountingUnavailable(
+            "Native create namespace differs from original handoff"
+        )
+    # Record the exact original identity before any grant or CR side effect.
+    with SessionLocal() as db:
+        admission.lock_operations(db, [operation_id])
+        lock_project(db, project_id)
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        if row.dispatch_metadata.get("cancelled"):
+            raise AccountingUnavailable("Native namespace handoff was cancelled")
+        update(row, create_namespace_uid=original["uid"])
+        db.commit()
+    ensure_troshka_namespaced_rbac(k8s.RbacAuthorizationV1Api(client), namespace)
+    current = api.get("Namespace", None, namespace)["metadata"]
+    if current.get("uid") != original["uid"] or current.get("deletionTimestamp"):
+        raise AccountingUnavailable("Native create namespace changed during grants")
 
 
 def bind(api, target, operation_id, profile):
@@ -372,10 +421,9 @@ def bind(api, target, operation_id, profile):
     if (
         ns["metadata"].get("deletionTimestamp")
         or root["metadata"].get("deletionTimestamp")
-        or ns["metadata"].get("annotations", {}).get("troshka.redhat.com/operation")
-        != operation_id
-        or ns["metadata"].get("annotations", {}).get("troshka.redhat.com/project-id")
-        != root["spec"].get("projectId")
+        or not namespace_matches(
+            ns, target, operation_id, root["spec"].get("projectId")
+        )
         or root["spec"] != target["payload"]["spec"]
         or power.helpers().intent(root)
         != marker(target, operation_id, "pending", profile)
@@ -397,6 +445,18 @@ def bind(api, target, operation_id, profile):
         deployment_generation=root["metadata"]["generation"],
     )
     return result.model_dump(mode="json")
+
+
+def namespace_matches(ns, target, operation_id, project_id):
+    if ns["metadata"].get("uid") != target.get("create_namespace_uid"):
+        return False
+    if target.get("base_grants_mode") == "external":
+        return True
+    annotations = ns["metadata"].get("annotations", {})
+    return (
+        annotations.get("troshka.redhat.com/operation") == operation_id
+        and annotations.get("troshka.redhat.com/project-id") == project_id
+    )
 
 
 def publish(api, target, operation_id, request):

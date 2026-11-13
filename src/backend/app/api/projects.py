@@ -2411,6 +2411,9 @@ def stop_project(
     # never complete and leave the project stuck in "stopping".
     _reject_unsupported_hibernate(db, project, project.off_action)
 
+    from app.services.quota_enforcement import reconcile_worker, request_native_stop
+
+    action_id = request_native_stop(db, project, project.off_action or "stop")
     project.state = "stopping"
     db.commit()
     notify_project(
@@ -2419,7 +2422,10 @@ def stop_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(stop_project_async, project.id, project_id=project.id)
+    if action_id:
+        enqueue_job(reconcile_worker, action_id)
+    else:
+        enqueue_job(stop_project_async, project.id, project_id=project.id)
 
     return {"status": "stopping"}
 
@@ -2606,6 +2612,21 @@ def force_stop_project(
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
         raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
+
+    from app.services.quota_enforcement import reconcile_worker, request_native_stop
+
+    action_id = request_native_stop(db, project)
+    if action_id:
+        from app.core.redis import enqueue_job
+
+        project.state = "stopping"
+        db.commit()
+        notify_project(
+            project_id,
+            {"type": "project-state", "state": "stopping", "deploy_error": None},
+        )
+        enqueue_job(reconcile_worker, action_id)
+        return {"status": "stopping"}
 
     topo = project.deployed_topology or project.topology or {}
     vms = [n for n in topo.get("nodes", []) if n.get("type") == "vmNode"]
@@ -3253,6 +3274,11 @@ def wipe_disk(
     if restart:
         quota_operations.deny_unsupported("Disk wipe with automatic restart")
     project, host = _get_project_and_host(project_id, user, db)
+
+    if host.host_type == "kubevirt-cluster":
+        quota_operations.deny_unsupported(
+            "Native disk wipe requires an admitted initial power-on"
+        )
 
     topo = project.deployed_topology or project.topology or {}
     vm_node = next(
@@ -7141,6 +7167,10 @@ def undeploy_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    from app.services.quota_cleanup import guard_supported_cleanup
+
+    guard_supported_cleanup(db, project)
+
     from app.services.quota_accounting import quotas_enabled
 
     if quotas_enabled() and not project.host_id:
@@ -7191,6 +7221,10 @@ def delete_project(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+    from app.services.quota_cleanup import guard_supported_cleanup
+
+    guard_supported_cleanup(db, project)
 
     from app.services.metering_service import safe_freeze_invoice
     from app.services.quota_accounting import quotas_enabled

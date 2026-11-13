@@ -13611,6 +13611,13 @@ def stop_project_async(project_id: str, *, force_stop: bool = False):
             return
 
         off_action = "stop" if force_stop else (project.off_action or "stop")
+        from app.services.quota_enforcement import reconcile_action, request_native_stop
+
+        action_id = request_native_stop(s, project, off_action)
+        if action_id:
+            s.commit()
+            reconcile_action(s, action_id, quota_operations.now())
+            return
         if off_action == "hibernate" and not supports_hibernate(host):
             # Fail fast rather than leave the project stuck in "stopping".
             _set_project_error(
@@ -14616,6 +14623,9 @@ def _destroy_single_host_resources(s, ctx, project, delete_record: bool) -> bool
 
     if host.host_type == "kubevirt-cluster":
         from app.services.quota_accounting import quotas_enabled
+        from app.services.quota_cleanup import guard_supported_cleanup
+
+        guard_supported_cleanup(s, project)
 
         _destroy_kubevirt_native(
             project_id, host, s, delete_record and not quotas_enabled()
@@ -14656,6 +14666,9 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
             return
 
         from app.services.quota_accounting import quotas_enabled
+        from app.services.quota_cleanup import guard_supported_cleanup
+
+        guard_supported_cleanup(s, project)
 
         if quotas_enabled():
             from app.services.quota_cleanup import fence

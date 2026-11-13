@@ -162,6 +162,19 @@ def generic_api(q):
             assert method == "POST"
             value = deepcopy(body)
             if kind == "TroshkaProject":
+                if getattr(q, "require_namespace_grants", False):
+                    from app.services.providers import kubevirt
+
+                    for binding in (
+                        kubevirt._PROVIDER_NS_BINDING,
+                        kubevirt._OPERATOR_NS_BINDING,
+                    ):
+                        assert (
+                            namespace,
+                            binding,
+                        ) in q.namespace_grants, (
+                            "Forbidden: namespace write grant missing"
+                        )
                 schema = project_spec_schema()
                 value["spec"] = {
                     key: item
@@ -296,10 +309,32 @@ def deploy_case(resume_case, monkeypatch):
         db.commit()
     from app.services.providers import kubevirt
 
+    q.namespace_grants = {}
+
+    class NamespaceRBAC:
+        def __init__(self, api_client):
+            pass
+
+        def create_namespaced_role_binding(self, namespace, body):
+            q.namespace_grants[namespace, body["metadata"]["name"]] = deepcopy(body)
+
+        def read_namespaced_role_binding(self, namespace, name):
+            return deepcopy(q.namespace_grants[namespace, name])
+
+    monkeypatch.setattr("kubernetes.client.RbacAuthorizationV1Api", NamespaceRBAC)
+
     monkeypatch.setattr(
         kubevirt,
         "_get_k8s_clients",
-        lambda provider: (None, None, SimpleNamespace(close=lambda: None)),
+        lambda provider: (
+            None,
+            SimpleNamespace(
+                read_namespace=lambda name: q.apis[q.new_id].get(
+                    "Namespace", None, name
+                )
+            ),
+            SimpleNamespace(close=lambda: None),
+        ),
     )
 
     class SyntheticClient:
@@ -321,6 +356,95 @@ def deploy_case(resume_case, monkeypatch):
     with q.sessions() as db:
         q.original_meters = monetary_identity(db, q.project_ids)
     return q
+
+
+def test_pending_cr_requires_exact_namespace_write_grants(deploy_case):
+    from app.services.providers import kubevirt
+
+    q = deploy_case
+    q.require_namespace_grants = True
+    operation_id = start(q)
+    target = current_target(q, operation_id)
+    namespace = target["payload"]["metadata"]["namespace"]
+    assert len(q.namespace_grants) == 2
+    assert {ns for ns, _ in q.namespace_grants} == {namespace}
+    assert (
+        q.namespace_grants[namespace, kubevirt._PROVIDER_NS_BINDING]["roleRef"]["name"]
+        == kubevirt.PROVIDER_NAMESPACED_ROLE
+    )
+    assert q.namespace_grants[namespace, kubevirt._OPERATOR_NS_BINDING]["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": "troshka-operator",
+            "namespace": "troshka-operator",
+        }
+    ]
+
+
+@pytest.mark.parametrize("missing_grant", [False, True])
+def test_pending_external_namespace_only_verifies_exact_grants(
+    deploy_case, monkeypatch, missing_grant
+):
+    from kubernetes import client
+
+    from app.models.provider import Provider
+    from app.services.providers import kubevirt
+
+    q = deploy_case
+    api = q.apis[q.new_id]
+    with q.sessions() as db:
+        namespace = kubevirt._project_ns(db.get(Provider, q.provider_id), q.new_id)
+    original = api.request(
+        "POST",
+        "Namespace",
+        None,
+        None,
+        {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": namespace}},
+    )
+    rbac = client.RbacAuthorizationV1Api(None)
+    kubevirt.ensure_troshka_namespaced_rbac(rbac, namespace)
+    if missing_grant:
+        del q.namespace_grants[namespace, kubevirt._OPERATOR_NS_BINDING]
+    monkeypatch.setattr(kubevirt, "base_namespace_grants_mode", lambda: "external")
+    writes = deepcopy(q.namespace_grants)
+    if missing_grant:
+        with pytest.raises(kubevirt.BaseNamespaceGrantsError):
+            start(q)
+        assert not api.rows("TroshkaProject", namespace)
+    else:
+        operation_id = start(q)
+        target = current_target(q, operation_id)
+        assert target["root"]["namespace_uid"] == original["metadata"]["uid"]
+        assert target["base_grants_mode"] == "external"
+    assert q.namespace_grants == writes
+    assert len([c for c in api.calls if c[0] == "POST" and c[1][0] == "Namespace"]) == 1
+
+
+def test_namespace_replacement_during_grants_retains_handoff_without_cr(
+    deploy_case, monkeypatch
+):
+    from app.services.providers import kubevirt
+
+    q = deploy_case
+    original = kubevirt.ensure_troshka_namespaced_rbac
+
+    def replace(rbac, namespace):
+        original(rbac, namespace)
+        q.apis[q.new_id].values["Namespace", namespace]["metadata"][
+            "uid"
+        ] = "replacement"
+
+    monkeypatch.setattr(kubevirt, "ensure_troshka_namespaced_rbac", replace)
+    with pytest.raises(accounting.AccountingUnavailable, match="namespace changed"):
+        start(q)
+    assert not q.apis[q.new_id].rows("TroshkaProject", None)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(project_id=q.new_id).one()
+        assert row.dispatch_metadata["native_deploy"]["create_handoff"]
+        assert (
+            row.dispatch_metadata["native_deploy"]["create_namespace_uid"]
+            != "replacement"
+        )
 
 
 def monetary_identity(db, project_ids):

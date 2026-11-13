@@ -141,13 +141,8 @@ def _invoice_summary(
         "period_end": row.period_end.isoformat() if row.period_end else None,
         "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
     }
-    if db is not None and quotas_enabled():
-        data["total_usd"] = str(
-            _ledger_summary(
-                db, "project", row.project_id, row.period_start, row.period_end
-            )["total"]
-        )
-        data["accounting_status"] = "ready"
+    # Invoices are frozen at creation (including new-era ledger invoices).
+    # Reading them never reprojects an old document through the current ledger.
     return data
 
 
@@ -156,10 +151,6 @@ def _invoice_detail(
 ) -> dict:
     data = _invoice_summary(row, owner_email, db)
     data["line_items"] = row.line_items or {}
-    if db is not None and quotas_enabled():
-        data["line_items"] = _ledger_summary(
-            db, "project", row.project_id, row.period_start, row.period_end
-        )["line_items"]
     return data
 
 
@@ -236,7 +227,7 @@ def _statement_summary(
         "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
         "project_count": len((row.line_items or {}).get("by_project") or []),
     }
-    if db is not None and quotas_enabled():
+    if db is not None and quotas_enabled() and row.status != "final":
         data["total_usd"] = str(
             _ledger_summary(db, "user", row.owner_id, row.period_start, row.period_end)[
                 "total"
@@ -251,6 +242,10 @@ def _statement_detail(
 ) -> dict:
     data = _statement_summary(row, owner_email, db)
     data["line_items"] = row.line_items or {}
+    if db is not None and quotas_enabled() and row.status != "final":
+        data["line_items"] = _ledger_summary(
+            db, "user", row.owner_id, row.period_start, row.period_end
+        )["line_items"]
     return data
 
 
