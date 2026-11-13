@@ -3,6 +3,7 @@ from app.models.disk import Disk
 from app.models.dns_provider import DnsProvider
 from app.models.elastic_ip import ElasticIp
 from app.models.host import Host, HostAssignment
+from app.models.kubevirt_cache_birth import NativeCacheBirth
 from app.models.kubevirt_storage import (
     NativeCollectionDomain,
     NativeEnrollment,
@@ -55,6 +56,7 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "NativeCacheBirth",
     "NativeReportingTarget",
     "NativeEnrollmentRequest",
     "NativeEnrollment",

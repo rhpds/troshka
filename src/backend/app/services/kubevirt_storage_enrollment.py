@@ -297,10 +297,11 @@ def validate_domain_extension(previous, current, *, retired=()):
         or {str(p.project_id) for p in current.request.projects} != set(new_roots)
     ):
         raise ValueError("domain extension must retain every exact old root")
-    for field in ("collector_ids", "provider_clusters", "cache_roots", "pool_keys"):
+    for field in ("collector_ids", "provider_clusters", "pool_keys"):
         before, after = getattr(old, field), getattr(new, field)
         if sorted(map(digest, before)) != sorted(map(digest, after)):
             raise ValueError("domain extension cannot change collection identities")
+    _validate_cache_authorization(old, new)
     _validate_initialization_authorization(old, new)
     before = {
         str(p.project_id): p
@@ -326,7 +327,9 @@ def _validate_initialization_authorization(old, new):
             raise ValueError(
                 "root extension cannot change initialization authorization"
             )
-        if set(old.project_roots) == set(new.project_roots):
+        if set(old.project_roots) == set(new.project_roots) and not (
+            extension and extension.cache_authorization_digest
+        ):
             raise ValueError("root extension must add a new project root")
         return
     if (
@@ -335,6 +338,67 @@ def _validate_initialization_authorization(old, new):
         or digest(new.initialization_evidence) != authorization
     ):
         raise ValueError("explicit reviewed initialization authorization mismatch")
+
+
+def cache_authorization_digest(pins):
+    return digest(
+        {
+            "cache_roots": [c.model_dump(mode="json") for c in pins.cache_roots],
+            "cache_birth_receipts": [
+                r.model_dump(mode="json") for r in pins.cache_birth_receipts
+            ],
+        }
+    )
+
+
+def _validate_cache_authorization(old, new):
+    extension = new.domain_extension
+    authorization = extension.cache_authorization_digest if extension else None
+    fields = ("cache_roots", "cache_birth_receipts")
+    before = {f: set(map(digest, getattr(old, f))) for f in fields}
+    after = {f: set(map(digest, getattr(new, f))) for f in fields}
+    if authorization is None:
+        if before != after:
+            raise ValueError("ordinary extension cannot change cache authority")
+        return
+    if (
+        authorization != cache_authorization_digest(new)
+        or before == after
+        or any(not before[f] <= after[f] for f in fields)
+    ):
+        raise ValueError("explicit additive cache authorization mismatch")
+
+
+def _validate_cache_receipts(db, manifest):
+    from app.services.native_cache_birth import validated_receipt
+
+    pins = manifest.pins
+    seen = set()
+    for ref in pins.cache_birth_receipts:
+        intent, receipt = validated_receipt(db, ref.operation_id, ref.digest)
+        cache = {
+            "cluster_key": intent.target.cluster_key,
+            "namespace": intent.namespace,
+            "namespace_uid": intent.namespace_uid,
+        }
+        if (
+            ref.operation_id in seen
+            or intent.domain_id != pins.domain_id
+            or intent.target_id != manifest.request.target_id
+            or cache not in [c.model_dump(mode="json") for c in pins.cache_roots]
+            or not any(
+                p.provider_id == intent.target.provider_id
+                and p.cluster_key == intent.target.cluster_key
+                for p in pins.provider_clusters
+            )
+            or not any(
+                p.ceph_fsid == receipt.image_key.ceph_fsid
+                and p.pool_id == receipt.image_key.pool_id
+                for p in pins.pool_keys
+            )
+        ):
+            raise ValueError("cache receipt outside protected enrollment scope")
+        seen.add(ref.operation_id)
 
 
 def _extension_predecessor(db, manifest, domain):
@@ -406,6 +470,7 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
         manifest.model_dump(mode="python", warnings=False)
     )
     _validate_manifest(db, manifest, expected_target_id)
+    _validate_cache_receipts(db, manifest)
     previous = (
         db.query(NativeEnrollment).filter_by(digest=manifest.digest).one_or_none()
     )

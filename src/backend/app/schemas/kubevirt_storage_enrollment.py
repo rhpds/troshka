@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import Field, model_serializer, model_validator
 
+from app.schemas.kubevirt_cache_birth import CacheBirthReference
 from app.schemas.kubevirt_storage import Evidence, PoolKey, ProjectRoot, Text
 from app.schemas.kubevirt_storage_initialization import InitializationEvidence
 
@@ -44,12 +45,17 @@ class DomainExtension(Evidence):
     initialization_authorization_digest: str | None = Field(
         default=None, pattern=r"^[a-f0-9]{64}$"
     )
+    cache_authorization_digest: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$"
+    )
 
     @model_serializer(mode="wrap")
     def serialize_authorization(self, handler):
         data = handler(self)
         if data.get("initialization_authorization_digest") is None:
             data.pop("initialization_authorization_digest", None)
+        if data.get("cache_authorization_digest") is None:
+            data.pop("cache_authorization_digest", None)
         return data
 
 
@@ -59,6 +65,9 @@ class VerificationPins(Evidence):
     provider_clusters: list[ProviderCluster] = Field(min_length=1, max_length=100)
     project_roots: list[ProjectRoot] = Field(min_length=1, max_length=10000)
     cache_roots: list[CacheRoot] = Field(default_factory=list, max_length=100)
+    cache_birth_receipts: list[CacheBirthReference] = Field(
+        default_factory=list, max_length=1000
+    )
     pool_keys: list[PoolKey] = Field(min_length=1, max_length=100)
     initialization_evidence: InitializationEvidence | None = None
     domain_extension: DomainExtension | None = None
@@ -89,6 +98,8 @@ class VerificationPins(Evidence):
         for key in ("initialization_evidence", "domain_extension"):
             if data.get(key) is None:
                 data.pop(key, None)
+        if not data.get("cache_birth_receipts"):
+            data.pop("cache_birth_receipts", None)
         return data
 
 
