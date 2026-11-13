@@ -1,4 +1,5 @@
-# Isolated development app; application source: 500edb408d7ded5616867d0d4887947106d0a09d.
+# Persistent dev app; backend source: 65ec8e671c2407c41c82c3217a43db5409e17ffd.
+# Frontend source: 500edb408d7ded5616867d0d4887947106d0a09d.
 # Supply auth.initialAdmin explicitly on first installation; never put secrets here.
 namespace:
   create: false
@@ -6,7 +7,7 @@ namespace:
 backend:
   image:
     repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-backend
-    tag: v2026.11.13-170117-dev
+    tag: v2026.11.13-181627-dev
 frontend:
   image:
     repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-frontend
