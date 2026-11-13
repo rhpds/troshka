@@ -774,6 +774,10 @@ def test_explicit_static_api_defaults_and_quantities_preserve_admitted_plan(
     else:
         phase(api, "initializing")
         deploy.reconcile(api, root(api))
+    troshkavm = api.rows("TroshkaVM", "ns")[0]
+    api.values["TroshkaVM", troshkavm["metadata"]["name"]]["spec"].update(
+        nestedVirt=False, recertEnabled=False
+    )
     vm = api.rows("VirtualMachine", "ns")[0]
     spec = api.values["VirtualMachine", vm["metadata"]["name"]]["spec"]
     domain = spec["template"]["spec"]["domain"]
@@ -814,6 +818,11 @@ def test_explicit_static_api_defaults_and_quantities_preserve_admitted_plan(
 @pytest.mark.parametrize(
     "kind,path,value",
     [
+        ("TroshkaVM", ("nestedVirt",), True),
+        ("TroshkaVM", ("recertEnabled",), True),
+        ("TroshkaVM", ("nestedVirt",), 0),
+        ("TroshkaVM", ("recertEnabled",), "false"),
+        ("TroshkaVM", ("unknownBoolean",), False),
         ("VirtualMachine", ("template", "spec", "domain", "cpu", "sockets"), True),
         ("Deployment", ("template", "spec", "terminationGracePeriodSeconds"), 0),
         ("Deployment", ("strategy",), {"type": "Recreate"}),
@@ -832,6 +841,33 @@ def test_nondefault_or_wrong_type_additions_are_not_api_defaults(
     for part in path[:-1]:
         spec = spec.setdefault(part, {})
     spec[path[-1]] = value
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(expected, actual)
+
+
+def test_troshkavm_api_defaults_preserve_immutable_plan(api):
+    planned = deploy.render(root(api), "synthetic-reviewed-storage")
+    original = deepcopy(planned)
+    original_digest = deploy.plan_digest(planned)
+    expected = next(value for value in planned if value["kind"] == "TroshkaVM")
+    actual = deepcopy(expected)
+    actual["spec"].update(nestedVirt=False, recertEnabled=False)
+    original_actual = deepcopy(actual)
+
+    deploy.verify_spec(expected, actual)
+
+    assert deploy.configuration(expected) == deploy.configuration(actual)
+    assert deploy.plan_digest(planned) == original_digest
+    assert planned == original
+    assert actual == original_actual
+
+
+@pytest.mark.parametrize("field", ["nestedVirt", "recertEnabled"])
+def test_troshkavm_explicit_true_cannot_change_to_default(field):
+    expected = resource("TroshkaVM", "vm", spec={field: True})
+    actual = deepcopy(expected)
+    actual["spec"][field] = False
+
     with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
         deploy.verify_spec(expected, actual)
 

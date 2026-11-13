@@ -31,6 +31,9 @@ _POD_DEFAULTS = {
     ("containers", "[]", "terminationMessagePolicy"): "File",
 }
 _CONFIGURATION_DEFAULTS = {
+    # src/operator/crds/troshkavm.yaml supplies these booleans on API creation.
+    # Only explicit false is equivalent to omission; true remains configuration.
+    "TroshkaVM": {("nestedVirt",): False, ("recertEnabled",): False},
     "VirtualMachine": {
         ("template", "spec", "domain", "cpu", "sockets"): 1,
         ("template", "spec", "domain", "cpu", "threads"): 1,
