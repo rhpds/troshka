@@ -36,6 +36,8 @@ def inventory_digest(inventory):
         fields += ("snapshot_evidence",)
     if inventory.retiring_roots:
         fields += ("retiring_roots",)
+    if inventory.clone_references:
+        fields += ("clone_references",)
     data = {
         name: sorted(
             (v.model_dump(mode="json") for v in getattr(inventory, name)),

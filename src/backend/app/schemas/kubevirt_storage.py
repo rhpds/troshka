@@ -47,6 +47,11 @@ class PoolKey(Evidence):
     pool_id: Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 
 
+class CloneReference(Evidence):
+    lineage_id: UUID
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class CsiWorkloadIdentity(Evidence):
     uid: Text
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -263,6 +268,17 @@ class CSISnapshotEvidence(Evidence):
 
 
 class NativeInventory(Evidence):
+    clone_references: list[CloneReference] = Field(
+        default_factory=list, max_length=10000
+    )
+
+    @model_serializer(mode="wrap")
+    def serialize_clone_references(self, handler):
+        data = handler(self)
+        if not data.get("clone_references"):
+            data.pop("clone_references", None)
+        return data
+
     collector_id: Text = "standalone"
     project_roots: list[ProjectRoot] = Field(default_factory=list, max_length=10000)
     volume_bindings: list[VolumeBinding] = Field(default_factory=list, max_length=10000)
@@ -355,6 +371,9 @@ class AttributionResult(Evidence):
 
 
 class NativeStorageReport(AttributionResult):
+    clone_references: list[CloneReference] = Field(
+        default_factory=list, max_length=10000
+    )
     version: Literal["kubevirt-rbd-allocated-v1"] = "kubevirt-rbd-allocated-v1"
     metric: Literal["rbd_allocated_extent_bytes"] = "rbd_allocated_extent_bytes"
     report_id: UUID
@@ -381,6 +400,8 @@ class NativeStorageReport(AttributionResult):
     @model_serializer(mode="wrap")
     def serialize_initialization(self, handler):
         data = handler(self)
+        if not data.get("clone_references"):
+            data.pop("clone_references", None)
         if data.get("initialization_observation") is None:
             data.pop("initialization_observation", None)
         if not data.get("retiring_roots"):

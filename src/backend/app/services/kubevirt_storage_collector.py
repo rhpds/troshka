@@ -407,7 +407,7 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
         raise _ReadFailure("identity_changed")
 
 
-def collect_report(inventory, rbd_reader, *, limits, clock):
+def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
     started = getattr(rbd_reader, "scan_started_at", clock())
     deadline = time.monotonic() + limits.scan_timeout_seconds
     errors = list(inventory.blockers)
@@ -429,7 +429,10 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
     )
     working = inventory.model_copy(update={"blockers": errors})
     attributed = attribute_graph(
-        working, images, max_parent_depth=limits.max_parent_depth
+        working,
+        images,
+        max_parent_depth=limits.max_parent_depth,
+        clone_lineages=clone_lineages,
     )
     # Inventory was acquired before any image; include its age in every total.
     projects = [
@@ -466,6 +469,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         retained_bindings=inventory.retained_bindings,
         snapshot_evidence=inventory.snapshot_evidence,
         retiring_roots=inventory.retiring_roots,
+        clone_references=inventory.clone_references,
         inventory_blockers=inventory.blockers,
         images=images,
         collection_errors=errors,

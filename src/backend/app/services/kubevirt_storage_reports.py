@@ -41,6 +41,7 @@ def report_inventory(report):
         else report.collection_errors,
         snapshot_evidence=report.snapshot_evidence,
         retiring_roots=report.retiring_roots,
+        clone_references=report.clone_references,
     )
 
 
@@ -232,10 +233,40 @@ def _binding_errors(report, manifest, roots, retained):
     return errors
 
 
-def _persist_bindings(db, report, domain_id):
-    for binding in (
-        report.volume_bindings + report.retained_bindings + report.cache_bindings
-    ):
+def _receipt_cache_identities(db, references):
+    from app.services.native_cache_birth import validated_receipt
+
+    identities = set()
+    for reference in references:
+        intent, receipt = validated_receipt(
+            db, reference.operation_id, reference.digest
+        )
+        identities.add(
+            digest(
+                {
+                    "cluster_key": intent.target.cluster_key,
+                    "namespace": intent.namespace,
+                    "namespace_uid": intent.namespace_uid,
+                    "pvc_uid": receipt.pvc_uid,
+                    "pv_uid": receipt.pv_uid,
+                    "csi_driver": receipt.csi_driver,
+                    "volume_handle": receipt.volume_handle,
+                    "image_key": receipt.image_key.model_dump(mode="json"),
+                }
+            )
+        )
+    return identities
+
+
+def _persist_bindings(db, report, domain_id, clone_lineages=(), cache_receipts=()):
+    private = {p.intermediate for p in clone_lineages}
+    caches = [b for b in report.cache_bindings if b.image_key not in private]
+    if cache_receipts:
+        # Namespace discovery may see CSI temporary PVCs before clone proof.
+        # Only exact sealed source identities can become durable platform cache.
+        authorized = _receipt_cache_identities(db, cache_receipts)
+        caches = [b for b in caches if digest(_binding_identity(b)) in authorized]
+    for binding in report.volume_bindings + report.retained_bindings + caches:
         key = binding_key(binding)
         if db.get(NativeRetainedBinding, key) is not None:
             continue
@@ -325,13 +356,21 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
         if b.root_key not in retired
     ]
     inventory = normalized_inventory(report, roots, retained)
+    from app.services.native_clone_lineage import resolve_lineages
+
+    try:
+        clone_lineages = resolve_lineages(db, report.clone_references, manifest)
+        clone_errors = set()
+    except ValueError:
+        clone_lineages, clone_errors = [], {"managed_clone_authority_unverified"}
     # Validate the recomputed graph's exact quantities before accepting evidence.
-    attribute_graph(inventory, report.images)
+    attribute_graph(inventory, report.images, clone_lineages=clone_lineages)
     errors = _domain_errors(report, manifest, roots) | _live_identity_errors(
         db, roots, manifest
     )
     errors |= _binding_errors(report, manifest, roots, retained)
     errors |= _retiring_errors(db, report, domain)
+    errors |= clone_errors
     snapshot = NativeStorageSnapshot(
         id=identity,
         domain_id=domain.id,
@@ -346,7 +385,9 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
     )
     db.add(snapshot)
     if not errors:
-        _persist_bindings(db, report, domain.id)
+        _persist_bindings(
+            db, report, domain.id, clone_lineages, manifest.pins.cache_birth_receipts
+        )
     db.flush()
     _advance_attempt(db, domain, snapshot)
     db.flush()

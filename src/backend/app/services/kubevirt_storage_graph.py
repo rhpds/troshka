@@ -19,13 +19,17 @@ UNVERIFIED_IDENTITY = frozenset(
 )
 
 
-def _walk(start, observations, cache, depth_limit):
+def _walk(start, observations, cache, depth_limit, authorized):
     seen, path, errors = set(), set(), set()
-    _visit_ancestor(start, 0, observations, cache, depth_limit, seen, path, errors)
+    _visit_ancestor(
+        start, 0, observations, cache, depth_limit, seen, path, errors, authorized
+    )
     return seen, errors
 
 
-def _visit_ancestor(key, depth, observations, cache, limit, seen, path, errors):
+def _visit_ancestor(
+    key, depth, observations, cache, limit, seen, path, errors, authorized
+):
     if key in path:
         errors.add("ancestry_cycle")
         return
@@ -41,7 +45,7 @@ def _visit_ancestor(key, depth, observations, cache, limit, seen, path, errors):
         return
     # V1 records snapshot IDs, not their parents. A head parent (or its absence)
     # cannot prove retained ancestry after a shallow flatten.
-    if image.snapshots:
+    if image.snapshots and key not in authorized:
         errors.add("snapshot_ancestry_unverified")
     if key in cache and image.parent and image.parent.image_key not in cache:
         errors.add("unverified_cache_ancestor")
@@ -57,6 +61,7 @@ def _visit_ancestor(key, depth, observations, cache, limit, seen, path, errors):
             seen,
             path,
             errors,
+            authorized,
         )
         path.remove(key)
 
@@ -88,7 +93,8 @@ def _index_images(images):
     return observations, duplicates
 
 
-def _ownership(inventory, observations, cache, max_parent_depth):
+def _ownership(inventory, observations, cache, max_parent_depth, authorized=None):
+    authorized = set() if authorized is None else authorized
     ownership, project_nodes, failures = defaultdict(set), {}, defaultdict(set)
     bindings = list(
         {
@@ -101,12 +107,12 @@ def _ownership(inventory, observations, cache, max_parent_depth):
         for binding in bindings:
             if binding.root == root:
                 reached, errors = _walk(
-                    binding.image_key, observations, cache, max_parent_depth
+                    binding.image_key, observations, cache, max_parent_depth, authorized
                 )
                 nodes |= reached
                 failures[root.project_id] |= errors
         reached, errors = _retiring_ownership(
-            root, inventory, observations, cache, max_parent_depth
+            root, inventory, observations, cache, max_parent_depth, authorized
         )
         nodes |= reached
         failures[root.project_id] |= errors
@@ -116,12 +122,16 @@ def _ownership(inventory, observations, cache, max_parent_depth):
     return ownership, project_nodes, failures
 
 
-def _retiring_ownership(root, inventory, observations, cache, max_parent_depth):
+def _retiring_ownership(
+    root, inventory, observations, cache, max_parent_depth, authorized
+):
     nodes, failures = set(), set()
     for retiring in inventory.retiring_roots:
         if retiring.root == root:
             for key in retiring.owned_images:
-                reached, errors = _walk(key, observations, cache, max_parent_depth)
+                reached, errors = _walk(
+                    key, observations, cache, max_parent_depth, authorized
+                )
                 nodes |= reached
                 failures |= errors
     return nodes, failures
@@ -183,7 +193,7 @@ def _project_allocation(
     )
 
 
-def _pool_allocation(pool_key, keys, observations, blockers):
+def _pool_allocation(pool_key, keys, observations, blockers, authorized):
     applicable = [
         b
         for b in blockers
@@ -203,26 +213,36 @@ def _pool_allocation(pool_key, keys, observations, blockers):
         allocated_bytes=known
         if not applicable
         and len(complete) == len(keys)
-        and not any(image.snapshots for image in complete)
+        and not any(
+            image.snapshots and image.key not in authorized for image in complete
+        )
         else None,
     )
 
 
-def _platform_pools(cache, observations, blockers):
+def _platform_pools(cache, observations, blockers, authorized):
     pools = defaultdict(list)
     for key in cache:
         pools[PoolKey(ceph_fsid=key.ceph_fsid, pool_id=key.pool_id)].append(key)
     return [
-        _pool_allocation(k, values, observations, blockers)
+        _pool_allocation(k, values, observations, blockers, authorized)
         for k, values in pools.items()
     ]
 
 
-def attribute_graph(inventory, images, *, max_parent_depth=32):
+def attribute_graph(inventory, images, *, max_parent_depth=32, clone_lineages=()):
+    from app.services.native_clone_graph import authorize_graph
+
     observations, duplicates = _index_images(images)
-    cache = {b.image_key for b in inventory.cache_bindings}
+    authorized, private, blockers = authorize_graph(
+        inventory,
+        {k: v for k, v in observations.items() if k not in duplicates},
+        clone_lineages,
+    )
+    inventory = inventory.model_copy(update={"blockers": inventory.blockers + blockers})
+    cache = {b.image_key for b in inventory.cache_bindings} - private
     ownership, project_nodes, failures = _ownership(
-        inventory, observations, cache, max_parent_depth
+        inventory, observations, cache, max_parent_depth, authorized
     )
     authorized_absence = {
         key for root in inventory.retiring_roots for key in root.owned_images
@@ -251,6 +271,8 @@ def attribute_graph(inventory, images, *, max_parent_depth=32):
     ]
     return AttributionResult(
         projects=projects,
-        platform_pools=_platform_pools(cache, observations, inventory.blockers),
+        platform_pools=_platform_pools(
+            cache, observations, inventory.blockers, authorized
+        ),
         unattributed_images=sorted(unresolved, key=lambda k: k.model_dump_json()),
     )

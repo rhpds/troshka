@@ -36,6 +36,7 @@ PUBLIC_REASON_CODES = frozenset(
     """
 ancestry_cycle parent_depth_limit missing_image unverified_cache_ancestor
 snapshot_ancestry_unverified
+managed_clone_lineage_unverified managed_clone_authority_unverified
 duplicate_project_root unresolved_ownership incomplete_measurement incomplete_cache_evidence
 csi_snapshot_backend_unresolved snapshot_identity_unresolved scan_limit pvc_binding_unresolved
 project_discovery_unavailable cache_discovery_unavailable retained_identity_conflict
@@ -139,7 +140,18 @@ def domain_evidence(db, domain, roots):
         for key in proof.owned_images
     )
     images = [image for image in source.images if image.key not in retired_images]
-    return attribute_graph(inventory, images), source, set()
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from app.services.native_clone_lineage import resolve_lineages
+
+    manifest = VerifiedEnrollment.model_validate(
+        db.get(NativeEnrollment, report.enrollment_id).payload
+    )
+    try:
+        lineages = resolve_lineages(db, source.clone_references, manifest)
+    except ValueError:
+        return None, source, {"managed_clone_authority_unverified"}
+    return attribute_graph(inventory, images, clone_lineages=lineages), source, set()
 
 
 def _collect_evidence(db, roots, domains):
