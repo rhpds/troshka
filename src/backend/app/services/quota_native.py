@@ -185,12 +185,13 @@ def _measurement_report(db, domain, roots, manifest, now):
         raise AccountingUnavailable(
             "Native source observation is stale or future-dated"
         )
+    # Platform totals may be unknown without invalidating complete tenant graphs.
+    # Reachable cache ancestors still participate in each project's coverage.
     if (
         any(
             p.coverage != "complete" or p.allocated_bytes is None or p.blockers
             for p in graph.projects
         )
-        or any(p.allocated_bytes is None for p in graph.platform_pools)
         or source.collection_errors
     ):
         raise AccountingUnavailable("Native graph coverage is incomplete")

@@ -248,11 +248,8 @@ def _collect_images(
     retiring_keys = {
         key for root in inventory.retiring_roots for key in root.owned_images
     }
-    retiring_keys.update(
-        b.image_key
-        for b in inventory.absent_cache_bindings
-        if b in inventory.cache_bindings
-    )
+    # Project teardown needs physical absence proof. Unrelated platform cache
+    # uncertainty stays nullable; measured tenant quotas do not require its retirement.
     queue.extend((key, 0) for key in retiring_keys)
     checked_pools = {}
     while queue:

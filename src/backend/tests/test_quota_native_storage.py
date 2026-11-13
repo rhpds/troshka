@@ -142,6 +142,97 @@ def root_row(db, q, index=0):
     return db.query(QuotaReservation).filter_by(project_id=q.project_ids[index]).one()
 
 
+@pytest.mark.parametrize(
+    "failure", [None, "tenant", "ancestor", "lineage", "collection"]
+)
+def test_unreferenced_unknown_platform_storage_does_not_gate_tenant_measurement(
+    native_ledger, failure
+):
+    from app.models.kubevirt_storage import NativeProjectRoot, NativeRetainedBinding
+    from app.schemas.kubevirt_storage import Blocker, CloneReference
+    from app.services.kubevirt_storage_usage import domain_evidence
+
+    q = native_ledger
+    source = q.report.cache_bindings[0]
+    scratch = source.model_copy(
+        update={
+            "pvc_uid": "transient-scratch",
+            "pv_uid": "scratch-pv",
+            "volume_handle": "scratch-handle",
+            "image_key": source.image_key.model_copy(update={"image_id": "scratch"}),
+        }
+    )
+    unavailable = q.report.images[0].model_copy(
+        update={
+            "key": scratch.image_key,
+            "parent": None,
+            "snapshots": [],
+            "children": [],
+            "measurement_status": "unavailable",
+            "allocated_bytes": None,
+            "provisioned_bytes": None,
+            "measurement_semantics_version": None,
+        }
+    )
+    images = [*q.report.images, unavailable]
+    if failure in {"tenant", "ancestor"}:
+        target = (
+            source.image_key
+            if failure == "ancestor"
+            else q.report.volume_bindings[1].image_key
+        )
+        images = [
+            i.model_copy(
+                update={
+                    "measurement_status": "unavailable",
+                    "allocated_bytes": None,
+                    "measurement_semantics_version": None,
+                }
+            )
+            if i.key == target
+            else i
+            for i in images
+        ]
+    report = revised(
+        q.report,
+        images=images,
+        cache_bindings=[*q.report.cache_bindings, scratch],
+        clone_references=[CloneReference(lineage_id=uuid4(), digest="a" * 64)]
+        if failure == "lineage"
+        else [],
+        collection_errors=[Blocker(code="inventory_recheck_unavailable")]
+        if failure == "collection"
+        else [],
+    )
+    ingest(q, report)
+    with q.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+        roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
+        graph, _, errors = domain_evidence(db, domain, roots)
+        if failure is None:
+            assert not errors
+            assert all(p.coverage == "complete" for p in graph.projects)
+            assert graph.platform_pools[0].allocated_bytes is None
+        if failure is None:
+            assert any(
+                b.payload.get("pvc_uid") == scratch.pvc_uid
+                for b in db.query(NativeRetainedBinding)
+            )
+        row = root_row(db, q)
+        args = (
+            db,
+            db.get(Project, q.project_ids[0]),
+            row.operation_id,
+            row.dispatch_metadata["native_storage_identity"],
+            NOW,
+        )
+        if failure is None:
+            assert native.storage_measurement(*args).allocated_bytes == 30
+        else:
+            with pytest.raises(AccountingUnavailable):
+                native.storage_measurement(*args)
+
+
 def extension_manifest(db, q, *, previous=None):
     """Trusted synthetic extension, never a physical initialization profile."""
     from app.schemas.kubevirt_storage import ProjectRoot

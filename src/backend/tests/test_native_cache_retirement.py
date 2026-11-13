@@ -52,6 +52,12 @@ def test_retained_source_still_measured_when_scratch_is_absent():
     inv = discover_inventory(kube, [], [])
     reader = Rbd()
     reader.recheck_inventory = lambda: inv
+    original_info = reader.image_info
+    reader.image_info = lambda image: (
+        ReadResult(status="unavailable", collected_at=NOW)
+        if image == scratch.image_key
+        else original_info(image)
+    )
     reader.image_inventory = lambda image, **kw: ReadResult(
         status="complete",
         collected_at=NOW,
@@ -74,47 +80,60 @@ def test_retained_source_still_measured_when_scratch_is_absent():
         },
     )
     report = collect_report(inv, reader, limits=CollectionLimits(), clock=lambda: NOW)
-    assert report.platform_pools[0].allocated_bytes == 123
+    assert report.platform_pools[0].allocated_bytes is None
+    assert report.platform_pools[0].known_allocated_bytes == 123
     assert next(i for i in report.images if i.key == source.image_key).absence is None
     assert (
-        next(i for i in report.images if i.key == scratch.image_key).absence is not None
+        next(i for i in report.images if i.key == scratch.image_key).allocated_bytes
+        is None
     )
 
 
-def test_deleted_scratch_remains_bound_but_can_prove_zero():
+def test_deleted_scratch_remains_unknown_without_automatic_pool_scan():
     kube, binding = setup_cache()
     inventory = discover_inventory(kube, [], [])
     reader = Rbd()
     reader.recheck_inventory = lambda: discover_inventory(kube, [], [])
     reader.image_info = lambda image: ReadResult(status="unavailable", collected_at=NOW)
-    reader.image_inventory = lambda image, **kw: ReadResult(
-        status="complete",
-        collected_at=NOW,
-        value=BackendImageInventory(
-            ceph_fsid=image.ceph_fsid,
-            pool_id=image.pool_id,
-            rbd_namespace=image.rbd_namespace,
-            active_images={},
-            trash_ids=[],
+    calls = []
+
+    def inventory_read(image, **kw):
+        calls.append(image)
+        return ReadResult(
+            status="complete",
             collected_at=NOW,
-        ),
-    )
+            value=BackendImageInventory(
+                ceph_fsid=image.ceph_fsid,
+                pool_id=image.pool_id,
+                rbd_namespace=image.rbd_namespace,
+                active_images={},
+                trash_ids=[],
+                collected_at=NOW,
+            ),
+        )
+
+    reader.image_inventory = inventory_read
     report = collect_report(
         inventory, reader, limits=CollectionLimits(), clock=lambda: NOW
     )
     assert report.cache_bindings == [binding]
-    assert report.platform_pools[0].allocated_bytes == 0
-    assert report.images[0].absence is not None
+    assert report.platform_pools[0].allocated_bytes is None
+    assert report.images[0].absence is None
+    assert not calls
     assert inventory_digest(
         report_inventory(type(report).model_validate_json(report.model_dump_json()))
     ) == inventory_digest(inventory)
+    from app.services.kubevirt_storage_collector import _retiring_image
     from app.services.kubevirt_storage_graph import attribute_graph
 
-    unproved = inventory.model_copy(update={"absent_cache_bindings": []})
-    assert (
-        attribute_graph(unproved, report.images).platform_pools[0].allocated_bytes
-        is None
+    # Previously recorded exact absence remains valid evidence; no new scan is
+    # required merely to measure unrelated tenant storage.
+    proven = _retiring_image(
+        reader, binding.image_key, "test", CollectionLimits(), lambda: NOW
     )
+    assert attribute_graph(inventory, [proven]).platform_pools[0].allocated_bytes == 0
+    unproved = inventory.model_copy(update={"absent_cache_bindings": []})
+    assert attribute_graph(unproved, [proven]).platform_pools[0].allocated_bytes is None
 
 
 @pytest.mark.parametrize(
@@ -211,6 +230,7 @@ def test_backend_absence_never_inferred_from_failed_image_read(condition):
     reader.image_inventory = backend
     report = collect_report(inv, reader, limits=CollectionLimits(), clock=lambda: NOW)
     assert report.platform_pools[0].allocated_bytes is None
+    assert not calls
 
 
 @pytest.mark.parametrize("condition", ["retained", "new", "changed", "omitted"])
