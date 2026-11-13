@@ -1,4 +1,4 @@
-"""Durable admission for the supported single-host nested VM execution path.
+"""Durable admission for nested VMs and bounded retained managed native resume.
 
 An operation may be delivered repeatedly, but has one committed dispatch claim.
 An ambiguous claimed worker is reconciled, never dispatched again on a timer.
@@ -108,29 +108,23 @@ def digest(topology):
 def select_adapter(db, project, *, host=None):
     """Select lifecycle semantics before any placement or provider mutation.
 
-    A renderable native demand or complete reporting snapshot is insufficient:
-    controller fencing, direct observations and native baseline are still absent.
-    No configuration flag or report can enable this adapter at this milestone.
+    Classification alone never authorizes native growth. Its retained start
+    adapter validates managed off proof, immutable workload demand, current COW
+    measurement and a fresh capacity/accounting baseline. First deploy is denied.
     """
     from app.models.provider import Provider
 
     if ((project.topology or {}).get("placement") or {}).get("requires_kubevirt"):
-        raise AccountingUnavailable(
-            "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
-        )
+        return "kubevirt"
     if host is None and project.host_id:
         host = db.get(Host, project.host_id)
     if host is not None and host.host_type == "kubevirt-cluster":
-        raise AccountingUnavailable(
-            "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
-        )
+        return "kubevirt"
     provider_ids = {project.provider_id, getattr(host, "provider_id", None)} - {None}
     for provider_id in provider_ids:
         provider = db.get(Provider, provider_id)
         if provider and provider.type == "kubevirt":
-            raise AccountingUnavailable(
-                "Native quota adapter unavailable: lifecycle readiness gates are incomplete"
-            )
+            return "kubevirt"
     return "nested"
 
 
@@ -139,7 +133,8 @@ def supported(db, project, *, host_id=None, deployed=False):
     host = (
         db.get(Host, host_id or project.host_id) if host_id or project.host_id else None
     )
-    select_adapter(db, project, host=host)
+    if _supported_native(db, project, host):
+        return
     topology = (
         (project.deployed_topology if deployed else None) or project.topology or {}
     )
@@ -167,19 +162,36 @@ def supported(db, project, *, host_id=None, deployed=False):
         _supported_provider(db, project.provider_id)
     selected = host_id or project.host_id
     if selected:
-        host = db.get(Host, selected)
-        if not host or host.host_type == "kubevirt-cluster":
-            raise AccountingUnavailable(
-                "Native/operator quota allocation is not supported"
-            )
-        _supported_provider(db, host.provider_id)
-        if host.billing_mode != "shared":
-            raise AccountingUnavailable(
-                "Dedicated backing-host ownership requires retained billing observations"
-            )
+        _supported_nested_host(db, selected)
     if project.disks:
         raise AccountingUnavailable(
             "Legacy disk metadata needs verified allocation identity before quota use"
+        )
+
+
+def _supported_native(db, project, host):
+    if select_adapter(db, project, host=host) != "kubevirt":
+        return False
+    from app.models.provider import Provider
+    from app.services.native_managed_power import supported as native_supported
+
+    provider = db.get(
+        Provider, project.provider_id or getattr(host, "provider_id", None)
+    )
+    if provider is None or provider.type != "kubevirt":
+        raise AccountingUnavailable("Native retained provider identity required")
+    native_supported(project, host)
+    return True
+
+
+def _supported_nested_host(db, selected):
+    host = db.get(Host, selected)
+    if not host or host.host_type == "kubevirt-cluster":
+        raise AccountingUnavailable("Native/operator quota allocation is not supported")
+    _supported_provider(db, host.provider_id)
+    if host.billing_mode != "shared":
+        raise AccountingUnavailable(
+            "Dedicated backing-host ownership requires retained billing observations"
         )
 
 
@@ -333,6 +345,10 @@ def prepare(db, project, kind, *, host_id=None):
     if not accounting.quotas_enabled():
         return None
     try:
+        if select_adapter(db, project) == "kubevirt":
+            from app.services.native_managed_power import prepare as native_prepare
+
+            return native_prepare(db, project, kind, host_id=host_id)
         supported(db, project, host_id=host_id)
         operation_id = str(uuid4())
         # The operation advisory lock is always before identity locks.
@@ -430,19 +446,30 @@ def claim(db, project_id, operation_id, kind):
         raise AccountingUnavailable(
             "Worker requires its original quota operation; recovery must reconcile"
         )
+    from app.services.native_managed_power import claim_preflight
+
+    native_proof = claim_preflight(operation_id)
+    if native_proof is not None:
+        from app.services.native_managed_power import apply_claim_preflight
+
+        apply_claim_preflight(db, project_id, operation_id, native_proof)
     admission.revalidate(db, operation_id, now())
     row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
     project = db.get(Project, project_id)
-    _validate_claim_target(db, row, project, project_id, kind)
+    _validate_claim_target(
+        db, row, project, project_id, kind, native_proof=native_proof
+    )
     metadata = dict(row.dispatch_metadata)
     metadata["claim"] = str(uuid4())
+    if native_proof is not None:
+        metadata["native_claim_off_proof"] = native_proof["off_proof"]
     row.dispatch_metadata = metadata
     row.state = "dispatched"
     row.dispatched_at = now()
     db.commit()
 
 
-def _validate_claim_target(db, row, project, project_id, kind):
+def _validate_claim_target(db, row, project, project_id, kind, *, native_proof=None):
     metadata = row.dispatch_metadata
     if row.project_id != project_id or metadata.get("kind") != kind:
         raise AccountingUnavailable("Quota operation does not match this worker")
@@ -454,6 +481,11 @@ def _validate_claim_target(db, row, project, project_id, kind):
         raise AccountingUnavailable(
             "Operation already claimed; reconcile before further allocation"
         )
+    if metadata.get("adapter") == "kubevirt":
+        from app.services.native_managed_power import validate_claimed_context
+
+        validate_claimed_context(db, project, row, native_proof=native_proof)
+        return
     supported(db, project)
     if metadata["desired_digest"] != digest(project.topology or {}):
         raise AccountingUnavailable("Desired topology changed after reservation")
@@ -512,6 +544,10 @@ def _settled(row):
 def reconcile(project_id):
     """Conservative full-environment compute observation, never project.state."""
     if not accounting.quotas_enabled():
+        return
+    from app.services.native_managed_power import reconcile as native_reconcile
+
+    if native_reconcile(project_id):
         return
     from app.core.database import SessionLocal
     from app.services.ws_pubsub import get_cached_vm_states

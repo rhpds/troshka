@@ -9,6 +9,48 @@ import pytest
 from app.schemas.quota import AccountingUnavailable
 
 
+def test_configured_container_requests_are_tenant_demand_without_limits():
+    from app.services.quota_native import _helpers, demand_for_manifest
+
+    containers = _helpers()[3]
+    body = containers.build_single_container_pod(
+        "ns", {"id": "container-one", "image": "example/image"}, {}, {}, {}
+    )
+    demand = demand_for_manifest(body)
+    assert demand.tenant_compute
+    assert demand.cpu_millicores == 1000
+    assert demand.ram_bytes == 512 * 2**20
+    assert not demand.blockers
+    assert "limits" not in body["spec"]["containers"][0]["resources"]
+
+
+def test_fractional_configured_cpu_sums_before_millicore_or_environment_rounding(
+    native_target,
+):
+    from app.services.quota_native import build_native_plan
+
+    project, host = native_target
+    project.topology = {
+        "nodes": [
+            {
+                "id": "first-container",
+                "type": "containerNode",
+                "data": {"image": "example/tenant", "cpus": 0.5001},
+            },
+            {
+                "id": "second-container",
+                "type": "containerNode",
+                "data": {"image": "example/tenant", "cpus": 0.4998},
+            },
+        ]
+    }
+    plan = build_native_plan(Mock(), project, host)
+    assert plan.cpu == 1
+    assert plan.tenant_complete
+    assert any(not v.tenant_compute for v in plan.demands)
+    assert not plan.complete  # First deployment/initial storage is a separate profile.
+
+
 @pytest.fixture
 def native_target():
     topology = {
@@ -129,19 +171,18 @@ def test_missing_profiles_never_become_zero_storage(native_target):
         native_resources(plan)
 
 
-def test_adapter_selection_keeps_native_unavailable(native_target):
+def test_adapter_selection_distinguishes_retained_native(native_target):
     from app.services.quota_operations import select_adapter
 
     db = Mock()
     project, host = native_target
-    with pytest.raises(AccountingUnavailable, match="Native.*unavailable"):
-        select_adapter(db, project, host=host)
+    assert select_adapter(db, project, host=host) == "kubevirt"
     host.host_type = "shared"
     db.get.return_value = SimpleNamespace(type="ocpvirt")
     assert select_adapter(db, project, host=host) == "nested"
 
 
-def test_known_helper_millicores_round_once():
+def test_helpers_remain_inventory_but_do_not_count_as_tenant_compute():
     from app.services.quota_native import NativeDemand, NativeExecutionPlan
     from app.services.quota_resources import native_resources
 
@@ -159,8 +200,8 @@ def test_known_helper_millicores_round_once():
         ),
     )
     assert plan.helper_millicores == 350
-    assert native_resources(plan).cpu == 3
-    assert native_resources(plan).ram_bytes == 2**30 + 300
+    assert native_resources(plan).cpu == 2
+    assert native_resources(plan).ram_bytes == 2**30
 
 
 def test_pool_aliases_require_consistent_logical_units():
@@ -297,7 +338,9 @@ def test_plan_preserves_declared_fractional_helper_requests(native_target):
     showroom = next(item for item in plan.demands if "ctr-showroom" in item.resource_id)
     assert showroom.requested_cpu_millicores == 250
     assert showroom.requested_ram_bytes == 128 * 2**20
-    assert showroom.cpu_millicores is None  # Requests do not bound maximum use.
+    assert showroom.cpu_millicores == 250
+    assert showroom.tenant_compute  # Configured requests are the selected quota basis.
+    assert not plan.complete  # Unsupported lifecycle/import profiles remain blocked.
 
 
 def test_ceph_restore_does_not_render_blank_appliance_claims(native_target):
@@ -342,9 +385,16 @@ def test_deployment_container_wrappers_match_planned_manifests(
     entries = topo.extract_containers(project.topology)
     topo.enrich_container_nics(project.topology, entries)
     topo.enrich_showroom_infra_networks(project.topology, entries)
-    container.create_container_pods(
-        namespace, entries, {}, k8s.owner_ref(body), disk_pvcs
-    )
+    from helpers import managed_power
+
+    api = Mock(get=Mock(return_value=body))
+    token = managed_power._context.set((body, namespace, api))
+    try:
+        container.create_container_pods(
+            namespace, entries, {}, k8s.owner_ref(body), disk_pvcs
+        )
+    finally:
+        managed_power._context.reset(token)
     actual = [
         call.kwargs["body"] for call in core_api.create_namespaced_pod.call_args_list
     ]
@@ -356,15 +406,17 @@ def test_deployment_container_wrappers_match_planned_manifests(
     )
 
 
-def test_native_only_topology_is_denied_before_host_selection(native_target):
+def test_native_only_first_deploy_is_denied_before_host_selection(native_target):
+    from app.services.native_managed_power import prepare
     from app.services.quota_operations import select_adapter
 
     project, _ = native_target
     project.provider_id = None
     project.host_id = None
     project.topology["placement"] = {"requires_kubevirt": True}
-    with pytest.raises(AccountingUnavailable, match="Native.*unavailable"):
-        select_adapter(Mock(), project)
+    assert select_adapter(Mock(), project) == "kubevirt"
+    with pytest.raises(AccountingUnavailable, match="first-deploy.*unavailable"):
+        prepare(Mock(), project, "deploy")
 
 
 def test_aggregate_overflow_is_accounting_unavailable():
@@ -379,8 +431,8 @@ def test_aggregate_overflow_is_accounting_unavailable():
         "t",
         "[]",
         (
-            NativeDemand("a", "helper", 1, 2**63 - 1),
-            NativeDemand("b", "helper", 1, 2**63 - 1),
+            NativeDemand("a", "guest", 1, 2**63 - 1),
+            NativeDemand("b", "guest", 1, 2**63 - 1),
         ),
     )
     with pytest.raises(AccountingUnavailable):

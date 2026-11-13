@@ -71,6 +71,18 @@ class FakeAPI:
         return deepcopy(live)
 
     def request(self, method, kind, namespace, name, body):
+        if method == "POST" and kind == "Pod":
+            value = deepcopy(body)
+            value["metadata"].update(
+                uid=value["metadata"]["name"] + "-restored",
+                resourceVersion="1",
+                generation=1,
+            )
+            key = kind, value["metadata"]["name"]
+            assert key not in self.values
+            self.values[key] = value
+            self.calls.append((method, key, deepcopy(body)))
+            return deepcopy(value)
         assert method == "DELETE" and kind == "Pod"
         self.calls.append((method, (kind, name), deepcopy(body)))
         value = self.values[kind, name]
@@ -144,6 +156,112 @@ def test_all_helpers_stop_and_originals_survive_restart(lifecycle):
 def test_intentionally_halted_vm_is_preserved(lifecycle, mode):
     lifecycle.values["VirtualMachine", "vm-runtime"]["spec"] = deepcopy(mode)
     assert reconcile(lifecycle)["targets"][0]["desired"] == mode
+
+
+def admitted_resume(api):
+    state = root(api)["status"]["managedPower"]
+    request = {
+        "version": 1,
+        "mode": "running",
+        "requestId": "start-1",
+        "allocationGeneration": "allocation-1",
+        "resumeOf": "stop-1",
+        "executionDigest": "execution",
+        "profile": "configured-workloads-v1",
+        "targetDigest": state["inventoryDigest"],
+        "configurationDigest": power.configuration_digest(
+            power.inventory(api, root(api))[0]
+        ),
+    }
+    api.values["TroshkaProject", "project"]["metadata"]["annotations"][
+        power.ANNOTATION
+    ] = json.dumps(request)
+    return request
+
+
+def test_admitted_restore_preserves_originals_and_halted_vm(lifecycle):
+    lifecycle.values["VirtualMachine", "vm-runtime"]["spec"] = {"running": False}
+    original = reconcile(lifecycle)
+    admitted_resume(lifecycle)
+    restored = reconcile(lifecycle)
+    assert restored["state"] == "restoring"
+    assert restored["targets"] == original["targets"]
+    assert lifecycle.get("VirtualMachine", "ns", "vm-runtime")["spec"] == {
+        "running": False
+    }
+    assert all(v["spec"]["replicas"] == 1 for v in lifecycle.rows("Deployment", "ns"))
+    assert reconcile(lifecycle)["targets"] == original["targets"]
+
+
+def test_running_intent_requires_exact_prior_snapshot(lifecycle):
+    reconcile(lifecycle)
+    request = admitted_resume(lifecycle)
+    request["targetDigest"] = "changed"
+    lifecycle.values["TroshkaProject", "project"]["metadata"]["annotations"][
+        power.ANNOTATION
+    ] = json.dumps(request)
+    assert reconcile(lifecycle)["state"] == "blocked"
+    assert all(v["spec"]["replicas"] == 0 for v in lifecycle.rows("Deployment", "ns"))
+
+
+def test_restore_restarts_from_originals_after_lost_patch_response(
+    lifecycle, monkeypatch
+):
+    original = reconcile(lifecycle)["targets"]
+    admitted_resume(lifecycle)
+    patch = lifecycle.patch
+    failed = False
+
+    def lose_response(value, changes, **kwargs):
+        nonlocal failed
+        result = patch(value, changes, **kwargs)
+        if value["kind"] == "VirtualMachine" and not failed:
+            failed = True
+            raise RuntimeError("synthetic restore response loss")
+        return result
+
+    monkeypatch.setattr(lifecycle, "patch", lose_response)
+    with pytest.raises(RuntimeError):
+        reconcile(lifecycle)
+    power._locks.clear()
+    assert reconcile(lifecycle)["targets"] == original
+    assert all(v["spec"]["replicas"] == 1 for v in lifecycle.rows("Deployment", "ns"))
+
+
+def test_new_stop_supersedes_restore_before_next_mutation(lifecycle, monkeypatch):
+    reconcile(lifecycle)
+    admitted_resume(lifecycle)
+    patch = lifecycle.patch
+
+    def supersede(value, changes, **kwargs):
+        result = patch(value, changes, **kwargs)
+        if value["kind"] == "VirtualMachine":
+            request = {
+                "version": 1,
+                "mode": "stopped",
+                "requestId": "stop-2",
+                "allocationGeneration": "allocation-1",
+            }
+            lifecycle.values["TroshkaProject", "project"]["metadata"]["annotations"][
+                power.ANNOTATION
+            ] = json.dumps(request)
+        return result
+
+    monkeypatch.setattr(lifecycle, "patch", supersede)
+    assert reconcile(lifecycle)["state"] == "blocked"
+    assert all(v["spec"]["replicas"] == 0 for v in lifecycle.rows("Deployment", "ns"))
+    monkeypatch.setattr(lifecycle, "patch", patch)
+    state = reconcile(lifecycle)
+    assert state["requestId"] == "stop-2"
+    assert all(
+        t["desired"] == {"replicas": 1}
+        for t in state["targets"]
+        if t["kind"] == "Deployment"
+    )
+    assert (
+        lifecycle.get("VirtualMachine", "ns", "vm-runtime")["spec"]["runStrategy"]
+        == "Halted"
+    )
 
 
 @pytest.mark.parametrize(
@@ -298,7 +416,7 @@ def test_running_annotation_cannot_bypass_missing_admission(lifecycle):
     lifecycle.values["TroshkaProject", "project"]["metadata"]["annotations"][
         power.ANNOTATION
     ] = json.dumps(request)
-    assert reconcile(lifecycle)["reason"] == "managed_resume_admission_unavailable"
+    assert reconcile(lifecycle)["reason"] == "managed_resume_profile_invalid"
     assert (
         lifecycle.get("VirtualMachine", "ns", "vm-runtime")["spec"]["runStrategy"]
         == "Halted"

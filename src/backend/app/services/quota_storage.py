@@ -546,6 +546,15 @@ def _native_scope_evidence(db, root, now):
     ):
         raise AccountingUnavailable("Native latest allocation has not been reconciled")
     for row in rows:
+        if (
+            row.state in {"pending", "dispatched", "reconciling"}
+            and not any(row.observed.values())
+            and row.dispatch_metadata.get("native_resume")
+        ):
+            from app.services.native_managed_power import validate_claimed_context
+
+            validate_claimed_context(db, project, row)
+            continue
         allocation = (
             db.query(QuotaAllocation)
             .filter_by(operation_id=row.operation_id)

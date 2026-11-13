@@ -13957,6 +13957,13 @@ def start_project_async(project_id: str):
             return
 
         if host.host_type == "kubevirt-cluster":
+            from app.services import quota_accounting
+
+            if quota_accounting.quotas_enabled():
+                from app.services.native_managed_power import start_claimed
+
+                start_claimed(s, project)
+                return
             topology = project.topology or {}
             vms = _extract_vms(topology)
             _start_kubevirt_vms(s, host, project_id, vms)

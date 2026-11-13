@@ -541,8 +541,12 @@ def test_complete_measurement_does_not_enable_native_growth_or_stop(
     reconcile(q)
     with q.sessions() as db:
         project = db.get(Project, q.project_ids[0])
-        with pytest.raises(AccountingUnavailable, match="lifecycle readiness"):
-            operations.select_adapter(db, project)
+        assert operations.select_adapter(db, project) == "kubevirt"
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as error:
+            operations.prepare(db, project, "deploy")
+        assert "first-deploy" in error.value.detail["message"]
         db.add(QuotaPolicy(scope="project", scope_id=project.id, storage_bytes=30))
         db.commit()
         enforcement.evaluate(db, NOW)

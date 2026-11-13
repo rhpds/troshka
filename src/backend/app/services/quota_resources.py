@@ -19,15 +19,17 @@ MIB = 2**20
 def native_resources(plan) -> Resources:
     """Convert only complete native plans; unknown demand is never zero.
 
-    Underlying helper millicores remain in the immutable plan. Whole-vCPU
-    admission rounds the aggregate concurrent envelope up exactly once.
+    Helper diagnostics remain in the immutable plan. Whole-vCPU admission
+    rounds configured tenant workload CPU up exactly once per environment.
     """
     if not plan.complete:
         raise AccountingUnavailable("Native execution demand is incomplete")
     try:
         return Resources(
             cpu=plan.cpu,
-            ram_bytes=sum(item.ram_bytes or 0 for item in plan.demands),
+            ram_bytes=sum(
+                item.ram_bytes or 0 for item in plan.demands if item.tenant_compute
+            ),
             storage_bytes=sum(
                 item.initial_storage_bytes or 0
                 for item in plan.demands

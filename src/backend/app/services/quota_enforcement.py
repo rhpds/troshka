@@ -614,7 +614,7 @@ def _prepare_native(db, project, run, rows):
     from app.services import native_managed_power as native
 
     try:
-        context = native.retained_context(db, project, rows)
+        context = native.stop_context(db, project, rows)
     except (accounting.AccountingUnavailable, ValueError, KeyError, TypeError):
         run.last_error = (
             "Native managed shutdown and completion observation unavailable"
@@ -625,6 +625,18 @@ def _prepare_native(db, project, run, rows):
         run.last_error = "Native managed allocation changed during shutdown"
         return False
     run.details = {**run.details, "managed_context": context}
+    for row in rows:
+        if (
+            row.state == "pending"
+            and row.dispatch_metadata.get("native_resume")
+            and not row.dispatch_metadata.get("claim")
+        ):
+            row.dispatch_metadata = {
+                **row.dispatch_metadata,
+                "cancelled": True,
+                "worker_finished": True,
+                "worker_finished_at": _now().isoformat(),
+            }
     return True
 
 
@@ -806,7 +818,7 @@ def _publish_native_stop(project_id, event):
 def _native_proof_matches(db, project, run, rows, proof):
     from app.services import native_managed_power as native
 
-    context = native.retained_context(db, project, rows)
+    context = native.stop_context(db, project, rows)
     observed = datetime.fromisoformat(proof["observed_at"])
     started = datetime.fromisoformat(proof["started_at"])
     age = (accounting.utc(_now()) - accounting.utc(observed)).total_seconds()
@@ -896,6 +908,9 @@ def run_once():
     for project_id in project_ids:
         try:
             quota_storage.reconcile_project(project_id)
+            from app.services.native_managed_power import reconcile as reconcile_resume
+
+            reconcile_resume(project_id)
         except Exception:
             logger.warning(
                 "Physical storage observation unavailable for %s; growth remains fenced by freshness",

@@ -280,6 +280,10 @@ def build_snapshot(db: Session, project: Project) -> dict | None:
     if not project.host_id or project.state == "draft":
         return None
     host = db.get(Host, project.host_id)
+    if quotas_enabled() and host and host.host_type == "kubevirt-cluster":
+        from app.services.native_managed_power import billing_snapshot
+
+        return billing_snapshot(db, project)
     provider_type = _host_provider_type(db, host)
     topology = project.deployed_topology or project.topology or {}
     from app.services.ws_pubsub import get_cached_vm_states

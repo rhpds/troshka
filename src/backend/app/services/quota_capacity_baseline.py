@@ -772,6 +772,15 @@ def _worker_profile(rows, observed, native_identity):
 
 def _confirm(db, rows, vectors, entry, observed):
     for row, vector in zip(rows, vectors):
+        if entry["adapter"] == native.ADAPTER:
+            from app.services.native_managed_power import baseline_profile
+
+            row.dispatch_metadata = {
+                **row.dispatch_metadata,
+                "native_baseline_profile": baseline_profile(
+                    entry["compute_observation"]
+                ),
+            }
         target = Resources.model_validate(
             {**vector, "storage_bytes": row.observed["storage_bytes"]}
         )
@@ -852,13 +861,15 @@ def _binding_coverage(source):
 
 def _accounting_project(db, project, entry, now):
     """Validate current coverage without accrual, cursor writes or history import."""
-    _require(
-        entry["adapter"] == "nested",
-        "Native current billing profile requires separate integration",
-    )
     from app.services import metering_service as metering
 
-    snap, rates = _billing_snapshot(db, project, entry["compute_observation"])
+    if entry["adapter"] == native.ADAPTER:
+        from app.services.native_managed_power import billing_snapshot
+
+        snap = billing_snapshot(db, project)
+        rates = metering.load_type_rates(db)
+    else:
+        snap, rates = _billing_snapshot(db, project, entry["compute_observation"])
     snap = metering._quota_snapshot(project, snap, now)
     _billing_coverage(db, project, snap, rates, now)
 
@@ -970,9 +981,16 @@ def _billing_rates(rows, snap, rates):
 
 def _readiness(db, report, evidence, now):
     accounting_blockers = []
-    native_present = False
+    runtime_blockers = []
     for project_id, entry in evidence["projects"].items():
-        native_present |= entry["adapter"] == native.ADAPTER
+        if entry["adapter"] == native.ADAPTER:
+            try:
+                from app.services.native_managed_power import current_profile
+
+                project = db.get(Project, project_id)
+                current_profile(db, project, _current(db, project))
+            except (AccountingUnavailable, ValueError, KeyError, TypeError) as error:
+                runtime_blockers.append(str(error))
         try:
             _accounting_project(db, db.get(Project, project_id), entry, now)
         except (AccountingUnavailable, ValueError, KeyError, TypeError) as error:
@@ -982,10 +1000,8 @@ def _readiness(db, report, evidence, now):
     report.update(
         accounting_ready=not accounting_blockers,
         accounting_blockers=accounting_blockers,
-        runtime_ready=not native_present,
-        runtime_blockers=["Native deploy/start admission profile unavailable"]
-        if native_present
-        else [],
+        runtime_ready=not runtime_blockers,
+        runtime_blockers=runtime_blockers,
     )
     report["ready"] = (
         report["capacity_ready"]
@@ -1153,9 +1169,6 @@ def check_ready(db):
             "Capacity proof or immutable receipt linkage is missing",
         )
         if accounting.quotas_enabled():
-            _require(
-                marker.ready, "Fresh accounting/runtime baseline has not been verified"
-            )
             projects = _runtime_current(db, details, now)
             result.update(
                 capacity_ready=True,
@@ -1220,10 +1233,8 @@ def _runtime_current(db, details, now):
     observation times or an import-time whole-database fingerprint.
     """
     _require(
-        details.get("ready")
-        and details.get("accounting_ready")
-        and details.get("runtime_ready"),
-        "Fresh accounting/runtime profile is unavailable",
+        details.get("capacity_ready"),
+        "Reviewed fresh capacity proof is unavailable",
     )
     projects = list(db.query(Project).order_by(Project.id))
     source = {
@@ -1263,6 +1274,18 @@ def _runtime_billing_project(db, project, now):
     reserved and is not treated as an already billable deployed environment.
     """
     rows = _current(db, project)
+    if rows and storage.storage_adapter(rows[0]) == native.ADAPTER:
+        from app.services import metering_service as metering
+        from app.services.native_managed_power import billing_snapshot
+
+        _billing_coverage(
+            db,
+            project,
+            metering._quota_snapshot(project, billing_snapshot(db, project, rows), now),
+            metering.load_type_rates(db),
+            now,
+        )
+        return
     retained = [row for row in rows if any(row.observed.values())]
     if not retained:
         _require(
@@ -1341,6 +1364,11 @@ def _runtime_project(db, project, now):
                 "Current retained allocation pairing is inconsistent",
             )
     storage.scope_evidence(db, "project", project.id, now)
+    if rows and storage.storage_adapter(rows[0]) == native.ADAPTER:
+        from app.services.native_managed_power import current_profile
+
+        current_profile(db, project, rows)
+        return
     roots = [
         row
         for row in rows

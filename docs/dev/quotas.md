@@ -21,8 +21,8 @@ Backing-host platform capacity is not a second guest charge. Stopped environment
 retain storage and the slot. See [the allocation inventory](quota-allocation-paths.md)
 for the maintained supported/denied boundaries and their tests.
 
-Native/operator KubeVirt, BMC/deferred power, multi-host placement, dedicated
-billing, containers/pods, installers/Showroom/runners, live reconfiguration,
+The nested adapter does not cover native/operator KubeVirt, BMC/deferred power,
+multi-host placement, dedicated billing, containers/pods, installers/Showroom/runners, live reconfiguration,
 individual VM start/reboot/resume, live migration, snapshot/capture buffers,
 unresolved image virtual sizes, legacy Disk rows and retained EIPs are not covered
 by this baseline. Those growth surfaces are explicitly denied with enforcement
@@ -78,9 +78,49 @@ unknown ownership, unresolved work and inventory drift remain blockers. A first
 native import needs that off proof under its proposed generation token; this
 importer cannot create an intent, collect provider evidence or stop workloads.
 Configured VM/container CPU and RAM belong to user quotas; network, console and
-virtualization overhead belong to platform capacity. Active native compute,
-native billing and deploy/start admission integration are still unavailable, so a
-native capacity-only import has `runtime_ready=false` and public `ready=false`.
+virtualization overhead belong to platform capacity. A capacity import alone does
+not authorize native execution: the bounded retained resume profile below must
+also have verified demand, current billing coverage and resolved worker history.
+
+### Retained managed native resume (increment 4A)
+
+An already retained native project can resume through its original shared native
+host after a reviewed fresh-capacity baseline, a complete enrolled physical COW
+measurement and independent producer-drained off proof. Supported workloads are
+basic VMs and single containers with ordinary networks and their managed
+dnsmasq/gateway/exec/VNC helpers. VM CPU/RAM and configured container requests
+(defaults: 1 CPU and 512 MiB) count toward tenant quotas; fractional CPUs sum
+exactly and round up once per environment. Helpers remain platform compute and
+all managed helpers participate in stop, restore and observation. Missing helper
+limits do not invent tenant charges or cause runtime limits to be added.
+
+Start reserves only restored compute under project, owner and organization limits.
+The measured retained storage and environment slot stay on the original ledger
+generation; their start increment is zero. One worker claims the operation and
+persists a handoff before publishing the exact stopped episode and restore target.
+The operator restores saved replicas, original VM power and validated bare
+container manifests. Intentionally halted VMs stay halted. A complete independent
+running/readiness inventory confirms the increment and opens configured tenant
+compute meters at that proof time. Existing vCPU/RAM rates and provisioned disk
+GiB-hour prices remain unchanged; measured physical COW bytes remain the storage
+quota basis. No historical costs are migrated or repriced.
+
+Pending helpers, paused/unknown workloads, changed resources or retained identities
+keep the reservation. An ambiguous claimed handoff is observed rather than
+redispatched. The existing enforcement poll retries observations and completion
+receipts. Completed managed roots keep ordinary producer mutations fenced; only
+the bounded lifecycle reconciler acts, preventing new topology growth or accidental
+starts of intentionally halted VMs. A newer managed stop supersedes restore and
+retains disk/PVC/image/pattern ownership and storage charges.
+
+First native deploy remains unavailable (increment 4B). Pod groups, installers,
+BMC, UEFI/TPM, active imports, Ceph appliances, multi-host and topology growth are
+outside this profile. Initial physical allocation and new root identity binding
+still need separate evidence. Snapshot-backed image/cache ancestry remains blocked
+unless its physical allocation graph is complete; a successful clone or PVC virtual
+size is not that evidence. Unknown physical allocation never becomes zero. This
+development increment has backend/operator integration tests, not live cluster
+acceptance or authorization to enable enforcement/deploy it.
 
 ## Physical storage contract and operating limits
 

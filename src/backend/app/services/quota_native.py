@@ -22,6 +22,7 @@ METRIC = "rbd_allocated_extent_bytes"
 MAX_QUANTITY = 2**63 - 1
 ADAPTER = "kubevirt"
 MEASUREMENT_VERSION = "native-rbd-measurement-v1"
+CONFIGURED_PROFILE = "configured-workloads-v1"
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,12 @@ class NativeDemand:
     blockers: tuple[str, ...] = ()
     requested_cpu_millicores: int | None = None
     requested_ram_bytes: int | None = None
+    quota_workload: bool = False
+    configured_cpu: str | None = None
+
+    @property
+    def tenant_compute(self):
+        return self.classification == "guest" or self.quota_workload
 
     def __post_init__(self):
         if self.classification not in {"guest", "helper", "storage", "platform"}:
@@ -400,7 +407,25 @@ class NativeExecutionPlan:
     @property
     def cpu(self):
         """Known concurrent lower bound, never an admissible vector if blocked."""
-        return _ceil(sum(item.cpu_millicores or 0 for item in self.demands), 1000)
+        return _ceil(
+            sum(
+                Decimal(item.configured_cpu)
+                if item.configured_cpu is not None
+                else Decimal(item.cpu_millicores or 0) / 1000
+                for item in self.demands
+                if item.tenant_compute
+            )
+        )
+
+    @property
+    def tenant_complete(self):
+        return all(
+            not item.blockers
+            and item.cpu_millicores is not None
+            and item.ram_bytes is not None
+            for item in self.demands
+            if item.tenant_compute
+        )
 
     @property
     def pool_initialization_demands(self):
@@ -516,6 +541,21 @@ def _pod_demand(body):
     ):
         blockers.append("pod_sidecar_or_runtime_overhead_profile_missing")
     requests = _pod_requested_envelope(pod, replicas)
+    if body["kind"] == "Pod" and body.get("metadata", {}).get("labels", {}).get(
+        "app"
+    ) in {"troshka-container", "troshka-pod"}:
+        return NativeDemand(
+            resource_id(body),
+            "helper",
+            *requests,
+            blockers=()
+            if all(v is not None for v in requests)
+            else ("configured_pod_resources_unmapped",),
+            requested_cpu_millicores=requests[0],
+            requested_ram_bytes=requests[1],
+            quota_workload=True,
+            configured_cpu=_configured_pod_cpu(pod, requests),
+        )
     return NativeDemand(
         resource_id(body),
         "helper",
@@ -523,6 +563,19 @@ def _pod_demand(body):
         blockers=tuple(sorted(set(blockers))),
         requested_cpu_millicores=requests[0],
         requested_ram_bytes=requests[1],
+    )
+
+
+def _configured_pod_cpu(pod, requests):
+    from kubernetes.utils.quantity import parse_quantity
+
+    if pod.get("initContainers") or requests[0] is None:
+        return None
+    return str(
+        sum(
+            parse_quantity(c["resources"]["requests"]["cpu"])
+            for c in pod.get("containers", [])
+        )
     )
 
 

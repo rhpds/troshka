@@ -682,15 +682,18 @@ def reconcile_stop(api, root):
         request = intent(root)
         if request is None:
             raise ManagedPowerError("managed_intent_missing")
-        # Start admission and worker claim are a separate increment. A manually
-        # written running annotation must never become a resume bypass.
-        require(request["mode"] == "stopped", "managed_resume_admission_unavailable")
+        if request["mode"] == "running":
+            reconcile_restore(api, root, request)
+            return
         rows, by_uid = inventory(api, root)
         profile(root, rows, by_uid, api)
         state = deepcopy(root.get("status", {}).get("managedPower"))
         if state is None or "inventoryDigest" not in state:
             state = snapshot(root, rows, by_uid, request)
             root = write_status(api, root, state)  # Persist originals BEFORE mutation.
+        elif state.get("requestId") != request["requestId"]:
+            state = superseding_stop(root, rows, state, request)
+            root = write_status(api, root, state)
         validate_snapshot(root, state, request)
         require(
             state.get("retainedDigest") == retained_digest(rows),
@@ -708,6 +711,189 @@ def reconcile_stop(api, root):
         state = deepcopy(current.get("status", {}).get("managedPower", {}))
         state.update(state="blocked", producerDrained=False, reason=str(error))
         write_status(api, current, state)
+
+
+def superseding_stop(root, rows, state, request):
+    """Carry desired originals through partial restore; bind recreated Pod UIDs."""
+    validate_snapshot(root, state, {**request, "requestId": state["requestId"]})
+    validate_restore_inventory(rows, state)
+    targets = deepcopy(state["targets"])
+    pods = {p["metadata"]["name"]: p for p in rows["Pod"]}
+    manifests = container_manifests(root, rows)
+    for target in targets:
+        if target["kind"] != "Pod" or target["name"] not in pods:
+            continue
+        pod = pods[target["name"]]
+        manifest = manifests[target["name"]]
+        require(
+            digest(manifest) == target["manifestDigest"]
+            and manifest_matches(manifest["spec"], pod["spec"]),
+            "managed_container_changed",
+        )
+        uid = pod["metadata"]["uid"]
+        if uid != target["uid"]:
+            require(
+                bool(state.get("resumeRequestId"))
+                and state.get("restoredPods", {}).get(target["name"], uid) == uid,
+                "managed_target_changed",
+            )
+            target["uid"] = uid
+    result = {k: deepcopy(state[k]) for k in ("topologyDigest", "retainedDigest")}
+    result.update(
+        requestId=request["requestId"],
+        allocationGeneration=request["allocationGeneration"],
+        mode="stopped",
+        state="stopping",
+        producerDrained=False,
+        targets=targets,
+    )
+    result["inventoryDigest"] = digest(
+        {"targets": targets, "retainedDigest": result["retainedDigest"]}
+    )
+    return result
+
+
+def validate_restore(root, state, request):
+    require(
+        request.get("profile") == "configured-workloads-v1",
+        "managed_resume_profile_invalid",
+    )
+    require(
+        isinstance(request.get("executionDigest"), str)
+        and bool(request["executionDigest"])
+        and request.get("resumeOf") == state.get("requestId")
+        and request.get("targetDigest") == state.get("inventoryDigest"),
+        "managed_resume_target_changed",
+    )
+    previous = {**request, "mode": "stopped", "requestId": request["resumeOf"]}
+    validate_snapshot(root, state, previous)
+    require(state.get("producerDrained") is True, "managed_producer_not_drained")
+    require(
+        state.get("resumeRequestId") in (None, request["requestId"]),
+        "managed_episode_changed",
+    )
+
+
+def reconcile_restore(api, root, request):
+    state = deepcopy(root.get("status", {}).get("managedPower", {}))
+    validate_restore(root, state, request)
+    rows, by_uid = inventory(api, root)
+    profile(root, rows, by_uid, api)
+    require(
+        state["retainedDigest"] == retained_digest(rows),
+        "managed_retained_identity_changed",
+    )
+    validate_restore_inventory(rows, state)
+    require(
+        configuration_digest(rows) == request.get("configurationDigest"),
+        "managed_configuration_changed",
+    )
+    if state.get("state") == "running":
+        require(
+            state.get("confirmedOperationId") == request["requestId"]
+            and bool(state.get("confirmedObservationId")),
+            "managed_confirmation_invalid",
+        )
+        return  # Completed managed plans never reopen ordinary producer paths.
+    state.update(state="restoring", resumeRequestId=request["requestId"])
+    root = write_status(api, root, state)
+    manifests = container_manifests(root, rows)
+    for target in state["targets"]:
+        restore_target(api, root, request, target, state, manifests)
+    current = root_for(root, root["metadata"]["namespace"], api)
+    require(intent(current) == request, "managed_episode_changed")
+    write_status(api, current, state)
+
+
+def validate_restore_inventory(rows, state):
+    for kind in ("VirtualMachine", "Deployment"):
+        expected = {t["name"]: t["uid"] for t in state["targets"] if t["kind"] == kind}
+        actual = {v["metadata"]["name"]: v["metadata"]["uid"] for v in rows[kind]}
+        require(actual == expected, "managed_inventory_changed")
+
+
+def configuration_digest(rows):
+    """Power transitions may change desired state, never workload declarations."""
+    values = []
+    for kind in ("VirtualMachine", "Deployment"):
+        for value in rows[kind]:
+            values.append(
+                {
+                    "kind": kind,
+                    "name": value["metadata"]["name"],
+                    "uid": value["metadata"]["uid"],
+                    "spec": {
+                        k: v
+                        for k, v in value["spec"].items()
+                        if k not in {"running", "runStrategy", "replicas"}
+                    },
+                }
+            )
+    return digest(sorted(values, key=lambda v: (v["kind"], v["name"])))
+
+
+def restore_target(api, root, request, target, state, manifests):
+    namespace = root["metadata"]["namespace"]
+    require(
+        intent(root_for(root, namespace, api)) == request, "managed_episode_changed"
+    )
+    if target["kind"] == "Pod":
+        restore_pod(api, root, target, state, manifests)
+        return
+    value = api.get(target["kind"], namespace, target["name"])
+    require(
+        value["metadata"]["uid"] == target["uid"]
+        and not value["metadata"].get("deletionTimestamp"),
+        "managed_target_changed",
+    )
+    desired = target["desired"]
+    changes = [
+        {"op": "remove", "path": "/spec/" + k}
+        for k in ("running", "runStrategy")
+        if k in value["spec"] and k not in desired
+    ]
+    changes.extend(
+        {"op": "add", "path": "/spec/" + k, "value": v}
+        for k, v in desired.items()
+        if value["spec"].get(k) != v
+    )
+    if changes:
+        api.patch(value, changes)
+
+
+def restore_pod(api, root, target, state, manifests):
+    manifest = manifests.get(target["name"])
+    require(
+        manifest is not None and digest(manifest) == target.get("manifestDigest"),
+        "managed_container_changed",
+    )
+    require(
+        container_node_id(root, manifest) == target.get("nodeId"),
+        "managed_container_identity_changed",
+    )
+    namespace = root["metadata"]["namespace"]
+    values = {p["metadata"]["name"]: p for p in api.rows("Pod", namespace)}
+    pod = values.get(target["name"])
+    if pod is None:
+        # An ambiguous create is never retried: next reconciliation reads it by
+        # its exact saved name, owner and manifest before proceeding.
+        pod = api.request("POST", "Pod", namespace, None, manifest)
+    require(not pod["metadata"].get("deletionTimestamp"), "managed_target_deleting")
+    require(
+        manifest_matches(manifest["spec"], pod["spec"]), "managed_container_changed"
+    )
+    require(
+        pod["metadata"].get("ownerReferences")
+        == manifest["metadata"]["ownerReferences"],
+        "managed_owner_changed",
+    )
+    restored = state.setdefault("restoredPods", {})
+    uid = pod["metadata"]["uid"]
+    require(
+        restored.get(target["name"], uid) == uid and uid != target["uid"],
+        "managed_target_changed",
+    )
+    restored[target["name"]] = uid
 
 
 def off_inventory(rows):
