@@ -9,6 +9,7 @@ from app.schemas.kubevirt_storage import (
     ImageObservation,
     NativeInventory,
     ProjectRoot,
+    SnapshotKey,
     VolumeBinding,
 )
 from app.services.kubevirt_storage_graph import attribute_graph
@@ -97,6 +98,74 @@ def test_private_parents_and_shared_cache_are_counted_once():
     assert [p.allocated_bytes for p in result.projects] == [30, 50]
     assert result.platform_pools[0].allocated_bytes == 100
     assert not result.unattributed_images
+
+
+@pytest.mark.parametrize("parent", [None, "parent-1"])
+@pytest.mark.parametrize("size", [0, 8388608])
+def test_snapshot_parent_uncertainty_keeps_known_subset_and_unrelated_project(
+    parent, size
+):
+    images = observations()
+    images[0] = observation("child-1", size, parent).model_copy(
+        update={"snapshots": [SnapshotKey(image_key=key("child-1"), snapshot_id="123")]}
+    )
+    affected, unaffected = attribute_graph(inventory(), images).projects
+    assert affected.allocated_bytes is None
+    assert affected.known_allocated_bytes == size
+    assert affected.coverage == "partial"
+    assert "snapshot_ancestry_unverified" in affected.blockers
+    assert unaffected.allocated_bytes == unaffected.known_allocated_bytes == 50
+    assert unaffected.coverage == "complete"
+    assert unaffected.blockers == []
+
+
+def test_snapshot_on_reachable_private_ancestor_blocks_project():
+    images = observations()
+    images[2] = images[2].model_copy(
+        update={"snapshots": [SnapshotKey(image_key=key("parent-1"), snapshot_id="1")]}
+    )
+    result = attribute_graph(inventory(), images)
+    assert result.projects[0].allocated_bytes is None
+    assert result.projects[0].known_allocated_bytes == 30
+    assert "snapshot_ancestry_unverified" in result.projects[0].blockers
+    assert result.projects[1].allocated_bytes == 50
+
+
+def test_snapshot_cache_blocks_only_reachable_projects_and_affected_pool():
+    images = observations()
+    images[1] = observation("child-2", 40)
+    images[-1] = images[-1].model_copy(
+        update={"snapshots": [SnapshotKey(image_key=key("cache"), snapshot_id="1")]}
+    )
+    evidence = inventory()
+    other_cache = evidence.cache_bindings[0].model_copy(
+        update={"image_key": key("other-cache").model_copy(update={"pool_id": 2})}
+    )
+    other_image = observation("other-cache", 20).model_copy(
+        update={"key": other_cache.image_key}
+    )
+    evidence = evidence.model_copy(
+        update={"cache_bindings": [*evidence.cache_bindings, other_cache]}
+    )
+    result = attribute_graph(evidence, [*images, other_image])
+    assert result.projects[0].allocated_bytes is None
+    assert result.projects[0].known_allocated_bytes == 30
+    assert "snapshot_ancestry_unverified" in result.projects[0].blockers
+    assert result.projects[1].allocated_bytes == 40
+    assert result.projects[1].blockers == []
+    pools = {pool.pool_key.pool_id: pool for pool in result.platform_pools}
+    assert pools[1].allocated_bytes is None
+    assert pools[1].known_allocated_bytes == 100
+    assert pools[2].allocated_bytes == pools[2].known_allocated_bytes == 20
+
+
+def test_unreachable_snapshot_observation_does_not_block_projects():
+    image = observation("unrelated", 5).model_copy(
+        update={"snapshots": [SnapshotKey(image_key=key("unrelated"), snapshot_id="1")]}
+    )
+    result = attribute_graph(inventory(), [*observations(), image])
+    assert [project.allocated_bytes for project in result.projects] == [30, 50]
+    assert result.platform_pools[0].allocated_bytes == 100
 
 
 def test_saved_zero_and_timeout_recordings_keep_distinct_coverage():

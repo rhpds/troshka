@@ -71,6 +71,71 @@ def url(scope, identity):
     return f"/api/v1/quotas/{scope}/{identity}/native-storage"
 
 
+@pytest.mark.parametrize("image_id", ["child-1", "cache"])
+@pytest.mark.parametrize("legacy_persisted", [False, True])
+def test_snapshot_ancestry_reprojects_imported_and_legacy_reports_without_rewriting(
+    native_client, image_id, legacy_persisted
+):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.services.kubevirt_storage_enrollment import digest
+    from tests.kubevirt_storage_helpers import with_retained_snapshot
+    from tests.test_kubevirt_storage_reports import revised
+
+    client, q = native_client
+    report = with_retained_snapshot(q.report, image_id)
+    if legacy_persisted:
+        # Seed the exact raw state an older evaluator accepted, bypassing import.
+        identity = str(report.report_id)
+        with q.sessions() as db:
+            saved = db.get(NativeStorageSnapshot, identity)
+            saved.payload = report.model_dump(mode="json")
+            saved.digest = digest(report)
+            db.commit()
+    else:
+        report = revised(
+            report,
+            started_at=report.started_at + timedelta(seconds=1),
+            completed_at=report.completed_at + timedelta(seconds=1),
+        )
+        identity = ingest(q, report)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        before = {
+            column.name: getattr(saved, column.name)
+            for column in saved.__table__.columns
+        }
+        assert saved.accepted is True
+        assert saved.payload["projects"][0]["allocated_bytes"] == 30
+        assert saved.payload["projects"][0]["coverage"] == "complete"
+        assert saved.payload["platform_pools"][0]["allocated_bytes"] == 100
+    act(q, q.owner_id)
+    affected, control = [str(root.project_id) for root in report.project_roots]
+    response = client.get(url("project", affected))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["allocated_bytes"] is None
+    assert body["known_allocated_bytes"] == 30
+    assert body["status"] == "partial"
+    assert body["covered_projects"] == 0
+    assert "snapshot_ancestry_unverified" in body["reason_codes"]
+    assert body["enforcement_eligible"] is False
+    other = client.get(url("project", control)).json()
+    assert other["allocated_bytes"] == (50 if image_id == "child-1" else None)
+    total = client.get(url("user", q.owner_id)).json()
+    assert total["allocated_bytes"] is None
+    assert total["known_allocated_bytes"] == 80
+    act(q, q.admin_id)
+    admin = client.get(url("user", q.owner_id)).json()
+    assert admin["platform_bytes"] == (100 if image_id == "child-1" else None)
+    assert ingest(q, report) == identity
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert {
+            column.name: getattr(saved, column.name)
+            for column in saved.__table__.columns
+        } == before
+
+
 def test_owner_shared_viewer_admin_and_no_graph_or_pool_leaks(native_client):
     client, q = native_client
     pid = str(q.report.project_roots[0].project_id)

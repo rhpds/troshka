@@ -170,6 +170,26 @@ cannot establish complete retained-version accounting. Keep those totals null
 until a version-pinned, read-only, ID-aware adapter and full graph traversal are
 implemented and independently validated. No such adapter ships in this workflow.
 
+USER snapshots also have a separate ancestry uncertainty. A shallow flatten can
+remove an image head's parent while retained snapshots still depend on private
+ancestors. V1 evidence records snapshot IDs but has no per-snapshot parent proof;
+neither the current head parent nor a parentless head establishes that proof.
+The graph therefore emits `snapshot_ancestry_unverified` for every reachable
+snapshot-bearing observation, including verified cache images and measured-zero
+images. The affected project's authoritative total is null; snapshot-bearing
+cache images also make their platform pool total null. Unrelated projects and
+pools retain their own coverage.
+
+This guard preserves measured own allocation as the known subset when ownership
+and identity remain verified. That subset may omit retained ancestors, so it
+cannot establish total usage, available headroom or enforcement readiness.
+It is distinct from unsupported TRASH allocation, which remains unmeasured.
+Imports and reads recompute graph attribution from raw evidence, including old
+v1 reports that contain previously complete aggregate fields. Identical replay
+preserves the original payload, digest, report ID and timestamps; it does not
+rewrite evidence or make an old report fresh. No schema or metric version change
+is required, and this correction adds no metadata adapter.
+
 A bounded disposable USER-snapshot experiment on downstream Ceph
 `19.2.1-423.el9cp`, commit `cb76ca76a78ea7346ab574122ab21a208cf75df0`, used 64 MiB
 images and aligned 4 MiB writes. Base+two untouched clones measured 4/0/0 MiB;

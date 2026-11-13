@@ -191,6 +191,54 @@ def test_unknown_namespace_and_collector_cannot_bootstrap(native_case):
         ingest(q, forged)
 
 
+def test_snapshot_report_import_recomputes_graph_and_replay_preserves_evidence(
+    native_case, monkeypatch
+):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.services import kubevirt_storage_reports
+    from app.services.kubevirt_storage_enrollment import digest
+    from tests.kubevirt_storage_helpers import with_retained_snapshot
+
+    q = native_case
+    report = with_retained_snapshot(q.report)
+    assert report.projects[0].allocated_bytes == 30
+    assert report.projects[0].coverage == "complete"
+    evaluated = []
+    graph = kubevirt_storage_reports.attribute_graph
+
+    def capture(*args, **kwargs):
+        result = graph(*args, **kwargs)
+        evaluated.append(result)
+        return result
+
+    monkeypatch.setattr(kubevirt_storage_reports, "attribute_graph", capture)
+    identity = ingest(q, report)
+    assert evaluated[0].projects[0].allocated_bytes is None
+    assert evaluated[0].projects[0].known_allocated_bytes == 30
+    assert "snapshot_ancestry_unverified" in evaluated[0].projects[0].blockers
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        before = {
+            column.name: getattr(saved, column.name)
+            for column in saved.__table__.columns
+        }
+        assert saved.accepted is True
+        assert saved.digest == digest(report)
+        assert saved.payload == report.model_dump(mode="json")
+    result = usage(q)
+    assert result.allocated_bytes is None
+    assert result.known_allocated_bytes == 80
+    assert "snapshot_ancestry_unverified" in result.reason_codes
+    assert ingest(q, report) == identity == str(report.report_id)
+    with q.sessions() as db:
+        saved = db.get(NativeStorageSnapshot, identity)
+        assert {
+            column.name: getattr(saved, column.name)
+            for column in saved.__table__.columns
+        } == before
+        assert db.query(NativeStorageSnapshot).count() == 1
+
+
 def test_new_partial_invalidates_old_complete_and_late_old_does_not_resurrect(
     native_case,
 ):

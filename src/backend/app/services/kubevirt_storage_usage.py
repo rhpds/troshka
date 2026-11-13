@@ -35,6 +35,7 @@ MAX_BYTES = 2**63 - 1
 PUBLIC_REASON_CODES = frozenset(
     """
 ancestry_cycle parent_depth_limit missing_image unverified_cache_ancestor
+snapshot_ancestry_unverified
 duplicate_project_root unresolved_ownership incomplete_measurement incomplete_cache_evidence
 csi_snapshot_backend_unresolved snapshot_identity_unresolved scan_limit pvc_binding_unresolved
 project_discovery_unavailable cache_discovery_unavailable retained_identity_conflict

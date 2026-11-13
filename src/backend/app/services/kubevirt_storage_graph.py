@@ -39,6 +39,10 @@ def _visit_ancestor(key, depth, observations, cache, limit, seen, path, errors):
     if image is None:
         errors.add("missing_image")
         return
+    # V1 records snapshot IDs, not their parents. A head parent (or its absence)
+    # cannot prove retained ancestry after a shallow flatten.
+    if image.snapshots:
+        errors.add("snapshot_ancestry_unverified")
     if key in cache and image.parent and image.parent.image_key not in cache:
         errors.add("unverified_cache_ancestor")
         return
@@ -181,7 +185,9 @@ def _pool_allocation(pool_key, keys, observations, blockers):
         pool_key=pool_key,
         known_allocated_bytes=known,
         allocated_bytes=known
-        if not applicable and len(complete) == len(keys)
+        if not applicable
+        and len(complete) == len(keys)
+        and not any(image.snapshots for image in complete)
         else None,
     )
 
