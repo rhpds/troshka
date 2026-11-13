@@ -42,10 +42,12 @@ def selected_host(db, project, host_id):
         host is None
         or host.host_type != "kubevirt-cluster"
         or host.state != "active"
+        or host.agent_status != "connected"
         or not host.accepting_work
         or (host.billing_mode or "shared") != "shared"
         or provider is None
         or provider.type != "kubevirt"
+        or provider.state != "active"
         or project.provider_id not in (None, provider.id)
         or project.host_assignments
         or project.mesh_subnet_id
@@ -53,18 +55,17 @@ def selected_host(db, project, host_id):
         raise AccountingUnavailable(
             "An explicit available single native shared host is required"
         )
-    helpers().validate_topology(project.topology or {})
     return host, provider
 
 
-def final_payload(project, provider, profile):
+def final_payload(project, provider, profile, *, topology=None, sources=None):
     from app.services.deploy_service import (
         _generate_exec_ssh_keypair,
         _regenerate_kubevirt_cloud_init,
     )
     from app.services.providers.kubevirt import _build_troshka_project_cr, _project_ns
 
-    topology = deepcopy(project.topology)
+    topology = deepcopy(topology if topology is not None else project.topology)
     private, public = _generate_exec_ssh_keypair(project.id)
     _regenerate_kubevirt_cloud_init(topology, project, public)
     # No custom NIC/network, imported S3 disk, installer or model-selection path
@@ -80,6 +81,8 @@ def final_payload(project, provider, profile):
     payload["spec"]["managedVncImage"] = initialization.implementation(
         profile
     ).vnc_image
+    if sources:
+        payload["spec"]["managedSources"] = deepcopy(sources)
     root = {**deepcopy(payload), "metadata": {**payload["metadata"], "uid": "pending"}}
     payload["spec"]["managedPlanDigest"] = helpers().plan_digest(
         helpers().render(root, profile.target.storage_class_name)
@@ -89,13 +92,40 @@ def final_payload(project, provider, profile):
 
 def prepare(db, project, *, host_id):
     if not host_id:
-        raise AccountingUnavailable(
-            "Native first-deploy admission is unavailable without an explicit native host"
+        from app.services.placement import (
+            calculate_project_requirements,
+            find_available_host,
         )
+
+        if project.provider_id is None:
+            raise AccountingUnavailable(
+                "Automatic native placement requires the project's selected provider"
+            )
+        reqs = calculate_project_requirements(project.topology)
+        selected = find_available_host(
+            db,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            provider_id=project.provider_id,
+            requires_kubevirt=True,
+        )
+        host_id = selected.id if selected else None
+        if host_id is None:
+            raise AccountingUnavailable(
+                "No available native host has configured capacity"
+            )
     operation_id = str(uuid4())
+    # Resolve external source I/O before acquiring operation/project/ledger locks.
+    from app.services import native_managed_images as images
+
+    input_digest = digest(project.topology)
+    host, provider = selected_host(db, project, host_id)
+    _, manifest, candidate = initialization.enrollment(db, provider.id)
+    owner = db.get(User, project.owner_id)
+    topology, sources = images.freeze(db, project, owner, candidate, manifest)
     admission.lock_operations(db, [operation_id])
     project, owner, organization = lock_project(db, project.id)
-    if organization is None:
+    if organization is None or not owner.access_enabled:
         raise AccountingUnavailable(
             "Native deployment requires current organization attribution"
         )
@@ -107,7 +137,14 @@ def prepare(db, project, *, host_id):
     domain, manifest, profile, observation = initialization.current(
         db, provider.id, operations.now()
     )
-    payload = final_payload(project, provider, profile)
+    if digest(profile) != digest(candidate) or digest(project.topology) != input_digest:
+        raise AccountingUnavailable("Native source/profile changed while freezing plan")
+    images.validate_sources(
+        db, owner, {"sources": sources, "sources_digest": digest(sources)}, profile
+    )
+    payload = final_payload(
+        project, provider, profile, topology=topology, sources=sources
+    )
     demand, claims = payload_demand(payload, profile)
     requested = Resources(
         cpu=demand["cpu"],
@@ -136,6 +173,8 @@ def prepare(db, project, *, host_id):
             "payload": payload,
             "payload_digest": digest(payload["spec"]),
             "input_digest": digest(project.topology),
+            "sources": sources,
+            "sources_digest": digest(sources),
             "demand": demand,
             "claims": claims,
             "initial_bound": requested.storage_bytes,
@@ -161,9 +200,10 @@ def payload_demand(payload, profile):
 
     claims = []
     for value in planned:
-        if value["kind"] != "PersistentVolumeClaim":
+        if value["kind"] not in {"PersistentVolumeClaim", "DataVolume"}:
             continue
-        size = int(parse_quantity(value["spec"]["resources"]["requests"]["storage"]))
+        spec = value["spec"]["pvc"] if value["kind"] == "DataVolume" else value["spec"]
+        size = int(parse_quantity(spec["resources"]["requests"]["storage"]))
         if not profile.minimum_capacity_bytes <= size <= profile.maximum_capacity_bytes:
             raise AccountingUnavailable(
                 "Native PVC capacity is outside initialization applicability"
@@ -187,7 +227,9 @@ def validate(db, project, row, *, placed=True, physical=True):
         )
     owner = db.get(User, project.owner_id)
     if (
-        (row.owner_id, row.organization_id) != (owner.id, owner.organization_id)
+        owner is None
+        or not owner.access_enabled
+        or (row.owner_id, row.organization_id) != (owner.id, owner.organization_id)
         or (owner.id, owner.organization_id)
         != (target["owner_id"], target["organization_id"])
         or provider.id != target["provider_id"]
@@ -207,6 +249,9 @@ def validate(db, project, row, *, placed=True, physical=True):
     )
     if digest(profile) != target["profile_digest"]:
         raise AccountingUnavailable("Native pending initialization profile changed")
+    from app.services.native_managed_images import validate_sources
+
+    validate_sources(db, owner, target, profile)
     demand, claims = payload_demand(target["payload"], profile)
     vector = Resources(
         cpu=demand["cpu"],
@@ -230,7 +275,7 @@ def place(db, project, operation_id, host_id):
     if row.state != "pending" or row.dispatch_metadata.get("claim"):
         raise AccountingUnavailable("Claimed native work cannot repeat placement")
     target, _ = validate(db, project, row, placed=False)
-    if host_id != target["host_id"]:
+    if host_id not in (None, target["host_id"]):
         raise AccountingUnavailable("Native placement cannot move the reserved host")
     project.host_id = target["host_id"]
     project.topology = deepcopy(target["payload"]["spec"]["topology"])
@@ -254,7 +299,9 @@ def marker(target, operation_id, phase, profile):
         "version": 1,
         "mode": "deploy",
         "phase": phase,
-        "profile": helpers().PROFILE,
+        "profile": helpers().CLONE_PROFILE
+        if profile.operation == "managed-cache-clone"
+        else helpers().PROFILE,
         "profileDigest": target["profile_digest"],
         "storageClass": profile.target.storage_class_name,
         "requestId": operation_id,
@@ -737,6 +784,13 @@ def advance(project_id, operation_id, target, profile, provider):
             db.commit()
         return
     if phase == "bound":
+        if target.get("sources"):
+            from app.services.native_managed_images import prepare_sources
+
+            if not prepare_sources(
+                SessionLocal, operation_id, target, profile, provider
+            ):
+                return
         enroll_ready(project_id, operation_id, target)
         return
     if phase == "initialization-intent":
@@ -819,7 +873,7 @@ def release_runtime(project_id, operation_id, target, provider):
         quota_storage.apply_measurement(
             db, project, [row], measurement, operations.now()
         )
-        if not measured_blank_initialization(db, project.id, measurement):
+        if not measured_initialization(db, row, measurement):
             update(row, blocker="initialization_not_blank")
             db.commit()
             raise AccountingUnavailable("Native initialization is no longer blank")
@@ -872,6 +926,47 @@ def measured_blank_initialization(db, project_id, measurement):
     return source is not None and blank_initialization(source.payload, project_id)
 
 
+def measured_initialization(db, row, measurement):
+    """Both initial admission and delayed release consume the same protected proof."""
+    target = row.dispatch_metadata["native_deploy"]
+    if not target.get("sources"):
+        return measured_blank_initialization(db, row.project_id, measurement)
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.schemas.kubevirt_storage import CloneReference, VolumeBinding
+    from app.services.native_clone_graph import binding_identity
+    from app.services.native_clone_lineage import validated_lineage
+
+    source = db.get(NativeStorageSnapshot, measurement.report_id)
+    expected = set(target.get("clone_lineages", {}).values())
+    if source is None or not expected:
+        return False
+    try:
+        references = [
+            CloneReference.model_validate(v)
+            for v in source.payload.get("clone_references", [])
+        ]
+        proofs = [
+            validated_lineage(db, r.lineage_id, r.digest)
+            for r in references
+            if str(r.lineage_id) in expected
+        ]
+        bindings = [
+            binding_identity(VolumeBinding.model_validate(v))
+            for v in source.payload["volume_bindings"]
+        ]
+    except ValueError:
+        return False  # Expected denial must preserve the measurement already applied.
+    return (
+        {str(p.lineage_id) for p in proofs} == expected
+        and all(
+            p.operation_id == row.operation_id
+            and p.binding.root.model_dump(mode="json") == target["root"]
+            for p in proofs
+        )
+        and all(binding_identity(p.binding) in bindings for p in proofs)
+    )
+
+
 def enroll_ready(project_id, operation_id, target):
     from app.core.database import SessionLocal
     from app.services.quota_capacity_baseline import _native_identity
@@ -891,6 +986,18 @@ def enroll_ready(project_id, operation_id, target):
             **row.dispatch_metadata,
             "native_storage_identity": identity,
         }
+        if target.get("sources"):
+            from app.services.native_managed_images import prepare_clones
+
+            lineages = prepare_clones(
+                db,
+                row,
+                {
+                    **target,
+                    "initialization_storage_class": profile.target.storage_class_name,
+                },
+            )
+            update(row, clone_lineages=lineages)
         request = marker(target, operation_id, "initializing", profile)
         update(
             row,
@@ -934,7 +1041,7 @@ def admit_runtime(project_id, operation_id, target, proof):
             now=operations.now(),
             snapshot=power.billing_snapshot(db, project, [row]),
         )
-        if not measured_blank_initialization(db, project.id, measurement):
+        if not measured_initialization(db, row, measurement):
             update(row, blocker="initialization_not_blank")
             db.commit()  # Complete measured allocation stays charged, runtime stays off.
             return

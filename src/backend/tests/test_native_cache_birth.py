@@ -615,8 +615,9 @@ def test_concurrent_submission_creates_at_most_once(concurrent_case):
     assert len(adapter.created) == 1
 
 
+@pytest.mark.parametrize("split", [False, True])
 def test_concrete_provider_creates_and_independently_verifies_new_source(
-    native_case, installed, monkeypatch
+    native_case, installed, monkeypatch, split
 ):
     from copy import deepcopy
 
@@ -629,7 +630,11 @@ def test_concrete_provider_creates_and_independently_verifies_new_source(
         validated_receipt,
         verify_cache_birth,
     )
-    from app.services.native_cache_provider import CacheProviderAdapter
+    from app.services.native_cache_provider import (
+        CacheCreationAdapter,
+        CacheProviderAdapter,
+        CacheVerificationAdapter,
+    )
 
     q = installed
     operation = prepare(
@@ -655,7 +660,16 @@ def test_concrete_provider_creates_and_independently_verifies_new_source(
     q.reader.api.rest_client = SimpleNamespace(
         pool_manager=SimpleNamespace(connection_pool_kw=pool_options)
     )
-    adapter = CacheProviderAdapter(q.reader, q.backend, source_client, profile)
+    adapter = (
+        CacheCreationAdapter(q.reader, source_client, profile)
+        if split
+        else CacheProviderAdapter(q.reader, q.backend, source_client, profile)
+    )
+    verifier = (
+        CacheVerificationAdapter(q.reader, q.backend, source_client, profile)
+        if split
+        else adapter
+    )
     resources = {}
 
     def dv_read(*args, **kwargs):
@@ -723,7 +737,9 @@ def test_concrete_provider_creates_and_independently_verifies_new_source(
         ),
     )
     submit_cache_birth(native_case.sessions, operation, adapter)
-    reference = verify_cache_birth(native_case.sessions, operation, adapter)
+    if split:
+        assert not q.commands
+    reference = verify_cache_birth(native_case.sessions, operation, verifier)
     assert pool_options["retries"] == 0
     with native_case.sessions() as db:
         _, receipt = validated_receipt(db, operation, reference.digest)
@@ -732,4 +748,4 @@ def test_concrete_provider_creates_and_independently_verifies_new_source(
         adapter.preflight(intent)
     head["ETag"] = "replaced-source"
     with pytest.raises(ValueError, match="source identity"):
-        adapter.observe(intent, resources["dv"])
+        verifier.observe(intent, resources["dv"])

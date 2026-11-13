@@ -242,6 +242,10 @@ def deploy_case(resume_case, monkeypatch):
         original = validated_enrollment(old)
         host = db.query(Host).one()
         host.state = "active"
+        host.agent_status = "connected"
+        from app.models.provider import Provider
+
+        db.get(Provider, host.provider_id).state = "active"
         q.host_id, q.provider_id = host.id, host.provider_id
         data = synthetic_profile()
         data["target"].update(

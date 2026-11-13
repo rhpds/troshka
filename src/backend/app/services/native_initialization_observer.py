@@ -657,6 +657,28 @@ def source(result, timestamps):
     return result.value
 
 
+def verify_kubernetes_target(kube_value, target):
+    """Exact Kubernetes portion of installation identity; no backend substitute."""
+    sc = kube_value["storage_class"]
+    require(
+        kube_value["provider_id"] == str(target.provider_id)
+        and kube_value["cluster_key"] == target.cluster_key
+        and sc["metadata"]["name"] == target.storage_class_name
+        and sc["metadata"]["uid"] == target.storage_class_uid
+        and sc["provisioner"] == target.provisioner
+        and sc.get("parameters", {}) == target.storage_class_parameters
+        and StorageClassOptions(
+            volume_binding_mode=sc.get("volumeBindingMode", "Immediate"),
+            reclaim_policy=sc.get("reclaimPolicy", "Delete"),
+            allow_volume_expansion=sc.get("allowVolumeExpansion", False),
+            mount_options=sc.get("mountOptions", []),
+        )
+        == target.storage_class_options
+        and csi_identity(kube_value) == target.csi_installation,
+        "Kubernetes installation identity changed",
+    )
+
+
 def target_from_reads(kube_value, backend, timestamps):
     sc = kube_value["storage_class"]
     params = sc.get("parameters", {})

@@ -56,7 +56,7 @@ def prepare_clone(db, *, operation_id, claim_name, cache_reference):
     )
     target = (operation.dispatch_metadata or {}).get("native_deploy", {})
     if (
-        operation.state not in ("pending", "dispatched")
+        operation.state not in ("pending", "dispatched", "reconciling")
         or operation.dispatch_metadata.get("cancelled")
         or target.get("phase") != "bound"
         or not operation.dispatch_metadata.get("claim")

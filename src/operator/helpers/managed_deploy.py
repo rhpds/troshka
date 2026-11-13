@@ -14,6 +14,7 @@ from kubernetes.utils.quantity import parse_quantity
 from helpers import managed_power as power
 
 PROFILE = "configured-blank-pvc-v1"
+CLONE_PROFILE = "configured-managed-clone-v1"
 
 # Only these static API defaults are equivalent to omission in this profile.
 # Environment-dependent defaults (CPU models, machine types, injected requests,
@@ -57,7 +58,7 @@ _SERVER_ALLOCATIONS = {
 }
 
 
-def validate_topology(topology):
+def validate_topology(topology, *, clone=False):
     forbidden = (
         "clusters",
         "ocp",
@@ -108,9 +109,21 @@ def validate_topology(topology):
             "diskSource",
             "centralSource",
         )
-        power.require(not any(data.get(k) for k in flags))
+        allowed = (
+            {"libraryItemId", "resolvedS3Path", "sourceSizeGb", "centralSource"}
+            if clone and node["type"] == "storageNode"
+            else set()
+        )
+        power.require(not any(data.get(k) for k in flags if k not in allowed))
         power.require(not data.get("firmware", "bios").startswith("uefi"))
         if node["type"] == "storageNode":
+            if clone and data.get("source") == "library":
+                power.require(
+                    bool(data.get("libraryItemId"))
+                    and data.get("format", "qcow2") == "qcow2"
+                    and not data.get("s3Path")
+                )
+                continue
             power.require(
                 not data.get("image")
                 and not data.get("s3Path")
@@ -126,7 +139,8 @@ def render(root, storage_class):
     from helpers import containers, k8s, kubevirt, topology, vnc
 
     topo = deepcopy(root["spec"].get("topology", {}))
-    validate_topology(topo)
+    sources = root["spec"].get("managedSources", {})
+    validate_topology(topo, clone=bool(sources))
     namespace = root["metadata"]["namespace"]
     disks, cdroms = topology.resolve_vm_disks(topo)
     power.require(not any(cdroms.values()), "managed_import_unsupported")
@@ -146,11 +160,10 @@ def render(root, storage_class):
         result.append(child)
         mapping = {}
         for disk in child["spec"]["disks"]:
-            power.require(not disk.get("patternImage") and not disk.get("libraryImage"))
+            power.require(not disk.get("patternImage"))
             name = k8s.vm_disk_pvc_name(child["metadata"]["name"], disk["id"])
             mapping[disk["id"]] = name
-            pvc = kubevirt.build_blank_pvc(name, namespace, disk["sizeGb"])
-            pvc["spec"]["storageClassName"] = storage_class
+            pvc = disk_manifest(disk, sources, name, namespace, storage_class)
             pvc["metadata"]["ownerReferences"] = [k8s.owner_ref(root)]
             result.append(pvc)
         # Inline NoCloud is deterministic; never create a secret with random
@@ -208,7 +221,52 @@ def render(root, storage_class):
     result.append(helper)
     keys = [(v["kind"], v["metadata"]["name"]) for v in result]
     power.require(len(set(keys)) == len(keys), "managed_resource_collision")
+    power.require(
+        {
+            v["spec"]["source"]["pvc"]["name"]
+            for v in result
+            if v["kind"] == "DataVolume"
+        }
+        == {v["name"] for v in sources.values()},
+        "managed_source_not_cloned",
+    )
     return result
+
+
+def disk_manifest(disk, sources, name, namespace, storage_class):
+    from helpers.kubevirt import build_blank_pvc
+
+    if disk.get("libraryImage"):
+        power.require(disk["id"] in sources, "managed_source_required")
+        return clone_manifest(
+            name, namespace, sources[disk["id"]], disk["sizeGb"], storage_class
+        )
+    value = build_blank_pvc(name, namespace, disk["sizeGb"])
+    value["spec"]["storageClassName"] = storage_class
+    return value
+
+
+def clone_manifest(name, namespace, source, size, storage_class):
+    from helpers.kubevirt import build_clone_datavolume
+
+    value = build_clone_datavolume(
+        name,
+        namespace,
+        source["name"],
+        source["namespace"],
+        size,
+        source["sourceCapacityGiB"],
+    )
+    value["spec"]["pvc"]["storageClassName"] = storage_class
+    value["spec"]["pvc"]["volumeMode"] = "Filesystem"
+    value["metadata"]["annotations"] = {"cdi.kubevirt.io/storage.usePopulator": "false"}
+    if source.get("storage_request"):
+        power.require(
+            value["spec"]["pvc"]["resources"]["requests"]["storage"]
+            == source["storage_request"],
+            "managed_source_capacity_changed",
+        )
+    return value
 
 
 def demand(manifests):
@@ -240,7 +298,10 @@ def request(root) -> dict:
     if value is None:
         raise power.ManagedPowerError("managed_deploy_intent_required")
     power.require(value["mode"] == "deploy")
-    power.require(value.get("profile") == PROFILE)
+    power.require(value.get("profile") in {PROFILE, CLONE_PROFILE})
+    power.require(
+        (value["profile"] == CLONE_PROFILE) == bool(root["spec"].get("managedSources"))
+    )
     power.require(value.get("phase") in {"pending", "initializing", "runtime"})
     power.require(
         value.get("payloadDigest") == power.digest(root["spec"]),
@@ -339,6 +400,7 @@ def reconcile(api, root):
         root, state = ensure_resource(api, root, state, wanted, value)
     if wanted["phase"] == "initializing":
         rows, _, _ = observe(api, root)
+        retain_generated_claims(api, rows, state)
         state["initializationDigest"] = initialization_digest(rows)
         state["phase"] = "initialized"
     else:
@@ -349,29 +411,85 @@ def reconcile(api, root):
 def preflight_release(api, root, state):
     if state["phase"] == "initialized":
         rows, _, _ = observe(api, root)
+        verify_retained_claims(api, rows, state)
         power.require(
             initialization_digest(rows) == state["initializationDigest"],
             "managed_initialization_changed",
         )
         return
     rows, by_uid, _ = observe(api, root, runtime=True, allow_missing_pods=True)
+    verify_retained_claims(api, rows, state)
     for values in rows.values():
         for value in values:
-            if value["kind"] in {"ReplicaSet", "VirtualMachineInstance"}:
-                continue
-            if (
-                value["kind"] == "Pod"
-                and power.parent_kind(value, by_uid) != "TroshkaProject"
-            ):
-                continue
-            key = value["kind"] + ":" + value["metadata"]["name"]
-            saved = state["creates"].get(key, {})
-            power.require(
-                bool(saved)
-                and saved.get("uid", value["metadata"]["uid"])
-                == value["metadata"]["uid"],
-                "managed_target_changed",
-            )
+            verify_runtime_target(value, by_uid, state)
+
+
+def verify_runtime_target(value, by_uid, state):
+    if value["kind"] in {"ReplicaSet", "VirtualMachineInstance"}:
+        return
+    if value["kind"] == "Pod" and power.parent_kind(value, by_uid) != "TroshkaProject":
+        return
+    if value["kind"] == "PersistentVolumeClaim" and value["metadata"][
+        "name"
+    ] in state.get("generatedClaims", {}):
+        return  # Independently matched to the retained original DV/PVC/PV closure.
+    key = value["kind"] + ":" + value["metadata"]["name"]
+    saved = state["creates"].get(key, {})
+    power.require(
+        bool(saved)
+        and saved.get("uid", value["metadata"]["uid"]) == value["metadata"]["uid"],
+        "managed_target_changed",
+    )
+
+
+def generated_claim_identities(api, rows, state):
+    claims = {v["metadata"]["name"]: v for v in rows["PersistentVolumeClaim"]}
+    result = {}
+    for dv in rows["DataVolume"]:
+        name, uid = dv["metadata"]["name"], dv["metadata"]["uid"]
+        original = state["creates"].get("DataVolume:" + name, {})
+        power.require(original.get("uid") == uid, "managed_clone_dv_changed")
+        claim = claims[name]
+        pv = api.get("PersistentVolume", None, claim["spec"]["volumeName"])
+        spec = pv["spec"]
+        result[name] = {
+            "uid": claim["metadata"]["uid"],
+            "dvUid": uid,
+            "spec": configuration(claim),
+            "pv": {
+                "uid": pv["metadata"]["uid"],
+                "name": pv["metadata"]["name"],
+                "claimRef": {
+                    k: spec["claimRef"][k] for k in ("uid", "name", "namespace")
+                },
+                "storageClassName": spec.get("storageClassName"),
+                "csi": deepcopy(spec.get("csi", {})),
+            },
+        }
+    return result
+
+
+def retain_generated_claims(api, rows, state):
+    current = generated_claim_identities(api, rows, state)
+    if not current:
+        return
+    if "generatedClaims" in state:
+        power.require(
+            state["generatedClaims"] == current, "managed_clone_binding_changed"
+        )
+    else:
+        power.require(
+            not state.get("initializationDigest"), "managed_clone_binding_unbound"
+        )
+        state["generatedClaims"] = current
+
+
+def verify_retained_claims(api, rows, state):
+    power.require(
+        state.get("generatedClaims", {})
+        == generated_claim_identities(api, rows, state),
+        "managed_clone_binding_changed",
+    )
 
 
 def require_release(state, wanted):
@@ -443,6 +561,8 @@ def ensure_resource(api, root, state, wanted, desired):
     else:
         actual = existing[0]
         power.require(key in journal, "managed_unrelated_resource")
+        if value["kind"] == "DataVolume":
+            power.require(journal[key].get("uid"), "managed_create_unresolved")
     power.require(not actual["metadata"].get("deletionTimestamp"))
     power.require(
         journal[key].get("uid", actual["metadata"]["uid"]) == actual["metadata"]["uid"],
@@ -456,9 +576,16 @@ def ensure_resource(api, root, state, wanted, desired):
     verify_spec(value, actual, allocations=journal[key].get("allocations"))
     if value["kind"] == "TroshkaVM":
         actual = acknowledge_vm(api, actual)
-    journal[key]["uid"] = actual["metadata"]["uid"]
+    if not journal[key].get("uid"):
+        journal[key]["uid"] = actual["metadata"]["uid"]
+        current = write_state(api, current, state)
     if bind_allocations(journal[key], value, actual):
         current = write_state(api, current, state)
+    restore_resource(api, wanted, value, actual)
+    return current, state
+
+
+def restore_resource(api, wanted, value, actual):
     if wanted["phase"] == "runtime" and value["kind"] in {
         "VirtualMachine",
         "Deployment",
@@ -475,7 +602,6 @@ def ensure_resource(api, root, state, wanted, desired):
                     }
                 ],
             )
-    return current, state
 
 
 def acknowledge_vm(api, value):
@@ -619,6 +745,8 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         for v in planned
         if runtime or v["kind"] != "Pod"
     }
+    generated = generated_claims(planned, rows)
+    expected.update(generated)
     actual = {
         (v["kind"], v["metadata"]["name"]): v
         for values in rows.values()
@@ -637,6 +765,9 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         "managed_inventory_changed",
     )
     for key, value in actual.items():
+        if key in generated:
+            verify_generated_claim(value, generated[key], rows)
+            continue
         verify_spec(
             expected[key], value, allocations=allocation_proof(root, expected[key])
         )
@@ -656,6 +787,53 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         )
         power.require(all(v["spec"].get("replicas") == 0 for v in rows["Deployment"]))
     return rows, by_uid, planned
+
+
+def generated_claims(planned, rows):
+    return {
+        ("PersistentVolumeClaim", value["metadata"]["name"]): value
+        for value in planned
+        if value["kind"] == "DataVolume"
+    }
+
+
+def verify_generated_claim(actual, dv, rows):
+    """CDI child binding is distinct from deterministic original DV plan matching."""
+    live = [
+        v for v in rows["DataVolume"] if v["metadata"]["name"] == dv["metadata"]["name"]
+    ]
+    power.require(len(live) == 1, "managed_clone_dv_missing")
+    owners = actual["metadata"].get("ownerReferences", [])
+    power.require(
+        len(owners) == 1
+        and owners[0].get("kind") == "DataVolume"
+        and owners[0].get("controller") is True
+        and owners[0].get("uid") == live[0]["metadata"]["uid"],
+        "managed_clone_owner_changed",
+    )
+    spec = deepcopy(actual["spec"])
+    spec.pop("volumeName", None)
+    # Supported direct CDI CSI clone. An unexpected populator/snapshot/selector
+    # shape is never silently canonicalized away.
+    for field in ("dataSource", "dataSourceRef"):
+        source = spec.pop(field, None)
+        if source is not None:
+            expected = {
+                "kind": "PersistentVolumeClaim",
+                "name": dv["spec"]["source"]["pvc"]["name"],
+            }
+            if "apiGroup" in source:
+                expected["apiGroup"] = ""
+            if field == "dataSourceRef" and "namespace" in source:
+                expected["namespace"] = dv["spec"]["source"]["pvc"]["namespace"]
+            power.require(source == expected, "managed_clone_datasource_changed")
+    expected = {"kind": "PersistentVolumeClaim", "spec": dv["spec"]["pvc"]}
+    power.require(
+        configuration({"kind": "PersistentVolumeClaim", "spec": spec})
+        == configuration(expected),
+        "managed_clone_pvc_changed",
+    )
+    power.require(not actual["metadata"].get("deletionTimestamp"))
 
 
 def plan_digest(planned):

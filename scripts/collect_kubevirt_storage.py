@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 from uuid import UUID
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "backend"))
+_root = Path(__file__).resolve().parents[1]
+sys.path.insert(
+    0, str(_root / "src" / "backend" if (_root / "src" / "backend").is_dir() else _root)
+)
 
 from app.schemas.kubevirt_storage import (
     CollectionLimits,

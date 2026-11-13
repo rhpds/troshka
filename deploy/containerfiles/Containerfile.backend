@@ -18,6 +18,8 @@ COPY src/backend/ .
 # Offline quota migration is an explicit operator action, never an entrypoint.
 COPY scripts/backfill_quotas.py /opt/app-root/src/scripts/backfill_quotas.py
 COPY scripts/migrate_groups.py /opt/app-root/src/scripts/migrate_groups.py
+COPY scripts/import_kubevirt_storage.py /opt/app-root/src/scripts/import_kubevirt_storage.py
+COPY scripts/collect_kubevirt_storage.py /opt/app-root/src/scripts/collect_kubevirt_storage.py
 COPY schemas/ /opt/app-root/src/schemas/
 # The backend imports the shared troshka_serial package (serial/headless VM exec)
 # at deploy time from app/services/headless.py, kubevirt_serial.py, kubevirt.py.

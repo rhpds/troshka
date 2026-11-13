@@ -101,6 +101,80 @@ def enroll(q, manifest=None):
     return identity, manifest
 
 
+def test_managed_bootstrap_cli_allows_only_explicit_zero_root_pins(
+    empty_case, cli, tmp_path
+):
+    import json
+
+    from collect_kubevirt_storage import Manifest
+
+    q = empty_case
+    raw = deepcopy(q.raw_pins)
+    fsid = str(uuid4())  # Standalone collector Manifest requires a real FSID UUID.
+    raw["pool_keys"][0]["ceph_fsid"] = fsid
+    raw["initialization_evidence"]["target"]["ceph_fsid"] = fsid
+    pins = authorize_empty_domain(raw)
+    pools = [p.model_dump(mode="json") for p in q.backend.pools]
+    config = dict(
+        collector_id=pins.collector_ids[0],
+        ceph_fsid=fsid,
+        project_roots=[],
+        cache_roots=raw["cache_roots"],
+        pools=pools,
+        capability=dict(
+            command_version=q.profile.target.rbd_command_version,
+            initialization_evidence=pins.initialization_evidence.model_dump(
+                mode="json"
+            ),
+        ),
+    )
+    backends = [
+        dict(
+            mode="direct",
+            ceph_fsid=fsid,
+            pools=pools,
+            ceph_conf="/protected/ceph.conf",
+            ceph_keyring="/protected/ceph.keyring",
+        )
+    ]
+    paths = {}
+    for name, value in (
+        ("pins", pins.model_dump(mode="json")),
+        ("inventory", config),
+        ("backend_config", backends),
+    ):
+        path = tmp_path / (name + ".json")
+        path.write_text(json.dumps(value))
+        path.chmod(0o600)
+        paths[name] = path
+    args = SimpleNamespace(**paths)
+    with pytest.raises(ValueError):
+        Manifest.model_validate(config)
+    actual_pins, actual, backend = cli._managed_inputs(args)
+    assert actual_pins == pins and actual.project_roots == []
+    assert actual.ceph_fsid == backend.ceph_fsid
+    # An ordinary rootless inventory never bypasses nonempty enrollment scope.
+    without_authority = pins.model_dump(mode="json")
+    without_authority.pop("empty_domain_bootstrap")
+    paths["pins"].write_text(json.dumps(without_authority))
+    with pytest.raises(ValueError):
+        cli._managed_inputs(args)
+    paths["pins"].write_text(pins.model_dump_json())
+    config["project_roots"] = [
+        dict(
+            project_id=str(uuid4()),
+            cluster_key="cluster-uid",
+            namespace="fabricated-seed",
+            namespace_uid="seed-ns",
+            project_cr_uid="seed-cr",
+            deployment_generation=1,
+        )
+    ]
+    paths["inventory"].write_text(json.dumps(config))
+    with pytest.raises(ValueError):
+        cli._managed_inputs(args)
+
+
 def inventory(q):
     return NativeInventory(
         collector_id=q.pins.collector_ids[0],

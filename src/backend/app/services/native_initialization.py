@@ -23,7 +23,11 @@ def implementation(profile):
 
     target = profile.target
     if (
-        profile.profile_name != "odf-rbd-blank-startup-allowance-v1"
+        profile.profile_name
+        != {
+            "blank-pvc": "odf-rbd-blank-startup-allowance-v1",
+            "managed-cache-clone": "odf-rbd-clone-startup-allowance-v1",
+        }.get(profile.operation)
         or profile.reservation_semantics != "measured-startup-allowance-v1"
         or target.csi_version != OBSERVER_VERSION
         or target.csi_installation is None
@@ -37,7 +41,14 @@ def implementation(profile):
             "Native initialization requires explicit supported startup allowance; "
             "legacy physical acceptance profiles remain unsupported"
         )
-    return SimpleNamespace(vnc_image=profile.vnc_image)
+    return SimpleNamespace(
+        vnc_image=profile.vnc_image,
+        profile=(
+            "configured-managed-clone-v1"
+            if profile.operation == "managed-cache-clone"
+            else "configured-blank-pvc-v1"
+        ),
+    )
 
 
 def supported_blank_storage(target):

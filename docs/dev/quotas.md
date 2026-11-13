@@ -179,10 +179,12 @@ the wipe helper may power on a stopped VM before touching its disk.
 The code integrates admission, immutable payload/rendered-plan and helper-image
 pins, one claimed pending CR handoff, full UID binding, automated roots-only
 enrollment, halted storage initialization, independent complete physical collection,
-runtime release and independent running confirmation. The initial shape is one
-explicit shared native host, default pod networking, basic VMs/single containers
-and actual new blank PVCs within the protected capacity applicability. Custom
-`networkNode`, pod groups, installers, BMC, UEFI/TPM, active imports, Ceph appliances,
+runtime release and independent running confirmation. The supported shape is one
+shared native host, default pod networking, basic VMs/single containers and new
+blank PVCs or the explicit managed central-image clone profile below. Ordinary
+owners use automatic placement within their project's selected native provider;
+the chosen host is frozen before reservation and revalidated before dispatch. Custom
+`networkNode`, pod groups, installers, BMC, UEFI/TPM, ordinary imports, Ceph appliances,
 multi-host and topology growth remain unsupported. A pending operation cannot
 switch profile, payload, owner/organization or target after reservation.
 
@@ -201,8 +203,9 @@ views, independently of current capacity readiness. New-era documents already
 freeze ledger totals when created; reading historical documents does not rebuild
 pre-cutover charges from the fresh ledger.
 
-`native_initialization.implementation()` supports only the explicit
-`odf-rbd-blank-startup-allowance-v1` profile with the supported ODF installation
+`native_initialization.implementation()` supports the explicit
+`odf-rbd-blank-startup-allowance-v1` and `odf-rbd-clone-startup-allowance-v1`
+profiles with the supported ODF installation
 observer, Ceph server/client 19.2.1, format-2 non-thick blank PVCs and one exact
 protected target. It requires `reservation_semantics: measured-startup-allowance-v1`
 and a positive, operator-configured `initial_storage_bound_bytes` **per new PVC**.
@@ -210,6 +213,52 @@ Despite its legacy field name, that amount is a startup allowance, not a physica
 maximum. There is no numeric default and no capacity-sized tenant reservation.
 PVC logical capacity remains an applicability/CSI input; a large thin disk can
 reserve a small allowance and subsequently settle to its measured allocated bytes.
+
+The clone profile additionally requires `version: native-clone-initialization-v1`,
+`operation: managed-cache-clone`, and this protected `source_policy` envelope:
+
+```yaml
+source_policy:
+  version: central-qcow2-direct-import-v1
+  provider_id: <approved-active-s3_readonly-provider-UUID>
+  bucket: <approved-central-bucket>
+  key_prefix: <approved-library-key-prefix>
+  cache_secret_ref: <existing-cache-namespace-S3-secret-name>
+```
+
+These fields accompany the existing complete installation target, named VNC
+image, applicability bounds and explicit allowance; they do not replace those
+pins. The enrolled domain must have one exact protected cache namespace. Its
+namespace, source-import Secret, provider credentials and read-only collector
+credentials remain administrator setup. No source/secret upload API is added.
+Only ready central QCOW2 LibraryItems accessible to the current project owner are
+supported. The API resolves their database keys, freezes S4 HEAD identity and
+measured QCOW2 virtual size, and ignores topology-derived source hints as authority.
+Unknown virtual size is denied. Source import sizing is finalized once; the real
+clone builder's padding and source-capacity floor are frozen before reserving the
+per-claim startup allowance (a 30 GiB request normally renders 40 GiB).
+
+The existing claimed operation reserves before the platform cache import. The
+worker posts that import once using only bounded Kubernetes/S4 checks and fresh
+protected installation evidence. The scheduled collector independently verifies
+the original direct non-populator import twice, publishes its protected receipt
+through additive enrollment, and verifies the original operator-created clone DV
+and its CSI head → private intermediate snapshot → golden snapshot chain twice.
+Workers receive no backend credentials. Initial and delayed runtime admission both
+require that exact protected lineage and a fresh complete measured report. A
+Succeeded DV, a copied disk, or an unverified source is insufficient. Golden bytes
+remain platform-owned; tenant head and private intermediate bytes remain charged
+through retained stop/resume and cleanup settlement. Ambiguous creates never cause
+source recreation or adoption of a same-name clone DV.
+
+This is a source-supported profile awaiting installed-CDI acceptance. The installed
+CDI must honor `cdi.kubevirt.io/storage.usePopulator: "false"` for the new import and
+clone, and produce the explicitly supported generated-PVC and dynamic CSI clone
+provenance. PV request identity may differ from the final PVC UID after a supported
+rebind; original DV ownership, new dynamic provisioning, exact CSI journal mapping
+and the verified backend chain are still required. Unknown populator/snapshot or
+adoption shapes stay blocked. Unit/transport fixtures do not authorize deployment,
+quota enablement or historical source adoption.
 
 This policy explicitly accepts temporary storage overage during creation. Every
 complete measured byte stays charged. Allocation above the allowance retains the
@@ -377,11 +426,14 @@ locks. Physical free space includes platform cache consumption and all other
 filesystem users; shared base totals are informational and do not substitute for
 free-space checks.
 
-Cold image downloads cannot run in an enabled quota deployment. A platform
+Nested-host cold image downloads cannot run in an enabled quota deployment. A platform
 administrator must populate and verify approved immutable base caches as a
 separately authorized platform maintenance task, check pool headroom, and then
 retry the deployment. Do not disable quota enforcement or bypass project growth
 guards to warm a cache. A cache miss/corruption during deployment remains an error.
+Native central-image imports use only the separately pinned managed clone path
+described above, after installed-profile acceptance; this does not enable ordinary
+downloads or arbitrary topology source URLs.
 
 Fresh observations retain request-start time and the exact host, project and
 deployment-generation identity. Storage freshness is at most **60 seconds**.

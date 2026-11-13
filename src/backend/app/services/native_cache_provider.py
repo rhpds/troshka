@@ -12,12 +12,10 @@ from app.services.native_cache_verification import require
 from app.services.native_initialization import supported_blank_storage
 
 
-class CacheProviderAdapter:
-    def __init__(self, kube, backend, source_client, installation_profile):
-        self.kube, self.backend = kube, backend
+class CacheReads:
+    def __init__(self, kube, source_client, installation_profile):
+        self.kube = kube
         self.source_client, self.profile = source_client, installation_profile
-        # Kubernetes generated clients can otherwise retry ambiguous POSTs.
-        kube.api.rest_client.pool_manager.connection_pool_kw["retries"] = 0
 
     def _value(self, result):
         require(result.status == "complete", "incomplete independent backend read")
@@ -51,8 +49,8 @@ class CacheProviderAdapter:
         )
         require(current == source, "frozen S4 source identity changed")
 
-    def _identities(self, intent):
-        from app.services.native_initialization_observer import ProductionObserver
+    def _kubernetes_identities(self, intent):
+        from app.services.native_initialization_observer import verify_kubernetes_target
 
         require(
             self.profile.target == intent.target, "independent installation pin changed"
@@ -66,8 +64,10 @@ class CacheProviderAdapter:
             and supported_blank_storage(target),
             "unsupported fresh provisioning profile",
         )
-        observed = ProductionObserver().observe(self.profile, self.kube, self.backend)
-        require(observed.target == target, "installed CSI/storage class changed")
+        value = self._value(
+            self.kube.initialization_identity(target.storage_class_name)
+        )
+        verify_kubernetes_target(value, target)
         require(
             self.kube.cluster_identity() == target.cluster_key
             and self.kube.namespace(intent.namespace)["metadata"]["uid"]
@@ -93,10 +93,18 @@ class CacheProviderAdapter:
             )
         )
 
+
+class CacheCreationAdapter(CacheReads):
+    """Worker-only one-shot creation; cannot execute backend commands."""
+
+    def __init__(self, kube, source_client, installation_profile):
+        super().__init__(kube, source_client, installation_profile)
+        kube.api.rest_client.pool_manager.connection_pool_kw["retries"] = 0
+
     def preflight(self, intent):
         from kubernetes.client.exceptions import ApiException
 
-        self._identities(intent)
+        self._kubernetes_identities(intent)
         for read in (self._dv, self._pvc):
             try:
                 read(intent)
@@ -124,6 +132,21 @@ class CacheProviderAdapter:
             },
             _request_timeout=self.kube._timeout(),
         )
+
+
+class CacheVerificationAdapter(CacheReads):
+    """Collector-only full independent observations; has no create interface."""
+
+    def __init__(self, kube, backend, source_client, installation_profile):
+        super().__init__(kube, source_client, installation_profile)
+        self.backend = backend
+
+    def _identities(self, intent):
+        from app.services.native_initialization_observer import ProductionObserver
+
+        self._kubernetes_identities(intent)
+        observed = ProductionObserver().observe(self.profile, self.kube, self.backend)
+        require(observed.target == intent.target, "installed CSI/backend changed")
 
     def _pods(self, namespace):
         value = self._dict(
@@ -171,3 +194,12 @@ class CacheProviderAdapter:
         }
         self._identities(intent)
         return result
+
+
+class CacheProviderAdapter(CacheCreationAdapter, CacheVerificationAdapter):
+    """Compatibility wrapper for administrative receipt callers."""
+
+    def __init__(self, kube, backend, source_client, installation_profile):
+        CacheReads.__init__(self, kube, source_client, installation_profile)
+        self.backend = backend
+        kube.api.rest_client.pool_manager.connection_pool_kw["retries"] = 0

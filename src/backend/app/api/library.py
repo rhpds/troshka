@@ -74,25 +74,9 @@ def _ensure_user_library(user: User, db: Session) -> Library:
 
 
 def _library_list_query(db: Session, user: User, lib: Library, shared_ids: list):
-    from sqlalchemy import or_
-    from sqlalchemy.sql import false as sa_false
+    from app.services.library_access import usable_items
 
-    central_lib = db.query(Library).filter_by(type="central").first()
-    central_lib_id = central_lib.id if central_lib else None
-
-    if user.role == "admin":
-        return db.query(LibraryItem)
-    return db.query(LibraryItem).filter(
-        or_(
-            LibraryItem.library_id == lib.id,
-            LibraryItem.id.in_(shared_ids) if shared_ids else sa_false(),
-            (
-                LibraryItem.library_id == central_lib_id
-                if central_lib_id
-                else sa_false()
-            ),
-        )
-    )
+    return usable_items(db, user)
 
 
 def _owner_maps_for_items(db: Session, items, lib: Library) -> tuple[dict, dict]:

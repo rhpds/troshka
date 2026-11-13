@@ -170,6 +170,9 @@ def snapshot(sessions, pins, target_id):
             "operations": ids,
             "previous": deepcopy(previous.payload) if previous else None,
         }
+        from app.services.native_managed_verification import pending
+
+        result["images"] = pending(db, domain)
         db.commit()
         return result
 
@@ -325,6 +328,19 @@ def cycle(sessions, pins, target_id, collector_id, readers, backend, collect):
         if work["selected"]:
             verified = verify_new_roots(work, readers, backend)
             apply_extension(sessions, pins, work, verified, target_id)
+        if work["images"]:
+            from app.services.native_managed_verification import (
+                publish_sources,
+                verify_clones,
+                verify_sources,
+            )
+
+            profile = work["manifest"].pins.initialization_evidence
+            references = verify_sources(
+                sessions, work["images"], readers, backend, profile
+            )
+            publish_sources(sessions, pins, target_id, references, readers, backend)
+            verify_clones(sessions, work["images"], readers, backend, profile)
         with sessions() as db:
             domain, manifest = anchored(db, pins)
             enrollment_id = domain.enrollment_id

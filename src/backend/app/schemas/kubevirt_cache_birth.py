@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from app.schemas.kubevirt_storage import (
     Bytes,
@@ -100,6 +100,7 @@ class CacheBirthIntent(Evidence):
     spec: dict
     spec_digest: Digest
     created_at: datetime
+    managed_authority: dict | None = None
     profile: Literal["odf-rbd-direct-import-v1"] = "odf-rbd-direct-import-v1"
     population: Literal["direct-pvc-no-populator-v1"] = "direct-pvc-no-populator-v1"
     seal_policy: Literal[
@@ -119,6 +120,13 @@ class CacheBirthIntent(Evidence):
         ):
             raise ValueError("frozen source/spec identity mismatch")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize_authority(self, handler):
+        data = handler(self)
+        if data.get("managed_authority") is None:
+            data.pop("managed_authority", None)
+        return data
 
 
 class CacheBirthReceipt(Evidence):

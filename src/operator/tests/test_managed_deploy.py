@@ -164,6 +164,244 @@ def release(api):
     )
 
 
+@pytest.fixture
+def clone_api(api, monkeypatch):
+    body = api.values["TroshkaProject", "project"]
+    body["spec"]["topology"]["nodes"][1]["data"].update(
+        source="library",
+        libraryItemId="approved-item",
+        resolvedS3Path="library/rhel.qcow2",
+        centralSource=True,
+        size=30,
+    )
+    body["spec"]["managedSources"] = {
+        "disk-one": {
+            "name": "managed-cache-original",
+            "namespace": "platform-cache",
+            "sourceCapacityGiB": 23,
+            "storage_request": "40Gi",
+        }
+    }
+    wanted = power.intent(body)
+    wanted.update(
+        profile=deploy.CLONE_PROFILE, payloadDigest=power.digest(body["spec"])
+    )
+    body["metadata"]["annotations"][power.ANNOTATION] = json.dumps(wanted)
+    original = api.request
+
+    def create(method, kind, namespace, name, desired):
+        if kind == "DataVolume":
+            # Installed v1beta1 spec is structural and prunes unknown fields.
+            allowed = {
+                "checkpoints",
+                "contentType",
+                "finalCheckpoint",
+                "preallocation",
+                "priorityClassName",
+                "pvc",
+                "source",
+                "sourceRef",
+                "storage",
+            }
+            desired = deepcopy(desired)
+            desired["spec"] = {k: v for k, v in desired["spec"].items() if k in allowed}
+        value = original(method, kind, namespace, name, desired)
+        if kind == "DataVolume":
+            value["status"] = {"phase": "Succeeded"}
+            api.values[kind, value["metadata"]["name"]] = deepcopy(value)
+            pvc = resource(
+                "PersistentVolumeClaim",
+                value["metadata"]["name"],
+                value,
+                deepcopy(value["spec"]["pvc"]),
+            )
+            pvc["spec"]["volumeName"] = "clone-pv"
+            pvc["status"] = {"phase": "Bound"}
+            api.values["PersistentVolumeClaim", pvc["metadata"]["name"]] = pvc
+            pv = resource(
+                "PersistentVolume",
+                "clone-pv",
+                spec={
+                    "claimRef": {
+                        k: pvc["metadata"][k] for k in ("uid", "name", "namespace")
+                    }
+                },
+            )
+            pv["metadata"].pop("namespace")
+            api.values["PersistentVolume", "clone-pv"] = pv
+        return value
+
+    monkeypatch.setattr(api, "request", create)
+    return api
+
+
+def test_clone_real_render_journals_only_dv_and_holds_runtime_until_release(clone_api):
+    api = clone_api
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    rows, _, plan = deploy.observe(api, root(api))
+    assert len(rows["DataVolume"]) == len(rows["PersistentVolumeClaim"]) == 1
+    assert rows["VirtualMachine"][0]["spec"]["runStrategy"] == "Halted"
+    assert deploy.demand(plan)["cpu"] == 3
+    assert not any(
+        c[0] == "POST" and c[1][0] == "PersistentVolumeClaim" for c in api.calls
+    )
+    dv = rows["DataVolume"][0]
+    assert dv["spec"]["pvc"]["resources"]["requests"]["storage"] == "40Gi"
+    assert "storageClassName" not in dv["spec"]
+    assert dv["spec"]["pvc"]["storageClassName"] == "synthetic-reviewed-storage"
+    assert dv["spec"]["source"]["pvc"] == {
+        "name": "managed-cache-original",
+        "namespace": "platform-cache",
+    }
+    state = root(api)["status"]["managedDeployment"]
+    assert (
+        state["creates"]["DataVolume:" + dv["metadata"]["name"]]["uid"]
+        == dv["metadata"]["uid"]
+    )
+    release(api)
+    deploy.reconcile(api, root(api))
+    assert api.rows("VirtualMachine", "ns")[0]["spec"]["runStrategy"] != "Halted"
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_clone_runtime_reconcile_and_interrupted_phase_write_retain_generated_claim(
+    clone_api, monkeypatch, interrupted
+):
+    api = clone_api
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    original_objects = {
+        (v["kind"], v["metadata"]["name"]): deepcopy(v["metadata"]["uid"])
+        for kind in ("DataVolume", "PersistentVolumeClaim")
+        for v in api.rows(kind, "ns")
+    }
+    release(api)
+    original_write = deploy.write_state
+    failed = []
+
+    def write(current_api, body, state):
+        result = original_write(current_api, body, state)
+        if interrupted and state.get("phase") == "runtime" and not failed:
+            failed.append(True)
+            raise TimeoutError("interrupted immediately after runtime-phase write")
+        return result
+
+    monkeypatch.setattr(deploy, "write_state", write)
+    if interrupted:
+        with pytest.raises(TimeoutError):
+            deploy.reconcile(api, root(api))
+        assert api.rows("VirtualMachine", "ns")[0]["spec"]["runStrategy"] == "Halted"
+    else:
+        deploy.reconcile(api, root(api))
+    deploy.reconcile(api, root(api))
+    assert api.rows("VirtualMachine", "ns")[0]["spec"]["runStrategy"] != "Halted"
+    actual = {
+        (v["kind"], v["metadata"]["name"]): v["metadata"]["uid"]
+        for kind in ("DataVolume", "PersistentVolumeClaim")
+        for v in api.rows(kind, "ns")
+    }
+    assert actual == original_objects
+    assert (
+        len([c for c in api.calls if c[0] == "POST" and c[1][0] == "DataVolume"]) == 1
+    )
+    assert not any(
+        c[0] == "POST" and c[1][0] == "PersistentVolumeClaim" for c in api.calls
+    )
+
+
+@pytest.mark.parametrize("changed", ["pvc_uid", "pv_uid", "csi", "journal_uid"])
+def test_clone_runtime_replay_rejects_generated_storage_identity_changes(
+    clone_api, changed
+):
+    api = clone_api
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    release(api)
+    deploy.reconcile(api, root(api))
+    pvc = api.values[next(k for k in api.values if k[0] == "PersistentVolumeClaim")]
+    pv = api.values["PersistentVolume", "clone-pv"]
+    if changed == "pvc_uid":
+        pvc["metadata"]["uid"] = "replacement-pvc"
+        pv["spec"]["claimRef"]["uid"] = "replacement-pvc"
+    elif changed == "pv_uid":
+        pv["metadata"]["uid"] = "replacement-pv"
+    elif changed == "csi":
+        pv["spec"]["csi"] = {"driver": "unexpected", "volumeHandle": "replacement"}
+    else:
+        state = api.values["TroshkaProject", "project"]["status"]["managedDeployment"]
+        state["creates"]["DataVolume:" + pvc["metadata"]["name"]][
+            "uid"
+        ] = "replacement-dv"
+    before = len([c for c in api.calls if c[0] == "POST"])
+    with pytest.raises(power.ManagedPowerError):
+        deploy.reconcile(api, root(api))
+    assert len([c for c in api.calls if c[0] == "POST"]) == before
+
+
+@pytest.mark.parametrize(
+    "change", ["unknown_source", "owner", "extra_pvc", "writer", "failed"]
+)
+def test_clone_unknown_generated_shape_or_writer_stays_off(clone_api, change):
+    api = clone_api
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    pvc = api.values[next(k for k in api.values if k[0] == "PersistentVolumeClaim")]
+    if change == "unknown_source":
+        pvc["spec"]["dataSourceRef"] = {
+            "kind": "VolumeCloneSource",
+            "apiGroup": "cdi.kubevirt.io",
+            "name": "unexpected",
+        }
+    elif change == "owner":
+        pvc["metadata"]["ownerReferences"][0]["uid"] = "replacement"
+    elif change == "extra_pvc":
+        extra = resource(
+            "PersistentVolumeClaim", "unplanned", root(api), deepcopy(pvc["spec"])
+        )
+        api.values["PersistentVolumeClaim", "unplanned"] = extra
+    elif change == "writer":
+        helper = resource(
+            "Pod",
+            "cdi-writer",
+            root(api),
+            {
+                "volumes": [
+                    {"persistentVolumeClaim": {"claimName": pvc["metadata"]["name"]}}
+                ]
+            },
+        )
+        api.values["Pod", "cdi-writer"] = helper
+    else:
+        api.values[next(k for k in api.values if k[0] == "DataVolume")]["status"][
+            "phase"
+        ] = "Failed"
+    with pytest.raises(power.ManagedPowerError):
+        deploy.observe(api, root(api))
+    assert api.rows("VirtualMachine", "ns")[0]["spec"]["runStrategy"] == "Halted"
+
+
+def test_clone_lost_original_dv_response_cannot_be_adopted(clone_api, monkeypatch):
+    api = clone_api
+    original = api.request
+
+    def lost(method, kind, namespace, name, desired):
+        value = original(method, kind, namespace, name, desired)
+        if kind == "DataVolume":
+            raise TimeoutError("lost original DV response")
+        return value
+
+    monkeypatch.setattr(api, "request", lost)
+    phase(api, "initializing")
+    with pytest.raises(TimeoutError):
+        deploy.reconcile(api, root(api))
+    with pytest.raises(power.ManagedPowerError, match="managed_create_unresolved"):
+        deploy.reconcile(api, root(api))
+    assert (
+        len([c for c in api.calls if c[0] == "POST" and c[1][0] == "DataVolume"]) == 1
+    )
+
+
 def test_pending_has_no_children_and_configured_fractional_demand(api):
     deploy.reconcile(api, root(api))
     assert api.calls == []

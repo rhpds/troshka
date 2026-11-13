@@ -57,6 +57,14 @@ def _bound_pvc(intent, response, pvc, pv):
         all(spec.get(k) == v for k, v in intent.spec["pvc"].items()),
         "PVC provisioning changed",
     )
+    if getattr(intent, "managed_authority", None) is not None:
+        from kubernetes.utils.quantity import parse_quantity
+
+        require(
+            parse_quantity(pvc["status"].get("capacity", {}).get("storage", "0"))
+            == parse_quantity(intent.spec["pvc"]["resources"]["requests"]["storage"]),
+            "actual managed source capacity changed",
+        )
     pmeta, pspec = pv["metadata"], pv["spec"]
     require(
         spec.get("volumeName") == pmeta.get("name")
