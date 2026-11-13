@@ -52,6 +52,15 @@ def _pre_era_source(row, start):
 
 
 def require_ready(db: Session) -> None:
+    if accounting_started_at(db) is not None:
+        from app.services.quota_capacity_baseline import check_ready
+
+        result = check_ready(db)
+        if not result["ready"]:
+            raise AccountingUnavailable(
+                result.get("message", "Fresh capacity/runtime readiness is unavailable")
+            )
+        return
     baseline = db.get(QuotaReadiness, "baseline")
     if (
         not baseline

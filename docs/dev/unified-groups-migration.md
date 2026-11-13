@@ -158,11 +158,39 @@ unverified. No enforcement enablement is part of this procedure.
 The old `backfill_quotas.py` import/run path is intentionally blocked after this
 receipt exists: its `_history` routine reconstructs Default attribution and
 imports invoices/statements, contrary to this fresh-start contract. Direct legacy
-summary import is blocked too. This is not a permanent prohibition on a future
-capacity baseline: a separately reviewed fresh-era-only baseline must validate
-physical allocated bytes and current operations without importing pre-start
-costs, and honor the saved start before enforcement may be enabled. Do not delete
-the receipt to run the old importer. This task does not verify such a baseline.
+summary import is blocked too. Use the separate current-capacity importer with
+`--baseline-kind fresh-capacity`; never delete the receipt to run the legacy
+importer. It preserves owners, organizations, assets, original operation IDs and
+billing history, and records independently verified physical storage and compute
+without reconstructing historical costs or changing rates.
+
+With the explicit private `QUOTA_BASELINE_DATABASE_URL` target and writers still
+fenced, collect the versioned inventory, fill its reviewed evidence envelope, then
+rehearse before applying:
+
+```bash
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --inventory
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --evidence /private/operator/current-capacity.json
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --evidence /private/operator/current-capacity.json --apply
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --check-ready
+```
+
+The default run always rolls back; a blocked apply rolls back the complete batch.
+The `fresh-capacity-v1` marker links to the immutable conversion receipt and
+keeps `capacity_ready`, `accounting_ready`, `runtime_ready`, `enforcement_enabled`
+and public `ready` separate. Present capacity above policy is recorded and the
+overage reported; the importer dispatches no shutdown and enables no enforcement.
+
+Native stopped assets require current enrolled complete COW storage evidence and
+a complete independent managed off inventory, including helpers and the existing
+managed stop intent/producer-drained snapshot. A cached VM-off list or project
+state is insufficient. A first import without a ledger uses the inventory's
+proposed generation token; its independently collected managed off proof must
+already name that generation. The importer neither creates a stop intent nor
+stops workloads. Active native compute, native current billing, native deploy/start
+admission and unsupported snapshot ancestry remain explicit blockers. A successful
+native capacity import therefore still has `runtime_ready=false` and `ready=false`.
+See [quota baseline instructions](quotas.md#fresh-era-current-capacity-import).
 
 Before commit, rollback is automatic. After commit but before any writer resumes,
 restore the verified in-cluster backup while all writers/external work remain

@@ -791,6 +791,10 @@ def _manifest_digest(db, evidence, actual):
 
 def check_ready(db):
     """Read-only preflight. Disabled writers invalidate a reviewed source digest."""
+    if accounting.accounting_started_at(db) is not None:
+        from app.services.quota_capacity_baseline import check_ready as fresh_ready
+
+        return fresh_ready(db)
     try:
         accounting.require_ready(db)
     except AccountingUnavailable as error:

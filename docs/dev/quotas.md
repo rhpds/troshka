@@ -29,6 +29,59 @@ by this baseline. Those growth surfaces are explicitly denied with enforcement
 enabled. Existing unsupported live resources **block readiness**; denial of future
 growth does not account for already allocated infrastructure.
 
+## Fresh-era current-capacity import
+
+After Unified Groups fresh accounting conversion, select
+`--baseline-kind fresh-capacity` explicitly. The legacy importer remains available
+for databases without the conversion receipt; it cannot reconstruct history on a
+fresh database. Preflight reports the required kind and version automatically.
+Use an explicit private target through `--database-url` or
+`QUOTA_BASELINE_DATABASE_URL`; the CLI never defaults to the application's DB.
+
+```bash
+python3 scripts/backfill_quotas.py --preflight
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --inventory
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --evidence /private/operator/current-capacity.json
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --evidence /private/operator/current-capacity.json --apply
+python3 scripts/backfill_quotas.py --baseline-kind fresh-capacity --check-ready
+```
+
+Inventory gives the exact source digest, immutable fresh receipt identity,
+retained operation IDs/generations and deterministic first-import tokens. Supply
+the `fresh-capacity-v1` evidence envelope from the reviewed contract with stopped
+Troshka writers, original job reconciliation and independent current compute and
+physical storage observations. The manifest cannot override resources, owners,
+organizations or rates. Dry-run rehearses the same atomic transaction and rolls it
+back. Any blocked candidate rolls back the entire apply. Exact replay does not
+rewrite rows or timestamps; newer evidence reconciles the original generation.
+Pre-enable readiness still requires the reviewed source/ledger fingerprint.
+After authorized enablement, ordinary billing cursors, charges and reservations
+may evolve: readiness checks current supported attribution, ledger pairing and
+fresh retained physical evidence. Exact replay remains bound to its original
+post-import fingerprint even after those legitimate runtime changes.
+
+The importer preserves projects, owners, organizations, images, patterns,
+snapshots, original requested vectors, job identities, rates and every billing
+source/cursor/document. It imports no historical costs. It records observed
+capacity even above policy and reports the overage without dispatching shutdown.
+`capacity_ready` covers present physical/compute proof; `accounting_ready` covers
+current source/rate coverage; `runtime_ready` covers implemented admission and
+shutdown profiles. Public `ready` requires all three. Enforcement stays disabled.
+
+Nested evidence uses the supported shared single-host VM resource/power profile
+and allocated file inventory for its existing generation. Native evidence uses
+current enrolled roots and the latest complete COW graph. Stopped native assets
+also need a complete independent managed resource inventory validated against the
+existing stopped intent and producer-drained snapshot, covering guest and helper
+shutdown. Missing helper observations, unsupported snapshot allocation ancestry,
+unknown ownership, unresolved work and inventory drift remain blockers. A first
+native import needs that off proof under its proposed generation token; this
+importer cannot create an intent, collect provider evidence or stop workloads.
+Configured VM/container CPU and RAM belong to user quotas; network, console and
+virtualization overhead belong to platform capacity. Active native compute,
+native billing and deploy/start admission integration are still unavailable, so a
+native capacity-only import has `runtime_ready=false` and public `ready=false`.
+
 ## Physical storage contract and operating limits
 
 `storage_bytes` is the sum of `st_blocks * 512` from every regular file beneath
