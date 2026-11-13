@@ -99,3 +99,27 @@ Full Task 5b mediation/authority retirement, credential and controller isolation
 API routing, accepted-request drain, durable fence acknowledgement and settlement
 remain unproved. Task 6 stop/release evidence and later native quota enablement
 gates remain mandatory. No live rollout or quota enablement is authorized here.
+
+## Validation record — 2026-11-12
+
+Implementation `601254c3` passed independent scoped review, 314 backend tests and
+1,661 operator tests. Seven existing local HTTP-server tests initially could not
+bind loopback sockets in the restricted sandbox; the permitted loopback rerun
+passed the entire operator suite. No cluster calls were part of those suites.
+
+A subsequent read-only check used the reviewed backend validator in external
+mode against the existing `troshka-cache` namespace on ocpvdev01. GET-only client
+adapters used bounded request timeouts. Namespace and both binding identities
+and resource versions were identical before and after validation:
+
+| Object | UID | Resource version |
+| --- | --- | --- |
+| Namespace `troshka-cache` | `adad19a0-d126-4266-8477-2f40e8eb6b26` | `2088741334` |
+| RoleBinding `troshka-provider-namespaced` | `f99e2c0d-266e-4dda-ace0-32021f371288` | `2462089332` |
+| RoleBinding `troshka-operator-namespaced` | `c20c36d7-5bf6-442e-9f3e-e2768e07509c` | `2462089335` |
+
+Validation completed successfully with no API writes or deployed configuration
+changes. The development kubeconfig disables TLS verification; warnings were
+retained. This checks real API response compatibility only, not authenticated
+production isolation, actual writer authorization or deployed handler behavior.
+No grants were revoked, no workload restarted and no quotas enabled.
