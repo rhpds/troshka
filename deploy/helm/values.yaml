@@ -171,6 +171,10 @@ defaults:
   maxProjectsPerUser: 10
   userLibraryQuotaGb: 500
 
+quotas:
+  # Enable only after baseline import and resource coverage/reconciliation pass.
+  enabled: false
+
 overcommit:
   cpuRatio: 4.0
   ramRatio: 1.5

@@ -50,6 +50,8 @@ data:
       max_vms_per_project: {{ .Values.defaults.maxVmsPerProject }}
       max_projects_per_user: {{ .Values.defaults.maxProjectsPerUser }}
       user_library_quota_gb: {{ .Values.defaults.userLibraryQuotaGb }}
+    quotas:
+      enabled: {{ .Values.quotas.enabled }}
     redis:
       {{- if .Values.redis.url }}
       url: {{ .Values.redis.url | quote }}
