@@ -3,6 +3,9 @@
 Registration does not establish support for measured storage or managed quotas.
 """
 
+import math
+from datetime import UTC, datetime
+
 from app.services.providers import kubevirt
 
 _CRDS = ("troshkaprojects", "troshkavms", "troshkanetworks", "troshkancephs")
@@ -99,6 +102,38 @@ def _verify_crds(ext_api):
             raise ValueError("Required Troshka CRD not established")
 
 
+def _published_ceph_capacity(custom_api):
+    """Read fresh Rook-published capacity without toolbox access or pod exec."""
+    clusters = custom_api.list_namespaced_custom_object(
+        group="ceph.rook.io",
+        version="v1",
+        namespace="openshift-storage",
+        plural="cephclusters",
+        _request_timeout=_READ_TIMEOUT,
+    ).get("items", [])
+    if len(clusters) != 1:
+        raise ValueError("Ceph cluster capacity missing or ambiguous")
+    capacity = clusters[0].get("status", {}).get("ceph", {}).get("capacity", {})
+    total, used, available = (
+        capacity.get(key) for key in ("bytesTotal", "bytesUsed", "bytesAvailable")
+    )
+    dimensions = (total, used, available)
+    if any(
+        type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        for value in dimensions
+    ):
+        raise ValueError("Invalid published Ceph capacity")
+    if total <= 0 or used > total or available > total or used + available > total:
+        raise ValueError("Inconsistent published Ceph capacity")
+    timestamp = datetime.fromisoformat(capacity["lastUpdated"])
+    if (
+        timestamp.tzinfo is None
+        or not 0 <= (datetime.now(UTC) - timestamp).total_seconds() <= 300
+    ):
+        raise ValueError("Published Ceph capacity is not fresh")
+    return int(total // (1024**3))
+
+
 def verify_existing_operator(provider, expected_image):
     """Return discovered capacity; propagate any failed/unavailable observation."""
     from kubernetes import client
@@ -114,7 +149,7 @@ def verify_existing_operator(provider, expected_image):
         _verify_pods(deployment, core_api, apps_api, namespace, expected_image)
         _verify_crds(client.ApiextensionsV1Api(api_client))
         vcpus, ram_mb = kubevirt._query_cluster_capacity(core_api, strict=True)
-        storage_gb = kubevirt._query_ceph_storage_gb(core_api, strict=True)
+        storage_gb = _published_ceph_capacity(custom_api)
         max_eips = kubevirt._query_metallb_capacity(custom_api, strict=True)
         if min(vcpus, ram_mb, storage_gb) <= 0 or max_eips < 0:
             raise ValueError("Cluster capacity unavailable")

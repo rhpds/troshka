@@ -1764,13 +1764,12 @@ def _query_cluster_capacity(core_api, *, strict=False):
     return total_vcpus, total_ram_mb
 
 
-def _query_ceph_df(core_api, *, strict=False) -> dict | None:
+def _query_ceph_df(core_api) -> dict | None:
     """Query Ceph cluster df via rook-ceph-tools. Returns stats dict or None."""
     try:
         toolbox_pods = core_api.list_namespaced_pod(
             namespace="openshift-storage",
             label_selector="app=rook-ceph-tools",
-            **({"_request_timeout": 10} if strict else {}),
         )
         if not getattr(toolbox_pods, "items", []):
             return None
@@ -1787,41 +1786,29 @@ def _query_ceph_df(core_api, *, strict=False) -> dict | None:
             stdin=False,
             tty=False,
             _preload_content=False,
-            **({"_request_timeout": 10} if strict else {}),
         )
         stdout = ""
-        deadline = time.monotonic() + 30
-        try:
-            while resp.is_open():
-                if strict and time.monotonic() >= deadline:
-                    raise TimeoutError("Ceph capacity discovery timed out")
-                resp.update(timeout=10)
-                if resp.peek_stdout():
-                    stdout += resp.read_stdout()
-                if resp.peek_stderr():
-                    resp.read_stderr()
-        finally:
-            resp.close()
+        while resp.is_open():
+            resp.update(timeout=10)
+            if resp.peek_stdout():
+                stdout += resp.read_stdout()
+            if resp.peek_stderr():
+                resp.read_stderr()
+        resp.close()
 
         import json
 
         ceph_df = json.loads(stdout)
         return ceph_df.get("stats") or {}
     except Exception as e:
-        if strict:
-            raise
         logger.warning(f"Failed to query Ceph storage capacity: {e}")
         return None
 
 
-def _query_ceph_storage_gb(core_api, *, strict=False):
+def _query_ceph_storage_gb(core_api):
     """Query total Ceph storage via the rook-ceph-tools pod. Returns 0 on failure."""
-    stats = (
-        _query_ceph_df(core_api, strict=True) if strict else _query_ceph_df(core_api)
-    )
+    stats = _query_ceph_df(core_api)
     if not stats:
-        if strict:
-            raise ValueError("Ceph storage capacity unavailable")
         return 0
     return int(stats.get("total_bytes", 0) / (1024**3))
 

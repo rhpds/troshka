@@ -1,6 +1,7 @@
 """Registration verifies an existing installation without installing anything."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
@@ -80,7 +81,16 @@ def attach(monkeypatch):
     )
     core = Mock(spec=["list_namespaced_pod", "list_node"])
     core.list_namespaced_pod.return_value = NS(items=[pod])
-    custom = Mock(spec=[])
+    custom = Mock(spec=["list_namespaced_custom_object"])
+    capacity = {
+        "bytesTotal": 1024 * 1024**3,
+        "bytesUsed": 512 * 1024**3,
+        "bytesAvailable": 512 * 1024**3,
+        "lastUpdated": datetime.now(UTC).isoformat(),
+    }
+    custom.list_namespaced_custom_object.return_value = {
+        "items": [{"status": {"ceph": {"capacity": capacity}}}]
+    }
     ext = Mock(spec=["read_custom_resource_definition"])
     ext.read_custom_resource_definition.return_value = NS(
         metadata=NS(deletion_timestamp=None),
@@ -92,10 +102,11 @@ def attach(monkeypatch):
     monkeypatch.setattr("kubernetes.client.AppsV1Api", Mock(return_value=apps))
     monkeypatch.setattr("kubernetes.client.ApiextensionsV1Api", Mock(return_value=ext))
     cpu = Mock(return_value=(32, 65536))
-    storage = Mock(return_value=1024)
+    storage = custom.list_namespaced_custom_object
     eips = Mock(return_value=10)
     monkeypatch.setattr(kubevirt, "_query_cluster_capacity", cpu)
-    monkeypatch.setattr(kubevirt, "_query_ceph_storage_gb", storage)
+    toolbox = Mock(side_effect=AssertionError("registration must not exec"))
+    monkeypatch.setattr(kubevirt, "_query_ceph_storage_gb", toolbox)
     monkeypatch.setattr(kubevirt, "_query_metallb_capacity", eips)
     install = Mock(side_effect=AssertionError("must not install"))
     monkeypatch.setattr(kubevirt, "_deploy_operator", install)
@@ -114,10 +125,13 @@ def attach(monkeypatch):
         ext=ext,
         cpu=cpu,
         storage=storage,
+        capacity=capacity,
+        custom=custom,
         eips=eips,
         install=install,
     )
     install.assert_not_called()
+    toolbox.assert_not_called()
     db.rollback()
     db.query(Host).filter_by(provider_id=provider.id).delete()
     db.delete(provider)
@@ -337,8 +351,58 @@ def test_strict_capacity_propagates_api_errors(helper, client):
         getattr(kubevirt, helper)(api, strict=True)
 
 
-def test_strict_ceph_missing_toolbox_is_failure():
-    api = Mock()
-    api.list_namespaced_pod.return_value = NS(items=[])
-    with pytest.raises(ValueError, match="unavailable"):
-        kubevirt._query_ceph_storage_gb(api, strict=True)
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "ambiguous",
+        "missing_capacity",
+        "zero",
+        "negative",
+        "oversize",
+        "inconsistent",
+        "string",
+        "bool",
+        "nan",
+        "infinite",
+        "missing_time",
+        "bad_time",
+        "naive_time",
+        "stale",
+        "future",
+    ],
+)
+def test_attach_rejects_unavailable_published_ceph_capacity(attach, failure):
+    a = attach
+    if failure == "missing":
+        a.storage.return_value["items"] = []
+    elif failure == "ambiguous":
+        a.storage.return_value["items"] *= 2
+    elif failure == "missing_capacity":
+        a.storage.return_value["items"][0]["status"] = {}
+    elif failure == "zero":
+        a.capacity["bytesTotal"] = 0
+    elif failure == "negative":
+        a.capacity["bytesUsed"] = -1
+    elif failure == "oversize":
+        a.capacity["bytesUsed"] = 2 * a.capacity["bytesTotal"]
+    elif failure == "inconsistent":
+        a.capacity["bytesAvailable"] = a.capacity["bytesTotal"]
+    elif failure in {"string", "bool", "nan", "infinite"}:
+        a.capacity["bytesTotal"] = {
+            "string": "1024",
+            "bool": True,
+            "nan": float("nan"),
+            "infinite": float("inf"),
+        }[failure]
+    elif failure == "missing_time":
+        a.capacity.pop("lastUpdated")
+    elif failure == "bad_time":
+        a.capacity["lastUpdated"] = "invalid"
+    elif failure == "naive_time":
+        a.capacity["lastUpdated"] = datetime.now().isoformat()
+    else:
+        offset = timedelta(minutes=-6 if failure == "stale" else 1)
+        a.capacity["lastUpdated"] = (datetime.now(UTC) + offset).isoformat()
+    assert post(a).status_code == 503
+    assert a.db.query(Host).filter_by(provider_id=a.provider.id).count() == 0
