@@ -12,10 +12,12 @@ import pytest
 from app.models.kubevirt_storage import NativeEnrollment
 from app.models.library import Library, LibraryItem
 from app.models.project import Project
+from app.models.provider import Provider
 from app.models.quota import QuotaReservation
 from app.models.user import User
 from app.schemas.kubevirt_storage_enrollment import DomainExtension
 from app.schemas.kubevirt_storage_initialization import InitializationEvidence
+from app.schemas.quota import AccountingUnavailable
 from app.services import native_managed_deploy as deploy
 from app.services import native_managed_images as images
 from app.services.kubevirt_storage_enrollment import (
@@ -92,7 +94,7 @@ def image_case(deploy_case, monkeypatch):
         item = LibraryItem(
             library_id=library.id,
             name="Approved RHEL",
-            type="disk",
+            type="image",
             format="qcow2",
             state="ready",
             source="central",
@@ -116,6 +118,15 @@ def image_case(deploy_case, monkeypatch):
             ),
         )
         q.profile = InitializationEvidence.model_validate(profile)
+        db.add(
+            Provider(
+                id=str(q.profile.source_policy.provider_id),
+                name="Approved central images",
+                type="s3_readonly",
+            )
+        )
+        db.flush()
+        item.source_provider_id = str(q.profile.source_policy.provider_id)
         old = db.get(NativeEnrollment, q.enrollment_id)
         previous = validated_enrollment(old)
         pins = previous.pins.model_copy(
@@ -196,7 +207,21 @@ def test_nonadmin_api_worker_freezes_real_builder_capacity_and_owner(
 
 @pytest.mark.parametrize(
     "change",
-    ["private", "wrong_source", "wrong_format", "unknown_size", "changed_head"],
+    [
+        "private",
+        "wrong_source",
+        "wrong_format",
+        "wrong_state",
+        "missing_key",
+        "wrong_prefix",
+        "wrong_provider",
+        "type_disk",
+        "type_vm",
+        "type_template",
+        "type_iso",
+        "unknown_size",
+        "changed_head",
+    ],
 )
 def test_source_denial_precedes_reservation_or_provider_mutation(
     image_case, monkeypatch, change
@@ -213,6 +238,16 @@ def test_source_denial_precedes_reservation_or_provider_mutation(
             item.source = "local"
         elif change == "wrong_format":
             item.format = "iso"
+        elif change == "wrong_state":
+            item.state = "pending"
+        elif change == "missing_key":
+            item.s3_key = None
+        elif change == "wrong_prefix":
+            item.s3_key = "unapproved/rhel.qcow2"
+        elif change == "wrong_provider":
+            item.source_provider_id = q.provider_id
+        elif change.startswith("type_"):
+            item.type = change.removeprefix("type_")
         db.commit()
     if change == "unknown_size":
         q.source.virtual_gib = 0
@@ -230,7 +265,10 @@ def test_source_denial_precedes_reservation_or_provider_mutation(
         monkeypatch.setattr(q.source, "head_object", changed)
     before = deepcopy(q.apis[q.new_id].calls)
     with q.sessions() as db:
-        with pytest.raises(Exception):
+        expected_error = (
+            ValueError if change == "changed_head" else AccountingUnavailable
+        )
+        with pytest.raises(expected_error):
             deploy.prepare(db, db.get(Project, q.new_id), host_id=q.host_id)
         db.rollback()
         assert db.query(QuotaReservation).filter_by(project_id=q.new_id).count() == 0

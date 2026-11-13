@@ -45,7 +45,7 @@ def authorized_item(db, owner, item_id, policy):
         item is None
         or item.source != "central"
         or item.format != "qcow2"
-        or item.type != "disk"
+        or item.type != "image"
         or item.state != "ready"
         or not item.s3_key
         or not item.s3_key.startswith(policy.key_prefix)
