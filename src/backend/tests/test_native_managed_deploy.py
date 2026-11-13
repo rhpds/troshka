@@ -1120,7 +1120,7 @@ def test_ambiguous_accepted_runtime_cas_is_only_observed(deploy_case, monkeypatc
 
 
 @pytest.mark.parametrize("scope", ["project", "user", "organization"])
-@pytest.mark.parametrize("dimension", ["cpu", "spending_usd"])
+@pytest.mark.parametrize("dimension", ["cpu", "storage_bytes", "spending_usd"])
 def test_first_deploy_checks_every_capacity_and_spending_scope(
     deploy_case, scope, dimension
 ):
@@ -1147,9 +1147,7 @@ def test_first_deploy_checks_every_capacity_and_spending_scope(
     assert not q.apis[q.new_id].calls
 
 
-def test_concurrent_new_deploys_reserve_physical_headroom_once(
-    deploy_case, monkeypatch
-):
+def test_concurrent_new_deploys_reserve_tenant_storage_once(deploy_case, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
@@ -1169,7 +1167,19 @@ def test_concurrent_new_deploys_reserve_physical_headroom_once(
             )
         )
         db.commit()
-    monkeypatch.setattr(SyntheticInitialization, "headroom", 32)
+        from app.models.quota import QuotaPolicy
+        from app.services.quota_admission import usage
+
+        used, reserved = usage(db, "user", q.owner_id)
+        db.add(
+            QuotaPolicy(
+                scope="user",
+                scope_id=q.owner_id,
+                storage_bytes=used.storage_bytes + reserved.storage_bytes + 32,
+            )
+        )
+        db.commit()
+    monkeypatch.setattr(SyntheticInitialization, "headroom", None)
     advance_clock()
     ingest_current(q)
     barrier = Barrier(2)
@@ -1186,7 +1196,7 @@ def test_concurrent_new_deploys_reserve_physical_headroom_once(
                 return operation_id
             except Exception as error:
                 db.rollback()
-                assert "headroom" in str(error)
+                assert error.detail["dimension"] == "storage_bytes"
                 return None
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1199,3 +1209,52 @@ def test_concurrent_new_deploys_reserve_physical_headroom_once(
             .all()
         )
         assert len(rows) == 1 and rows[0].requested["storage_bytes"] == 32
+
+
+def test_native_admission_does_not_require_pool_headroom(deploy_case, monkeypatch):
+    q = deploy_case
+    monkeypatch.setattr(SyntheticInitialization, "headroom", None)
+    advance_clock()
+    ingest_current(q)
+    with q.sessions() as db:
+        operation_id = operations.prepare(
+            db, db.get(Project, q.new_id), "deploy", host_id=q.host_id
+        )
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert row.requested["storage_bytes"] == 32
+        from app.services.quota_admission import usage
+
+        assert usage(db, "user", q.owner_id)[1].storage_bytes == 32
+
+
+def test_csi_capacity_failure_keeps_native_reservation_and_assets(deploy_case):
+    q = deploy_case
+    operation_id = initialized(q)
+    api = q.apis[q.new_id]
+    for value in api.values.values():
+        if value["kind"] == "PersistentVolumeClaim":
+            value["status"] = {"phase": "Pending"}
+    before = set(api.values)
+    deploy.reconcile(q.new_id)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        assert row.state == "reconciling"
+        assert row.requested["storage_bytes"] == 32
+        assert (
+            row.dispatch_metadata["native_deploy"]["phase"] == "initialization-intent"
+        )
+        assert not row.dispatch_metadata.get("native_initialization_consumed")
+    assert set(api.values) == before and not api.rows("Pod", None)
+
+
+def test_unavailable_provider_host_still_rejects_native_admission(deploy_case):
+    q = deploy_case
+    with q.sessions() as db:
+        db.get(Host, q.host_id).state = "disconnected"
+        db.commit()
+        with pytest.raises(Exception, match="available single native shared host"):
+            operations.prepare(
+                db, db.get(Project, q.new_id), "deploy", host_id=q.host_id
+            )
+        assert not db.query(QuotaReservation).filter_by(project_id=q.new_id).first()
+    assert not q.apis[q.new_id].calls

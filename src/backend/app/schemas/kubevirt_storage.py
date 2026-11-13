@@ -47,6 +47,30 @@ class PoolKey(Evidence):
     pool_id: Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 
 
+class CsiWorkloadIdentity(Evidence):
+    uid: Text
+    spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    images: dict[Text, Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]] = Field(
+        min_length=1, max_length=32
+    )
+
+
+class CsiInstallationIdentity(Evidence):
+    version: Literal["odf-rbd-installation-v1"]
+    namespace_uid: Text
+    driver_uid: Text
+    driver_spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    controller: CsiWorkloadIdentity
+    node: CsiWorkloadIdentity
+
+
+class StorageClassOptions(Evidence):
+    volume_binding_mode: Literal["Immediate"]
+    reclaim_policy: Literal["Delete", "Retain"]
+    allow_volume_expansion: bool
+    mount_options: list[Text] = Field(max_length=32)
+
+
 class InitializationTarget(PoolKey):
     provider_id: UUID
     cluster_key: Text
@@ -58,6 +82,16 @@ class InitializationTarget(PoolKey):
     csi_version: Text
     ceph_version: Text
     rbd_command_version: Text
+    csi_installation: CsiInstallationIdentity | None = None
+    storage_class_options: StorageClassOptions | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_identity(self, handler):
+        data = handler(self)
+        for name in ("csi_installation", "storage_class_options"):
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
 
 class InitializationObservation(Evidence):
@@ -67,8 +101,17 @@ class InitializationObservation(Evidence):
     profile_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     target: InitializationTarget
     observed_at: datetime
-    headroom_bytes: Bytes | None
-    headroom_semantics: Text
+    # Legacy evidence remains readable/digest stable, but is no longer a gate.
+    headroom_bytes: Bytes | None = None
+    headroom_semantics: Text | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_headroom(self, handler):
+        data = handler(self)
+        for name in ("headroom_bytes", "headroom_semantics"):
+            if name not in self.model_fields_set:
+                data.pop(name, None)
+        return data
 
 
 class ImageKey(PoolKey):

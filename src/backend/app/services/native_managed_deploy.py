@@ -115,7 +115,6 @@ def prepare(db, project, *, host_id):
         projects=1,
         storage_bytes=len(claims) * profile.initial_storage_bound_bytes,
     )
-    check_headroom(db, domain.id, observation, requested.storage_bytes)
     admission.reserve(db, project.id, operation_id, requested, operations.now())
     row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
     row.dispatch_metadata = {
@@ -177,23 +176,6 @@ def payload_demand(payload, profile):
     return helpers().demand(planned), sorted(claims)
 
 
-def check_headroom(db, domain_id, observation, amount, *, exclude=None):
-    remaining = 0
-    for row in db.query(QuotaReservation).filter(
-        QuotaReservation.state.in_(admission.PENDING)
-    ):
-        target = row.dispatch_metadata.get("native_deploy", {})
-        if row.operation_id != exclude and target.get("domain_id") == domain_id:
-            remaining += admission.remaining_vector(row).storage_bytes
-    if (
-        observation.headroom_bytes is None
-        or amount + remaining > observation.headroom_bytes
-    ):
-        raise AccountingUnavailable(
-            "Native initialization pool headroom is exhausted or unknown"
-        )
-
-
 def validate(db, project, row, *, placed=True, physical=True):
     target = row.dispatch_metadata["native_deploy"]
     host, provider = selected_host(db, project, target["host_id"])
@@ -239,16 +221,7 @@ def validate(db, project, row, *, placed=True, physical=True):
     ):
         raise AccountingUnavailable("Native admitted resource plan changed")
     if physical:
-        _, _, _, observation = initialization.current(
-            db, provider.id, operations.now(), domain_id=domain.id
-        )
-        check_headroom(
-            db,
-            domain.id,
-            observation,
-            admission.remaining_vector(row).storage_bytes,
-            exclude=row.operation_id,
-        )
+        initialization.current(db, provider.id, operations.now(), domain_id=domain.id)
     return target, profile
 
 

@@ -127,10 +127,49 @@ switch profile, payload, owner/organization or target after reservation.
 
 `native_initialization.implementation()` deliberately accepts **no real profile**.
 Synthetic transport tests prove code integration only. Real activation requires
-independent physical acceptance of the exact CSI/Ceph/StorageClass profile, its
-initialization bound and same-metric headroom semantics, followed by an explicit
+independent physical acceptance of the exact CSI/Ceph/StorageClass profile and its
+initialization bound, followed by an explicit
 supported implementation selector. Protected enrollment pins remain the authority;
 a report, a boolean certificate, PVC Bound status or calibration cannot enable it.
+
+Native admission uses measured project, owner and organization usage plus pending
+tenant reservations. It does not reserve pool-wide free space or promise a
+separate same-metric pool headroom guarantee. Existing provider placement and CSI
+provisioning/capacity failures still apply. A platform capacity failure retains the
+operation and assets for reconciliation; it never becomes zero tenant usage.
+
+The production observer independently reads the existing provider API and protected
+Ceph reader. Its bounded supported shape is the ODF `openshift-storage` RBD driver,
+`-ctrlplugin` Deployment and `-nodeplugin` DaemonSet, Immediate blank-PVC classes,
+RBD format 2 and disabled thick provisioning in one configured pool. It reads the
+actual StorageClass UID, parameters and options, cluster/provider identities,
+driver/workload UIDs and specification hashes, ready owner chains and consistent
+running immutable container image digests. `ceph versions` identifies running
+servers separately from the `rbd --version` client; mixed or unavailable versions,
+incomplete rollouts, missing permissions and stale/future sources reject.
+
+Selected controller ReplicaSets must match the current Deployment template.
+Running controller/node pod specifications must match that template after only
+explicit static Kubernetes defaults, scheduler node assignment, the standard
+service-account token projection/mount, default tolerations and the bounded
+DaemonSet node-affinity injection. Arguments, environment, security contexts,
+mounts and every other spec field remain exact. Only named controller hash labels
+and network-status/SCC metadata annotations are excluded from pod metadata
+comparison; an SCC annotation never excuses a changed security specification.
+Unrecognized admission mutations, derived priority changes, init/ephemeral
+containers and DaemonSet templates with required node affinity reject as
+unsupported. The observer does not claim these shapes were accepted on live ODF.
+
+New profiles carry typed `csi_installation` and `storage_class_options` fields.
+Their legacy `csi_version` slot must contain the explicit discriminator
+`odf-rbd-installation-v1`: it identifies this observation contract, **not a CSI
+vendor version**. ODF release labels and expected profile strings are never copied
+into observed versions. Legacy serialized profiles/reports retain their digest
+shape, but legacy-only profiles have no production observer. No real profile or
+bound is configured. Independent installed identity is executable observation
+code; it does not certify a physical initialization upper bound, image geometry,
+filesystem work, CSI defaults or the no-tenant-writer boundary. Those still need
+reviewed exact-target physical acceptance before activation can open.
 
 Initial storage bounds remain reserved until exact complete initialization evidence
 consumes only that storage remainder. Original requests remain immutable. Every
@@ -175,7 +214,7 @@ size is not that evidence. Unknown physical allocation never becomes zero. This
 development increment has backend/operator integration tests, not live cluster
 acceptance or authorization to enable enforcement/deploy it.
 
-## Physical storage contract and operating limits
+## Nested filesystem storage contract and operating limits
 
 `storage_bytes` is the sum of `st_blocks * 512` from every regular file beneath
 the exact `/var/lib/troshka/vms/<full-project-UUID>` directory: active disks, seeds,

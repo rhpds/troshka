@@ -48,6 +48,10 @@ def command_argv(
         return ["ceph", "osd", "lspools", "--format", "json"]
     if operation == "version":
         return ["rbd", "--version"]
+    if operation == "server_versions":
+        return ["ceph", "versions", "--format", "json"]
+    if operation == "namespaces":
+        return ["rbd", "namespace", "list", "--pool", _token(pool), "--format", "json"]
     pool, namespace = _token(pool), _token(namespace, empty=True)
     opts = ["--pool", pool, "--namespace", namespace]
     if operation == "journal":
@@ -361,6 +365,12 @@ class RbdReader:
 
     def command_version(self):
         return self._read("version", False)
+
+    def server_versions(self):
+        return self._read("server_versions")
+
+    def namespaces(self, pool):
+        return self._read("namespaces", pool=pool)
 
     def pool_identity(self):
         result = self._read("pools")

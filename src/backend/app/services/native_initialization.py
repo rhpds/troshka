@@ -1,8 +1,8 @@
 """Pinned initialization authority and fresh collector evidence, never calibration.
 
-No real implementation is enabled. An exact physically accepted downstream
-implementation must replace the closed selector before any real first deploy.
-Synthetic integration tests inject an explicitly synthetic reader implementation.
+Production installation observation is available independently of activation.
+No real physical capability is enabled: exact physical acceptance must precede
+opening the closed selector. Synthetic lifecycle tests inject their capability.
 """
 
 from datetime import UTC, datetime
@@ -24,7 +24,6 @@ def implementation(profile):
 
 
 def validate_observation(profile, value, now):
-    selected = implementation(profile)
     try:
         observation = InitializationObservation.model_validate(value)
     except ValueError as error:
@@ -34,19 +33,23 @@ def validate_observation(profile, value, now):
     if (
         observation.profile_digest != digest(profile)
         or observation.target != profile.target
-        or observation.headroom_semantics != selected.headroom_semantics
-        or observation.headroom_bytes is None
         or not 0 <= (utc(now) - observation.observed_at).total_seconds() <= 60
     ):
         raise AccountingUnavailable(
-            "Native initialization target/headroom is unavailable or changed"
+            "Native initialization target is unavailable or changed"
         )
     return observation
 
 
 def observe(profile, kube, backend, *, clock=None):
-    """Only the accepted implementation may interpret exact installed semantics."""
-    selected = implementation(profile)
+    """Observe installation identity; this never opens the physical capability."""
+    if profile.target.csi_installation is not None:
+        from app.services.native_initialization_observer import ProductionObserver
+
+        selected = ProductionObserver()
+    else:
+        # Legacy synthetic test implementations remain injected, never shipped.
+        selected = implementation(profile)
     value = selected.observe(profile, kube, backend)
     now = clock() if clock is not None else datetime.now(UTC)
     return validate_observation(profile, value, now)

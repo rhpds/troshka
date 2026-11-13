@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "backend"))
 
 from app.models.kubevirt_storage import NativeEnrollmentRequest, NativeReportingTarget
 from app.models.provider import Provider
-from app.schemas.kubevirt_storage import CollectionLimits, Evidence, NativeStorageReport
+from app.schemas.kubevirt_storage import (
+    CollectionLimits,
+    Evidence,
+    NativeStorageReport,
+    ReadResult,
+)
 from app.schemas.kubevirt_storage_enrollment import (
     EnrollmentRequest,
     VerificationPins,
@@ -142,6 +147,7 @@ class ProviderReader:
         config.api_key = {"authorization": "Bearer " + credentials["token"]}
         config.verify_ssl = credentials.get("verify_ssl", False)
         self.api = client.ApiClient(config)
+        self.provider_id = provider.id
         try:
             self.api.rest_client.pool_manager.connection_pool_kw["retries"] = 0
             self.core = client.CoreV1Api(self.api)
@@ -189,13 +195,90 @@ class ProviderReader:
 
         return bind(helpers().PowerClient(self.api), target, operation_id, profile)
 
-    def storage_class(self, name):
+    def storage_class(self, name) -> dict[str, Any]:
         from kubernetes import client
 
         result = client.StorageV1Api(self.api).read_storage_class(
             name, _request_timeout=self._timeout()
         )
-        return self.api.sanitize_for_serialization(result)
+        return cast(dict[str, Any], self.api.sanitize_for_serialization(result))
+
+    def _identity_list(self, method, namespace, selector):
+        if selector.get("matchExpressions") or not selector.get("matchLabels"):
+            raise ValueError("unsupported CSI selector")
+        result = cast(
+            dict[str, Any],
+            self.api.sanitize_for_serialization(
+                method(
+                    namespace,
+                    label_selector=",".join(
+                        f"{k}={v}" for k, v in sorted(selector["matchLabels"].items())
+                    ),
+                    limit=min(self.limits.max_objects, 1000),
+                    _request_timeout=self._timeout(),
+                )
+            ),
+        )
+        if result.get("metadata", {}).get("continue"):
+            raise ValueError("CSI inventory exceeds bound")
+        return result["items"]
+
+    def initialization_identity(self, storage_class_name):
+        from kubernetes import client
+
+        started = datetime.now(UTC)
+        try:
+            sc = self.storage_class(storage_class_name)
+            driver = sc["provisioner"]
+            namespace = sc["parameters"]["clusterID"]
+            if (
+                namespace != "openshift-storage"
+                or driver != namespace + ".rbd.csi.ceph.com"
+            ):
+                return ReadResult(status="unsupported", collected_at=started)
+            apps, storage = client.AppsV1Api(self.api), client.StorageV1Api(self.api)
+
+            def read(method, *args) -> dict[str, Any]:
+                return cast(
+                    dict[str, Any],
+                    self.api.sanitize_for_serialization(
+                        method(*args, _request_timeout=self._timeout())
+                    ),
+                )
+
+            controller = read(
+                apps.read_namespaced_deployment, driver + "-ctrlplugin", namespace
+            )
+            node = read(
+                apps.read_namespaced_daemon_set, driver + "-nodeplugin", namespace
+            )
+            value = {
+                "provider_id": self.provider_id,
+                "cluster_key": self.cluster_identity(),
+                "storage_class": sc,
+                "namespace": self.namespace(namespace),
+                "driver": read(storage.read_csi_driver, driver),
+                "controller": controller,
+                "node": node,
+                "replica_sets": self._identity_list(
+                    apps.list_namespaced_replica_set,
+                    namespace,
+                    controller["spec"]["selector"],
+                ),
+                "controller_pods": self._identity_list(
+                    self.core.list_namespaced_pod,
+                    namespace,
+                    controller["spec"]["selector"],
+                ),
+                "node_pods": self._identity_list(
+                    self.core.list_namespaced_pod, namespace, node["spec"]["selector"]
+                ),
+            }
+            return ReadResult(status="complete", collected_at=started, value=value)
+        except (
+            Exception
+        ):  # noqa: BLE001 - sanitize API/transport failures at reader boundary
+            return ReadResult(status="unavailable", collected_at=started)
 
 
 def _verify(db, args):

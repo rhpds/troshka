@@ -102,7 +102,7 @@ def initialization_reference(row):
 
 
 def remaining_vector(row):
-    """One remainder rule for usage, delayed claim and native pool capacity."""
+    """One remainder rule for usage and delayed claim, including initialization."""
     values = {
         name: max(0, row.requested[name] - row.observed.get(name, 0))
         for name in DIMENSIONS
