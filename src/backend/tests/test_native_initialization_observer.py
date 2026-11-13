@@ -591,6 +591,60 @@ def test_bounded_api_defaults_and_service_account_injection_match(installed, rol
     )
 
 
+@pytest.mark.parametrize("role", ["ctrl_pods", "node_pods"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "fifth",
+        "arbitrary-fourth",
+        "name",
+        "key",
+        "path",
+        "optional",
+        "extra-field",
+        "mount",
+        "volume-name",
+    ],
+)
+def test_exact_openshift_service_ca_projection(installed, role, change):
+    q = installed
+    pod = q.data[role][0]
+    inject_service_account(pod)
+    volume = pod["spec"]["volumes"][0]
+    source = {
+        "configMap": {
+            "name": "openshift-service-ca.crt",
+            "items": [{"key": "service-ca.crt", "path": "service-ca.crt"}],
+        }
+    }
+    volume["projected"]["sources"].append(source)
+    if change == "fifth":
+        volume["projected"]["sources"].append(deepcopy(source))
+    elif change == "arbitrary-fourth":
+        volume["projected"]["sources"][-1] = {"secret": {"name": "arbitrary"}}
+    elif change == "name":
+        source["configMap"]["name"] = "other-ca"
+    elif change in {"key", "path"}:
+        source["configMap"]["items"][0][change] = "other-ca.crt"
+    elif change == "optional":
+        source["configMap"]["optional"] = True
+    elif change == "extra-field":
+        source["configMap"]["items"][0]["mode"] = 420
+    elif change == "mount":
+        pod["spec"]["containers"][0]["volumeMounts"][0]["mountPath"] += "/other"
+    elif change == "volume-name":
+        volume["name"] = "other-projection"
+    if change == "none":
+        assert (
+            initialization.observe(q.profile, q.reader, q.backend).target
+            == q.profile.target
+        )
+    else:
+        with pytest.raises(AccountingUnavailable):
+            initialization.observe(q.profile, q.reader, q.backend)
+
+
 @pytest.mark.parametrize(
     "change",
     [

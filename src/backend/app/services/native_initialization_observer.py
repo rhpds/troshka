@@ -198,14 +198,14 @@ def deployment_parent(workload, replica_sets, pods):
 
 
 def token_projection(volume):
-    """Recognize only Kubernetes' default bound-service-account projection."""
+    """Recognize only Kubernetes and exact OpenShift service-CA token projections."""
     name = volume["name"]
     require(
         re.fullmatch(r"kube-api-access-[a-z0-9]{5}", name) is not None,
         "unsupported injected CSI volume",
     )
     sources = volume["projected"]["sources"]
-    require(len(sources) == 3, "unsupported service account projection")
+    require(len(sources) in {3, 4}, "unsupported service account projection")
     expiration = sources[0]["serviceAccountToken"]["expirationSeconds"]
     require(
         type(expiration) is int and expiration in (3600, 3607),
@@ -244,6 +244,15 @@ def token_projection(volume):
             ],
         },
     }
+    if len(sources) == 4:
+        expected["projected"]["sources"].append(
+            {
+                "configMap": {
+                    "name": "openshift-service-ca.crt",
+                    "items": [{"key": "service-ca.crt", "path": "service-ca.crt"}],
+                }
+            }
+        )
     require(volume == expected, "service account projection differs")
     return name
 
