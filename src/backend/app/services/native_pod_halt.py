@@ -67,12 +67,29 @@ def _followup(reader, manifest, target):
     return "delete_request_accepted"
 
 
+def _verify_dry_run_unchanged(reader, manifest, target):
+    _root(reader, manifest.root)
+    value = reader.read_pod_after_delete(manifest.root.namespace, target.name)
+    _root(reader, manifest.root)
+    require(value is not None)
+    _verify_response(value, manifest.root.namespace, target)
+    require(value.get("kind") == "Pod")
+    meta = value["metadata"]
+    require(
+        meta.get("resourceVersion") == target.resource_version
+        and not meta.get("deletionTimestamp"),
+        "dry_run_state_changed",
+    )
+
+
 def request_pod(reader, manifest, target, options, *, apply):
     try:
         returned = reader.delete_pod(
             manifest.root.namespace, target.name, options, dry_run=not apply
         )
         _verify_response(returned, manifest.root.namespace, target)
+        if not apply:
+            _verify_dry_run_unchanged(reader, manifest, target)
     except Exception:
         return {"target": target.model_dump(), "status": "ambiguous"}
     status = _followup(reader, manifest, target) if apply else "dry_run_accepted"

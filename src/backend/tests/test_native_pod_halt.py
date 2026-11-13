@@ -15,10 +15,12 @@ class Pods(Cluster):
         super().__init__()
         project = self.objects["TroshkaProject", "root"]
         self.objects["Pod", "showroom"] = obj("Pod", "showroom", project, volumes=[])
-        self.followup = "absent"
+        self.followup = "auto"
+        self.was_dry_run = None
         self.reply = None
 
     def delete_pod(self, namespace, name, options, *, dry_run):
+        self.was_dry_run = dry_run
         events = [json.loads(line) for line in self.journal.read_text().splitlines()]
         assert events[-1]["event"] == "attempt"
         assert options == {
@@ -36,7 +38,9 @@ class Pods(Cluster):
         return self.reply if self.reply is not None else result
 
     def read_pod_after_delete(self, namespace, name):
-        if self.followup == "absent":
+        if self.followup == "absent" or (
+            self.followup == "auto" and not self.was_dry_run
+        ):
             return None
         if self.followup == "error":
             raise TimeoutError("private")
@@ -434,7 +438,7 @@ def test_real_api_client_bounded_single_shot_transport(operation, response_kind)
         assert kwargs["redirect"] is False and kwargs["retries"] is False
         assert kwargs["timeout"].total <= 15
         if operation == "delete":
-            assert json.loads(kwargs["body"]) == options
+            assert json.loads(kwargs["body"]) == {**options, "dryRun": ["All"]}
             assert kwargs["headers"]["Content-Type"] == "application/json"
         if response_kind != "timeout":
             assert response.closed
@@ -481,3 +485,90 @@ def test_pod_rv_revalidated_before_dispatch(tmp_path):
     cluster.get = get
     assert execute(cluster, tmp_path)["status"] == "blocked"
     assert not cluster.requests
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("inherited", [None, ["All"], ["invalid"]])
+def test_delete_body_controls_server_dry_run_not_query(dry_run, inherited):
+    """Kubernetes v1.33 DeleteResource decodes query only for an empty body."""
+    # https://github.com/kubernetes/kubernetes/blob/v1.33.6/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/delete.go#L87-L115
+    import io
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, urlsplit
+
+    from kubernetes.client import ApiClient, Configuration
+    from urllib3.response import HTTPResponse
+
+    from app.services.native_vm_halt_transport import HaltClient
+
+    api = ApiClient(Configuration())
+    persisted = {"pod": True}
+    options = {
+        "apiVersion": "v1",
+        "kind": "DeleteOptions",
+        "preconditions": {"uid": "showroom-uid", "resourceVersion": "7"},
+    }
+    if inherited is not None:
+        options["dryRun"] = inherited
+    before = deepcopy(options)
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        raw = kwargs["body"]
+        effective = json.loads(raw) if raw else parse_qs(urlsplit(url).query)
+        if effective.get("dryRun") != ["All"]:
+            persisted["pod"] = False
+        return HTTPResponse(
+            body=io.BytesIO(json.dumps(obj("Pod", "showroom")).encode()),
+            status=200,
+            preload_content=False,
+        )
+
+    api.rest_client.pool_manager = SimpleNamespace(request=request)
+    client = object.__new__(HaltClient)
+    client.api, client.scan_deadline, client.max_response_bytes = api, None, 2048
+    try:
+        client.delete_pod("project", "showroom", options, dry_run=dry_run)
+        assert persisted["pod"] is dry_run
+        sent = json.loads(calls[0][2]["body"])
+        expected = {k: v for k, v in before.items() if k != "dryRun"}
+        if dry_run:
+            expected["dryRun"] = ["All"]
+        assert sent == expected
+        assert options == before
+        assert len(calls) == 1
+    finally:
+        api.close()
+
+
+@pytest.mark.parametrize(
+    "hazard", ["deleted", "deleting", "rv", "replacement", "unavailable", "root"]
+)
+def test_dry_run_requires_fresh_unchanged_pod_before_acceptance(tmp_path, hazard):
+    cluster = Pods()
+    original = cluster.delete_pod
+
+    def mutated(*args, **kwargs):
+        returned = original(*args, **kwargs)
+        if hazard == "deleted":
+            cluster.followup = "absent"
+        elif hazard == "deleting":
+            cluster.objects["Pod", "showroom"]["metadata"]["deletionTimestamp"] = "now"
+        elif hazard == "rv":
+            cluster.objects["Pod", "showroom"]["metadata"][
+                "resourceVersion"
+            ] = "changed"
+        elif hazard == "replacement":
+            cluster.followup = "replacement"
+        elif hazard == "unavailable":
+            cluster.followup = "error"
+        else:
+            cluster.namespace = lambda name: {"metadata": {"uid": "replacement"}}
+        return returned
+
+    cluster.delete_pod = mutated
+    report = execute(cluster, tmp_path)
+    assert report["results"][0]["status"] == "ambiguous"
+    assert report["status"] == "incomplete"
+    assert len(cluster.requests) == 1

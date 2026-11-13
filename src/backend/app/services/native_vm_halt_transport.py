@@ -17,7 +17,12 @@ _READ_ENDPOINTS = {
 
 class HaltClient(WorkloadReader):
     def delete_pod(self, namespace, name, options, *, dry_run):
-        return self._pod_request("DELETE", namespace, name, options, dry_run=dry_run)
+        # DeleteResource decodes nonempty body INSTEAD OF query parameters.
+        # Own this mode field: never mutate or inherit the caller's dryRun.
+        body = {key: value for key, value in options.items() if key != "dryRun"}
+        if dry_run:
+            body["dryRun"] = ["All"]
+        return self._pod_request("DELETE", namespace, name, body, dry_run=dry_run)
 
     def read_pod_after_delete(self, namespace, name):
         return self._pod_request("GET", namespace, name)

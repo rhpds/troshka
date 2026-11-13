@@ -129,7 +129,21 @@ The command sends one graceful DELETE with `apiVersion: v1`, `kind: DeleteOption
 and `preconditions: {uid: <selected UID>, resourceVersion: <selected RV>}`. Grace
 and propagation are omitted, preserving API defaults. There is no force, grace
 zero, orphan override, finalizer removal, controller DELETE or namespace DELETE.
-Server dry-run adds `dryRun=All`; explicit apply uses the same profile checks.
+Server dry-run includes `dryRun: ["All"]` **inside the DeleteOptions body**, as
+well as the query parameter. Explicit apply constructs a body without `dryRun`;
+the transport copies caller options and owns this field, so it cannot inherit a
+previous dry-run mode. Both modes use the same profile checks.
+
+Kubernetes v1.33 decodes DELETE options from a nonempty body and reads query
+options only when that body is empty. A query-only dry-run on this UID/RV body is
+therefore unsafe. This is established by the
+[Kubernetes v1.33.6 DeleteResource implementation](https://github.com/kubernetes/kubernetes/blob/v1.33.6/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/delete.go#L78-L127).
+The first local bare Pod implementation (`ce7ab2d0`) had this defect: its default
+dry-run deleted the isolated diskless acceptance Pod and incorrectly recorded
+`dry_run_accepted`. No `--apply` ran in that attempt. That acceptance failed; the
+original journal remains evidence of an erroneous result. Do not use that
+revision for Pod dry-runs or rerun its old target. Validate a new distinct target
+after reviewing the fix.
 
 Pod volumes use the controller allowlist above. Each referenced PVC must be
 bound and retained by the Project (optionally through a DataVolume), with exact
@@ -152,6 +166,13 @@ checks, yields `absence_observed`. A namespace NotFound never qualifies. A
 same-name replacement UID yields `ambiguous`; a still-terminating same-UID Pod or
 unavailable follow-up leaves `delete_request_accepted`. No response or subsequent
 API object absence proves that the process on a node physically stopped.
+
+After a Pod dry-run response, the command additionally requires a fresh exact Pod
+GET showing the original UID/resourceVersion and no deletionTimestamp, with root
+checks before and after the GET. Absence, a changed RV, replacement, deletion or
+unavailable evidence produces `ambiguous` and stops processing. Even an unrelated
+status update can conservatively make this check ambiguous. These extra reads
+detect observed mutation; they cannot undo a bad request or prove future state.
 
 ## Run
 
@@ -212,7 +233,7 @@ post-operation evidence, including paused VMIs and other live workloads.
 
 | Status | Meaning |
 |---|---|
-| `dry_run_accepted` | API accepted the dry-run and returned the exact supported cleanup delta. No persisted halt is claimed. |
+| `dry_run_accepted` | API accepted the dry-run and returned the exact supported cleanup delta/Pod identity. Pod dry-runs additionally observed the original UID/RV without deletionTimestamp through a fresh root-verified GET. No persisted halt is claimed. |
 | `desired_halt_observed` | API accepted the apply request and a fresh GET observed the same VM UID with desired halt. Compute may still run. |
 | `halt_request_accepted` | API returned the expected applied resource; follow-up desired-state evidence was unavailable or changed. Processing stops. |
 | `desired_stop_observed` | API accepted the controller apply request and a fresh GET saw the same UID with replicas zero or suspend true. Pods can still run. |
