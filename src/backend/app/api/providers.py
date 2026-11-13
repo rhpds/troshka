@@ -1,10 +1,11 @@
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_role
@@ -760,6 +761,11 @@ def delete_provider(
 
     if provider.type == "kubevirt":
         creds = provider.get_credentials()
+        if creds.get("operator_managed_externally"):
+            raise HTTPException(
+                409,
+                "Provider uses an externally managed operator; cluster cleanup is prohibited",
+            )
         core_api = _cleanup_kubevirt_k8s_resources(provider, creds)
         _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
     elif provider.hosts:
@@ -1555,6 +1561,103 @@ def create_s3_bucket(
     except Exception as e:
         logger.exception("Failed to create bucket %s: %s", bucket, e)
         raise HTTPException(status_code=500, detail=f"Failed to create bucket: {e}")
+
+
+class AttachOperatorRequest(BaseModel):
+    expected_operator_image: str
+
+    @field_validator("expected_operator_image")
+    @staticmethod
+    def named_image_reference(image: str) -> str:
+        repository, separator, tag = image.rpartition(":")
+        if (
+            not separator
+            or not repository
+            or "@" in image
+            or re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9./:_-]*", repository) is None
+            or re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}", tag) is None
+            or tag.lower()
+            in {"latest", "production", "main", "stable", "dev", "master"}
+        ):
+            raise ValueError(
+                "An explicit operator image with a named version tag is required"
+            )
+        return image
+
+
+def _existing_attach_host(provider, db):
+    from app.models.host import Host
+
+    hosts = db.query(Host).filter_by(provider_id=provider.id).all()
+    if not hosts:
+        return None
+    if len(hosts) != 1:
+        raise HTTPException(
+            409, "Provider has multiple hosts; resolve registration conflict"
+        )
+    host = hosts[0]
+    if (
+        host.host_type != "kubevirt-cluster"
+        or host.instance_type != "kubevirt-cluster"
+        or host.state != "active"
+        or host.agent_status not in {"connected", "disconnected", "error"}
+        or host.instance_id != provider.get_credentials().get("api_url")
+    ):
+        raise HTTPException(409, "Existing host conflicts with operator registration")
+    return host
+
+
+@router.post("/{provider_id}/attach-operator")
+def attach_operator(
+    provider_id: str, body: AttachOperatorRequest, user: AdminUser, db: DbSession
+):
+    """Register an existing verified operator without installing cluster resources."""
+    from urllib.parse import urlsplit
+
+    from app.models.host import Host
+    from app.services.existing_operator import verify_existing_operator
+
+    # Serialize repeated/concurrent attach calls, including the first host insert.
+    provider = db.query(Provider).filter_by(id=provider_id).with_for_update().first()
+    if not provider:
+        raise HTTPException(404, _PROVIDER_NOT_FOUND)
+    if provider.type != "kubevirt":
+        raise HTTPException(400, "Attach operator is only for kubevirt providers")
+    if provider.state != "active":
+        raise HTTPException(409, "Provider is not active")
+    host = _existing_attach_host(provider, db)
+    try:
+        capacity = verify_existing_operator(provider, body.expected_operator_image)
+    except Exception:
+        # Provider/Kubernetes exceptions can contain credentials and API responses.
+        raise HTTPException(
+            503, "Existing operator verification or capacity discovery failed"
+        ) from None
+    if host is None:
+        creds = provider.get_credentials()
+        host = Host(
+            provider_id=provider.id,
+            instance_id=creds["api_url"],
+            instance_type="kubevirt-cluster",
+            host_type="kubevirt-cluster",
+            region=provider.default_region or "",
+            state="active",
+            ip_address=urlsplit(creds["api_url"]).hostname or "",
+            agent_token=creds.get("token", ""),
+        )
+        db.add(host)
+    for key, value in capacity.items():
+        setattr(host, key, value)
+    host.agent_status = "connected"
+    creds = provider.get_credentials()
+    creds["operator_managed_externally"] = True
+    provider.set_credentials(creds)
+    db.commit()
+    return {
+        "host_id": host.id,
+        "status": host.agent_status,
+        "verified_image": body.expected_operator_image,
+    }
 
 
 @router.post(

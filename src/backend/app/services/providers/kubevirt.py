@@ -1740,7 +1740,7 @@ def _node_allocatable_vcpus_ram_mb(node) -> tuple[int, int]:
     return vcpus, ram_mb
 
 
-def _query_cluster_capacity(core_api):
+def _query_cluster_capacity(core_api, *, strict=False):
     """Sum allocatable vCPUs and RAM across schedulable worker nodes.
 
     Returns ``(total_vcpus, total_ram_mb)`` or ``(256, 1048576)`` as fallback.
@@ -1748,7 +1748,7 @@ def _query_cluster_capacity(core_api):
     total_vcpus = 0
     total_ram_mb = 0
     try:
-        nodes = core_api.list_node()
+        nodes = core_api.list_node(**({"_request_timeout": 10} if strict else {}))
         for node in getattr(nodes, "items", []):
             if not _node_is_schedulable_worker(node):
                 continue
@@ -1756,18 +1756,21 @@ def _query_cluster_capacity(core_api):
             total_vcpus += vcpus
             total_ram_mb += ram_mb
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"Failed to query cluster capacity: {e}")
         total_vcpus = 256
         total_ram_mb = 1024 * 1024
     return total_vcpus, total_ram_mb
 
 
-def _query_ceph_df(core_api) -> dict | None:
+def _query_ceph_df(core_api, *, strict=False) -> dict | None:
     """Query Ceph cluster df via rook-ceph-tools. Returns stats dict or None."""
     try:
         toolbox_pods = core_api.list_namespaced_pod(
             namespace="openshift-storage",
             label_selector="app=rook-ceph-tools",
+            **({"_request_timeout": 10} if strict else {}),
         )
         if not getattr(toolbox_pods, "items", []):
             return None
@@ -1784,29 +1787,41 @@ def _query_ceph_df(core_api) -> dict | None:
             stdin=False,
             tty=False,
             _preload_content=False,
+            **({"_request_timeout": 10} if strict else {}),
         )
         stdout = ""
-        while resp.is_open():
-            resp.update(timeout=10)
-            if resp.peek_stdout():
-                stdout += resp.read_stdout()
-            if resp.peek_stderr():
-                resp.read_stderr()
-        resp.close()
+        deadline = time.monotonic() + 30
+        try:
+            while resp.is_open():
+                if strict and time.monotonic() >= deadline:
+                    raise TimeoutError("Ceph capacity discovery timed out")
+                resp.update(timeout=10)
+                if resp.peek_stdout():
+                    stdout += resp.read_stdout()
+                if resp.peek_stderr():
+                    resp.read_stderr()
+        finally:
+            resp.close()
 
         import json
 
         ceph_df = json.loads(stdout)
         return ceph_df.get("stats") or {}
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"Failed to query Ceph storage capacity: {e}")
         return None
 
 
-def _query_ceph_storage_gb(core_api):
+def _query_ceph_storage_gb(core_api, *, strict=False):
     """Query total Ceph storage via the rook-ceph-tools pod. Returns 0 on failure."""
-    stats = _query_ceph_df(core_api)
+    stats = (
+        _query_ceph_df(core_api, strict=True) if strict else _query_ceph_df(core_api)
+    )
     if not stats:
+        if strict:
+            raise ValueError("Ceph storage capacity unavailable")
         return 0
     return int(stats.get("total_bytes", 0) / (1024**3))
 
@@ -1847,7 +1862,7 @@ def _count_addresses(addr: str) -> int:
         return 0
 
 
-def _query_metallb_capacity(custom_api):
+def _query_metallb_capacity(custom_api, *, strict=False):
     """Sum assignable external IPs across auto-assign MetalLB IPAddressPools.
 
     Troshka's EIP LoadBalancer services don't pin a pool, so only pools with
@@ -1859,8 +1874,11 @@ def _query_metallb_capacity(custom_api):
             group="metallb.io",
             version="v1beta1",
             plural="ipaddresspools",
+            **({"_request_timeout": 10} if strict else {}),
         )
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"Failed to query MetalLB IPAddressPools: {e}")
         return 0
 
