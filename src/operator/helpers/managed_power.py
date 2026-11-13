@@ -74,7 +74,9 @@ def intent(root):
         return None
     try:
         value = json.loads(raw)
-        require(value["version"] == 1 and value["mode"] in {"stopped", "running"})
+        require(
+            value["version"] == 1 and value["mode"] in {"stopped", "running", "deploy"}
+        )
         require(
             all(
                 type(value[k]) is str and 0 < len(value[k]) <= 256
@@ -247,8 +249,7 @@ def producer(*, project=False, reconcile=False):
                         root.get("metadata", {}).get("annotations", {}).get(ANNOTATION)
                         is not None
                     ):
-                        if reconcile:
-                            reconcile_stop(api, root)
+                        reconcile_intent(api, root, reconcile)
                         return None
                     return await function(*args, **kwargs)
                 finally:
@@ -257,6 +258,18 @@ def producer(*, project=False, reconcile=False):
         return wrapped
 
     return decorate
+
+
+def reconcile_intent(api, root, reconcile):
+    request = intent(root)
+    if request is None:
+        raise ManagedPowerError("managed_intent_required")
+    if request["mode"] == "deploy":
+        from helpers.managed_deploy import reconcile as deploy
+
+        deploy(api, root)
+    elif reconcile:
+        reconcile_stop(api, root)
 
 
 def inventory(api, root):
