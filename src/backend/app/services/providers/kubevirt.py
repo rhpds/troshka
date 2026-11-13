@@ -1725,10 +1725,15 @@ def _node_is_schedulable_worker(node) -> bool:
 
 
 def _node_allocatable_vcpus_ram_mb(node) -> tuple[int, int]:
+    from kubernetes.utils.quantity import parse_quantity
+
     alloc = node.status.allocatable or {}
     cpu_str = alloc.get("cpu", "0")
     mem_str = alloc.get("memory", "0")
-    vcpus = int(cpu_str)
+    cpu = parse_quantity(cpu_str)
+    if not cpu.is_finite() or cpu < 0:
+        raise ValueError("Invalid allocatable CPU quantity")
+    vcpus = int(cpu)
     if mem_str.endswith("Ki"):
         ram_mb = int(mem_str[:-2]) // 1024
     elif mem_str.endswith("Mi"):
