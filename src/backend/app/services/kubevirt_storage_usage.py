@@ -106,7 +106,8 @@ def _project_membership(db, scope, identity):
     return query.all()
 
 
-def _domain_evidence(db, domain, roots):
+def domain_evidence(db, domain, roots):
+    """Reconstruct actor-independent graph evidence for a domain's latest attempt."""
     if domain.conflicted:
         return None, None, {"collection_domain_conflict"}
     report = (
@@ -128,7 +129,7 @@ def _collect_evidence(db, roots, domains):
     allocations, platform, sources, reasons = {}, [], {}, {}
     for domain in domains:
         domain_roots = [r for r in roots if r.domain_id == domain.id]
-        graph, source, failures = _domain_evidence(db, domain, domain_roots)
+        graph, source, failures = domain_evidence(db, domain, domain_roots)
         reasons[domain.id] = failures
         if graph is None:
             continue

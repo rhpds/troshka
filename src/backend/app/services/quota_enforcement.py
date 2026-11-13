@@ -251,6 +251,9 @@ def _pool_causes(db, project, now):
         return set(), False
     try:
         root = storage.measurement_row(rows)
+        if storage.storage_adapter(root) != "nested":
+            # Native reports measure allocation, not filesystem free/headroom.
+            return set(), False
         evidence = root.dispatch_metadata.get("storage_evidence", {})
         storage.validate(
             evidence, project.id, operations._generation(root), project.host_id, now
@@ -573,6 +576,13 @@ def _prepare_stop(db, run, now):
     causes = [row for row in _stops(db, project.id) if _cause_key(row) in current]
     if not causes:
         run.state = "cancelled"
+        return False
+    from app.services.quota_storage import nested_runtime_ready
+
+    if not nested_runtime_ready(db, project, rows):
+        run.last_error = (
+            "Native managed shutdown and completion observation unavailable"
+        )
         return False
     if _complete_noncreation(db, project, rows, now) or _confirm_off(
         db, project, run, rows, now

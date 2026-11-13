@@ -527,6 +527,11 @@ def reconcile(project_id):
         if not project:
             return
         rows = _lock_observation_batch(db, project_id)
+        # Native allocation measurements do not make VM-only off proof complete.
+        from app.services.quota_storage import nested_runtime_ready
+
+        if rows is not None and not nested_runtime_ready(db, project, rows):
+            return
         if rows is None or not all(
             _observation_follows_worker(row, timestamp) for row in rows
         ):

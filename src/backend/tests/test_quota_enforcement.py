@@ -262,6 +262,101 @@ def compute(db, project, user, org, *, finished=True):
     return row
 
 
+@pytest.mark.parametrize(
+    "native_target",
+    ["persisted_adapter", "live_without_rows", "live_host_without_rows"],
+)
+def test_existing_spending_cause_cannot_use_native_vm_only_stop(
+    ledger, monkeypatch, native_target
+):
+    from app.models.host import Host
+    from app.models.provider import Provider
+
+    db, project, user, org, amounts = ledger
+    project.budget_usd = 0
+    row = None
+    if native_target == "persisted_adapter":
+        row = compute(db, project, user, org)
+        row.dispatch_metadata = {**row.dispatch_metadata, "adapter": "kubevirt"}
+    elif native_target == "live_without_rows":
+        provider = Provider(name="native-stop-blocked", type="kubevirt")
+        db.add(provider)
+        db.flush()
+        project.provider_id = provider.id
+    else:
+        host = Host(host_type="kubevirt-cluster")
+        db.add(host)
+        db.flush()
+        project.host_id = host.id
+    db.flush()
+    enforcement.evaluate(db, NOW)
+    run = actions(db, project, "stop_run")[0]
+    monkeypatch.setattr(
+        enforcement,
+        "_confirm_off",
+        lambda *args: pytest.fail("Native target used nested VM-only completion proof"),
+    )
+    assert not enforcement._prepare_stop(db, run, NOW)
+    assert "Native managed shutdown" in run.last_error
+    assert run.state == "pending" and run.attempts == 0
+    if row:
+        assert row.observed["cpu"] == 2
+
+
+def _nested_future_native_placement(db, project, user, org):
+    from app.models.host import Host
+    from app.services import quota_operations as operations
+
+    row = compute(db, project, user, org)
+    host = Host(host_type="bare-metal")
+    db.add(host)
+    db.flush()
+    project.host_id = host.id
+    project.deployed_topology = project.topology
+    operations.guard_topology_edit(db, project)
+    project.topology = {"nodes": [], "placement": {"requires_kubevirt": True}}
+    db.commit()
+    return row
+
+
+def test_nested_budget_stop_survives_future_native_placement_edit(ledger, monkeypatch):
+    db, project, user, org, amounts = ledger
+    row = _nested_future_native_placement(db, project, user, org)
+    project.budget_usd = 0
+    db.commit()
+    monkeypatch.setattr("app.services.ws_pubsub.get_cached_vm_states", lambda _: {})
+    dispatch = Mock()
+    monkeypatch.setattr(enforcement, "_dispatch", dispatch)
+    enforcement.evaluate(db, NOW)
+    run = actions(db, project, "stop_run")[0]
+    enforcement.reconcile_action(db, run.id, NOW)
+    dispatch.assert_called_once_with(project.id)
+    assert run.state == "issued" and run.attempts == 1
+    assert row.observed["cpu"] == 2
+
+
+def test_nested_cached_off_reconciles_after_future_native_placement_edit(
+    ledger, monkeypatch
+):
+    from app.services import quota_operations as operations
+    from app.services import quota_storage as storage
+
+    db, project, user, org, amounts = ledger
+    row = _nested_future_native_placement(db, project, user, org)
+    monkeypatch.setattr(
+        "app.services.ws_pubsub.get_cached_vm_states",
+        lambda _: {
+            "states": {"vm": "shut_off"},
+            "observed_at": NOW,
+            "observation_id": "nested-runtime-off",
+        },
+    )
+    monkeypatch.setattr(storage, "reconcile_project", Mock())
+    operations.reconcile(project.id)
+    db.expire_all()
+    assert row.observed == Resources(projects=1, storage_bytes=10).model_dump()
+
+
 def test_confirm_only_fresh_off_after_settled_growth_retains_storage(
     ledger, monkeypatch
 ):

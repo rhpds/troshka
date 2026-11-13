@@ -1,14 +1,16 @@
-"""Pure native demand inspection; this module does not authorize native growth.
+"""Native demand inspection and enrolled measurements; never authorize growth.
 
-Known compute is a lower bound while any demand is blocked. PVC capacity is
-recorded separately from nullable initialization allocation. No reporting value,
-nested qcow2 allowance, or cluster-wide raw Ceph capacity enters this contract.
+Known compute is a lower bound while any demand is blocked. Demand inspection
+keeps PVC capacity separate from nullable initialization allocation. Measurements
+consume only complete enrolled graphs; neither nested qcow2 allowances nor raw
+Ceph capacity can supply native allocation.
 """
 
 import importlib
 import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import ROUND_CEILING, Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -18,6 +20,218 @@ from app.schemas.quota import AccountingUnavailable
 
 METRIC = "rbd_allocated_extent_bytes"
 MAX_QUANTITY = 2**63 - 1
+ADAPTER = "kubevirt"
+MEASUREMENT_VERSION = "native-rbd-measurement-v1"
+
+
+@dataclass(frozen=True)
+class NativeStorageMeasurement:
+    """Exact attributed allocation, never a provisioned size or known subtotal."""
+
+    project_id: str
+    host_id: str
+    provider_id: str
+    generation_id: str
+    identity: dict
+    report_id: str
+    started_at: datetime
+    completed_at: datetime
+    observed_at: datetime
+    pools: tuple[tuple[str, int], ...]
+    allocated_bytes: int
+
+    def evidence(self):
+        return {
+            "version": MEASUREMENT_VERSION,
+            "metric": METRIC,
+            "project_id": self.project_id,
+            "host_id": self.host_id,
+            "provider_id": self.provider_id,
+            "generation_id": self.generation_id,
+            "identity": self.identity,
+            "report_id": self.report_id,
+            "started_at": self.started_at.isoformat(),
+            "completed_at": self.completed_at.isoformat(),
+            "observed_at": self.observed_at.isoformat(),
+            "pools": [list(pool) for pool in self.pools],
+            "allocated_bytes": self.allocated_bytes,
+        }
+
+
+def _measurement_domain(db, project_id, identity):
+    from app.models.kubevirt_storage import NativeCollectionDomain, NativeProjectRoot
+
+    roots = db.query(NativeProjectRoot).filter_by(project_id=project_id).all()
+    if len(roots) != 1:
+        raise AccountingUnavailable("Native storage requires one retained project root")
+    root = roots[0]
+    domain = (
+        db.query(NativeCollectionDomain)
+        .filter_by(id=root.domain_id)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if domain is None or identity.get("domain_id") != domain.id:
+        raise AccountingUnavailable("Native storage collection domain changed")
+    if identity.get("enrollment_id") != domain.enrollment_id:
+        raise AccountingUnavailable("Native storage enrollment changed")
+    return root, domain
+
+
+def _measurement_binding(db, project, root, domain, identity):
+    from app.models.host import Host
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.models.provider import Provider
+    from app.models.user import User
+    from app.schemas.kubevirt_storage_enrollment import VerifiedEnrollment
+    from app.services.kubevirt_storage_enrollment import digest, root_identity
+
+    enrollment = db.get(NativeEnrollment, domain.enrollment_id)
+    if enrollment is None or enrollment.domain_id != domain.id:
+        raise AccountingUnavailable("Native enrollment unavailable")
+    manifest = VerifiedEnrollment.model_validate(enrollment.payload)
+    if manifest.digest != enrollment.digest or manifest.digest != digest(
+        manifest.model_dump(mode="json", exclude={"digest"})
+    ):
+        raise AccountingUnavailable("Native enrollment identity changed")
+    expected = [p for p in manifest.request.projects if str(p.project_id) == project.id]
+    pinned = [r for r in manifest.pins.project_roots if str(r.project_id) == project.id]
+    if len(expected) != 1 or len(pinned) != 1:
+        raise AccountingUnavailable("Native enrollment project identity ambiguous")
+    expected, pinned = expected[0], pinned[0]
+    host = db.get(Host, project.host_id) if project.host_id else None
+    owner = db.get(User, project.owner_id) if project.owner_id else None
+    provider = db.get(Provider, host.provider_id) if host else None
+    if (
+        provider is None
+        or host is None
+        or provider.type != "kubevirt"
+        or owner is None
+        or project.host_id != str(expected.host_id)
+        or provider.id != str(expected.provider_id)
+        or root.provider_id != provider.id
+        or project.provider_id not in (None, provider.id)
+        or project.owner_id != str(expected.owner_id)
+        or owner.organization_id
+        != (str(expected.organization_id) if expected.organization_id else None)
+    ):
+        raise AccountingUnavailable("Native storage host/provider/ownership changed")
+    if (
+        root.payload != root_identity(pinned)
+        or identity.get("root") != pinned.model_dump(mode="json")
+        or identity.get("host_id") != host.id
+        or identity.get("provider_id") != provider.id
+    ):
+        raise AccountingUnavailable(
+            "Native retained namespace/project identity changed"
+        )
+    if pinned.deployment_generation is None:
+        raise AccountingUnavailable("Native project generation is unknown")
+    return host, provider, pinned, manifest
+
+
+def _measurement_report(db, domain, roots, manifest, now):
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.services.kubevirt_storage_enrollment import digest, root_key, utc
+    from app.services.kubevirt_storage_usage import MAX_REPORT_AGE, domain_evidence
+
+    graph, source, failures = domain_evidence(db, domain, roots)
+    report = db.get(NativeStorageSnapshot, domain.latest_report_id) if source else None
+    if failures or graph is None or source is None or report is None:
+        raise AccountingUnavailable("Native latest collection attempt is unavailable")
+    if (
+        {r.key for r in roots} != {root_key(r) for r in source.project_roots}
+        or set(source.pool_keys) != set(manifest.pins.pool_keys)
+        or source.collector_id not in manifest.pins.collector_ids
+    ):
+        raise AccountingUnavailable("Native enrolled graph inventory is incomplete")
+    if (
+        report.domain_id != domain.id
+        or report.enrollment_id != domain.enrollment_id
+        or str(source.report_id) != report.id
+        or digest(source) != report.digest
+        or utc(domain.latest_started_at) != utc(report.started_at)
+        or utc(source.started_at) != utc(report.started_at)
+        or utc(source.completed_at) != utc(report.completed_at)
+    ):
+        raise AccountingUnavailable("Native report identity changed")
+    times = [utc(source.started_at), *[utc(i.collected_at) for i in source.images]]
+    if not (
+        min(times) >= utc(now) - MAX_REPORT_AGE
+        and utc(source.started_at)
+        <= min(times)
+        <= max(times)
+        <= utc(source.completed_at)
+        and utc(source.completed_at) <= utc(report.imported_at) <= utc(now)
+    ):
+        raise AccountingUnavailable(
+            "Native source observation is stale or future-dated"
+        )
+    if (
+        any(
+            p.coverage != "complete" or p.allocated_bytes is None or p.blockers
+            for p in graph.projects
+        )
+        or any(p.allocated_bytes is None for p in graph.platform_pools)
+        or source.collection_errors
+    ):
+        raise AccountingUnavailable("Native graph coverage is incomplete")
+    return graph, source, report, min(times)
+
+
+def storage_measurement(db, project, generation_id, identity, now):
+    """Read current enrolled evidence under operation/membership locks held by caller.
+
+    The final domain lock serializes imports with reconciliation/evaluation. No
+    network I/O, quota writes, or implicit enrollment is performed here.
+    """
+    from app.models.kubevirt_storage import NativeProjectRoot
+
+    try:
+        root, domain = _measurement_domain(db, project.id, identity)
+        host, provider, pinned, manifest = _measurement_binding(
+            db, project, root, domain, identity
+        )
+        roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
+        graph, source, report, observed = _measurement_report(
+            db, domain, roots, manifest, now
+        )
+        supplied = [
+            r
+            for r in [
+                *source.project_roots,
+                *[b.root for b in source.volume_bindings + source.retained_bindings],
+                *[s.root for s in source.snapshot_evidence],
+            ]
+            if str(r.project_id) == project.id
+        ]
+        if not supplied or any(r != pinned for r in supplied):
+            raise AccountingUnavailable("Native report project generation changed")
+        projects = [p for p in graph.projects if str(p.project_id) == project.id]
+        if len(projects) != 1 or projects[0].namespace_uid != pinned.namespace_uid:
+            raise AccountingUnavailable("Native project graph attribution unavailable")
+        amount = projects[0].allocated_bytes
+        if amount is None:
+            raise AccountingUnavailable("Native exact allocation unavailable")
+        pools = tuple(sorted((p.ceph_fsid, p.pool_id) for p in set(source.pool_keys)))
+        if not pools:
+            raise AccountingUnavailable("Native physical pool identity unavailable")
+        return NativeStorageMeasurement(
+            project.id,
+            host.id,
+            provider.id,
+            generation_id,
+            identity,
+            report.id,
+            source.started_at,
+            source.completed_at,
+            observed,
+            pools,
+            amount,
+        )
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise AccountingUnavailable("Malformed native storage evidence") from error
 
 
 def _json(value):

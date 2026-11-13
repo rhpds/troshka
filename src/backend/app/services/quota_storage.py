@@ -259,6 +259,9 @@ def apply_measurement(db, project, rows, evidence, now):
     from app.services import quota_operations as operations
 
     root = measurement_row(rows)
+    adapter = storage_adapter(root)
+    if adapter != "nested":
+        return _apply_native_measurement(db, project, rows, evidence, now)
     generation = root.dispatch_metadata["generation_id"]
     amount = validate(evidence, project.id, generation, project.host_id, now)
     previous_evidence = root.dispatch_metadata.get("storage_evidence")
@@ -292,6 +295,109 @@ def apply_measurement(db, project, rows, evidence, now):
         "storage_pool_id": evidence["writable_pool"],
         "storage_evidence": evidence,
         "storage_measured_at": evidence["observed_at"],
+    }
+    db.flush()
+    return True
+
+
+def storage_adapter(row):
+    from app.services.quota_native import ADAPTER
+
+    adapter = row.dispatch_metadata.get("adapter", "nested")
+    if adapter not in ("nested", ADAPTER):
+        raise AccountingUnavailable("Unknown physical storage adapter")
+    return adapter
+
+
+def nested_runtime_ready(db, project, rows):
+    """Until native lifecycle integration, VM-only observations cannot release it."""
+    from app.models.provider import Provider
+
+    try:
+        if any(storage_adapter(row) != "nested" for row in rows):
+            return False
+    except AccountingUnavailable:
+        return False
+    # Admission examines the editable desired topology. Runtime shutdown and
+    # reconciliation must instead follow retained deployment and actual hosts.
+    topology = project.deployed_topology or {}
+    if (topology.get("placement") or {}).get("requires_kubevirt"):
+        return False
+    host = db.get(Host, project.host_id) if project.host_id else None
+    if host is not None and host.host_type == "kubevirt-cluster":
+        return False
+    provider_ids = {project.provider_id, getattr(host, "provider_id", None)} - {None}
+    for provider_id in provider_ids:
+        provider = db.get(Provider, provider_id)
+        if provider is not None and provider.type == "kubevirt":
+            return False
+    return True
+
+
+def _native_measurement(db, project, rows, now):
+    from app.models.user import User
+    from app.services import quota_native as native
+
+    root = measurement_row(rows)
+    identity = root.dispatch_metadata.get("native_storage_identity")
+    owner = db.get(User, project.owner_id)
+    if not identity or owner is None:
+        raise AccountingUnavailable("Native retained allocation identity unavailable")
+    for row in rows:
+        if (
+            storage_adapter(row) != native.ADAPTER
+            or row.project_id != project.id
+            or row.owner_id != project.owner_id
+            or row.organization_id != owner.organization_id
+            or row.dispatch_metadata.get("native_storage_identity") != identity
+        ):
+            raise AccountingUnavailable(
+                "Native retained allocation attribution changed"
+            )
+    return native.storage_measurement(
+        db, project, root.dispatch_metadata["generation_id"], identity, now
+    )
+
+
+def _apply_native_measurement(db, project, rows, evidence, now):
+    from app.services import quota_accounting as accounting
+    from app.services import quota_native as native
+    from app.services import quota_operations as operations
+
+    root = measurement_row(rows)
+    measurement = _native_measurement(db, project, rows, now)
+    if evidence is not None and evidence != measurement:
+        raise AccountingUnavailable("Native storage evidence is no longer current")
+    previous = root.dispatch_metadata.get("native_storage_evidence")
+    current = measurement.evidence()
+    if previous:
+        if previous == current:
+            return False
+        if previous.get("pools") != current["pools"]:
+            raise AccountingUnavailable("Native physical pool identity changed")
+        if accounting.utc(measurement.started_at) <= accounting.utc(
+            datetime.fromisoformat(previous["started_at"])
+        ):
+            raise AccountingUnavailable(
+                "Native storage report replay would roll back accounting"
+            )
+    timestamp = measurement.observed_at
+    settled = all(
+        operations._observation_follows_worker(row, timestamp) for row in rows
+    )
+    if not settled and not _after_dispatch(rows, timestamp):
+        raise AccountingUnavailable(
+            "Native storage observation predates its provider generation"
+        )
+    _apply_storage_vectors(
+        db, rows, root, measurement.allocated_bytes, settled, timestamp, now
+    )
+    root.dispatch_metadata = {
+        **root.dispatch_metadata,
+        "storage_version": native.MEASUREMENT_VERSION,
+        "storage_host_id": measurement.host_id,
+        "native_storage_evidence": current,
+        "storage_measured_at": timestamp.isoformat(),
     }
     db.flush()
     return True
@@ -369,7 +475,11 @@ def reconcile_project(project_id):
             return
         root = measurement_row(rows)
         host = db.get(Host, project.host_id)
-        evidence = fetch(host, project_id, root.dispatch_metadata["generation_id"])
+        evidence = (
+            fetch(host, project_id, root.dispatch_metadata["generation_id"])
+            if storage_adapter(root) == "nested"
+            else None
+        )
         db.rollback()
         rows = operations._lock_observation_batch(db, project_id)
         if rows:
@@ -399,6 +509,9 @@ def scope_evidence(db, scope, scope_id, now):
             or row.dispatch_metadata.get("kind") != "deploy"
         ):
             continue
+        if storage_adapter(row) != "nested":
+            _native_scope_evidence(db, row, now)
+            continue
         evidence = row.dispatch_metadata.get("storage_evidence", {})
         validate(
             evidence,
@@ -412,6 +525,41 @@ def scope_evidence(db, scope, scope_id, now):
         ):
             raise AccountingUnavailable(
                 "Physical storage allocation has not been measured"
+            )
+
+
+def _native_scope_evidence(db, root, now):
+    from app.models.project import Project
+    from app.services import quota_operations as operations
+
+    project = db.get(Project, root.project_id)
+    if project is None:
+        raise AccountingUnavailable("Native retained project ownership unavailable")
+    rows = operations.current_generation(operations._rows(db, project.id))
+    measurement = _native_measurement(db, project, rows, now)
+    if (
+        measurement_row(rows).operation_id != root.operation_id
+        or root.dispatch_metadata.get("native_storage_evidence")
+        != measurement.evidence()
+        or root.dispatch_metadata.get("storage_measured_at")
+        != measurement.observed_at.isoformat()
+    ):
+        raise AccountingUnavailable("Native latest allocation has not been reconciled")
+    for row in rows:
+        allocation = (
+            db.query(QuotaAllocation)
+            .filter_by(operation_id=row.operation_id)
+            .one_or_none()
+        )
+        if (
+            allocation is None
+            or allocation.project_id != row.project_id
+            or allocation.owner_id != row.owner_id
+            or allocation.organization_id != row.organization_id
+            or allocation.observed != row.observed
+        ):
+            raise AccountingUnavailable(
+                "Native retained allocation ledger is inconsistent"
             )
 
 
