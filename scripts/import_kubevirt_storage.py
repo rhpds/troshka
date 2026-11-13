@@ -461,7 +461,7 @@ def _managed_inputs(args):
 def _managed_cycle(db, args):
     from app.services.kubevirt_storage_collector import collect_report
     from app.services.kubevirt_storage_inventory import discover_inventory
-    from app.services.native_managed_collector import cycle, retained_inputs
+    from app.services.native_managed_collector import cycle, retained_inputs, retiring_inputs
     from sqlalchemy.orm import sessionmaker
 
     pins, config, backend_config = _managed_inputs(args)
@@ -506,11 +506,16 @@ def _managed_cycle(db, args):
 
         def collect(manifest, previous, started):
             retained, caches = retained_inputs(sessions, manifest.pins.domain_id)
+            retiring, retired = retiring_inputs(sessions, manifest.pins.domain_id)
+            from app.services.kubevirt_storage_enrollment import root_key
+
+            roots = [r for r in manifest.pins.project_roots if root_key(r) not in retired]
             kube.scan_started_at = backend.scan_started_at = started
             kube.retained_cache_bindings = caches
-            inventory = discover_inventory(kube, retained, manifest.pins.project_roots)
+            kube.retiring_intents = retiring
+            inventory = discover_inventory(kube, retained, roots)
             backend.recheck_inventory = lambda: discover_inventory(
-                kube, retained, manifest.pins.project_roots
+                kube, retained, roots
             )
             return collect_report(
                 inventory, backend, limits=limits, clock=lambda: datetime.now(UTC)

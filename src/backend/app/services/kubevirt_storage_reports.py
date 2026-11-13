@@ -40,13 +40,17 @@ def report_inventory(report):
         if report.inventory_blockers is not None
         else report.collection_errors,
         snapshot_evidence=report.snapshot_evidence,
+        retiring_roots=report.retiring_roots,
     )
 
 
 def normalized_inventory(report, roots, retained=()):
     inventory = report_inventory(report)
     # Provider aliases may repeat exact roots; identity, not provider count, owns bytes.
-    present = {root_key(r): r for r in report.project_roots}
+    expected_keys = {r.key for r in roots}
+    present = {
+        root_key(r): r for r in report.project_roots if root_key(r) in expected_keys
+    }
     blockers = list(
         {digest(b): b for b in inventory.blockers + report.collection_errors}.values()
     )
@@ -88,6 +92,11 @@ def normalized_inventory(report, roots, retained=()):
             ],
             "retained_bindings": [
                 canonical_binding(b) for b in inventory.retained_bindings
+            ],
+            "retiring_roots": [
+                r.model_copy(update={"root": canonical_root(r.root)})
+                for r in inventory.retiring_roots
+                if root_key(r.root) in expected_keys
             ],
         }
     )
@@ -304,8 +313,17 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
     )
     if domain.enrollment_id != enrollment_id:
         raise ValueError("obsolete enrollment version")
-    roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
-    retained = db.query(NativeRetainedBinding).filter_by(domain_id=domain.id).all()
+    from app.services.quota_cleanup import active_roots, settled_root_keys
+
+    retired = settled_root_keys(db)
+    roots = active_roots(
+        db, db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
+    )
+    retained = [
+        b
+        for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
+        if b.root_key not in retired
+    ]
     inventory = normalized_inventory(report, roots, retained)
     # Validate the recomputed graph's exact quantities before accepting evidence.
     attribute_graph(inventory, report.images)
@@ -313,6 +331,7 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
         db, roots, manifest
     )
     errors |= _binding_errors(report, manifest, roots, retained)
+    errors |= _retiring_errors(db, report, domain)
     snapshot = NativeStorageSnapshot(
         id=identity,
         domain_id=domain.id,
@@ -332,3 +351,34 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
     _advance_attempt(db, domain, snapshot)
     db.flush()
     return identity
+
+
+def _retiring_errors(db, report, domain):
+    from app.services.quota_cleanup import native_intents
+
+    intents = {
+        v.intent_id: v
+        for v in native_intents(db)
+        if str(v.domain_id) == domain.id and v.phase in {"teardown", "pending"}
+    }
+    errors = set()
+    for proof in report.retiring_roots:
+        intent = intents.get(proof.intent_id)
+        if intent is None or (
+            proof.operation_id != intent.operation_id
+            or proof.root != intent.root
+            or proof.inventory_digest != intent.inventory_digest
+            or set(proof.owned_images) != set(intent.owned_images)
+            or proof.observed_at < intent.teardown_at
+            or proof.observed_at < report.started_at
+            or proof.observed_at > report.completed_at
+        ):
+            errors.add("retiring_root_authorization_changed")
+    reported = {p.intent_id for p in report.retiring_roots}
+    roots = {root_key(r) for r in report.project_roots}
+    if any(
+        root_key(v.root) in roots and v.intent_id not in reported
+        for v in intents.values()
+    ):
+        errors.add("retiring_root_evidence_missing")
+    return errors

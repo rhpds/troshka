@@ -124,6 +124,15 @@ class SnapshotKey(Evidence):
     snapshot_id: Text
 
 
+class BackendImageInventory(PoolKey):
+    """Successful stable public directory and all-source trash observations."""
+
+    rbd_namespace: str = Field(max_length=128)
+    active_images: dict[Text, Text] = Field(max_length=10000)
+    trash_ids: list[Text] = Field(max_length=10000)
+    collected_at: datetime
+
+
 class ProjectRoot(Evidence):
     project_id: UUID
     cluster_key: Text
@@ -142,6 +151,58 @@ class VolumeBinding(Evidence):
     image_key: ImageKey
     provisioned_bytes: Bytes | None = None
     owner_reference_uids: list[Text] = Field(default_factory=list, max_length=128)
+
+
+class CleanupObject(Evidence):
+    kind: Text
+    name: Text
+    uid: Text
+    namespace: Text | None = None
+    resource_version: Text
+    reclaim_policy: Literal["Delete", "Retain"] | None = None
+
+    namespace_bootstrap: dict | None = None
+
+
+class NativeCleanupIntent(Evidence):
+    version: Literal["native-cleanup-v1"] = "native-cleanup-v1"
+    intent_id: UUID
+    operation_id: Text
+    operation_ids: list[Text] = Field(min_length=1, max_length=10000)
+    generation: Text
+    mode: Literal["delete", "undeploy"]
+    namespace_mode: Literal["managed"]
+    phase: Literal["stopping", "off", "teardown", "pending", "settled", "finalized"]
+    owner_id: UUID
+    organization_id: UUID | None
+    host_id: UUID
+    provider_id: UUID
+    domain_id: UUID
+    enrollment_id: UUID
+    initial_report_id: UUID
+    root: ProjectRoot
+    owned_images: list[ImageKey] = Field(max_length=10000)
+    bindings: list[VolumeBinding] = Field(max_length=10000)
+    objects: list[CleanupObject] = Field(default_factory=list, max_length=10000)
+    inventory_digest: str = ""
+    stop_action_id: Text
+    stop_proof: dict | None = None
+    prepared_at: datetime
+    teardown_at: datetime | None = None
+    namespace_delete_at: datetime | None = None
+    settlement_report_id: UUID | None = None
+    settled_at: datetime | None = None
+    last_error: str | None = None
+
+
+class RetiringRoot(Evidence):
+    intent_id: UUID
+    operation_id: Text
+    root: ProjectRoot
+    inventory_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    owned_images: list[ImageKey] = Field(max_length=10000)
+    objects_absent: bool
+    observed_at: datetime
 
 
 class Blocker(Evidence):
@@ -215,6 +276,7 @@ class NativeInventory(Evidence):
     snapshot_evidence: list[CSISnapshotEvidence] = Field(
         default_factory=list, max_length=10000
     )
+    retiring_roots: list[RetiringRoot] = Field(default_factory=list, max_length=10000)
 
 
 class ImageObservation(Evidence):
@@ -228,9 +290,35 @@ class ImageObservation(Evidence):
     measurement_status: Status
     command_version: Annotated[str, Field(max_length=256)]
     measurement_semantics_version: Annotated[str, Field(max_length=256)] | None
+    absence: BackendImageInventory | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_absence(self, handler):
+        data = handler(self)
+        if data.get("absence") is None:
+            data.pop("absence", None)
+        return data
 
     @model_validator(mode="after")
     def complete_requires_bytes(self):
+        if self.absence is not None:
+            proof = self.absence
+            if (
+                self.measurement_status != "complete"
+                or self.allocated_bytes != 0
+                or self.provisioned_bytes != 0
+                or self.measurement_semantics_version != "kubevirt-rbd-absence-v1"
+                or (proof.ceph_fsid, proof.pool_id, proof.rbd_namespace)
+                != (self.key.ceph_fsid, self.key.pool_id, self.key.rbd_namespace)
+                or self.key.image_id
+                in set(proof.active_images.values()) | set(proof.trash_ids)
+                or self.collected_at != proof.collected_at
+                or self.parent
+                or self.snapshots
+                or self.children
+            ):
+                raise ValueError("invalid immutable image absence proof")
+            return self
         if self.measurement_status == "complete" and (
             self.allocated_bytes is None
             or self.measurement_semantics_version != "kubevirt-rbd-allocated-v1"
@@ -288,12 +376,15 @@ class NativeStorageReport(AttributionResult):
     snapshot_evidence: list[CSISnapshotEvidence] = Field(
         default_factory=list, max_length=10000
     )
+    retiring_roots: list[RetiringRoot] = Field(default_factory=list, max_length=10000)
 
     @model_serializer(mode="wrap")
     def serialize_initialization(self, handler):
         data = handler(self)
         if data.get("initialization_observation") is None:
             data.pop("initialization_observation", None)
+        if not data.get("retiring_roots"):
+            data.pop("retiring_roots", None)
         return data
 
     @model_validator(mode="after")

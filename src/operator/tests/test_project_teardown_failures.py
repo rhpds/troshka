@@ -1,5 +1,7 @@
 """Regression tests for best-effort deletion and finalizer wait boundaries."""
 
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +9,7 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from handlers import project
+from helpers import managed_power
 
 
 DELETERS = [
@@ -15,6 +18,36 @@ DELETERS = [
     (project._delete_namespaced_services, "CoreV1Api", "service", True),
     (project._delete_namespaced_pvcs, "CoreV1Api", "persistent_volume_claim", False),
 ]
+
+
+def test_managed_project_finalizer_never_enters_legacy_cleanup(monkeypatch):
+    root = {"apiVersion": "troshka.redhat.com/v1alpha1", "kind": "TroshkaProject", "metadata": {"name": "project", "namespace": "ns", "uid": "project-uid", "generation": 1, "resourceVersion": "1"}}
+    request = {"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "generation-1"}
+    refs = [
+        {"kind": "Namespace", "name": "ns", "uid": "ns-uid", "resource_version": "1", "namespace": None},
+        {"kind": "TroshkaProject", "name": "project", "uid": "project-uid", "resource_version": "1", "namespace": "ns"},
+    ]
+    payload = {"version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "generation-1", "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": "project-uid", "deployment_generation": 1}, "stop_proof": {"request_id": "stop-1", "generation": "generation-1"}, "objects": refs, "inventory_digest": managed_power.digest(refs)}
+    root["metadata"]["annotations"] = {managed_power.ANNOTATION: json.dumps(request), managed_power.CLEANUP_ANNOTATION: json.dumps(payload)}
+
+    class Reader:
+        def get(self, kind, namespace, name):
+            return root if kind == "TroshkaProject" else {"metadata": {"uid": "ns-uid"}}
+
+        def rows(self, kind, namespace):
+            return []
+
+    monkeypatch.setattr(managed_power, "PowerClient", Reader)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("managed cleanup reached legacy namespace/capture cleanup")
+
+    for name in ("_abort_pattern_capture_temps", "_delete_custom_resources", "_delete_namespaced_deployments", "_force_delete_namespaced_pods", "_delete_namespaced_services", "_delete_namespaced_pvcs"):
+        monkeypatch.setattr(project, name, forbidden)
+    import kopf
+
+    handler = next(args[0][0] for args in reversed(kopf.on.delete.return_value.call_args_list) if asyncio.iscoroutinefunction(args[0][0]) and args[0][0].__name__ == "project_delete")
+    asyncio.run(handler("ns", "project", body=root))
 
 
 def named_resource(name):

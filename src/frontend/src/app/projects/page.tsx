@@ -99,6 +99,7 @@ const stateColors: Record<string, string> = {
   stopped: "#f87171",
   error: "#ef4444",
   deleting: "#fb923c",
+  cleanup_pending: "#fb923c",
 };
 
 interface PatternSummary {
@@ -1664,8 +1665,8 @@ export default function ProjectsPage() {
             fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
               if (r.ok) {
                 r.json().then((data) => {
-                  if (data.status === "deleting") {
-                    updateProjectState(p.id, "deleting");
+                  if (data.status === "deleting" || data.status === "cleanup_pending") {
+                    updateProjectState(p.id, data.status);
                   } else {
                     removeProject(p.id);
                     localStorage.removeItem(`troshka-canvas-${p.id}`);

@@ -946,6 +946,13 @@ def run_once():
             )
         ]
     for project_id in project_ids:
+        from app.services.quota_cleanup import native_intent, reconcile_native
+
+        with SessionLocal() as cleanup_db:
+            cleanup = native_intent(cleanup_db, project_id)
+        if cleanup and cleanup.phase != "finalized":
+            reconcile_native(project_id, str(cleanup.intent_id))
+            continue
         try:
             quota_storage.reconcile_project(project_id)
             from app.services.native_managed_power import reconcile as reconcile_resume

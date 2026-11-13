@@ -342,6 +342,9 @@ def known_empty(db, project):
 
 def prepare(db, project, kind, *, host_id=None):
     """Reserve before placement/state changes. Caller commits before dispatch."""
+    from app.services.quota_cleanup import guard_pending
+
+    guard_pending(db, project)
     if not accounting.quotas_enabled():
         return None
     try:

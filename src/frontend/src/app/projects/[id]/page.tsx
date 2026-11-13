@@ -724,10 +724,13 @@ export default function ProjectCanvasPage() {
 
   // REST fallback: poll deploy progress when WS isn't delivering updates
   useEffect(() => {
-    if (!["deploying", "reconfiguring", "starting", "stopping"].includes(projectState)) return;
+    if (!["deploying", "reconfiguring", "starting", "stopping", "cleanup_pending"].includes(projectState)) return;
     const interval = setInterval(() => {
       fetch(`/api/v1/projects/${projectId}`)
-        .then((r) => r.ok ? r.json() : null)
+        .then((r) => {
+          if (r.status === 404 && projectState === "cleanup_pending") router.push("/projects");
+          return r.ok ? r.json() : null;
+        })
         .then((data) => {
           if (data?.deploy_progress) setDeployProgress(data.deploy_progress);
           if (data?.deploy_error) setDeployError(data.deploy_error);
@@ -1347,6 +1350,7 @@ export default function ProjectCanvasPage() {
     stopped: "#f87171",
     error: "#ef4444",
     deleting: "#f87171",
+    cleanup_pending: "#fb923c",
   };
 
   const renderProjectHeader = () => (
@@ -1613,7 +1617,12 @@ projectState === "stopped" && (
                   variant: "danger",
                 }))) return;
                 fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
-                  .then(() => { setProjectState("draft"); setDeployError(null); });
+                  .then(async (response) => {
+                    const data = await response.json();
+                    if (!response.ok) { setAlertMsg(formatQuotaError(data, "Undeploy failed")); return; }
+                    setProjectState(data.status);
+                    setDeployError(data.status === "cleanup_pending" ? "Cleanup pending: storage remains charged until original resources and retained storage are confirmed gone." : null);
+                  });
               }}>
                 Undeploy
               </button>
@@ -1639,7 +1648,12 @@ projectState === "error" && (
             <>
               <button type="button" className="project-stop-btn" onClick={() => {
                 fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
-                  .then(() => { setProjectState("draft"); setDeployError(null); });
+                  .then(async (response) => {
+                    const data = await response.json();
+                    if (!response.ok) { setAlertMsg(formatQuotaError(data, "Undeploy failed")); return; }
+                    setProjectState(data.status);
+                    setDeployError(data.status === "cleanup_pending" ? "Cleanup pending: storage remains charged until original resources and retained storage are confirmed gone." : null);
+                  });
               }}>
                 Reset to Draft
               </button>
@@ -2530,6 +2544,11 @@ showWorkloadModal && (
         <div role="alert" style={{ padding: 12, color: "var(--pf-t--global--text--color--status--danger--default)", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ whiteSpace: "pre-wrap", flex: 1 }}>{deployError}</span>
           <button type="button" onClick={() => setDeployError(null)}>Dismiss</button>
+        </div>
+      )}
+      {projectState === "cleanup_pending" && (
+        <div role="status" style={{ position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 100, padding: "16px 24px", background: "#292f37", borderRadius: 8 }}>
+          Cleanup pending. Storage remains charged until the original resources and retained storage are confirmed gone.
         </div>
       )}
       {projectState === "deleting" && (

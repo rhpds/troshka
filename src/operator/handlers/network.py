@@ -308,6 +308,14 @@ async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkanetworks")
 async def network_delete(spec, meta, namespace, name, **_):
+    from helpers.managed_power import PowerClient, cleanup_child
+
+    if cleanup_child(PowerClient(), meta, namespace):
+        return
+    return await _network_delete_legacy(spec, meta, namespace, name)
+
+
+async def _network_delete_legacy(spec, meta, namespace, name):
     logger.info(f"Deleting network {name} in {namespace} — cleaning up resources")
     api = client.CoreV1Api()
     apps_api = client.AppsV1Api()

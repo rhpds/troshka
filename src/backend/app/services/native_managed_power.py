@@ -739,6 +739,9 @@ def prepare(db, project, kind, *, host_id=None):
     previous = operations.current_generation(operations._rows(db, project_id))
     admission.lock_operations(db, [operation_id, *[r.operation_id for r in previous]])
     project, _, _ = lock_project(db, project_id)
+    from app.services.quota_cleanup import guard_pending
+
+    guard_pending(db, project)
     rows = operations.current_generation(operations._rows(db, project.id))
     context = retained_context(db, project, rows)
     if context != target["context"] or target["root_spec"].get(

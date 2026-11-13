@@ -280,15 +280,17 @@ def validated_enrollment(row):
     return manifest
 
 
-def validate_domain_extension(previous, current):
+def validate_domain_extension(previous, current, *, retired=()):
     """Preserve measurement identity; initialization authority is separately explicit."""
     old, new = previous.pins, current.pins
-    old_roots = {str(r.project_id): r for r in old.project_roots}
+    old_roots = {
+        str(r.project_id): r for r in old.project_roots if root_key(r) not in retired
+    }
     new_roots = {str(r.project_id): r for r in new.project_roots}
     if (
         old.domain_id != new.domain_id
         or previous.request.target_id != current.request.target_id
-        or len(old_roots) != len(old.project_roots)
+        or len({str(r.project_id) for r in old.project_roots}) != len(old.project_roots)
         or len(new_roots) != len(new.project_roots)
         or not set(old_roots) <= set(new_roots)
         or any(new_roots.get(key) != value for key, value in old_roots.items())
@@ -300,7 +302,11 @@ def validate_domain_extension(previous, current):
         if sorted(map(digest, before)) != sorted(map(digest, after)):
             raise ValueError("domain extension cannot change collection identities")
     _validate_initialization_authorization(old, new)
-    before = {str(p.project_id): p for p in previous.request.projects}
+    before = {
+        str(p.project_id): p
+        for p in previous.request.projects
+        if str(p.project_id) in old_roots
+    }
     after = {str(p.project_id): p for p in current.request.projects}
     for project_id, identity in before.items():
         # Authorized owner/org transfers remain governed by live operation checks.
@@ -345,11 +351,16 @@ def _extension_predecessor(db, manifest, domain):
     if previous is None or previous.digest != extension.previous_enrollment_digest:
         raise ValueError("domain extension predecessor digest mismatch")
     original = validated_enrollment(previous)
-    validate_domain_extension(original, manifest)
+    from app.services.quota_cleanup import settled_root_keys
+
+    retired = settled_root_keys(db)
+    validate_domain_extension(original, manifest, retired=retired)
     # Reject before advancing a version that would orphan an oldest operation.
     list(_enrollment_chain(db, domain, previous.id, maximum=63))
     stored = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
-    if {r.key for r in stored} != {root_key(r) for r in original.pins.project_roots}:
+    if {r.key for r in stored if r.key not in retired} != {
+        root_key(r) for r in original.pins.project_roots if root_key(r) not in retired
+    }:
         raise ValueError("domain extension does not cover retained domain roots")
 
 
@@ -369,7 +380,9 @@ def _enrollment_chain(db, domain, enrollment_id, *, maximum=64):
         if previous is None or previous.digest != extension.previous_enrollment_digest:
             raise ValueError("domain extension predecessor unavailable")
         original = validated_enrollment(previous)
-        validate_domain_extension(original, manifest)
+        from app.services.quota_cleanup import settled_root_keys
+
+        validate_domain_extension(original, manifest, retired=settled_root_keys(db))
         current = previous
     raise ValueError("domain extension depth limit exceeded")
 

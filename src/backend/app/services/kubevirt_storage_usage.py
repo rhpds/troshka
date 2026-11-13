@@ -120,9 +120,26 @@ def domain_evidence(db, domain, roots):
     if not report.accepted:
         return None, None, set(report.reason_codes)
     source = NativeStorageReport.model_validate(report.payload)
-    retained = db.query(NativeRetainedBinding).filter_by(domain_id=domain.id).all()
+    from app.services.quota_cleanup import active_roots, settled_root_keys
+
+    roots = active_roots(db, roots)
+    retired = settled_root_keys(db)
+    retained = [
+        b
+        for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
+        if b.root_key not in retired
+    ]
     inventory = normalized_inventory(source, roots, retained)
-    return attribute_graph(inventory, source.images), source, set()
+    from app.services.kubevirt_storage_enrollment import root_key
+
+    retired_images = set(
+        key
+        for proof in source.retiring_roots
+        if root_key(proof.root) in retired
+        for key in proof.owned_images
+    )
+    images = [image for image in source.images if image.key not in retired_images]
+    return attribute_graph(inventory, images), source, set()
 
 
 def _collect_evidence(db, roots, domains):
@@ -237,7 +254,9 @@ def _read_authorized(db, actor_id, scope, scope_id, now):
         raise HTTPException(403, "Quota access denied")
     target = authorize_policy(db, actor, scope, scope_id, lock=False)
     projects = _project_membership(db, scope, target.id)
-    roots = db.query(NativeProjectRoot).all()
+    from app.services.quota_cleanup import active_roots
+
+    roots = active_roots(db, db.query(NativeProjectRoot).all())
     live_ids = {p for (p,) in db.query(Project.id)}
     orphan_ids = {r.project_id for r in roots if r.project_id not in live_ids}
     enrolled_ids = {r.project_id for r in roots}

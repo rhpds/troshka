@@ -56,7 +56,15 @@ def anchored(db, pins):
 
 
 def candidates(db, domain, manifest):
-    roots = {str(r.project_id): r for r in manifest.pins.project_roots}
+    from app.services.kubevirt_storage_enrollment import root_key
+    from app.services.quota_cleanup import settled_root_keys
+
+    retired = settled_root_keys(db)
+    roots = {
+        str(r.project_id): r
+        for r in manifest.pins.project_roots
+        if root_key(r) not in retired
+    }
     selected = []
     for row in db.query(QuotaReservation).filter(
         QuotaReservation.state.in_(admission.PENDING)
@@ -93,12 +101,46 @@ def retained_inputs(sessions, domain_id):
     """Durable binding hints survive failed attempts; never copied measurements."""
     volumes, caches = [], []
     with sessions() as db:
+        from app.models.kubevirt_storage import NativeEnrollment
+        from app.services.kubevirt_storage_enrollment import (
+            root_key,
+            validated_enrollment,
+        )
+        from app.services.quota_cleanup import settled_root_keys
+
+        retired = settled_root_keys(db)
+        domain = db.get(NativeCollectionDomain, str(domain_id))
+        manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
+        roots = {root_key(r): r for r in manifest.pins.project_roots}
         for row in db.query(NativeRetainedBinding).filter_by(domain_id=str(domain_id)):
+            if row.root_key in retired:
+                continue
             if "root" in row.payload:
-                volumes.append(VolumeBinding.model_validate(row.payload))
+                binding = VolumeBinding.model_validate(row.payload)
+                pinned = roots.get(root_key(binding.root))
+                if pinned is None:
+                    raise ValueError(
+                        "retained binding root is outside current enrollment"
+                    )
+                volumes.append(binding.model_copy(update={"root": pinned}))
             else:
                 caches.append(CacheBinding.model_validate(row.payload))
     return volumes, caches
+
+
+def retiring_inputs(sessions, domain_id):
+    from app.services.quota_cleanup import native_intents, settled_root_keys
+
+    with sessions() as db:
+        return (
+            [
+                v
+                for v in native_intents(db)
+                if str(v.domain_id) == str(domain_id)
+                and v.phase in {"teardown", "pending"}
+            ],
+            settled_root_keys(db),
+        )
 
 
 def snapshot(sessions, pins, target_id):
@@ -222,8 +264,16 @@ def reconcile_allocations(sessions, manifest):
     from app.services import quota_storage
     from app.services.quota_locks import lock_rows
 
-    ids = [str(r.project_id) for r in manifest.pins.project_roots]
     with sessions() as db:
+        from app.services.kubevirt_storage_enrollment import root_key
+        from app.services.quota_cleanup import settled_root_keys
+
+        retired = settled_root_keys(db)
+        ids = [
+            str(r.project_id)
+            for r in manifest.pins.project_roots
+            if root_key(r) not in retired
+        ]
         operation_ids = all_operation_ids(db, ids)
         admission.lock_operations(db, operation_ids)
         owners = (
@@ -251,6 +301,17 @@ def reconcile_allocations(sessions, manifest):
                     db, project, rows, None, operations.now()
                 )
         db.commit()
+    from app.services.quota_cleanup import native_intents, reconcile_native
+
+    with sessions() as db:
+        pending = [
+            (str(v.root.project_id), str(v.intent_id))
+            for v in native_intents(db)
+            if str(v.domain_id) == str(manifest.pins.domain_id)
+            and v.phase != "finalized"
+        ]
+    for project_id, intent_id in pending:
+        reconcile_native(project_id, intent_id)
 
 
 def cycle(sessions, pins, target_id, collector_id, readers, backend, collect):

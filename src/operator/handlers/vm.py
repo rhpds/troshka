@@ -1761,6 +1761,10 @@ def _delete_cloudinit_secret(name, core_api, namespace):
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_delete(spec, status, meta, namespace, name, **_):
+    from helpers.managed_power import PowerClient, cleanup_child
+
+    if cleanup_child(PowerClient(), meta, namespace):
+        return
     logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()

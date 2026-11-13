@@ -235,6 +235,10 @@ def _collect_images(
         + inventory.retained_bindings
         + inventory.cache_bindings
     ]
+    retiring_keys = {
+        key for root in inventory.retiring_roots for key in root.owned_images
+    }
+    queue.extend((key, 0) for key in retiring_keys)
     checked_pools = {}
     while queue:
         key, depth = queue.pop(0)
@@ -250,7 +254,9 @@ def _collect_images(
         pool_key = (key.ceph_fsid, key.pool_id, key.rbd_namespace)
         if pool_key not in checked_pools:
             checked_pools[pool_key] = _trash_ids(rbd_reader, key, errors)
-        image = _observe(rbd_reader, key, pools, capability_ok, version, clock, limits)
+        image = _collect_image(
+            rbd_reader, key, retiring_keys, pools, capability_ok, version, clock, limits
+        )
         if key.image_id in checked_pools[pool_key]:
             image = image.model_copy(
                 update={
@@ -264,6 +270,47 @@ def _collect_images(
             queue.append((image.parent.image_key, depth + 1))
         queue.extend((child, depth + 1) for child in image.children)
     return images
+
+
+def _collect_image(
+    reader, key, retiring_keys, pools, capability_ok, version, clock, limits
+):
+    if key in retiring_keys and capability_ok:
+        image = _retiring_image(reader, key, version, limits, clock)
+        if image is not None:
+            return image
+    return _observe(reader, key, pools, capability_ok, version, clock, limits)
+
+
+def _retiring_image(reader, key, version, limits, clock):
+    """Only a successful complete directory/trash proof may represent absence."""
+    try:
+        result = reader.image_inventory(key, max_objects=limits.max_objects)
+        if result.status != "complete":
+            raise _ReadFailure(result.status)
+        proof = result.value
+        if key.image_id in set(proof.active_images.values()) | set(proof.trash_ids):
+            return None
+        return ImageObservation(
+            key=key,
+            collected_at=proof.collected_at,
+            allocated_bytes=0,
+            provisioned_bytes=0,
+            measurement_status="complete",
+            command_version=version,
+            measurement_semantics_version="kubevirt-rbd-absence-v1",
+            absence=proof,
+        )
+    except Exception:
+        return ImageObservation(
+            key=key,
+            collected_at=clock(),
+            allocated_bytes=None,
+            provisioned_bytes=None,
+            measurement_status="unavailable",
+            command_version=version,
+            measurement_semantics_version=None,
+        )
 
 
 def _final_checks(inventory, rbd_reader, errors):
@@ -302,24 +349,14 @@ def _graph_metadata(reader, image, pools, limits):
     return info.value.get("id"), parent, set(snapshots), set(children)
 
 
-def _final_graph_check(reader, images, pools, limits, deadline, errors):
+def _final_graph_check(reader, images, pools, limits, deadline, errors, clock):
     verified = []
     for image in images:
         if image.measurement_status != "complete":
             verified.append(image)
             continue
         try:
-            if time.monotonic() >= deadline:
-                raise _ReadFailure("scan_limit")
-            observed = _graph_metadata(reader, image, pools, limits)
-            expected = (
-                image.key.image_id,
-                image.parent,
-                set(image.snapshots),
-                set(image.children),
-            )
-            if observed != expected:
-                raise _ReadFailure("identity_changed")
+            _verify_image_graph(reader, image, pools, limits, deadline, clock)
             verified.append(image)
         except (_ReadFailure, ValueError, KeyError, TypeError, AttributeError) as error:
             status = (
@@ -337,10 +374,37 @@ def _final_graph_check(reader, images, pools, limits, deadline, errors):
                         "measurement_status": status,
                         "allocated_bytes": None,
                         "measurement_semantics_version": None,
+                        "absence": None,
                     }
                 )
             )
     return verified
+
+
+def _verify_image_graph(reader, image, pools, limits, deadline, clock):
+    if time.monotonic() >= deadline:
+        raise _ReadFailure("scan_limit")
+    if image.absence is not None:
+        observed = _retiring_image(
+            reader, image.key, image.command_version, limits, clock
+        )
+        if (
+            observed is None
+            or observed.absence is None
+            or observed.absence.model_dump(exclude={"collected_at"})
+            != image.absence.model_dump(exclude={"collected_at"})
+        ):
+            raise _ReadFailure("identity_changed")
+        return
+    observed = _graph_metadata(reader, image, pools, limits)
+    expected = (
+        image.key.image_id,
+        image.parent,
+        set(image.snapshots),
+        set(image.children),
+    )
+    if observed != expected:
+        raise _ReadFailure("identity_changed")
 
 
 def collect_report(inventory, rbd_reader, *, limits, clock):
@@ -360,7 +424,9 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         deadline,
     )
     _final_checks(inventory, rbd_reader, errors)
-    images = _final_graph_check(rbd_reader, images, pools, limits, deadline, errors)
+    images = _final_graph_check(
+        rbd_reader, images, pools, limits, deadline, errors, clock
+    )
     working = inventory.model_copy(update={"blockers": errors})
     attributed = attribute_graph(
         working, images, max_parent_depth=limits.max_parent_depth
@@ -399,6 +465,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock):
         cache_bindings=inventory.cache_bindings,
         retained_bindings=inventory.retained_bindings,
         snapshot_evidence=inventory.snapshot_evidence,
+        retiring_roots=inventory.retiring_roots,
         inventory_blockers=inventory.blockers,
         images=images,
         collection_errors=errors,

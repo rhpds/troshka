@@ -834,6 +834,13 @@ def test_next_overage_stop_retains_storage_and_original_power(
         operations.reconcile(q.project_ids[0])
         with q.sessions() as db:
             assert db.get(Project, q.project_ids[0]).state == "active"
+        if trigger == "timer":
+            # Replay the actual delayed timer delivery after an admitted resume.
+            # It belongs to the completed stop, never to the current generation.
+            for fn, args in queued:
+                fn(*args)
+            with q.sessions() as db:
+                assert db.get(Project, q.project_ids[0]).state == "active"
 
 
 def test_concurrent_user_native_stops_share_one_durable_episode(

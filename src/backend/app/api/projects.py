@@ -2056,6 +2056,9 @@ def update_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    from app.services.quota_cleanup import guard_pending
+
+    guard_pending(db, project, lock=True)
     fields = body.model_dump(exclude_unset=True)
     _apply_project_budget_policy(db, project, user, fields)
     if "topology" in fields:
@@ -7167,8 +7170,11 @@ def undeploy_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
-    from app.services.quota_cleanup import guard_supported_cleanup
+    from app.services.quota_cleanup import guard_supported_cleanup, request_native
 
+    pending = request_native(db, project, "undeploy")
+    if pending is not None:
+        return pending
     guard_supported_cleanup(db, project)
 
     from app.services.quota_accounting import quotas_enabled
@@ -7222,8 +7228,11 @@ def delete_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
-    from app.services.quota_cleanup import guard_supported_cleanup
+    from app.services.quota_cleanup import guard_supported_cleanup, request_native
 
+    pending = request_native(db, project, "delete")
+    if pending is not None:
+        return pending
     guard_supported_cleanup(db, project)
 
     from app.services.metering_service import safe_freeze_invoice

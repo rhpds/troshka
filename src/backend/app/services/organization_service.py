@@ -261,6 +261,10 @@ def _destination_spending(db, destination, now, live):
 
 
 def _validate_transfer(db, owner, projects, destination, now):
+    from app.services.quota_cleanup import guard_pending
+
+    for project in projects:
+        guard_pending(db, project)
     # Invalid project/owner stamps cannot hide behind an apparently empty draft.
     _validate_live_ledger(db, owner, projects)
     live = _has_infrastructure(db, owner, projects)

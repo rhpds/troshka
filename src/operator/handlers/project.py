@@ -3900,6 +3900,16 @@ def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_delete(namespace, name, **_):
+    from helpers.managed_power import PowerClient, cleanup_delete, cleanup_intent
+
+    body = _.get("body", {})
+    if "troshka.redhat.com/managed-cleanup" in body.get("metadata", {}).get("annotations", {}):
+        api = PowerClient()
+        root = api.get("TroshkaProject", namespace, name)
+        cleanup_intent(root)
+        if not cleanup_delete(api, root):
+            raise kopf.TemporaryError("Original managed cleanup remains pending", delay=5)
+        return
     logger.info(
         f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}"
     )

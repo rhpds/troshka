@@ -21,8 +21,15 @@ def _timer_quota_preflight(s, project, action):
 
     try:
         if action == "stop":
-            request_native_stop(s, project, project.off_action or "stop")
+            action_id = request_native_stop(s, project, project.off_action or "stop")
+            if action_id:
+                return action_id
         else:
+            from app.services.quota_cleanup import request_native
+
+            pending = request_native(s, project, "delete")
+            if pending is not None:
+                return "cleanup_pending"
             guard_supported_cleanup(s, project)
     except HTTPException as error:
         if error.status_code != 409:
@@ -53,7 +60,8 @@ def _process_expired_timers(s, now, result, _dry_run):
         if _dry_run:
             continue
         logger.info("Auto-stop fired for project %s (%s)", p.name, p.id[:8])
-        if not _timer_quota_preflight(s, p, "stop"):
+        stop_action = _timer_quota_preflight(s, p, "stop")
+        if not stop_action:
             continue
         p.state = "stopping"
         p.auto_stopped = True
@@ -62,7 +70,7 @@ def _process_expired_timers(s, now, result, _dry_run):
         p.auto_stop_warned = False
         s.commit()
         _notify(p.id, {"type": "timer_fired", "timer": "auto_stop"})
-        _spawn_stop(p.id)
+        _queue_timer_stop(p.id, stop_action)
 
     # Expired auto-delete
     expired_delete = (
@@ -79,7 +87,8 @@ def _process_expired_timers(s, now, result, _dry_run):
         result["auto_delete"].append(p.id)
         if _dry_run:
             continue
-        if not _timer_quota_preflight(s, p, "delete"):
+        delete_action = _timer_quota_preflight(s, p, "delete")
+        if not delete_action or delete_action == "cleanup_pending":
             continue
         logger.info("Auto-delete fired for project %s (%s)", p.name, p.id[:8])
         _notify(p.id, {"type": "timer_fired", "timer": "auto_delete"})
@@ -294,18 +303,32 @@ def _notify(project_id, message):
         logger.warning("Failed to send timer notification for %s", project_id[:8])
 
 
-def _spawn_stop(project_id):
+def _queue_timer_stop(project_id, action):
+    if isinstance(action, str):
+        _spawn_stop(project_id, action)
+    else:
+        _spawn_stop(project_id)
+
+
+def _spawn_stop(project_id, action_id=None):
     from app.core.redis import enqueue_job
     from app.services.deploy_service import stop_project_async
 
-    enqueue_job(stop_project_async, project_id, project_id=project_id)
+    if action_id:
+        from app.services.quota_enforcement import reconcile_worker
+
+        enqueue_job(reconcile_worker, action_id)
+    else:
+        enqueue_job(stop_project_async, project_id, project_id=project_id)
 
 
 def _delete_project(s, project):
     import copy
 
-    from app.services.quota_cleanup import guard_supported_cleanup
+    from app.services.quota_cleanup import guard_supported_cleanup, request_native
 
+    if request_native(s, project, "delete") is not None:
+        return
     guard_supported_cleanup(s, project)
 
     from app.services.deploy_service import (

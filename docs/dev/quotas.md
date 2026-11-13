@@ -121,17 +121,56 @@ environment slot remain charged afterward. Native pause/hibernate are rejected
 before mutation with quotas enabled. The stop coordinator survives worker loss
 and does not use a deployment job reference as its completion proof.
 
-**Native Delete and Undeploy are currently unsupported with quotas enabled for
-retained/deployed projects.** Both routes reject before EIP release, credentials
-revocation, cancellation, state changes or namespace destruction; the destroy
-worker and lifetime timer also guard teardown. An empty never-deployed draft
-without a host or operation history can still be removed/reset. Use managed Stop
-to turn off compute while preserving assets. This is a material functionality
-boundary, not completed native deletion support: a future narrow cleanup adapter
-must prove absence of the original resource generation, settle any unresolved
-producer work, and account for retained backend COW images/snapshots independently
-of namespace disappearance. The existing collector has no deletion settlement
-receipt; missing namespace/PVC/root evidence must never imply zero storage.
+Native Delete and Undeploy use a durable `native-cleanup-v1` intent on the
+original quota operation. Supported originals must have the existing managed
+namespace-create receipt (`native_deploy.base_grants_mode=managed` and exact
+`create_namespace_uid`) and a current complete supported storage graph. External
+namespace/grant mode and older allocations with unknown namespace ownership
+reject before cancellation, shutdown or destruction; current configuration never
+overrides original external/unknown ownership. Unsupported snapshot ancestry,
+capture or ambiguous storage shapes remain unavailable.
+
+For an originally managed namespace, cleanup recognizes only the existing exact
+Troshka provider/operator base grants and the observed OpenShift defaults:
+`system:deployers`, `system:image-builders`, `system:image-pullers`, and
+`default`/`builder`/`deployer` ServiceAccounts. Role references and subjects must
+match the same original namespace. Generated internal-registry dockercfg Secrets
+require the exact bootstrap ServiceAccount UID owner reference, matching platform
+annotations and the ServiceAccount's reverse secret reference; a name prefix is
+insufficient. Seal and recheck these immutable identities, and preserve bootstrap
+resources until namespace deletion. The exact unowned `kube-root-ca.crt` publisher
+shape and `openshift-service-ca.crt` service-CA injection shape are also sealed
+and preserved; cleanup never individually deletes these live publisher maps.
+Foreign, changed or additional unowned
+resources block destructive teardown. This is not compatibility with arbitrary
+namespace customizations or externally owned namespaces.
+
+The original Project, owner, organization, host, slot and storage charges remain
+visible as `cleanup_pending`. Full managed Stop proof closes compute first.
+Scoped operator/CSI teardown uses sealed original UIDs and resource versions,
+preserves shared images/patterns/caches, and never forces finalizers or directly
+deletes backend images. Original child cleanup markers are independently read
+back before parent deletion so foreground garbage collection cannot invoke
+legacy name-based cleanup. After interruption, fresh original-state observations
+may complete missing marker writes or UID/RV-bound submissions. Accepted/deleting
+originals are observed without duplicate mutation. Contradictory, unknown or
+replacement observations remain pending; retries never adopt replacements.
+
+The existing managed collector continues observing the original root after its
+namespace disappears. Retained original backend keys remain in the graph. Only
+bounded, stable public active-image name/immutable-ID inventories plus
+`rbd trash ls --all` can establish backend absence; command errors and namespace
+404 are never zero. Retain-policy PVs/storage remain pending and charged.
+Partial/stale/latest failed evidence retains prior charges. Fresh complete
+original resource absence and backend settlement close storage/slot accounting,
+freeze billing and finalize once: Undeploy resets the same record to draft;
+Delete removes it. The receipt survives Project deletion on the existing
+FK-free reservation row. Settled roots remain in append-only history while
+receipt-authorized active-root selection permits successor enrollment. Late old
+queue deliveries cannot change a later generation. Organization transfers and
+configuration edits reject while cleanup is pending.
+
+An empty never-deployed draft still uses the existing confirmed-empty path.
 Native disk wipe is also rejected even when automatic restart is false, because
 the wipe helper may power on a stopped VM before touching its disk.
 

@@ -50,6 +50,13 @@ KINDS = {
     "CronJob": ("batch/v1", "cronjobs"),
 }
 SUPPORT_KINDS = {"ServiceAccount", "Service", "Route", "Role", "RoleBinding"}
+CLEANUP_KINDS = {
+    "ConfigMap": ("v1", "configmaps"),
+    "Secret": ("v1", "secrets"),
+    "NetworkAttachmentDefinition": ("k8s.cni.cncf.io/v1", "network-attachment-definitions"),
+    "VolumeSnapshot": ("snapshot.storage.k8s.io/v1", "volumesnapshots"),
+}
+CLEANUP_ANNOTATION = GROUP + "/managed-cleanup"
 INVENTORY = tuple(
     k
     for k in KINDS
@@ -96,6 +103,177 @@ def intent(root):
         raise ManagedPowerError("managed_intent_invalid") from error
 
 
+def cleanup_intent(root):
+    raw = root.get("metadata", {}).get("annotations", {}).get(CLEANUP_ANNOTATION)
+    if raw is None:
+        return None
+    try:
+        require(len(raw) <= 512 * 1024, "cleanup_intent_limit")
+        value = json.loads(raw)
+        pinned = value["root"]
+        require(value["version"] == "native-cleanup-v1" and value["namespace_mode"] == "managed", "cleanup_intent_invalid")
+        require(pinned["project_cr_uid"] == root["metadata"]["uid"] and pinned["deployment_generation"] == root["metadata"]["generation"], "cleanup_root_changed")
+        require(len(value["objects"]) <= 1000 and value["inventory_digest"] == digest(sorted(value["objects"], key=lambda v: (v["kind"], v["name"]))), "cleanup_inventory_changed")
+        stopped = intent(root)
+        require(stopped is not None and stopped["mode"] == "stopped" and stopped["requestId"] == value["stop_proof"]["request_id"] and stopped["allocationGeneration"] == value["generation"], "cleanup_off_proof_changed")
+        return value
+    except (KeyError, TypeError, ValueError) as error:
+        raise ManagedPowerError("cleanup_intent_invalid") from error
+
+
+def cleanup_bootstrap(value, by_uid=None):
+    """Exact built-in OpenShift defaults and existing Troshka base grants only."""
+    meta = value.get("metadata", {})
+    name, namespace = meta.get("name"), meta.get("namespace")
+    if value.get("kind") == "Secret":
+        return cleanup_pull_secret(value, by_uid or {})
+    if meta.get("ownerReferences"):
+        return None
+    if value.get("kind") == "ConfigMap":
+        return cleanup_ca_configmap(value)
+    if value.get("kind") == "ServiceAccount" and name in {"default", "builder", "deployer"}:
+        return {"kind": "ServiceAccount", "name": name}
+    if value.get("kind") != "RoleBinding":
+        return None
+    expected = cleanup_grant_body(name, namespace)
+    return expected if expected and all(value.get(k) == v for k, v in expected.items()) else None
+
+
+def cleanup_ca_configmap(value):
+    meta = value["metadata"]
+    name = meta["name"]
+    shapes = {
+        "kube-root-ca.crt": ("kubernetes.io/description", "Contains a CA bundle that can be used to verify the kube-apiserver when using internal endpoints such as the internal service IP or kubernetes.default.svc. No other usage is guaranteed across distributions of Kubernetes clusters.", "ca.crt"),
+        "openshift-service-ca.crt": ("service.beta.openshift.io/inject-cabundle", "true", "service-ca.crt"),
+    }
+    if name not in shapes:
+        return None
+    annotation, expected, data_key = shapes[name]
+    if meta.get("annotations", {}).get(annotation) != expected or set(value.get("data", {})) != {data_key} or value.get("binaryData"):
+        return None
+    return {"kind": "ConfigMap", "name": name, "publisher": {annotation: expected}, "data_keys": [data_key]}
+
+
+def cleanup_pull_secret(value, by_uid):
+    meta = value["metadata"]
+    refs = meta.get("ownerReferences", [])
+    if len(refs) != 1:
+        return None
+    ref = refs[0]
+    sa = by_uid.get(ref.get("uid"), {})
+    sa_meta = sa.get("metadata", {})
+    name = sa_meta.get("name")
+    expected_ref = {"apiVersion": "v1", "kind": "ServiceAccount", "name": name, "uid": sa_meta.get("uid")}
+    annotations = meta.get("annotations", {})
+    valid = (
+        ref == expected_ref and name in {"default", "builder", "deployer"}
+        and sa_meta.get("namespace") == meta.get("namespace")
+        and cleanup_bootstrap(sa) is not None
+        and sa_meta.get("annotations", {}).get("openshift.io/internal-registry-pull-secret-ref") == meta["name"]
+        and value.get("type") == "kubernetes.io/dockercfg"
+        and annotations.get("openshift.io/internal-registry-auth-token.service-account") == name
+        and annotations.get("openshift.io/internal-registry-auth-token.binding") == "bound"
+    )
+    return {"kind": "Secret", "service_account_uid": sa_meta["uid"], "service_account": name, "type": value["type"]} if valid else None
+
+
+def cleanup_grant_body(name, namespace):
+    accounts = {
+        "troshka-provider-namespaced": ("troshka", "troshka", "troshka-provider-namespaced"),
+        "troshka-operator-namespaced": ("troshka-operator", "troshka-operator", "troshka-operator-namespaced"),
+        "system:deployers": ("deployer", namespace, "system:deployer"),
+        "system:image-builders": ("builder", namespace, "system:image-builder"),
+    }
+    if name == "system:image-pullers":
+        subjects = [{"apiGroup": "rbac.authorization.k8s.io", "kind": "Group", "name": "system:serviceaccounts:" + namespace}]
+        role = "system:image-puller"
+    elif name in accounts:
+        sa, sa_ns, role = accounts[name]
+        subjects = [{"kind": "ServiceAccount", "name": sa, "namespace": sa_ns}]
+    else:
+        return None
+    return {"roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": role}, "subjects": subjects}
+
+
+def cleanup_delete(api, root):
+    """Scoped finalizer: never call legacy capture, finalizer stripping or sweeps."""
+    value = cleanup_intent(root)
+    require(value is not None, "cleanup_intent_required")
+    ns = value["root"]["namespace"]
+    require(api.get("Namespace", None, ns)["metadata"]["uid"] == value["root"]["namespace_uid"], "cleanup_namespace_changed")
+    kinds = (set(KINDS) | set(CLEANUP_KINDS)) - {"Namespace", "PersistentVolume", "TroshkaProject"}
+    rows = {kind: api.rows(kind, ns) for kind in sorted(kinds)}
+    expected = {(v["kind"], v["name"]): v for v in value["objects"] if v.get("namespace")}
+    by_uid = {obj["metadata"]["uid"]: obj for values in rows.values() for obj in values}
+    found = []
+    for kind, objects in rows.items():
+        for obj in objects:
+            meta = obj["metadata"]
+            original = expected.get((kind, meta["name"]), {})
+            if cleanup_original(obj, original, by_uid):
+                continue  # Preserve bootstrap access until namespace deletion.
+            cleanup_runtime(obj)
+            found.append(obj)
+    if not found:
+        return True
+    # Preserve the established workload -> network -> Services -> storage order.
+    first = min(cleanup_stage(obj) for obj in found)
+    for obj in found:
+        if cleanup_stage(obj) != first or obj["metadata"].get("deletionTimestamp"):
+            continue
+        meta = obj["metadata"]
+        if obj["kind"] in {"TroshkaVM", "TroshkaNetwork"}:
+            annotations = {**meta.get("annotations", {}), CLEANUP_ANNOTATION: json.dumps(value, sort_keys=True)}
+            obj = api.patch(obj, [{"op": "add", "path": "/metadata/annotations", "value": annotations}])
+            meta = obj["metadata"]
+        result = api.request("DELETE", obj["kind"], ns, meta["name"], {
+            "apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground",
+            "preconditions": {"uid": meta["uid"], "resourceVersion": meta["resourceVersion"]},
+        })
+        require(isinstance(result, dict) and (result.get("kind") == "Status" or result.get("metadata", {}).get("uid") == meta["uid"]), "cleanup_delete_response_unverified")
+    return False
+
+
+def cleanup_runtime(obj):
+    kind = obj["kind"]
+    require(kind not in {"Pod", "VirtualMachineInstance", "Job", "CronJob", "VolumeSnapshot"}, "cleanup_runtime_present")
+    require(kind != "VirtualMachine" or obj["spec"].get("runStrategy") == "Halted", "cleanup_vm_running")
+    require(kind not in {"Deployment", "ReplicaSet"} or obj["spec"].get("replicas") == 0, "cleanup_controller_running")
+
+
+def cleanup_original(obj, original, by_uid):
+    require(original.get("uid") == obj["metadata"]["uid"], "cleanup_original_inventory_changed")
+    bootstrap = original.get("namespace_bootstrap")
+    if bootstrap:
+        require(cleanup_bootstrap(obj, by_uid) == bootstrap, "cleanup_namespace_bootstrap_changed")
+    return bool(bootstrap)
+
+
+def cleanup_stage(obj):
+    kind = obj["kind"]
+    if kind in {"TroshkaVM", "VirtualMachine", "Deployment", "ReplicaSet", "DataVolume"}:
+        return 0
+    if kind in {"TroshkaNetwork", "NetworkAttachmentDefinition", "Route"}:
+        return 1
+    return 2 if kind == "Service" else 3
+
+
+def cleanup_child(api, meta, namespace):
+    """Original managed child finalizers must not execute name-only legacy deletes."""
+    marker = meta.get("annotations", {}).get(CLEANUP_ANNOTATION)
+    if marker is None:
+        return False
+    owners = meta.get("ownerReferences", [])
+    require(len(owners) == 1 and owners[0].get("kind") == "TroshkaProject", "cleanup_parent_changed")
+    root = api.get("TroshkaProject", namespace, owners[0]["name"])
+    require(root["metadata"]["uid"] == owners[0]["uid"], "cleanup_root_changed")
+    value = cleanup_intent(root)
+    require(value is not None and json.loads(marker) == value, "cleanup_child_intent_changed")
+    require(value["root"]["namespace"] == namespace and api.get("Namespace", None, namespace)["metadata"]["uid"] == value["root"]["namespace_uid"], "cleanup_namespace_changed")
+    require(any(v["uid"] == meta["uid"] and v["name"] == meta["name"] and v.get("namespace") == namespace for v in value["objects"]), "cleanup_child_changed")
+    return True
+
+
 class PowerClient:
     """Small, bounded JSON transport using the operator/provider's existing client."""
 
@@ -111,8 +289,8 @@ class PowerClient:
         require(remaining > 0, "managed_observation_timeout")
         return min(5, remaining)
 
-    def request(self, method, kind, namespace, name=None, body=None, status=False):
-        version, plural = KINDS[kind]
+    def request(self, method, kind, namespace, name=None, body=None, status=False, allow_absent=False):
+        version, plural = (KINDS | CLEANUP_KINDS)[kind]
         prefix = "/api/" if version == "v1" else "/apis/"
         path = prefix + version
         if namespace is not None:
@@ -144,6 +322,8 @@ class PowerClient:
             timeout=Timeout(total=self.timeout()),
         )
         try:
+            if allow_absent and response.status == 404:
+                return None
             require(200 <= response.status < 300, "managed_api_unavailable")
             raw = response.read(4 * 1024 * 1024 + 1)
             require(len(raw) <= 4 * 1024 * 1024, "managed_response_limit")
@@ -155,6 +335,9 @@ class PowerClient:
 
     def get(self, kind, namespace, name):
         return self.request("GET", kind, namespace, name)
+
+    def find(self, kind, namespace, name):
+        return self.request("GET", kind, namespace, name, allow_absent=True)
 
     def rows(self, kind, namespace):
         value = self.request("GET", kind, namespace)
@@ -169,8 +352,9 @@ class PowerClient:
         for row in rows:
             require(row["metadata"]["namespace"] == namespace)
             row.setdefault("kind", kind)
-            row.setdefault("apiVersion", KINDS[kind][0])
-            require(row["kind"] == kind and row["apiVersion"] == KINDS[kind][0])
+            version = (KINDS | CLEANUP_KINDS)[kind][0]
+            row.setdefault("apiVersion", version)
+            require(row["kind"] == kind and row["apiVersion"] == version)
         return rows
 
     def patch(self, value, changes, *, status=False):

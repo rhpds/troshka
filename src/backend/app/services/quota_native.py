@@ -65,8 +65,11 @@ class NativeStorageMeasurement:
 
 def _measurement_domain(db, project_id, identity):
     from app.models.kubevirt_storage import NativeCollectionDomain, NativeProjectRoot
+    from app.services.quota_cleanup import active_roots
 
-    roots = db.query(NativeProjectRoot).filter_by(project_id=project_id).all()
+    roots = active_roots(
+        db, db.query(NativeProjectRoot).filter_by(project_id=project_id).all()
+    )
     if len(roots) != 1:
         raise AccountingUnavailable("Native storage requires one retained project root")
     root = roots[0]
@@ -145,13 +148,17 @@ def _measurement_report(db, domain, roots, manifest, now):
     from app.models.kubevirt_storage import NativeStorageSnapshot
     from app.services.kubevirt_storage_enrollment import digest, root_key, utc
     from app.services.kubevirt_storage_usage import MAX_REPORT_AGE, domain_evidence
+    from app.services.quota_cleanup import active_roots, settled_root_keys
 
+    roots = active_roots(db, roots)
+    retired = settled_root_keys(db)
     graph, source, failures = domain_evidence(db, domain, roots)
     report = db.get(NativeStorageSnapshot, domain.latest_report_id) if source else None
     if failures or graph is None or source is None or report is None:
         raise AccountingUnavailable("Native latest collection attempt is unavailable")
     if (
-        {r.key for r in roots} != {root_key(r) for r in source.project_roots}
+        {r.key for r in roots}
+        != {root_key(r) for r in source.project_roots if root_key(r) not in retired}
         or set(source.pool_keys) != set(manifest.pins.pool_keys)
         or source.collector_id not in manifest.pins.collector_ids
     ):

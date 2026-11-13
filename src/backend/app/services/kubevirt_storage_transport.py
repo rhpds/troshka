@@ -12,7 +12,13 @@ from uuid import UUID
 
 from pydantic import Field, model_serializer
 
-from app.schemas.kubevirt_storage import Bytes, Evidence, ImageKey, ReadResult
+from app.schemas.kubevirt_storage import (
+    BackendImageInventory,
+    Bytes,
+    Evidence,
+    ImageKey,
+    ReadResult,
+)
 from app.schemas.kubevirt_storage_initialization import InitializationEvidence
 
 
@@ -54,6 +60,13 @@ def command_argv(
         return ["rbd", "namespace", "list", "--pool", _token(pool), "--format", "json"]
     pool, namespace = _token(pool), _token(namespace, empty=True)
     opts = ["--pool", pool, "--namespace", namespace]
+    directories = {
+        "active": ["ls"],
+        "trash_all": ["trash", "ls", "--all"],
+        "trash": ["trash", "ls"],
+    }
+    if operation in directories:
+        return ["rbd", *directories[operation], *opts, "--format", "json"]
     if operation == "journal":
         object_uuid = str(UUID(object_uuid))
         if journal_key not in {"csi.imageid", "csi.imagename", "csi.volname"}:
@@ -69,8 +82,6 @@ def command_argv(
             journal_key,
             "-",
         ]
-    if operation == "trash":
-        return ["rbd", "trash", "ls", *opts, "--format", "json"]
     if operation not in {"info", "info_id", "du", "snapshots", "children"}:
         raise ValueError("unsupported read operation")
     image = _token(image)
@@ -539,3 +550,69 @@ class RbdReader:
     def trash_inventory(self, key):
         p = self._pool(key)
         return self._read("trash", pool=p.name, namespace=p.rbd_namespace)
+
+    def _inventory_value(self, operation, timestamps, **kwargs):
+        result = self._read(operation, **kwargs)
+        if result.status != "complete":
+            raise ValueError("incomplete image inventory")
+        timestamps.append(result.collected_at)
+        return result.value
+
+    def _inventory_round(self, pool, timestamps, max_objects):
+        args = {"pool": pool.name, "namespace": pool.rbd_namespace}
+        names = self._inventory_value("active", timestamps, **args)
+        if not isinstance(names, list) or len(names) > max_objects:
+            raise ValueError("incomplete image directory")
+        active = {}
+        for name in names:
+            name = _token(name)
+            if name in active:
+                raise ValueError("duplicate image name")
+            info = self._inventory_value("info", timestamps, image=name, **args)
+            if not isinstance(info, dict) or info.get("name") != name:
+                raise ValueError("image name changed")
+            active[name] = _token(info["id"])
+        if len(set(active.values())) != len(active):
+            raise ValueError("duplicate image identity")
+        trash = self._inventory_value("trash_all", timestamps, **args)
+        if not isinstance(trash, list) or len(trash) + len(active) > max_objects:
+            raise ValueError("incomplete trash directory")
+        ids = [_token(row["id"]) for row in trash]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate trash identity")
+        return active, sorted(ids)
+
+    def image_inventory(self, key, *, max_objects):
+        """No ENOENT inference; unresolved active names invalidate the whole read.
+
+        Ceph v19.2.1 long ls can omit failed image opens, and default trash ls
+        excludes REMOVING sources. Use plain ls, every info, and short --all trash.
+        """
+        timestamps = []
+        try:
+            pool = self._pool(key)
+            if self._verify_binding_target().status != "complete":
+                raise ValueError("backend identity changed")
+            if pool.rbd_namespace:
+                namespaces = self._inventory_value(
+                    "namespaces", timestamps, pool=pool.name
+                )
+                if pool.rbd_namespace not in namespaces:
+                    raise ValueError("backend namespace changed")
+            before = self._inventory_round(pool, timestamps, max_objects)
+            after = self._inventory_round(pool, timestamps, max_objects)
+            if before != after or self._verify_binding_target().status != "complete":
+                raise ValueError("backend inventory changed")
+            value = BackendImageInventory(
+                ceph_fsid=key.ceph_fsid,
+                pool_id=key.pool_id,
+                rbd_namespace=key.rbd_namespace,
+                active_images=before[0],
+                trash_ids=before[1],
+                collected_at=min(timestamps),
+            )
+            return ReadResult(
+                status="complete", value=value, collected_at=value.collected_at
+            )
+        except (ValueError, KeyError, TypeError):
+            return ReadResult(status="unavailable", collected_at=utcnow())

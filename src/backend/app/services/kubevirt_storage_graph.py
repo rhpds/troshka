@@ -105,10 +105,26 @@ def _ownership(inventory, observations, cache, max_parent_depth):
                 )
                 nodes |= reached
                 failures[root.project_id] |= errors
+        reached, errors = _retiring_ownership(
+            root, inventory, observations, cache, max_parent_depth
+        )
+        nodes |= reached
+        failures[root.project_id] |= errors
         project_nodes[root.project_id] = nodes
         for key in nodes - cache:
             ownership[key].add(root.project_id)
     return ownership, project_nodes, failures
+
+
+def _retiring_ownership(root, inventory, observations, cache, max_parent_depth):
+    nodes, failures = set(), set()
+    for retiring in inventory.retiring_roots:
+        if retiring.root == root:
+            for key in retiring.owned_images:
+                reached, errors = _walk(key, observations, cache, max_parent_depth)
+                nodes |= reached
+                failures |= errors
+    return nodes, failures
 
 
 def _project_allocation(
@@ -208,6 +224,12 @@ def attribute_graph(inventory, images, *, max_parent_depth=32):
     ownership, project_nodes, failures = _ownership(
         inventory, observations, cache, max_parent_depth
     )
+    authorized_absence = {
+        key for root in inventory.retiring_roots for key in root.owned_images
+    }
+    if any(i.absence is not None and i.key not in authorized_absence for i in images):
+        for root in inventory.project_roots:
+            failures[root.project_id].add("unapproved_image_absence")
     all_members = set().union(*project_nodes.values()) if project_nodes else set()
     unresolved = {
         k

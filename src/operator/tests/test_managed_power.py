@@ -10,7 +10,7 @@ from helpers import managed_power as power
 
 def resource(kind, name, owner=None, spec=None, status=None):
     value = {
-        "apiVersion": power.KINDS[kind][0],
+        "apiVersion": (power.KINDS | power.CLEANUP_KINDS)[kind][0],
         "kind": kind,
         "metadata": {
             "name": name,
@@ -89,6 +89,134 @@ class FakeAPI:
         assert body["preconditions"]["uid"] == value["metadata"]["uid"]
         value["metadata"]["deletionTimestamp"] = "2026-11-12T00:00:00Z"
         return deepcopy(value)
+
+
+@pytest.mark.parametrize("extra", [False, True])
+def test_cleanup_deletes_only_sealed_originals_and_retains_replacements(extra):
+    root = resource("TroshkaProject", "project", spec={"projectId": "project-id"})
+    child = resource("Service", "original-service", root)
+    payload = {
+        "version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "allocation-1",
+        "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": root["metadata"]["uid"], "deployment_generation": 1},
+        "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"},
+        "objects": [{"kind": "Service", "name": child["metadata"]["name"], "namespace": "ns", "uid": child["metadata"]["uid"]}],
+    }
+    payload["inventory_digest"] = power.digest(payload["objects"])
+    root["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload), power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"})}
+
+    class API(FakeAPI):
+        def request(self, method, kind, namespace, name, body):
+            assert method == "DELETE" and kind == "Service"
+            assert body["preconditions"]["uid"] == self.values[kind, name]["metadata"]["uid"]
+            self.calls.append((method, kind, name))
+            del self.values[kind, name]
+            return {"kind": "Status", "status": "Success"}
+
+    values = [root, child, resource("Namespace", "ns")]
+    if extra:
+        values.append(resource("Service", "foreign-service"))
+    api = API(values)
+    if extra:
+        with pytest.raises(power.ManagedPowerError):
+            power.cleanup_delete(api, root)
+        assert not api.calls
+    else:
+        assert power.cleanup_delete(api, root) is False
+        assert api.calls == [("DELETE", "Service", "original-service")]
+        assert power.cleanup_delete(api, root) is True
+
+
+@pytest.mark.parametrize("change", ["ordinary", "original", "child_uid", "parent_uid", "foreign", "marker"])
+def test_cleanup_child_authority_requires_original_parent_intent_and_child(change):
+    parent = resource("TroshkaProject", "project")
+    child = resource("TroshkaVM", "vm", parent)
+    payload = {
+        "version": "native-cleanup-v1", "namespace_mode": "managed",
+        "intent_id": "cleanup-1", "generation": "allocation-1",
+        "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1},
+        "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"},
+        "objects": [{"kind": "TroshkaVM", "name": "vm", "namespace": "ns", "uid": child["metadata"]["uid"]}],
+    }
+    payload["inventory_digest"] = power.digest(payload["objects"])
+    parent["metadata"]["annotations"] = {
+        power.CLEANUP_ANNOTATION: json.dumps(payload),
+        power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"}),
+    }
+    child["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload)}
+    if change == "ordinary":
+        child["metadata"]["annotations"] = {}
+    elif change == "child_uid":
+        child["metadata"]["uid"] = "replacement"
+    elif change == "parent_uid":
+        parent["metadata"]["uid"] = "replacement"
+    elif change == "foreign":
+        child["metadata"]["ownerReferences"] = []
+    elif change == "marker":
+        child["metadata"]["annotations"][power.CLEANUP_ANNOTATION] = "{}"
+    api = FakeAPI([parent, child, resource("Namespace", "ns")])
+    if change in {"ordinary", "original"}:
+        assert power.cleanup_child(api, child["metadata"], "ns") == (change == "original")
+    else:
+        with pytest.raises(power.ManagedPowerError):
+            power.cleanup_child(api, child["metadata"], "ns")
+    assert not api.calls
+
+
+@pytest.mark.parametrize("change", ["original", "grant_subject", "sa_uid", "secret_owner"])
+def test_cleanup_preserves_exact_openshift_bootstrap_and_blocks_changed_ownership(change):
+    parent = resource("TroshkaProject", "project")
+    sa = resource("ServiceAccount", "default")
+    sa["metadata"]["annotations"] = {"openshift.io/internal-registry-pull-secret-ref": "default-dockercfg-original"}
+    secret = resource("Secret", "default-dockercfg-original")
+    secret["type"] = "kubernetes.io/dockercfg"
+    secret["metadata"].update(annotations={"openshift.io/internal-registry-auth-token.service-account": "default", "openshift.io/internal-registry-auth-token.binding": "bound"}, ownerReferences=[{"apiVersion": "v1", "kind": "ServiceAccount", "name": "default", "uid": sa["metadata"]["uid"]}])
+    grant = resource("RoleBinding", "system:image-pullers")
+    grant.update(power.cleanup_grant_body("system:image-pullers", "ns"))
+    by_uid = {v["metadata"]["uid"]: v for v in [sa, secret, grant]}
+    objects = [{"kind": v["kind"], "name": v["metadata"]["name"], "namespace": "ns", "uid": v["metadata"]["uid"], "namespace_bootstrap": power.cleanup_bootstrap(v, by_uid)} for v in [sa, secret, grant]]
+    payload = {"version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "allocation-1", "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1}, "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"}, "objects": objects, "inventory_digest": power.digest(sorted(objects, key=lambda v: (v["kind"], v["name"])))}
+    parent["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload), power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"})}
+    if change == "grant_subject":
+        grant["subjects"][0]["name"] = "system:serviceaccounts:foreign"
+    elif change == "sa_uid":
+        sa["metadata"]["uid"] = "replacement"
+    elif change == "secret_owner":
+        secret["metadata"]["ownerReferences"][0]["uid"] = "replacement"
+    api = FakeAPI([parent, sa, secret, grant, resource("Namespace", "ns")])
+    if change == "original":
+        assert power.cleanup_delete(api, parent) is True
+    else:
+        with pytest.raises(power.ManagedPowerError):
+            power.cleanup_delete(api, parent)
+    assert not api.calls
+
+
+@pytest.mark.parametrize("name", ["kube-root-ca.crt", "openshift-service-ca.crt"])
+@pytest.mark.parametrize("change", ["original", "annotation", "foreign", "replacement"])
+def test_cleanup_preserves_original_ca_publishers_until_namespace_deletion(name, change):
+    parent = resource("TroshkaProject", "project")
+    ca = resource("ConfigMap", name)
+    annotation = {"kubernetes.io/description": "Contains a CA bundle that can be used to verify the kube-apiserver when using internal endpoints such as the internal service IP or kubernetes.default.svc. No other usage is guaranteed across distributions of Kubernetes clusters."} if name == "kube-root-ca.crt" else {"service.beta.openshift.io/inject-cabundle": "true"}
+    ca["metadata"]["annotations"] = annotation
+    ca["data"] = {"ca.crt" if name == "kube-root-ca.crt" else "service-ca.crt": "synthetic public CA"}
+    objects = [{"kind": "ConfigMap", "name": name, "namespace": "ns", "uid": ca["metadata"]["uid"], "namespace_bootstrap": power.cleanup_bootstrap(ca)}]
+    assert objects[0]["namespace_bootstrap"]
+    payload = {"version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "allocation-1", "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1}, "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"}, "objects": objects, "inventory_digest": power.digest(objects)}
+    parent["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload), power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"})}
+    if change == "annotation":
+        ca["metadata"]["annotations"] = {}
+    elif change == "foreign":
+        ca["metadata"]["name"] = "foreign-ca"
+    elif change == "replacement":
+        ca["metadata"]["uid"] = "replacement"
+    api = FakeAPI([parent, ca, resource("Namespace", "ns")])
+    if change == "original":
+        assert power.cleanup_delete(api, parent) is True
+        assert power.cleanup_delete(api, parent) is True
+    else:
+        with pytest.raises(power.ManagedPowerError):
+            power.cleanup_delete(api, parent)
+    assert not api.calls  # Never individually delete a live publisher's CA map.
 
 
 @pytest.fixture

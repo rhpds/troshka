@@ -15,6 +15,7 @@ from app.schemas.kubevirt_storage import (
     CacheBinding,
     CSISnapshotEvidence,
     NativeInventory,
+    RetiringRoot,
     VolumeBinding,
 )
 
@@ -33,6 +34,8 @@ def inventory_digest(inventory):
     )
     if inventory.snapshot_evidence:
         fields += ("snapshot_evidence",)
+    if inventory.retiring_roots:
+        fields += ("retiring_roots",)
     data = {
         name: sorted(
             (v.model_dump(mode="json") for v in getattr(inventory, name)),
@@ -225,6 +228,65 @@ def _project_discovery(kube, root, retained, cluster, pvs, contents):
         )
 
 
+def _retiring_discovery(kube, root, intent, pvs, contents):
+    """An authorized original root may outlive its namespace; bytes still need reads."""
+    if intent.root != root or not intent.teardown_at or not intent.inventory_digest:
+        raise ValueError("retiring root authorization changed")
+    namespace = kube.namespace_if_exists(root.namespace)
+    if namespace is not None:
+        if namespace["metadata"]["uid"] != root.namespace_uid:
+            raise ValueError("retiring namespace replaced")
+        kube.cleanup_rows(intent)
+        projects = kube.projects(root.namespace)
+        if projects and (
+            len(projects) != 1 or projects[0]["metadata"]["uid"] != root.project_cr_uid
+        ):
+            raise ValueError("retiring original root replaced")
+        bindings, errors = _project_pvcs(kube, root, pvs)
+    else:
+        bindings, errors = [], []
+    remaining = _retiring_pvs(root, intent, pvs)
+    snapshots, snapshot_errors = (
+        _snapshot_discovery(kube, root, contents) if namespace else ([], [])
+    )
+    # A content reference remains storage evidence even after namespace removal.
+    if any(
+        c.get("spec", {}).get("volumeSnapshotRef", {}).get("namespace")
+        == root.namespace
+        for c in contents.values()
+    ):
+        raise ValueError("retiring snapshot content remains")
+    proof = RetiringRoot(
+        intent_id=intent.intent_id,
+        operation_id=intent.operation_id,
+        root=root,
+        inventory_digest=intent.inventory_digest,
+        owned_images=intent.owned_images,
+        objects_absent=namespace is None and not remaining,
+        observed_at=getattr(kube, "scan_started_at", datetime.now(UTC)),
+    )
+    return bindings, snapshots, errors + snapshot_errors, proof
+
+
+def _retiring_pvs(root, intent, pvs):
+    original_pvs = {b.pv_uid for b in intent.bindings}
+    original_pvcs = {b.pvc_uid for b in intent.bindings}
+    remaining = []
+    for pv in pvs.values():
+        claim = pv.get("spec", {}).get("claimRef", {})
+        if (
+            pv["metadata"]["uid"] in original_pvs
+            or claim.get("namespace") == root.namespace
+        ):
+            if (
+                pv["metadata"]["uid"] not in original_pvs
+                or claim.get("uid") not in original_pvcs
+            ):
+                raise ValueError("retiring persistent volume replaced")
+            remaining.append(pv)
+    return remaining
+
+
 def _retained_cache(kube, enrolled, cache):
     result = []
     current = {b.pvc_uid for b in cache}
@@ -291,7 +353,8 @@ def _retained_conflicts(retained, roots, bindings):
 
 def discover_inventory(kube_reader, retained_bindings, roots):
     """Discover full enrolled namespaces; retained records contain identity only."""
-    bindings, snapshots, blockers, roots = [], [], [], list(roots)
+    bindings, snapshots, blockers, roots, retiring = [], [], [], list(roots), []
+    intents = {v.root: v for v in getattr(kube_reader, "retiring_intents", [])}
     try:
         cluster = kube_reader.cluster_identity()
         pvs = {p["metadata"]["name"]: p for p in kube_reader.pvs()}
@@ -316,9 +379,17 @@ def discover_inventory(kube_reader, retained_bindings, roots):
             continue
         seen_projects.add(root.project_id)
         seen_namespaces.add(namespace_key)
-        found, snapshot_records, problems = _project_discovery(
-            kube_reader, root, retained_bindings, cluster, pvs, contents
+        found, snapshot_records, problems, proof = _discover_root(
+            kube_reader,
+            root,
+            intents.get(root),
+            retained_bindings,
+            cluster,
+            pvs,
+            contents,
         )
+        if proof is not None:
+            retiring.append(proof)
         bindings.extend(found)
         snapshots.extend(snapshot_records)
         blockers.extend(problems)
@@ -333,10 +404,30 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         cache_bindings=cache,
         retained_bindings=retained_bindings,
         snapshot_evidence=snapshots,
+        retiring_roots=retiring,
         blockers=blockers,
         collected_at=getattr(kube_reader, "scan_started_at", datetime.now(UTC)),
     )
     return result.model_copy(update={"inventory_digest": inventory_digest(result)})
+
+
+def _discover_root(kube, root, intent, retained, cluster, pvs, contents):
+    if intent is None:
+        bindings, snapshots, blockers = _project_discovery(
+            kube, root, retained, cluster, pvs, contents
+        )
+        return bindings, snapshots, blockers, None
+    try:
+        if root.cluster_key != cluster:
+            raise ValueError("retiring cluster changed")
+        return _retiring_discovery(kube, root, intent, pvs, contents)
+    except Exception:
+        return (
+            [],
+            [],
+            [Blocker(code="retiring_root_unavailable", project_id=root.project_id)],
+            None,
+        )
 
 
 def _static_kubeconfig(data):
@@ -441,6 +532,22 @@ class KubernetesReader:
         return self._dict(
             self.core.read_namespace(name, _request_timeout=self._timeout())
         )
+
+    def namespace_if_exists(self, name):
+        from kubernetes.client.exceptions import ApiException
+
+        try:
+            return self.namespace(name)
+        except ApiException as error:
+            if error.status != 404:
+                raise
+            return None
+
+    def cleanup_rows(self, intent):
+        from app.services.native_managed_power import helpers
+        from app.services.quota_cleanup import _checked_cleanup_rows
+
+        return _checked_cleanup_rows(helpers().PowerClient(self.api), intent)
 
     def pod(self, namespace, name):
         return self._dict(
