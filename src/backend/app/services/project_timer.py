@@ -196,6 +196,7 @@ def _recover_one_stuck_project(
     s, project, result, dry_run, *, get_job_info, get_progress, clear_job_ref
 ) -> None:
     from app.models.quota import QuotaAction
+    from app.services.native_managed_deploy import has_pending_handoff
 
     if project.state == "stopping":
         run = (
@@ -211,6 +212,8 @@ def _recover_one_stuck_project(
             return  # Durable managed observation/retry is the active job.
     job_info = get_job_info(project.id)
     status = (job_info or {}).get("status") or ""
+    if has_pending_handoff(s, project, status):
+        return  # The completed worker handed ownership to durable reconciliation.
     if status in ("queued", "started"):
         if _started_deploy_is_zombie(status, project, get_progress):
             logger.warning(

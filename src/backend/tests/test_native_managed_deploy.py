@@ -581,6 +581,99 @@ def start(q):
     return operation_id
 
 
+@pytest.mark.parametrize("job_status", ["finished", None])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_timer_preserves_durable_native_deploy(
+    deploy_case, monkeypatch, job_status, dry_run
+):
+    from unittest.mock import Mock
+
+    from app.services import project_timer
+
+    q = deploy_case
+    start(q)
+    clear = Mock()
+    monkeypatch.setattr(project_timer, "_notify", Mock())
+    result = {}
+    job_info = {"status": job_status, "job_id": "completed-job"} if job_status else None
+    with q.sessions() as db:
+        project = db.get(Project, q.new_id)
+        project_timer._recover_one_stuck_project(
+            db,
+            project,
+            result,
+            dry_run,
+            get_job_info=lambda _: job_info,
+            get_progress=lambda _: None,
+            clear_job_ref=clear,
+        )
+        assert project.state == "deploying"
+        assert not project.deploy_error
+    assert not result.get("stuck_recovered")
+    clear.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "failed",
+        "canceled",
+        "stopped",
+        "cancelled-operation",
+        "released",
+        "wrong-generation",
+        "wrong-host",
+        "wrong-kind",
+        "reserved",
+        "unfinished",
+        "ordinary-reservation",
+    ],
+)
+def test_timer_does_not_hide_lost_native_deploy(deploy_case, monkeypatch, invalid):
+    from unittest.mock import Mock
+
+    from app.services import project_timer
+
+    q = deploy_case
+    operation_id = start(q)
+    monkeypatch.setattr(project_timer, "_notify", Mock())
+    result = {}
+    with q.sessions() as db:
+        project = db.get(Project, q.new_id)
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        metadata = deepcopy(row.dispatch_metadata)
+        if invalid == "cancelled-operation":
+            metadata["cancelled"] = True
+        elif invalid == "released":
+            row.state = "released"
+        elif invalid == "wrong-generation":
+            metadata["generation_id"] = str(uuid4())
+        elif invalid == "wrong-host":
+            project.host_id = None
+        elif invalid == "wrong-kind":
+            metadata["kind"] = "start"
+        elif invalid == "reserved":
+            metadata["native_deploy"]["phase"] = "reserved"
+        elif invalid == "unfinished":
+            metadata["worker_finished"] = False
+        elif invalid == "ordinary-reservation":
+            metadata.pop("native_deploy")
+        row.dispatch_metadata = metadata
+        db.commit()
+        status = invalid if invalid in {"failed", "canceled", "stopped"} else "finished"
+        project_timer._recover_one_stuck_project(
+            db,
+            project,
+            result,
+            False,
+            get_job_info=lambda _: {"status": status, "job_id": "completed-job"},
+            get_progress=lambda _: None,
+            clear_job_ref=Mock(),
+        )
+        assert project.state == "error"
+    assert result["stuck_recovered"] == [q.new_id]
+
+
 def test_pending_cr_pins_survive_shipped_schema_pruning(deploy_case):
     q = deploy_case
     operation_id = start(q)
@@ -808,9 +901,10 @@ def stop_and_resume(q, original_id, cpu, physical, monkeypatch):
         assert monetary_identity(db, q.project_ids) == q.original_meters
 
 
+@pytest.mark.parametrize("timer_error", [False, True])
 @pytest.mark.parametrize("amount,with_vm", [(16, False), (32, True)])
 def test_real_first_deploy_admission_pending_and_automatic_enrollment(
-    deploy_case, amount, with_vm, monkeypatch
+    deploy_case, amount, with_vm, monkeypatch, timer_error
 ):
     q = deploy_case
     if with_vm:
@@ -845,6 +939,11 @@ def test_real_first_deploy_admission_pending_and_automatic_enrollment(
     physical = amount * claims
     operation_id = start(q)
     with q.sessions() as db:
+        if timer_error:
+            project = db.get(Project, q.new_id)
+            project.state = "error"
+            project.deploy_error = "Background job lost while deploying — please retry"
+            db.commit()
         row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
         assert (
             row.requested["cpu"] == cpu
@@ -923,6 +1022,7 @@ def test_real_first_deploy_admission_pending_and_automatic_enrollment(
         assert (used.cpu, used.storage_bytes, used.projects) == (cpu, physical, 1)
         assert not any(reserved.model_dump().values())
         assert db.get(Project, q.new_id).state == "active"
+        assert db.get(Project, q.new_id).deploy_error is None
         disks = (
             db.query(MeteringInterval)
             .filter_by(project_id=q.new_id, kind="disk", ended_at=None)

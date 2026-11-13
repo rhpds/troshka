@@ -713,6 +713,37 @@ def locked(db, project_id, operation_id):
     return project, row, target, profile
 
 
+def has_pending_handoff(db, project, job_status):
+    """Recognize a completed worker's valid durable reconciliation ownership."""
+    if project.state != "deploying" or job_status not in ("", "finished"):
+        return False
+    rows = operations.current_generation(operations._rows(db, project.id))
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    metadata = row.dispatch_metadata
+    if (
+        row.state != "reconciling"
+        or metadata.get("adapter") != "kubevirt"
+        or metadata.get("kind") != "deploy"
+        or not metadata.get("worker_finished")
+        or not metadata.get("worker_finished_at")
+        or not metadata.get("claim")
+        or not metadata.get("native_deploy")
+    ):
+        return False
+    try:
+        target, _ = validate(db, project, row, physical=False)
+        return target["phase"] in {
+            "create-intent",
+            "bound",
+            "initialization-intent",
+            "runtime-intent",
+        }
+    except (AccountingUnavailable, ValueError, KeyError, TypeError):
+        return False
+
+
 def reconcile(project_id):
     from app.core.database import SessionLocal
     from app.services.quota_accounting import quotas_enabled
