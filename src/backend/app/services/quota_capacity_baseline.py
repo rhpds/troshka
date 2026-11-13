@@ -1274,6 +1274,30 @@ def _runtime_billing_project(db, project, now):
     reserved and is not treated as an already billable deployed environment.
     """
     rows = _current(db, project)
+    from app.services.native_managed_deploy import pending_profile
+
+    if pending_profile(db, project, rows):
+        if rows[0].dispatch_metadata["native_deploy"].get("initialized_report"):
+            from app.services import metering_service as metering
+            from app.services.native_managed_power import billing_snapshot
+
+            _billing_coverage(
+                db,
+                project,
+                metering._quota_snapshot(
+                    project, billing_snapshot(db, project, rows), now
+                ),
+                metering.load_type_rates(db),
+                now,
+            )
+        else:
+            _require(
+                not db.query(MeteringInterval)
+                .filter_by(project_id=project.id, ended_at=None)
+                .first(),
+                "Pending native deployment has unexplained billing sources",
+            )
+        return
     if rows and storage.storage_adapter(rows[0]) == native.ADAPTER:
         from app.services import metering_service as metering
         from app.services.native_managed_power import billing_snapshot
@@ -1338,6 +1362,10 @@ def _runtime_billing_project(db, project, now):
 def _runtime_project(db, project, now):
     rows = _current(db, project)
     if _empty(db, project, rows):
+        return
+    from app.services.native_managed_deploy import pending_profile
+
+    if pending_profile(db, project, rows):
         return
     operations.supported(db, project, deployed=True)
     _require(

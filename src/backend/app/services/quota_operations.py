@@ -345,7 +345,8 @@ def prepare(db, project, kind, *, host_id=None):
     if not accounting.quotas_enabled():
         return None
     try:
-        if select_adapter(db, project) == "kubevirt":
+        host = db.get(Host, host_id) if host_id else None
+        if select_adapter(db, project, host=host) == "kubevirt":
             from app.services.native_managed_power import prepare as native_prepare
 
             return native_prepare(db, project, kind, host_id=host_id)
@@ -482,6 +483,11 @@ def _validate_claim_target(db, row, project, project_id, kind, *, native_proof=N
             "Operation already claimed; reconcile before further allocation"
         )
     if metadata.get("adapter") == "kubevirt":
+        if metadata.get("native_deploy"):
+            from app.services.native_managed_deploy import validate
+
+            validate(db, project, row)
+            return
         from app.services.native_managed_power import validate_claimed_context
 
         validate_claimed_context(db, project, row, native_proof=native_proof)

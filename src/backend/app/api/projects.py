@@ -2266,6 +2266,21 @@ def _collect_deploy_topology_errors(topology) -> list:
     )
 
 
+def _has_deployable_workloads(db, project, host_id, reqs):
+    if reqs["vm_count"]:
+        return True
+    from app.models.host import Host
+    from app.services.quota_accounting import quotas_enabled
+
+    host = db.get(Host, host_id) if host_id else None
+    return bool(
+        quotas_enabled()
+        and host
+        and host.host_type == "kubevirt-cluster"
+        and reqs["container_count"]
+    )
+
+
 def _persist_placement_and_enqueue(
     project, result, _project_id: str, db, quota_operation_id=None
 ) -> dict:
@@ -2337,7 +2352,7 @@ def deploy_project(
         )
 
     reqs = calculate_project_requirements(project.topology)
-    if reqs["vm_count"] == 0:
+    if not _has_deployable_workloads(db, project, host_id, reqs):
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
     _validate_bmc_network(project.topology or {})

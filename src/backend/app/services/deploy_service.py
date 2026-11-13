@@ -10512,11 +10512,27 @@ def _require_deploy_host(host):
     return host
 
 
+def _deploying_project(db, project_id):
+    from app.models.project import Project
+    from app.models.quota import QuotaReservation
+    from app.services.native_managed_deploy import dispatch
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project or project.state != "deploying":
+        return None
+    operation_id = quota_operations.current_operation.get()
+    if operation_id:
+        pending = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        if pending.dispatch_metadata.get("native_deploy"):
+            dispatch(db, project)
+            return None
+    return project
+
+
 def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
     from app.core.database import SessionLocal
-    from app.models.project import Project
     from app.services.placement import record_deploy_end, record_deploy_start
 
     _clear_deploy_cancelled(project_id)
@@ -10524,8 +10540,8 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     _host_id_for_inflight: str | None = None
     s = SessionLocal()
     try:
-        project = s.query(Project).filter_by(id=project_id).first()
-        if not project or project.state != "deploying":
+        project = _deploying_project(s, project_id)
+        if project is None:
             return
         if project.deploy_error:
             project.deploy_error = None

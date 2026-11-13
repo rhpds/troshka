@@ -55,12 +55,19 @@ def retained_context(db, project, rows):
         or identity["provider_id"] != provider.id
     ):
         raise AccountingUnavailable("Native managed root changed")
-    return {
+    context = {
         "root": root.model_dump(mode="json"),
         "provider_id": provider.id,
         "generation": operations._generation(row),
         "identity": identity,
     }
+    first = row.dispatch_metadata.get("native_deploy")
+    if first and row.state == "confirmed":
+        context["first_deployment"] = {
+            "request": first["runtime_request"],
+            "confirmation": first["running_proof"]["observation_id"],
+        }
+    return context
 
 
 def stop_context(db, project, rows):
@@ -137,6 +144,7 @@ def stop_and_observe(api, context, request_id, *, clock=None):
         module.require(
             current is None
             or current.get("mode") == "running"
+            or completed_first_deployment(root, current, context)
             or (
                 current.get("mode") == "stopped"
                 and current.get("requestId") == context.get("supersedes")
@@ -154,6 +162,18 @@ def stop_and_observe(api, context, request_id, *, clock=None):
             root, [{"op": "add", "path": "/metadata/annotations", "value": annotations}]
         )
     return observe_off(api, context, request_id, started, clock)
+
+
+def completed_first_deployment(root, current, context):
+    first = context.get("first_deployment")
+    return bool(
+        first
+        and current == first["request"]
+        and root.get("status", {})
+        .get("managedDeployment", {})
+        .get("confirmedObservationId")
+        == first["confirmation"]
+    )
 
 
 def observe_off(api, context, request_id, started, clock):
@@ -696,8 +716,12 @@ def prepare(db, project, kind, *, host_id=None):
     from app.services import quota_storage
     from app.services.quota_locks import lock_project
 
+    if kind == "deploy":
+        from app.services.native_managed_deploy import prepare as prepare_deploy
+
+        return prepare_deploy(db, project, host_id=host_id)
     if kind != "start":
-        raise AccountingUnavailable("Native first-deploy admission remains unavailable")
+        raise AccountingUnavailable("Unsupported native admission operation")
     if host_id not in (None, project.host_id):
         raise AccountingUnavailable("Native resume cannot move its retained host")
     supported(project, db.get(Host, project.host_id))
@@ -822,7 +846,11 @@ def claim_preflight(operation_id):
             .filter_by(operation_id=operation_id)
             .one_or_none()
         )
-        if row is None or row.dispatch_metadata.get("adapter") != "kubevirt":
+        if (
+            row is None
+            or row.dispatch_metadata.get("adapter") != "kubevirt"
+            or row.dispatch_metadata.get("native_deploy")
+        ):
             return None
         if row.state != "pending" or row.dispatch_metadata.get("claim"):
             raise AccountingUnavailable("Claimed native work must be observed")
@@ -903,6 +931,10 @@ def reconcile(project_id):
     from app.models.quota import QuotaReservation
     from app.services import quota_admission as admission
     from app.services import quota_storage
+    from app.services.native_managed_deploy import reconcile as reconcile_deploy
+
+    if reconcile_deploy(project_id):
+        return True
 
     with SessionLocal() as reader:
         rows = operations.current_generation(operations._rows(reader, project_id))
@@ -1046,6 +1078,7 @@ def reconcile_receipts(project_id):
             )
             for r in rows
             if r.state == "confirmed"
+            and r.dispatch_metadata.get("native_resume")
             and r.dispatch_metadata.get("native_running_proof")
             and not r.dispatch_metadata.get("native_confirmation_delivered")
         ]
@@ -1269,7 +1302,10 @@ def settled_work(db, project, rows):
         r
         for r in rows
         if r.dispatch_metadata.get("native_running_proof")
-        and r.dispatch_metadata.get("native_resume")
+        and (
+            r.dispatch_metadata.get("native_resume")
+            or r.dispatch_metadata.get("native_deploy")
+        )
     ]
     running = (
         record["mode"] == "running"
@@ -1288,9 +1324,11 @@ def settled_work(db, project, rows):
             accepted,
             key=lambda r: r.dispatch_metadata["native_running_proof"]["observed_at"],
         )
+        first = row.dispatch_metadata.get("native_deploy")
         work.update(
             operation_id=row.operation_id,
-            target=deepcopy(row.dispatch_metadata["native_resume"]),
+            target=deepcopy(first or row.dispatch_metadata["native_resume"]),
+            first_deploy=bool(first),
             confirmation=row.dispatch_metadata["native_running_proof"][
                 "observation_id"
             ],
@@ -1303,6 +1341,12 @@ def settled_work(db, project, rows):
 def collect_settled(api, work):
     """All provider reads run before database locks; this never dispatches work."""
     if work["mode"] == "running":
+        if work.get("first_deploy"):
+            from app.services.native_managed_deploy import observe_runtime
+
+            return work["target"], observe_runtime(
+                api, work["target"], work["operation_id"]
+            )
         proof = observe_running(
             api,
             work["target"],
@@ -1517,9 +1561,14 @@ def admission_vector(rows):
 def billing_snapshot(db, project, rows=None, proof=None):
     """Same monetary rates/provisioned disk pricing; verified configured compute."""
     from app.services import metering_service as metering
+    from app.services.native_managed_deploy import pending_profile
 
     rows = rows or operations.current_generation(operations._rows(db, project.id))
-    demand, desired, active, observed = current_profile(db, project, rows)
+    pending = pending_profile(db, project, rows)
+    if pending:
+        desired, active, observed = [], False, operations.now()
+    else:
+        demand, desired, active, observed = current_profile(db, project, rows)
     if proof is not None:
         observed = datetime.fromisoformat(proof["observed_at"])
     host = db.get(Host, project.host_id)
@@ -1541,9 +1590,10 @@ def billing_snapshot(db, project, rows=None, proof=None):
         "observed_at": observed.isoformat(),
         "project_state": "active" if active else "stopped",
         "vms": nodes,
-        "disks": metering._snapshot_disks(
-            project, operations.retained_topology(project)
-        ),
+        "disks": []
+        if pending
+        and not rows[0].dispatch_metadata["native_deploy"].get("initialized_report")
+        else metering._snapshot_disks(project, operations.retained_topology(project)),
         "eips": [],
         "ceph": [],
         "native_profile": "configured-workloads-v1",

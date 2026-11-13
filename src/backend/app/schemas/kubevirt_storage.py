@@ -47,6 +47,30 @@ class PoolKey(Evidence):
     pool_id: Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
 
 
+class InitializationTarget(PoolKey):
+    provider_id: UUID
+    cluster_key: Text
+    rbd_namespace: str = Field(max_length=128)
+    storage_class_name: Text
+    storage_class_uid: Text
+    provisioner: Text
+    storage_class_parameters: dict[Text, Text] = Field(max_length=100)
+    csi_version: Text
+    ceph_version: Text
+    rbd_command_version: Text
+
+
+class InitializationObservation(Evidence):
+    version: Literal["native-initialization-observation-v1"]
+    metric: Literal["rbd_allocated_extent_bytes"]
+    measurement_version: Literal["native-rbd-measurement-v1"]
+    profile_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target: InitializationTarget
+    observed_at: datetime
+    headroom_bytes: Bytes | None
+    headroom_semantics: Text
+
+
 class ImageKey(PoolKey):
     rbd_namespace: Annotated[str, Field(max_length=128)] = ""
     image_id: Text
@@ -217,9 +241,17 @@ class NativeStorageReport(AttributionResult):
     collection_errors: list[Blocker] = Field(max_length=10000)
     inventory_blockers: list[Blocker] | None = Field(default=None, max_length=10000)
     enforcement_eligible: Literal[False] = False
+    initialization_observation: InitializationObservation | None = None
     snapshot_evidence: list[CSISnapshotEvidence] = Field(
         default_factory=list, max_length=10000
     )
+
+    @model_serializer(mode="wrap")
+    def serialize_initialization(self, handler):
+        data = handler(self)
+        if data.get("initialization_observation") is None:
+            data.pop("initialization_observation", None)
+        return data
 
     @model_validator(mode="after")
     def ordered_times(self):
@@ -227,6 +259,13 @@ class NativeStorageReport(AttributionResult):
             raise ValueError("reversed report timestamps")
         if any(i.collected_at > self.completed_at for i in self.images):
             raise ValueError("observation after report completion")
+        if (
+            self.initialization_observation is not None
+            and not self.started_at
+            <= self.initialization_observation.observed_at
+            <= self.completed_at
+        ):
+            raise ValueError("initialization observation outside collection")
         return self
 
 

@@ -6,24 +6,10 @@ An exact deployed CSI/Ceph profile still requires independent physical acceptanc
 """
 
 from typing import Literal
-from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from app.schemas.kubevirt_storage import Bytes, Evidence, PoolKey, Text
-
-
-class InitializationTarget(PoolKey):
-    provider_id: UUID
-    cluster_key: Text
-    rbd_namespace: str = Field(max_length=128)
-    storage_class_name: Text
-    storage_class_uid: Text
-    provisioner: Text
-    storage_class_parameters: dict[Text, Text] = Field(max_length=100)
-    csi_version: Text
-    ceph_version: Text
-    rbd_command_version: Text
+from app.schemas.kubevirt_storage import Bytes, Evidence, InitializationTarget, Text
 
 
 class InitializationEvidence(Evidence):

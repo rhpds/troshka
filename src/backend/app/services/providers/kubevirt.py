@@ -2670,8 +2670,14 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-    @quota_operations.unsupported_job
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
+        from app.services.quota_accounting import quotas_enabled
+
+        if quotas_enabled():
+            from app.services.native_managed_deploy import create_pending
+
+            create_pending(provider, project_id)
+            return f"project-{project_id[:8]}"
         _ensure_operator_crds(provider)
 
         custom_api, core_api, _ = _get_k8s_clients(provider)

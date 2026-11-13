@@ -32,6 +32,11 @@ KINDS = {
     "PersistentVolumeClaim": ("v1", "persistentvolumeclaims"),
     "PersistentVolume": ("v1", "persistentvolumes"),
     "Namespace": ("v1", "namespaces"),
+    "ServiceAccount": ("v1", "serviceaccounts"),
+    "Service": ("v1", "services"),
+    "Route": ("route.openshift.io/v1", "routes"),
+    "Role": ("rbac.authorization.k8s.io/v1", "roles"),
+    "RoleBinding": ("rbac.authorization.k8s.io/v1", "rolebindings"),
     **{
         k: ("apps/v1", p)
         for k, p in (
@@ -44,8 +49,11 @@ KINDS = {
     "Job": ("batch/v1", "jobs"),
     "CronJob": ("batch/v1", "cronjobs"),
 }
+SUPPORT_KINDS = {"ServiceAccount", "Service", "Route", "Role", "RoleBinding"}
 INVENTORY = tuple(
-    k for k in KINDS if k not in {"TroshkaProject", "PersistentVolume", "Namespace"}
+    k
+    for k in KINDS
+    if k not in {"TroshkaProject", "PersistentVolume", "Namespace"} | SUPPORT_KINDS
 )
 _locks = {}
 _context: ContextVar[tuple[dict, str, Any] | None] = ContextVar(
@@ -272,7 +280,7 @@ def reconcile_intent(api, root, reconcile):
         reconcile_stop(api, root)
 
 
-def inventory(api, root):
+def inventory(api, root, *, deployment_support=True):
     namespace = root["metadata"]["namespace"]
     rows = {kind: api.rows(kind, namespace) for kind in INVENTORY}
     all_rows = [root] + [value for values in rows.values() for value in values]
@@ -281,6 +289,12 @@ def inventory(api, root):
     require(len(by_uid) == len(all_rows), "managed_identity_duplicate")
     for value in all_rows[1:]:
         verify_chain(value, root, by_uid)
+    if deployment_support and root.get("status", {}).get("managedDeployment", {}).get(
+        "confirmedObservationId"
+    ):
+        from helpers import managed_deploy
+
+        managed_deploy.retained_support(api, root, rows, by_uid)
     return rows, by_uid
 
 
@@ -631,7 +645,9 @@ def snapshot(root, rows, by_uid, request):
 
 def retained_digest(rows):
     result = []
-    for kind in ("TroshkaVM", "TroshkaNetwork", "PersistentVolumeClaim", "DataVolume"):
+    kinds = ["TroshkaVM", "TroshkaNetwork", "PersistentVolumeClaim", "DataVolume"]
+    kinds.extend(sorted(SUPPORT_KINDS.intersection(rows)))
+    for kind in kinds:
         for value in rows[kind]:
             meta = value["metadata"]
             result.append(
@@ -640,7 +656,13 @@ def retained_digest(rows):
                     "name": meta["name"],
                     "uid": meta["uid"],
                     "owners": meta.get("ownerReferences"),
-                    "spec": value["spec"],
+                    "spec": {
+                        k: v
+                        for k, v in value.items()
+                        if k not in {"apiVersion", "kind", "metadata", "status"}
+                    }
+                    if kind in SUPPORT_KINDS
+                    else value["spec"],
                 }
             )
     return digest(sorted(result, key=lambda v: (v["kind"], v["name"])))

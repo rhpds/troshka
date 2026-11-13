@@ -2267,7 +2267,9 @@ def _resolve_golden_s3_config(disk, s3_config, central_s3_config, use_central):
         )
     if pattern_source == "gold" or use_central:
         if not central_s3_config:
-            raise ValueError("Central image source requires central storage configuration")
+            raise ValueError(
+                "Central image source requires central storage configuration"
+            )
         return central_s3_config, "s3-central-credentials"  # pragma: allowlist secret
     return s3_config, "s3-credentials"  # pragma: allowlist secret
 
@@ -2369,7 +2371,6 @@ def _resolve_disk_s3_path(disk):
     return None, False
 
 
-
 def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
     """Create VNC console proxy SA, RBAC, deployment, service, and route."""
     from helpers.vnc import (
@@ -2449,46 +2450,15 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
 def _create_vnc_rbac(namespace):
     """Create VNC Role and RoleBinding for KubeVirt VNC subresource access."""
     rbac_api = client.RbacAuthorizationV1Api()
-    role_body = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
-        "kind": "Role",
-        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
-        "rules": [
-            {
-                "apiGroups": [_KUBEVIRT_GROUP],
-                "resources": ["virtualmachineinstances"],
-                "verbs": ["get"],
-            },
-            {
-                "apiGroups": ["subresources.kubevirt.io"],
-                "resources": ["virtualmachineinstances", "virtualmachineinstances/vnc"],
-                "verbs": ["get"],
-            },
-        ],
-    }
+    from helpers.vnc import build_vnc_rbac
+
+    role_body, rb_body = build_vnc_rbac(namespace)
     try:
         rbac_api.create_namespaced_role(namespace=namespace, body=role_body)
     except ApiException as e:
         if e.status != 409:
             raise
 
-    rb_body = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
-        "kind": "RoleBinding",
-        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
-        "subjects": [
-            {
-                "kind": "ServiceAccount",
-                "name": "troshka-vnc",
-                "namespace": namespace,
-            },
-        ],
-        "roleRef": {
-            "apiGroup": "rbac.authorization.k8s.io",
-            "kind": "Role",
-            "name": "troshka-vnc-access",
-        },
-    }
     try:
         rbac_api.create_namespaced_role_binding(namespace=namespace, body=rb_body)
     except ApiException as e:
@@ -2644,13 +2614,17 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     _create_network_crs(
         custom_api, networks, static_leases, namespace, name, body, patch
     )
-    await managed_await(_create_ceph_cr(custom_api, topology, namespace, name, body, patch))
+    await managed_await(
+        _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
+    )
 
     apps_api = client.AppsV1Api()
-    await managed_await(_setup_gateway(core_api, apps_api, networks, namespace, name, body))
-    await managed_await(_setup_exec_pod(
-        core_api, apps_api, spec, meta, networks, namespace, name, body
-    ))
+    await managed_await(
+        _setup_gateway(core_api, apps_api, networks, namespace, name, body)
+    )
+    await managed_await(
+        _setup_exec_pod(core_api, apps_api, spec, meta, networks, namespace, name, body)
+    )
 
     vms = extract_vms(topology)
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
@@ -3094,9 +3068,9 @@ def _poll_recert_jobs(batch_api, recert_cfgs, namespace, status, patch):
                         pass
                     return False, True
                 patch.status["phase"] = "Error"
-                patch.status["error"] = (
-                    f"Certificate regeneration failed for {vm_label} after 3 attempts"
-                )
+                patch.status[
+                    "error"
+                ] = f"Certificate regeneration failed for {vm_label} after 3 attempts"
                 return False, True
             else:
                 running_names.append(vm_label)

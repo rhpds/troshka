@@ -64,6 +64,59 @@ def _vector_sum(vectors):
     return Resources(**values)
 
 
+def initialization_reference(row):
+    """Reference exact completed initialization; the requested vector is immutable."""
+    target = row.dispatch_metadata.get("native_deploy", {})
+    proof = target.get("initialization_proof", {})
+    physical = target.get("initialized_report", {})
+    root = target.get("root")
+    if (
+        not root
+        or not target.get("profile_digest")
+        or target.get("phase")
+        not in {"initialization-intent", "runtime-intent", "confirmed"}
+        or row.dispatch_metadata.get("generation_id") != row.operation_id
+        or proof.get("generation") != row.operation_id
+        or proof.get("request_id") != row.operation_id
+        or not proof.get("observation_id")
+        or not proof.get("storage_inventory")
+        or physical.get("generation_id") != row.operation_id
+        or physical.get("identity", {}).get("root") != root
+        or not physical.get("report_id")
+        or physical.get("allocated_bytes", target.get("initial_bound", -1) + 1)
+        > target.get("initial_bound", -1)
+    ):
+        raise AccountingUnavailable(
+            "Native initialization consumption proof is incomplete"
+        )
+    return {
+        "version": "native-initialization-consumed-v1",
+        "operation_id": row.operation_id,
+        "generation_id": row.operation_id,
+        "profile_digest": target["profile_digest"],
+        "root": root,
+        "report_id": physical["report_id"],
+        "observation_id": proof["observation_id"],
+        "pvc_uids": proof["storage_inventory"],
+    }
+
+
+def remaining_vector(row):
+    """One remainder rule for usage, delayed claim and native pool capacity."""
+    values = {
+        name: max(0, row.requested[name] - row.observed.get(name, 0))
+        for name in DIMENSIONS
+    }
+    consumed = row.dispatch_metadata.get("native_initialization_consumed")
+    if consumed is not None:
+        if consumed != initialization_reference(row):
+            raise AccountingUnavailable(
+                "Native initialization consumption reference changed"
+            )
+        values["storage_bytes"] = 0
+    return Resources(**values)
+
+
 def usage(db: Session, scope: str, scope_id: str) -> tuple[Resources, Resources]:
     """Confirmed usage plus unobserved reserved remainder. Caller holds scope lock."""
     columns = {
@@ -95,13 +148,7 @@ def usage(db: Session, scope: str, scope_id: str) -> tuple[Resources, Resources]
         .populate_existing()
         .all()
     )
-    remaining = [
-        {
-            name: max(0, row.requested[name] - row.observed.get(name, 0))
-            for name in DIMENSIONS
-        }
-        for row in reservations
-    ]
+    remaining = [remaining_vector(row).model_dump() for row in reservations]
     return _vector_sum(row.observed for row in allocated), _vector_sum(remaining)
 
 
@@ -227,12 +274,7 @@ def revalidate(db: Session, operation_id: str, now: datetime) -> None:
         raise OperationConflict(
             "Operation attribution does not match current membership"
         )
-    remaining = Resources(
-        **{
-            name: max(0, row.requested[name] - row.observed.get(name, 0))
-            for name in DIMENSIONS
-        }
-    )
+    remaining = remaining_vector(row)
     accounting.require_ready(db)
     for scope, identity in (
         ("organization", organization.id),

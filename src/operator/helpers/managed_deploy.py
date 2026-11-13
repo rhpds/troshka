@@ -44,6 +44,16 @@ _CONFIGURATION_DEFAULTS = {
     },
     "Pod": _POD_DEFAULTS,
     "PersistentVolumeClaim": {("volumeMode",): "Filesystem"},
+    "Service": {
+        ("spec", "sessionAffinity"): "None",
+        ("spec", "internalTrafficPolicy"): "Cluster",
+        ("spec", "ipFamilyPolicy"): "SingleStack",
+    },
+    "Route": {("spec", "wildcardPolicy"): "None", ("spec", "to", "weight"): 100},
+}
+_SERVER_ALLOCATIONS = {
+    "Service": ("clusterIP", "clusterIPs", "ipFamilies"),
+    "Route": ("host",),
 }
 
 
@@ -185,13 +195,17 @@ def render(root, storage_class):
                 pvcs,
             )
         )
-    result.append(
-        vnc.build_vnc_proxy_deployment(
-            root["metadata"]["name"],
-            namespace,
-            owner_body=root,
-        )
+    result.extend(vnc.build_vnc_support(root))
+    helper = vnc.build_vnc_proxy_deployment(
+        root["metadata"]["name"],
+        namespace,
+        owner_body=root,
     )
+    if root["spec"].get("managedVncImage"):
+        helper["spec"]["template"]["spec"]["containers"][0]["image"] = root["spec"][
+            "managedVncImage"
+        ]
+    result.append(helper)
     keys = [(v["kind"], v["metadata"]["name"]) for v in result]
     power.require(len(set(keys)) == len(keys), "managed_resource_collision")
     return result
@@ -306,6 +320,13 @@ def reconcile(api, root):
         "managed_cluster_changed",
     )
     planned = render(root, wanted["storageClass"])
+    if root["spec"].get("managedPlanDigest"):
+        power.require(
+            wanted.get("planDigest")
+            == root["spec"]["managedPlanDigest"]
+            == plan_digest(planned),
+            "managed_plan_changed",
+        )
     state = state_for(root, wanted)
     if wanted["phase"] == "runtime":
         require_release(state, wanted)
@@ -432,10 +453,12 @@ def ensure_resource(api, root, state, wanted, desired):
         == value["metadata"].get("ownerReferences"),
         "managed_owner_changed",
     )
-    verify_spec(value, actual)
+    verify_spec(value, actual, allocations=journal[key].get("allocations"))
     if value["kind"] == "TroshkaVM":
         actual = acknowledge_vm(api, actual)
     journal[key]["uid"] = actual["metadata"]["uid"]
+    if bind_allocations(journal[key], value, actual):
+        current = write_state(api, current, state)
     if wanted["phase"] == "runtime" and value["kind"] in {
         "VirtualMachine",
         "Deployment",
@@ -483,8 +506,47 @@ def bind_vm_owner(api, value, namespace):
     ref["uid"] = owners[0]["metadata"]["uid"]
 
 
-def verify_spec(expected, actual):
+def server_allocations(expected, actual):
+    """Only initial omitted address fields are supplied by API allocation."""
+    planned, observed = expected.get("spec", {}), actual.get("spec", {})
+    return {
+        field: deepcopy(observed[field])
+        for field in _SERVER_ALLOCATIONS.get(expected["kind"], ())
+        if field not in planned and field in observed
+    }
+
+
+def bind_allocations(saved, expected, actual):
+    if expected["kind"] not in _SERVER_ALLOCATIONS or "allocations" in saved:
+        return False
+    saved["allocations"] = server_allocations(expected, actual)
+    return True
+
+
+def allocation_proof(root, expected):
+    if expected["kind"] not in _SERVER_ALLOCATIONS:
+        return None
+    key = expected["kind"] + ":" + expected["metadata"]["name"]
+    saved = (
+        root.get("status", {})
+        .get("managedDeployment", {})
+        .get("creates", {})
+        .get(key, {})
+    )
+    power.require("allocations" in saved, "managed_support_allocation_unbound")
+    return saved["allocations"]
+
+
+def verify_spec(expected, actual, *, allocations=None):
     planned, observed = configuration(expected), configuration(actual)
+    if allocations is not None:
+        power.require(
+            server_allocations(expected, actual) == allocations,
+            "managed_support_allocation_changed",
+        )
+    for field in _SERVER_ALLOCATIONS.get(expected["kind"], ()):
+        if field not in expected.get("spec", {}):
+            observed.get("spec", {}).pop(field, None)
     # Binding is checked separately against immutable PVC/PV identities by
     # verify_storage. It is not a pre-creation input in a blank PVC manifest.
     if expected["kind"] == "PersistentVolumeClaim" and "volumeName" not in planned:
@@ -496,7 +558,14 @@ def verify_spec(expected, actual):
 
 
 def configuration(value) -> dict:
-    spec = deepcopy(value["spec"])
+    if value["kind"] in power.SUPPORT_KINDS:
+        spec = {
+            k: deepcopy(v)
+            for k, v in value.items()
+            if k not in {"apiVersion", "kind", "metadata", "status"}
+        }
+    else:
+        spec = deepcopy(value["spec"])
     if value["kind"] == "VirtualMachine":
         spec.pop("runStrategy", None)
     if value["kind"] == "Deployment":
@@ -543,7 +612,8 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         else wanted["phase"] in {"initializing", "runtime"}
     )
     planned = render(root, wanted["storageClass"])
-    rows, by_uid = power.inventory(api, root)
+    rows, by_uid = power.inventory(api, root, deployment_support=False)
+    support_inventory(api, root, planned, rows, by_uid)
     expected = {
         (v["kind"], v["metadata"]["name"]): v
         for v in planned
@@ -567,7 +637,9 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         "managed_inventory_changed",
     )
     for key, value in actual.items():
-        verify_spec(expected[key], value)
+        verify_spec(
+            expected[key], value, allocations=allocation_proof(root, expected[key])
+        )
         power.require(not value["metadata"].get("deletionTimestamp"))
     power.verify_storage(rows, by_uid, api)
     if not runtime:
@@ -584,3 +656,52 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         )
         power.require(all(v["spec"].get("replicas") == 0 for v in rows["Deployment"]))
     return rows, by_uid, planned
+
+
+def plan_digest(planned):
+    result = []
+    for value in planned:
+        item = deepcopy(value)
+        for ref in item["metadata"].get("ownerReferences", []):
+            ref["uid"] = "pending"
+        result.append(item)
+    return power.digest(
+        sorted(result, key=lambda v: (v["kind"], v["metadata"]["name"]))
+    )
+
+
+def support_inventory(api, root, planned, rows, by_uid):
+    for kind in power.SUPPORT_KINDS:
+        names = {v["metadata"]["name"] for v in planned if v["kind"] == kind}
+        values = [
+            v
+            for v in api.rows(kind, root["metadata"]["namespace"])
+            if v["metadata"]["name"] in names
+        ]
+        power.require(len(values) == len(names), "managed_support_missing")
+        for value in values:
+            power.require(
+                value["metadata"]["uid"] not in by_uid, "managed_identity_duplicate"
+            )
+            by_uid[value["metadata"]["uid"]] = value
+            power.verify_chain(value, root, by_uid)
+        rows[kind] = values
+
+
+def retained_support(api, root, rows, by_uid):
+    """Only new managed deployments include fixed support in retained proofs."""
+    state = root["status"]["managedDeployment"]
+    planned = render(root, state["storageClass"])
+    power.require(
+        root["spec"].get("managedPlanDigest") == plan_digest(planned),
+        "managed_plan_changed",
+    )
+    support_inventory(api, root, planned, rows, by_uid)
+    for value in planned:
+        if value["kind"] in power.SUPPORT_KINDS:
+            actual = next(
+                v
+                for v in rows[value["kind"]]
+                if v["metadata"]["name"] == value["metadata"]["name"]
+            )
+            verify_spec(value, actual, allocations=allocation_proof(root, value))

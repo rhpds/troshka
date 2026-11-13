@@ -23,8 +23,24 @@ class API(FakeAPI):
         if self.fail_create == "before":
             self.fail_create = None
             raise TimeoutError("synthetic create before server acceptance")
-        value["metadata"].update(uid=key[1] + "-new", resourceVersion="1", generation=1)
+        value["metadata"].update(
+            uid=kind + "-" + key[1] + "-new", resourceVersion="1", generation=1
+        )
         value.setdefault("status", {})
+        if kind == "Service":
+            value["spec"].update(
+                clusterIP="172.30.0.20",
+                clusterIPs=["172.30.0.20"],
+                ipFamilies=["IPv4"],
+                ipFamilyPolicy="SingleStack",
+                sessionAffinity="None",
+                internalTrafficPolicy="Cluster",
+            )
+        if kind == "Route":
+            value["spec"].update(
+                host=key[1] + ".apps.synthetic.example", wildcardPolicy="None"
+            )
+            value["spec"]["to"]["weight"] = 100
         if kind == "PersistentVolumeClaim":
             value["spec"]["volumeName"] = "pv-" + key[1]
             value["status"] = {"phase": "Bound"}
@@ -173,8 +189,139 @@ def test_initialization_holds_writers_and_replay_preserves_uids(api):
     assert {(k, v["metadata"]["uid"]) for k, v in initial.items()} == {
         (k, v["metadata"]["uid"]) for k, v in api.values.items()
     }
-    assert len([c for c in api.calls if c[0] == "POST"]) == 4
+    assert len([c for c in api.calls if c[0] == "POST"]) == 9
     assert deploy.demand(planned)["cpu"] == 3
+
+
+@pytest.mark.parametrize(
+    "kind,field,new",
+    [
+        ("Service", "clusterIP", "172.30.0.21"),
+        ("Service", "clusterIPs", ["172.30.0.21"]),
+        ("Service", "ipFamilies", ["IPv6"]),
+        ("Route", "host", "replacement.apps.synthetic.example"),
+    ],
+)
+def test_server_support_allocations_bind_on_initialization_and_reject_replay_drift(
+    api, kind, field, new
+):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    state = root(api)["status"]["managedDeployment"]
+    actual = api.rows(kind, "ns")[0]
+    key = kind + ":" + actual["metadata"]["name"]
+    assert state["creates"][key]["allocations"][field] == actual["spec"][field]
+    api.values[kind, actual["metadata"]["name"]]["spec"][field] = new
+    before = len(api.calls)
+    with pytest.raises(
+        power.ManagedPowerError, match="managed_support_allocation_changed"
+    ):
+        deploy.reconcile(api, root(api))
+    assert len(api.calls) == before
+    with pytest.raises(
+        power.ManagedPowerError, match="managed_support_allocation_changed"
+    ):
+        deploy.observe(api, root(api))
+
+
+@pytest.mark.parametrize(
+    "kind,path,new",
+    [
+        ("Service", ("selector", "app"), "foreign"),
+        ("Service", ("ports", 0, "targetPort"), 9090),
+        ("Service", ("ipFamilyPolicy",), "PreferDualStack"),
+        ("Route", ("to", "name"), "foreign"),
+        ("Route", ("tls", "termination"), "passthrough"),
+        ("Route", ("to", "weight"), 50),
+        ("Route", ("wildcardPolicy",), "Subdomain"),
+    ],
+)
+def test_server_allocations_do_not_ignore_support_configuration_drift(
+    api, kind, path, new
+):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    actual = api.rows(kind, "ns")[0]
+    spec = api.values[kind, actual["metadata"]["name"]]["spec"]
+    for part in path[:-1]:
+        spec = spec[part]
+    spec[path[-1]] = new
+    with pytest.raises(power.ManagedPowerError, match="managed_configuration_changed"):
+        deploy.observe(api, root(api))
+
+
+@pytest.mark.parametrize("kind,field", [("Service", "clusterIP"), ("Route", "host")])
+def test_explicit_support_address_is_exact_and_retained_allocations_do_not_rebind(
+    api, kind, field
+):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    body = root(api)
+    planned = deploy.render(body, "synthetic-reviewed-storage")
+    expected = deepcopy(next(v for v in planned if v["kind"] == kind))
+    actual = api.rows(kind, "ns")[0]
+    expected["spec"][field] = "explicit-other-address"
+    with pytest.raises(power.ManagedPowerError, match="managed_configuration_changed"):
+        deploy.verify_spec(expected, actual)
+    body["spec"]["managedPlanDigest"] = deploy.plan_digest(planned)
+    rows, by_uid = power.inventory(api, body, deployment_support=False)
+    deploy.retained_support(api, body, rows, by_uid)
+    api.values[kind, actual["metadata"]["name"]]["spec"][field] = "replacement-address"
+    rows, by_uid = power.inventory(api, body, deployment_support=False)
+    with pytest.raises(
+        power.ManagedPowerError, match="managed_support_allocation_changed"
+    ):
+        deploy.retained_support(api, body, rows, by_uid)
+
+
+def test_ambiguous_support_create_binds_returned_allocation_without_recreation(
+    api, monkeypatch
+):
+    request = api.request
+    lost = []
+
+    def ambiguous(method, kind, namespace, name, body):
+        result = request(method, kind, namespace, name, body)
+        if kind == "Service" and not lost:
+            lost.append(True)
+            raise TimeoutError("synthetic accepted service response lost")
+        return result
+
+    monkeypatch.setattr(api, "request", ambiguous)
+    phase(api, "initializing")
+    with pytest.raises(TimeoutError):
+        deploy.reconcile(api, root(api))
+    deploy.reconcile(api, root(api))
+    value = api.rows("Service", "ns")[0]
+    saved = root(api)["status"]["managedDeployment"]["creates"][
+        "Service:" + value["metadata"]["name"]
+    ]
+    assert saved["uid"] == value["metadata"]["uid"]
+    assert saved["allocations"]["clusterIP"] == value["spec"]["clusterIP"]
+    assert (
+        len(
+            [
+                call
+                for call in api.calls
+                if call[0] == "POST" and call[1][0] == "Service"
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("kind", ["Role", "RoleBinding"])
+def test_allocated_support_does_not_weaken_exact_rbac(api, kind):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    actual = api.rows(kind, "ns")[0]
+    value = api.values[kind, actual["metadata"]["name"]]
+    if kind == "Role":
+        value["rules"][0]["verbs"].append("delete")
+    else:
+        value["roleRef"]["name"] = "foreign-role"
+    with pytest.raises(power.ManagedPowerError, match="managed_configuration_changed"):
+        deploy.observe(api, root(api))
 
 
 def test_runtime_requires_prior_initialization_and_physical_receipt(api):
@@ -216,7 +363,7 @@ def test_ambiguous_create_never_redispatches(api, timing):
         assert len([c for c in api.calls if c[0] == "POST"]) == 1
     else:
         deploy.reconcile(api, root(api))
-        assert len([c for c in api.calls if c[0] == "POST"]) == 4
+        assert len([c for c in api.calls if c[0] == "POST"]) == 9
 
 
 def test_unrelated_resource_is_not_adopted(api):

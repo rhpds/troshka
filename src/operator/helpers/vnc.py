@@ -6,6 +6,58 @@ _IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
 VNC_PROXY_IMAGE = f"quay.io/redhat-gpte/troshka-vnc-proxy:{_IMAGE_TAG}"
 
 
+def build_vnc_rbac(namespace):
+    """Existing namespace-scoped VNC permissions, shared by both deploy paths."""
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
+        "rules": [
+            {
+                "apiGroups": ["kubevirt.io"],
+                "resources": ["virtualmachineinstances"],
+                "verbs": ["get"],
+            },
+            {
+                "apiGroups": ["subresources.kubevirt.io"],
+                "resources": ["virtualmachineinstances", "virtualmachineinstances/vnc"],
+                "verbs": ["get"],
+            },
+        ],
+    }
+    binding = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
+        "subjects": [
+            {"kind": "ServiceAccount", "name": "troshka-vnc", "namespace": namespace}
+        ],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "troshka-vnc-access",
+        },
+    }
+    return role, binding
+
+
+def build_vnc_support(root):
+    namespace, name = root["metadata"]["namespace"], root["metadata"]["name"]
+    values = [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {"name": "troshka-vnc", "namespace": namespace},
+        },
+        *build_vnc_rbac(namespace),
+        build_vnc_service(name, namespace),
+        build_vnc_route(name, namespace),
+    ]
+    for value in values:
+        value["metadata"]["ownerReferences"] = [owner_ref(root)]
+    return values
+
+
 def build_vnc_proxy_deployment(project_name, namespace, owner_body=None):
     dep_name = f"vnc-proxy-{project_name}"
     labels = {

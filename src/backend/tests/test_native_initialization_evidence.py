@@ -3,10 +3,18 @@
 These tests cannot certify any physical initialization bound or real CSI path.
 """
 
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.kubevirt_storage import InitializationObservation
 from app.schemas.kubevirt_storage_enrollment import VerificationPins
+from app.schemas.kubevirt_storage_initialization import InitializationEvidence
+from app.schemas.quota import AccountingUnavailable
+from app.services import native_initialization as initialization
+from app.services.kubevirt_storage_enrollment import digest
 from app.services.kubevirt_storage_transport import CapabilityProfile
 from tests.test_kubevirt_storage_reports import native_case as native_case_fixture
 
@@ -158,3 +166,44 @@ def test_enrollment_profile_target_must_belong_to_pinned_scope(
     body["initialization_evidence"] = profile
     with pytest.raises(ValidationError):
         VerificationPins.model_validate(body)
+
+
+@pytest.mark.parametrize("offset", [0, -61, 1])
+def test_initialization_observation_uses_post_read_clock_without_restamping(
+    monkeypatch, offset
+):
+    profile = InitializationEvidence.model_validate(synthetic_profile())
+    state = SimpleNamespace(now=datetime(2026, 11, 13, tzinfo=UTC), sample=None)
+    events = []
+
+    class SyntheticReader:
+        headroom_semantics = "synthetic-allocated-extents-headroom-v1"
+
+        def observe(self, profile, kube, backend):
+            events.append("read")
+            state.now += timedelta(seconds=2)
+            state.sample = InitializationObservation(
+                version="native-initialization-observation-v1",
+                metric=profile.metric,
+                measurement_version=profile.measurement_version,
+                profile_digest=digest(profile),
+                target=profile.target,
+                observed_at=state.now + timedelta(seconds=offset),
+                headroom_bytes=100,
+                headroom_semantics=self.headroom_semantics,
+            )
+            return state.sample
+
+    monkeypatch.setattr(initialization, "implementation", lambda _: SyntheticReader())
+
+    def clock():
+        events.append("clock")
+        return state.now
+
+    if offset:
+        with pytest.raises(AccountingUnavailable):
+            initialization.observe(profile, None, None, clock=clock)
+    else:
+        result = initialization.observe(profile, None, None, clock=clock)
+        assert result.observed_at == state.sample.observed_at
+    assert events == ["read", "clock"]

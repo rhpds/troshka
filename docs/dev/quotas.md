@@ -113,10 +113,63 @@ the bounded lifecycle reconciler acts, preventing new topology growth or acciden
 starts of intentionally halted VMs. A newer managed stop supersedes restore and
 retains disk/PVC/image/pattern ownership and storage charges.
 
-First native deploy remains unavailable (increment 4B). Pod groups, installers,
-BMC, UEFI/TPM, active imports, Ceph appliances, multi-host and topology growth are
-outside this profile. Initial physical allocation and new root identity binding
-still need separate evidence. Snapshot-backed image/cache ancestry remains blocked
+### Managed first native deployment (increment 4B; real activation closed)
+
+The code integrates admission, immutable payload/rendered-plan and helper-image
+pins, one claimed pending CR handoff, full UID binding, automated roots-only
+enrollment, halted storage initialization, independent complete physical collection,
+runtime release and independent running confirmation. The initial shape is one
+explicit shared native host, default pod networking, basic VMs/single containers
+and actual new blank PVCs within the protected capacity applicability. Custom
+`networkNode`, pod groups, installers, BMC, UEFI/TPM, active imports, Ceph appliances,
+multi-host and topology growth remain unsupported. A pending operation cannot
+switch profile, payload, owner/organization or target after reservation.
+
+`native_initialization.implementation()` deliberately accepts **no real profile**.
+Synthetic transport tests prove code integration only. Real activation requires
+independent physical acceptance of the exact CSI/Ceph/StorageClass profile, its
+initialization bound and same-metric headroom semantics, followed by an explicit
+supported implementation selector. Protected enrollment pins remain the authority;
+a report, a boolean certificate, PVC Bound status or calibration cannot enable it.
+
+Initial storage bounds remain reserved until exact complete initialization evidence
+consumes only that storage remainder. Original requests remain immutable. Every
+measured byte stays charged, including above-bound allocation, which retains
+assets and blocks runtime. Provisioned GiB-hour disk billing opens once at verified
+initialization; configured VM/container compute billing opens only after complete
+running proof. Fixed VNC support uses the existing namespace permissions and joins
+initialization, stop and resume identity proofs without tenant compute charges.
+Stale/partial attempts block release and growth. Ambiguous creates/releases are
+observed without redispatch or adoption/deletion of unrelated objects.
+
+The privileged collector needs one-time scheduling/configuration, not a manual
+administrator enrollment step for each project. After physical acceptance, run the
+following existing CLI cycle from its existing protected credential environment
+on a periodic scheduler within evidence freshness bounds (for example every 20
+seconds). Configure the explicit reporting DB target, protected pins, backend
+configuration and inventory once; the application receives no backend secrets:
+
+```bash
+python3 scripts/import_kubevirt_storage.py \
+  --target-id "$NATIVE_REPORT_TARGET_ID" \
+  reconcile-managed \
+  --pins /protected/native-pins.json \
+  --backend-config /protected/native-backend.json \
+  --inventory /protected/native-inventory.json \
+  --kubeconfig /protected/native-collector.kubeconfig \
+  --output /protected/native-latest-attempt.json
+```
+
+Set `TROSHKA_NATIVE_REPORT_DATABASE_URL` in that protected collector environment
+(or supply the existing explicit `--database-url` option). The cycle checks the
+current domain's predecessor chain against the protected pins, independently
+verifies admitted pending roots, copies the initialization envelope unchanged and
+collects/imports the whole expanded domain. It never rewrites pins or adds an
+initialization authorization digest. Concurrent predecessors use CAS; failed
+attempts invalidate readiness while prior roots, allocations and costs persist.
+No scheduler or real profile is enabled by this source change.
+
+Snapshot-backed image/cache ancestry remains blocked
 unless its physical allocation graph is complete; a successful clone or PVC virtual
 size is not that evidence. Unknown physical allocation never becomes zero. This
 development increment has backend/operator integration tests, not live cluster

@@ -919,6 +919,34 @@ def _finalize_single_host(
     }
 
 
+def _managed_native_placement(db, project, host_id, operation_id):
+    from app.models.quota import QuotaReservation
+    from app.services import quota_accounting, quota_operations
+    from app.services.native_managed_deploy import place
+    from app.services.quota_admission import revalidate
+
+    if not quota_accounting.quotas_enabled() or not operation_id:
+        return None
+    row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+    if not row.dispatch_metadata.get("native_deploy"):
+        return None
+    revalidate(db, operation_id, quota_operations.now())
+    return place(db, project, operation_id, host_id)
+
+
+def _bind_quota_placement(db, project, host, operation_id):
+    from app.services import quota_accounting, quota_operations
+    from app.services.quota_storage import bind_host
+
+    if quota_accounting.quotas_enabled():
+        if not host:
+            raise quota_operations.AccountingUnavailable(
+                "Quota deployment requires available single-host capacity; automatic backing-host provisioning is unsupported"
+            )
+        quota_operations.supported(db, project, host_id=host.id)
+        bind_host(db, project, host, operation_id)
+
+
 def place_project(
     db: Session,
     project: Project,
@@ -927,7 +955,11 @@ def place_project(
     quota_operation_id: str | None = None,
 ) -> dict:
     """Assign a project to a host. Returns placement result."""
-    from app.services import quota_accounting, quota_operations
+    from app.services import quota_operations
+
+    managed = _managed_native_placement(db, project, host_id, quota_operation_id)
+    if managed is not None:
+        return managed
 
     quota_operations.placement_guard(db, project, quota_operation_id)
     if not project.topology:
@@ -967,15 +999,7 @@ def place_project(
     if error:
         return error
 
-    if quota_accounting.quotas_enabled():
-        if not host:
-            raise quota_operations.AccountingUnavailable(
-                "Quota deployment requires available single-host capacity; automatic backing-host provisioning is unsupported"
-            )
-        quota_operations.supported(db, project, host_id=host.id)
-        from app.services.quota_storage import bind_host
-
-        bind_host(db, project, host, quota_operation_id)
+    _bind_quota_placement(db, project, host, quota_operation_id)
 
     if not host:
         # KubeVirt-only templates must not fall through to multi-host mesh or

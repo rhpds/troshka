@@ -199,9 +199,9 @@ def check_pool(db, evidence, requested=0, exclude=None):
             row.operation_id != exclude
             and metadata.get("storage_host_id") == evidence["host_id"]
         ):
-            pending += max(
-                0, row.requested["storage_bytes"] - row.observed.get("storage_bytes", 0)
-            )
+            from app.services.quota_admission import remaining_vector
+
+            pending += remaining_vector(row).storage_bytes
     if pool["free_bytes"] <= reserve_floor(pool) + pending + requested:
         raise AccountingUnavailable(
             "Physical storage pool has insufficient operating headroom"
@@ -474,6 +474,10 @@ def reconcile_project(project_id):
         if not rows:
             return
         root = measurement_row(rows)
+        if root.dispatch_metadata.get(
+            "native_deploy"
+        ) and not root.dispatch_metadata.get("native_storage_identity"):
+            return
         host = db.get(Host, project.host_id)
         evidence = (
             fetch(host, project_id, root.dispatch_metadata["generation_id"])
