@@ -205,8 +205,13 @@ def test_online_enrollment_preserves_live_workloads_and_accounting(online_case):
 @pytest.mark.parametrize(
     "change", ["namespace", "root", "generation", "topology", "pvc", "pool"]
 )
-def test_online_rejects_changed_independent_identity(online_case, change, monkeypatch):
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_online_rejects_changed_independent_identity(
+    online_case, change, monkeypatch, reviewed
+):
     q = online_case
+    if reviewed:
+        reviewed_topology_case(q)
     api = q.apis[q.project_ids[0]]
     root = api.rows("TroshkaProject", None)[0]
     if change == "namespace":
@@ -249,8 +254,11 @@ def test_online_rejects_changed_independent_identity(online_case, change, monkey
 
 
 @pytest.mark.parametrize("change", ["owner", "topology", "stale", "quotas"])
-def test_apply_rechecks_prepared_state(online_case, change, monkeypatch):
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_apply_rechecks_prepared_state(online_case, change, monkeypatch, reviewed):
     q = online_case
+    if reviewed:
+        reviewed_topology_case(q)
     value = verified(q)
     with q.sessions() as db:
         project = db.get(Project, q.project_ids[0])
@@ -327,11 +335,14 @@ def test_helper_replacement_during_ancestry_scan_rejects_receipt(
         assert db.query(NativeCustodyReceipt).count() == 0
 
 
-def test_legacy_cleanup_uses_real_stop_and_exact_storage_graph(online_case):
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_legacy_cleanup_uses_real_stop_and_exact_storage_graph(online_case, reviewed):
     from app.services.kubevirt_storage_reports import import_report
     from tests.test_quota_native_storage import revised
 
     q = online_case
+    if reviewed:
+        reviewed_topology_case(q)
     apply_receipt(q)
     with q.sessions() as db:
         import_report(
@@ -566,3 +577,92 @@ def test_custody_requires_explicit_boolean_attestation(value):
         CustodyAttestation(
             administrator="operator", reason="reviewed", namespace_custody=value
         )
+
+
+def reviewed_topology_case(q):
+    project_id = q.project_ids[0]
+    root = next(
+        v
+        for (kind, _), v in q.apis[project_id].values.items()
+        if kind == "TroshkaProject"
+    )
+    root["spec"]["topology"]["workloadsDone"] = True
+    q.attestation["topology_reviews"] = {
+        project_id: {
+            "saved_digest": online.enrollment.digest(
+                q.prepared["topologies"][project_id]
+            ),
+            "live_digest": online.enrollment.digest(root["spec"]["topology"]),
+        }
+    }
+    return project_id, root
+
+
+def test_reviewed_topology_preserves_both_versions_and_provider(online_case):
+    q = online_case
+    project_id, root = reviewed_topology_case(q)
+    before = deepcopy(q.apis[project_id].values)
+    receipt = verified(q)
+    assert receipt["runtime_topologies"][project_id] == root["spec"]["topology"]
+    assert receipt["prepared"]["topologies"] == q.prepared["topologies"]
+    with q.sessions() as db:
+        online.apply(db, receipt, expected_target_id=q.target_id)
+        db.commit()
+        assert (
+            db.get(Project, project_id).deployed_topology
+            == q.prepared["topologies"][project_id]
+        )
+    assert q.apis[project_id].values == before
+    assert not q.apis[project_id].calls
+
+
+@pytest.mark.parametrize("side", ["saved_digest", "live_digest"])
+def test_reviewed_topology_rejects_wrong_digest(online_case, side):
+    q = online_case
+    project_id, _ = reviewed_topology_case(q)
+    q.attestation["topology_reviews"][project_id][side] = "0" * 64
+    with pytest.raises(AccountingUnavailable, match="topology"):
+        verified(q)
+
+
+def test_reviewed_topology_rejects_later_runtime_change(online_case):
+    q = online_case
+    _, root = reviewed_topology_case(q)
+    root["spec"]["topology"]["workloadsDone"] = False
+    with pytest.raises(AccountingUnavailable, match="topology"):
+        verified(q)
+
+
+def test_topology_review_cannot_name_another_project(online_case):
+    q = online_case
+    project_id, _ = reviewed_topology_case(q)
+    q.attestation["topology_reviews"][str(uuid4())] = q.attestation["topology_reviews"][
+        project_id
+    ]
+    with pytest.raises(AccountingUnavailable, match="review"):
+        verified(q)
+
+
+def test_legacy_attestation_serialization_preserves_digest():
+    from app.schemas.native_online_enrollment import CustodyAttestation
+
+    value = {
+        "administrator": "operator",
+        "reason": "reviewed",
+        "namespace_custody": True,
+    }
+    assert CustodyAttestation.model_validate(value).model_dump(mode="json") == value
+
+
+def test_receipt_validation_rechecks_review_even_with_recomputed_outer_digest(
+    online_case,
+):
+    q = online_case
+    project_id, _ = reviewed_topology_case(q)
+    receipt = verified(q)
+    receipt["runtime_topologies"][project_id]["workloadsDone"] = False
+    receipt["digest"] = online.enrollment.digest(
+        {key: value for key, value in receipt.items() if key != "digest"}
+    )
+    with pytest.raises(AccountingUnavailable, match="topology"):
+        online._validated(receipt)

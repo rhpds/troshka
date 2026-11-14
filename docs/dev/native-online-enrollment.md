@@ -88,6 +88,32 @@ This grants custody of the project namespace for eventual owner-requested
 cleanup. Review the namespace contents before attesting. The local CLI is a
 privileged database-administrator interface, not a user-facing ingestion API.
 
+### Reviewed legacy topology differences
+
+Normal enrollment requires the saved deployment and live topology to match after
+the documented deployment-finalization projection. Older projects can contain
+post-deployment installer, route, or editor updates in only one copy. Do not
+rewrite either copy or broadly ignore fields to pass this check.
+
+After reviewing the differences for a specific project, an administrator may add
+`topology_reviews` to the attestation. It maps each reviewed project UUID to
+`saved_digest` and `live_digest`, computed with
+`app.services.kubevirt_storage_enrollment.digest` from the complete saved
+`deployed_topology` and complete live TroshkaProject `spec.topology`, respectively.
+Do not hash the canonical projection or automatically approve newly observed
+values. Capture the hashes during review; any subsequent change requires review
+again. Never export credential-bearing topology contents into logs.
+
+Only projects in the prepared request may have a review. The receipt retains
+both exact versions, and both hashes are checked during verification and receipt
+validation. The saved deployment must still match at application and later
+cleanup. Namespace identity, provider identity, object custody, PVC/PV bindings,
+and COW ancestry checks remain mandatory. This exception grants cleanup-only
+compatibility, not valid compute accounting or permission to enable quotas.
+
+Omit `topology_reviews` for ordinary enrollment. Empty reviews are omitted from
+serialized evidence so existing receipt digests remain valid.
+
 ## Verify and enroll
 
 ```sh

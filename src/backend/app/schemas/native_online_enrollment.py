@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from app.schemas.kubevirt_storage import (
     CacheBinding,
@@ -45,10 +45,27 @@ class CurrentAncestryCustody(Evidence):
         return self
 
 
+class TopologyReview(Evidence):
+    """Administrator-reviewed exact versions; never a general drift allowance."""
+
+    saved_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    live_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class CustodyAttestation(Evidence):
     administrator: Text
     reason: str = Field(min_length=1, max_length=4096)
     namespace_custody: Literal[True]
+    topology_reviews: dict[str, TopologyReview] = Field(
+        default_factory=dict, max_length=10000
+    )
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_digest(self, handler):
+        value = handler(self)
+        if not self.topology_reviews:
+            value.pop("topology_reviews", None)
+        return value
 
     @field_validator("namespace_custody", mode="before")
     @classmethod

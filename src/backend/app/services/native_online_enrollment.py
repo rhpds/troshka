@@ -85,7 +85,16 @@ def canonical_topology(topology):
     return value
 
 
-def _root(kube, root, topology):
+def _topology_matches(saved, live, review=None):
+    if review is not None:
+        return (
+            enrollment.digest(saved) == review.saved_digest
+            and enrollment.digest(live) == review.live_digest
+        )
+    return canonical_topology(saved) == canonical_topology(live)
+
+
+def _root(kube, root, topology, review=None):
     enrollment._verify_project(kube, root)
     namespace = kube.namespace(root.namespace)
     projects = kube.projects(root.namespace)
@@ -98,8 +107,7 @@ def _root(kube, root, topology):
         and value["metadata"].get("generation") == root.deployment_generation
         and not value["metadata"].get("deletionTimestamp")
         and value["spec"].get("projectId") == str(root.project_id)
-        and canonical_topology(value["spec"].get("topology", {}))
-        == canonical_topology(topology),
+        and _topology_matches(topology, value["spec"].get("topology", {}), review),
         "Online namespace/root/topology identity changed",
     )
     return value["spec"]["topology"]
@@ -237,26 +245,31 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
     _require(
         set(prepared.topologies) == set(providers), "Prepared topology coverage changed"
     )
+    _require(
+        set(attestation.topology_reviews) <= set(providers),
+        "Topology review names an unenrolled project",
+    )
     pools = {(p.ceph_fsid, p.pool_id) for p in pins.pool_keys}
     bindings, runtime_topologies, object_identities = [], {}, {}
     for root in pins.project_roots:
         kube = kube_readers[providers[str(root.project_id)]]
         topology = prepared.topologies[str(root.project_id)]
-        runtime = _root(kube, root, topology)
+        review = attestation.topology_reviews.get(str(root.project_id))
+        runtime = _root(kube, root, topology, review)
         runtime_topologies[str(root.project_id)] = runtime
         object_identities[str(root.project_id)] = validate_namespace(
             ReadOnlyManaged(kube), {"root": root.model_dump(mode="json")}
         )
         first = _bindings(kube, root, pools)
         _require(
-            _root(kube, root, topology) == runtime,
+            _root(kube, root, topology, review) == runtime,
             "Runtime topology changed during verification",
         )
         _require(
             first == _bindings(kube, root, pools), "Online storage identity changed"
         )
         _require(
-            _root(kube, root, topology) == runtime,
+            _root(kube, root, topology, review) == runtime,
             "Runtime topology changed during verification",
         )
         _require(
@@ -277,7 +290,12 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
     for root in pins.project_roots:
         kube = kube_readers[providers[str(root.project_id)]]
         _require(
-            _root(kube, root, prepared.topologies[str(root.project_id)])
+            _root(
+                kube,
+                root,
+                prepared.topologies[str(root.project_id)],
+                attestation.topology_reviews.get(str(root.project_id)),
+            )
             == runtime_topologies[str(root.project_id)]
             and _bindings(kube, root, pools) == [b for b in bindings if b.root == root],
             "Custody root or storage binding changed during ancestry verification",
@@ -354,10 +372,17 @@ def _validate_coverage(receipt):
     )
     for project_id in projects:
         _require(
-            canonical_topology(receipt.prepared.topologies[project_id])
-            == canonical_topology(receipt.runtime_topologies[project_id]),
+            _topology_matches(
+                receipt.prepared.topologies[project_id],
+                receipt.runtime_topologies[project_id],
+                receipt.attestation.topology_reviews.get(project_id),
+            ),
             "Custody runtime topology mismatch",
         )
+    _require(
+        set(receipt.attestation.topology_reviews) <= projects,
+        "Topology review names an unenrolled project",
+    )
     _require(
         {str(b.root.project_id) for b in receipt.bindings} == projects,
         "Custody storage coverage changed",
