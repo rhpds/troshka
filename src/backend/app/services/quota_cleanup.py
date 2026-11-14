@@ -219,6 +219,9 @@ def request_native(db, project, mode):
     from app.core.redis import enqueue_job
 
     try:
+        completed = _complete_unclaimed_native(db, project, mode)
+        if completed is not None:
+            return completed
         intent = prepare_native(db, project, mode)
     except accounting.AccountingUnavailable as error:
         raise operations._http_denial(error) from error
@@ -232,6 +235,118 @@ def request_native(db, project, mode):
         "mode": intent.mode,
         "cleanup_id": str(intent.intent_id),
     }
+
+
+def _unclaimed_candidate(rows):
+    return (
+        len(rows) == 1
+        and rows[0].dispatch_metadata.get("native_deploy", {}).get("phase")
+        == "reserved"
+    )
+
+
+def _require_unclaimed_worker(db, project, rows):
+    row = rows[0]
+    metadata = row.dispatch_metadata
+    target = metadata["native_deploy"]
+    forbidden = {
+        "root",
+        "create_started_at",
+        "create_handoff",
+        "create_namespace_uid",
+        "initialized_report",
+        "release_handoff",
+        "clone_lineages",
+    }
+    if (
+        not operations.known_empty(db, project)
+        or metadata.get("adapter") != "kubevirt"
+        or metadata.get("kind") != "deploy"
+        or metadata.get("calls")
+        or metadata.get("native_storage_identity")
+        or metadata.get("native_cleanup")
+        or row.dispatched_at
+        or any(row.observed.values())
+        or forbidden.intersection(target)
+    ):
+        raise accounting.AccountingUnavailable(
+            "Native unclaimed cleanup requires never-dispatched work"
+        )
+    from app.services.native_managed_deploy import validate
+
+    # Original attribution, placement and payload remain mandatory. A failed
+    # current collector attempt cannot prevent cancellation before dispatch.
+    validate(db, project, row, physical=False)
+
+
+def _require_no_unclaimed_assets(db, project):
+    from app.models.elastic_ip import ElasticIp
+    from app.models.kubevirt_storage import NativeProjectRoot
+    from app.models.metering import MeteringInterval
+    from app.models.quota import QuotaAllocation
+    from app.services.quota_capacity_baseline import _binding_inventory
+
+    allocations = db.query(QuotaAllocation).filter_by(project_id=project.id).all()
+    roots = db.query(NativeProjectRoot).filter_by(project_id=project.id).all()
+    root_keys = {root.key for root in roots}
+    bindings = _binding_inventory(db, [])
+    retained = (
+        project.disks
+        or active_roots(db, roots)
+        or any(a.state != "released" or any(a.observed.values()) for a in allocations)
+        or any(any(r.observed.values()) for r in operations._rows(db, project.id))
+        or any(
+            b["root_key"] in root_keys
+            or b["payload"].get("root", {}).get("project_id") == project.id
+            for b in bindings
+        )
+        or db.query(MeteringInterval)
+        .filter_by(project_id=project.id, ended_at=None)
+        .first()
+        or db.query(ElasticIp)
+        .filter_by(project_id=project.id)
+        .filter(ElasticIp.state.in_(("allocated", "associated")))
+        .first()
+    )
+    if retained:
+        raise accounting.AccountingUnavailable(
+            "Native unclaimed cleanup retains unresolved resources"
+        )
+
+
+def _complete_unclaimed_native(db, project, mode):
+    """Fence the original admission under the same lock used by worker claim.
+
+    A queued or preclaim-failed worker need not have a completion timestamp:
+    native claim preflight has no side effects, and claim refreshes this row
+    under the operation lock before any provider handoff. Whichever wins the
+    lock determines whether cancellation remains safe.
+    """
+    if (
+        mode != "undeploy"
+        or not accounting.quotas_enabled()
+        or operations.select_adapter(db, project) != "kubevirt"
+        or not _unclaimed_candidate(
+            operations.current_generation(operations._rows(db, project.id))
+        )
+    ):
+        return None
+    project, rows = _native_lock(db, project.id)
+    if not _unclaimed_candidate(rows):
+        raise accounting.AccountingUnavailable("Native cleanup operation changed")
+    _require_unclaimed_worker(db, project, rows)
+    _require_no_unclaimed_assets(db, project)
+    fence(db, project.id)
+    finalize_absence(db, project, operations.now())
+    project.state, project.host_id, project.vni_map, project.deploy_error = (
+        "draft",
+        None,
+        None,
+        None,
+    )
+    project.deployed_topology = None
+    db.commit()
+    return {"status": "draft"}
 
 
 def guard_pending(db, project, *, lock=False):
