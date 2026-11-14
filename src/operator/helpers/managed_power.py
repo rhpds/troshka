@@ -368,6 +368,11 @@ class PowerClient:
         return self.request("GET", kind, namespace, name, allow_absent=True)
 
     def rows(self, kind, namespace):
+        cluster_scoped = kind in {"Namespace", "PersistentVolume"}
+        require(
+            namespace is None if cluster_scoped else isinstance(namespace, str) and bool(namespace),
+            "managed_inventory_scope_invalid",
+        )
         value = self.request("GET", kind, namespace)
         rows = value["items"]
         require(
@@ -378,7 +383,7 @@ class PowerClient:
         )
         require(len({r["metadata"]["uid"] for r in rows}) == len(rows))
         for row in rows:
-            require(row["metadata"]["namespace"] == namespace)
+            require(row["metadata"].get("namespace") == namespace, "managed_inventory_namespace_changed")
             row.setdefault("kind", kind)
             version = (KINDS | CLEANUP_KINDS)[kind][0]
             row.setdefault("apiVersion", version)
