@@ -43,6 +43,11 @@ resume_case = resume_case_fixture
     "change",
     [
         None,
+        "incomplete_initialization",
+        "incomplete_spec",
+        "incomplete_intent",
+        "incomplete_parent",
+        "incomplete_unjournaled",
         "stale",
         "owner",
         "runtime",
@@ -103,6 +108,19 @@ def test_unreleased_full_copy_is_owned_during_api_undeploy(
     monkeypatch.setattr(api, "request", full_copy)
     deploy.reconcile(q.new_id)
     deploy.helpers().reconcile(api, api.rows("TroshkaProject", None)[0])
+    if change and change.startswith("incomplete_"):
+        live = next(v for (k, _), v in api.values.items() if k == "TroshkaProject")
+        state = live["status"]["managedDeployment"]
+        state.pop("phase", None)
+        state.pop("initializationDigest", None)
+        state.pop("generatedClaims", None)
+        for key in list(state["creates"]):
+            kind, name = key.split(":", 1)
+            if kind not in {"DataVolume", "TroshkaVM", "VirtualMachine"}:
+                state["creates"].pop(key)
+                api.values.pop((kind, name), None)
+            elif kind == "VirtualMachine":
+                state["creates"][key].pop("uid")
     # Only creation uses the historical renderer. Cleanup observes that frozen
     # false-mode plan through the current production renderer compatibility path.
     monkeypatch.setattr(deploy.helpers(), "clone_manifest", original_manifest)
@@ -195,6 +213,20 @@ def test_unreleased_full_copy_is_owned_during_api_undeploy(
     monkeypatch.setattr(api, "request", delete)
     fn, args = queued.pop()
     fn(*args)
+    if change and change.startswith("incomplete_"):
+        live = next(v for (k, _), v in api.values.items() if k == "TroshkaProject")
+        vm = next(v for (k, _), v in api.values.items() if k == "VirtualMachine")
+        entry_key = "VirtualMachine:" + vm["metadata"]["name"]
+        if change == "incomplete_spec":
+            vm["spec"]["template"]["spec"]["domain"]["cpu"]["cores"] = 999
+        elif change == "incomplete_intent":
+            live["status"]["managedDeployment"]["creates"][entry_key][
+                "intentDigest"
+            ] = "changed"
+        elif change == "incomplete_parent":
+            vm["metadata"]["ownerReferences"][0]["uid"] = "replacement"
+        elif change == "incomplete_unjournaled":
+            del live["status"]["managedDeployment"]["creates"][entry_key]
     if change == "writer":
         api.values["Pod", "writer"] = q.support.resource("Pod", "writer")
     elif change in {"dv_uid", "pv_uid"}:
@@ -219,7 +251,7 @@ def test_unreleased_full_copy_is_owned_during_api_undeploy(
         ] = "replacement"
     deploy.power.helpers().reconcile_stop(api, api.rows("TroshkaProject", None)[0])
     fn(*args)
-    if change:
+    if change and change != "incomplete_initialization":
         with q.sessions() as db:
             assert quota_cleanup.native_intent(db, q.new_id).phase == "stopping"
             assert (
@@ -238,6 +270,14 @@ def test_unreleased_full_copy_is_owned_during_api_undeploy(
             api.rows("TroshkaProject", None)[0],
         )
     root = api.rows("TroshkaProject", None)[0]
+    if change == "incomplete_initialization":
+        state = root["status"]["managedDeployment"]
+        assert "generatedClaims" not in state
+        assert not state.get("phase")
+        vm_entry = next(
+            v for k, v in state["creates"].items() if k.startswith("VirtualMachine:")
+        )
+        assert "uid" not in vm_entry
     for _ in range(8):
         if deploy.power.helpers().cleanup_delete(api, root):
             break

@@ -9,6 +9,7 @@ import json
 import re
 from copy import deepcopy
 from decimal import ROUND_CEILING, Decimal
+from uuid import UUID
 
 from kubernetes.utils.quantity import parse_quantity
 
@@ -59,6 +60,19 @@ _CONFIGURATION_DEFAULTS = {
 _SERVER_ALLOCATIONS = {
     "Service": ("clusterIP", "clusterIPs", "ipFamilies"),
     "Route": ("host",),
+    "VirtualMachine": (),
+}
+_VM_ALLOCATIONS = {
+    "architecture": ("template", "spec", "architecture"),
+    "machine": ("template", "spec", "domain", "machine", "type"),
+    "pciTopology": (
+        "template",
+        "metadata",
+        "annotations",
+        "kubevirt.io/pci-topology-version",
+    ),
+    "firmwareSerial": ("template", "spec", "domain", "firmware", "serial"),
+    "firmwareUUID": ("template", "spec", "domain", "firmware", "uuid"),
 }
 
 
@@ -565,8 +579,7 @@ def ensure_resource(api, root, state, wanted, desired):
     else:
         actual = existing[0]
         power.require(key in journal, "managed_unrelated_resource")
-        if value["kind"] == "DataVolume":
-            power.require(journal[key].get("uid"), "managed_create_unresolved")
+        verify_create_replay(value, actual, journal[key])
     power.require(not actual["metadata"].get("deletionTimestamp"))
     power.require(
         journal[key].get("uid", actual["metadata"]["uid"]) == actual["metadata"]["uid"],
@@ -580,13 +593,24 @@ def ensure_resource(api, root, state, wanted, desired):
     verify_spec(value, actual, allocations=journal[key].get("allocations"))
     if value["kind"] == "TroshkaVM":
         actual = acknowledge_vm(api, actual)
+    changed = bind_allocations(journal[key], value, actual)
     if not journal[key].get("uid"):
         journal[key]["uid"] = actual["metadata"]["uid"]
-        current = write_state(api, current, state)
-    if bind_allocations(journal[key], value, actual):
+        changed = True
+    if changed:
         current = write_state(api, current, state)
     restore_resource(api, wanted, value, actual)
     return current, state
+
+
+def verify_create_replay(expected, actual, saved):
+    if expected["kind"] in {"DataVolume", "VirtualMachine"}:
+        power.require(saved.get("uid"), "managed_create_unresolved")
+    if expected["kind"] == "VirtualMachine":
+        power.require(
+            "allocations" in saved or not server_allocations(expected, actual),
+            "managed_create_unresolved",
+        )
 
 
 def restore_resource(api, wanted, value, actual):
@@ -637,13 +661,58 @@ def bind_vm_owner(api, value, namespace):
 
 
 def server_allocations(expected, actual):
-    """Only initial omitted address fields are supplied by API allocation."""
+    """Bind only the explicitly supported omitted API-allocated fields."""
+    if expected["kind"] == "VirtualMachine":
+        return vm_allocations(expected["spec"], actual["spec"])
     planned, observed = expected.get("spec", {}), actual.get("spec", {})
     return {
         field: deepcopy(observed[field])
         for field in _SERVER_ALLOCATIONS.get(expected["kind"], ())
         if field not in planned and field in observed
     }
+
+
+def nested_value(spec, path):
+    current = spec
+    for part in path:
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def vm_allocations(planned, observed):
+    result = {}
+    for field, path in _VM_ALLOCATIONS.items():
+        present, value = nested_value(observed, path)
+        if not nested_value(planned, path)[0] and present:
+            valid_vm_allocation(field, value)
+            result[field] = value
+    return result
+
+
+def valid_vm_allocation(field, value):
+    power.require(isinstance(value, str), "managed_vm_allocation_invalid")
+    if field in {"firmwareSerial", "firmwareUUID"}:
+        try:
+            valid = str(UUID(value)) == value
+        except ValueError:
+            valid = False
+    elif field == "pciTopology":
+        valid = re.fullmatch(r"v[1-9][0-9]{0,2}", value) is not None
+    else:
+        valid = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}", value) is not None
+    power.require(valid, "managed_vm_allocation_invalid")
+
+
+def remove_vm_allocations(observed, allocations):
+    for field in allocations:
+        path = _VM_ALLOCATIONS[field]
+        current = observed
+        for part in path[:-1]:
+            current = current[part]
+        del current[path[-1]]
+    return canonical_fields(observed, _CONFIGURATION_DEFAULTS["VirtualMachine"], ())
 
 
 def bind_allocations(saved, expected, actual):
@@ -653,7 +722,7 @@ def bind_allocations(saved, expected, actual):
     return True
 
 
-def allocation_proof(root, expected):
+def allocation_proof(root, expected, actual=None):
     if expected["kind"] not in _SERVER_ALLOCATIONS:
         return None
     key = expected["kind"] + ":" + expected["metadata"]["name"]
@@ -663,17 +732,26 @@ def allocation_proof(root, expected):
         .get("creates", {})
         .get(key, {})
     )
+    if expected["kind"] == "VirtualMachine" and "allocations" not in saved:
+        power.require(
+            actual is not None and not server_allocations(expected, actual),
+            "managed_support_allocation_unbound",
+        )
+        return {}  # Legacy exact-spec VM had no injected values to bind.
     power.require("allocations" in saved, "managed_support_allocation_unbound")
     return saved["allocations"]
 
 
 def verify_spec(expected, actual, *, allocations=None):
     planned, observed = configuration(expected), configuration(actual)
+    captured = server_allocations(expected, actual)
     if allocations is not None:
         power.require(
-            server_allocations(expected, actual) == allocations,
+            captured == allocations,
             "managed_support_allocation_changed",
         )
+    if expected["kind"] == "VirtualMachine":
+        observed = remove_vm_allocations(observed, captured)
     for field in _SERVER_ALLOCATIONS.get(expected["kind"], ()):
         if field not in expected.get("spec", {}):
             observed.get("spec", {}).pop(field, None)
@@ -773,7 +851,9 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
             verify_generated_claim(value, generated[key], rows)
             continue
         verify_spec(
-            expected[key], value, allocations=allocation_proof(root, expected[key])
+            expected[key],
+            value,
+            allocations=allocation_proof(root, expected[key], value),
         )
         power.require(not value["metadata"].get("deletionTimestamp"))
     power.verify_storage(rows, by_uid, api)
@@ -951,8 +1031,8 @@ def pending_cleanup_request(root):
 def observe_pending_cleanup(api, root):
     """Read-only partial initialization inventory; absent ambiguous creates stay journaled.
 
-    This bounded recovery supports no known tenant storage. A present disk, even
-    at the expected name, is never adopted or repaired by cancellation.
+    Known tenant storage requires the backend's exact retained measurement
+    bindings. The unknown-create branch never adopts a disk at an expected name.
     """
     wanted, state = pending_cleanup_request(root)
     namespace = root["metadata"]["namespace"]
@@ -1017,24 +1097,46 @@ def observe_pending_cleanup(api, root):
     return rows, journal
 
 
-def observe_initialized_cleanup(api, root, wanted, state):
-    """Observe original initialized storage without authorizing runtime or clones."""
+def initialized_cleanup_rows(api, root, wanted, state):
+    """Verify existing receipts or the bounded partial-initialization inventory."""
     original = deepcopy(root)
     original["metadata"]["annotations"][power.ANNOTATION] = json.dumps(wanted)
-    rows, _, _ = observe(api, original)
-    verify_retained_claims(api, rows, state)
+    if not state.get("phase") and not state.get("initializationDigest"):
+        rows = observe_partial_storage(api, original, state)
+    else:
+        rows, _, _ = observe(api, original)
+    if (
+        "generatedClaims" in state
+        or state.get("phase")
+        or state.get("initializationDigest")
+    ):
+        verify_retained_claims(api, rows, state)
     for values in rows.values():
         for value in values:
-            if value["kind"] == "PersistentVolumeClaim" and value["metadata"][
-                "name"
-            ] in state.get("generatedClaims", {}):
+            if value["kind"] == "PersistentVolumeClaim" and any(
+                dv["metadata"]["name"] == value["metadata"]["name"]
+                for dv in rows["DataVolume"]
+            ):
                 continue
             entry = state.get("creates", {}).get(
                 value["kind"] + ":" + value["metadata"]["name"], {}
             )
             power.require(
-                entry.get("uid") == value["metadata"]["uid"], "managed_target_changed"
+                entry.get("uid") == value["metadata"]["uid"]
+                or (
+                    not state.get("phase")
+                    and not state.get("initializationDigest")
+                    and value["kind"] == "VirtualMachine"
+                    and "uid" not in entry
+                ),
+                "managed_target_changed",
             )
+    return rows
+
+
+def observe_initialized_cleanup(api, root, wanted, state):
+    """Observe original initialized storage without authorizing runtime or clones."""
+    rows = initialized_cleanup_rows(api, root, wanted, state)
     known = {v["metadata"]["uid"] for values in rows.values() for v in values}
     kinds = (set(power.KINDS) | set(power.CLEANUP_KINDS)) - {
         "Namespace",
@@ -1077,6 +1179,37 @@ def observe_initialized_cleanup(api, root, wanted, state):
     }
 
 
+def observe_partial_storage(api, root, state):
+    """Fence partial initialization using existing intents, never adopt receipts."""
+    planned = render_observed(root, state["storageClass"])
+    expected = {(v["kind"], v["metadata"]["name"]): v for v in planned}
+    power.require(
+        all(tuple(k.split(":", 1)) in expected for k in state["creates"]),
+        "pending_cleanup_journal_changed",
+    )
+    rows, by_uid = power.inventory(api, root, deployment_support=False)
+    for kind in power.SUPPORT_KINDS:
+        rows[kind] = [
+            v
+            for v in api.rows(kind, root["metadata"]["namespace"])
+            if (kind, v["metadata"]["name"]) in expected
+        ]
+        by_uid.update({v["metadata"]["uid"]: v for v in rows[kind]})
+    generated = generated_claims(planned, rows)
+    for values in rows.values():
+        for value in values:
+            key = (value["kind"], value["metadata"]["name"])
+            if key in generated:
+                verify_generated_claim(value, generated[key], rows)
+            else:
+                verify_pending_object(
+                    api, root, value, expected, state, by_uid, known_storage=True
+                )
+    generated_claim_identities(api, rows, state)
+    power.verify_storage(rows, by_uid, api)
+    return rows
+
+
 def initialized_cleanup_pv(api, pvc, binding):
     pv = api.get("PersistentVolume", None, pvc["spec"]["volumeName"])
     spec = pv["spec"]
@@ -1091,13 +1224,16 @@ def initialized_cleanup_pv(api, pvc, binding):
     return pv
 
 
-def verify_pending_object(api, root, value, expected, journal, by_uid):
+def verify_pending_object(
+    api, root, value, expected, journal, by_uid, *, known_storage=False
+):
     key = (value["kind"], value["metadata"]["name"])
     if power.cleanup_bootstrap(value, by_uid) is not None:
         return
     power.require(key in expected, "managed_unrelated_resource")
     power.require(
-        value["kind"]
+        (known_storage and value["kind"] == "DataVolume")
+        or value["kind"]
         not in {
             "Pod",
             "VirtualMachineInstance",
@@ -1110,7 +1246,9 @@ def verify_pending_object(api, root, value, expected, journal, by_uid):
     power.verify_chain(value, root, by_uid)
     entry = journal["creates"].get(":".join(key), {})
     power.require(
-        entry.get("uid") == value["metadata"]["uid"], "managed_target_changed"
+        entry.get("uid") == value["metadata"]["uid"]
+        or (known_storage and value["kind"] == "VirtualMachine" and "uid" not in entry),
+        "managed_target_changed",
     )
     desired = deepcopy(expected[key])
     bind_vm_owner(api, desired, root["metadata"]["namespace"])

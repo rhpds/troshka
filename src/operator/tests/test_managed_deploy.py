@@ -980,6 +980,157 @@ def test_troshkavm_explicit_true_cannot_change_to_default(field):
         deploy.verify_spec(expected, actual)
 
 
+def injected_vm_defaults(value):
+    """Sanitized installed shape; identifiers are synthetic, not a live receipt."""
+    template = value["spec"]["template"]
+    template.setdefault("metadata", {}).setdefault("annotations", {})[
+        "kubevirt.io/pci-topology-version"
+    ] = "v3"
+    template["spec"]["architecture"] = "amd64"
+    template["spec"]["domain"].update(
+        machine={"type": "pc-q35-rhel9.6.0"},
+        firmware={
+            "serial": "da5bc70b-b4eb-47f3-8e1a-795ec3571258",
+            "uuid": "179455e0-cc90-4ff8-a84a-34a7af551a5b",
+        },
+    )
+
+
+def test_vm_injected_create_values_are_atomically_receipted(api, monkeypatch):
+    original = api.request
+    snapshots = []
+    original_write = deploy.write_state
+
+    def write(client, body, state):
+        snapshots.append(deepcopy(state))
+        return original_write(client, body, state)
+
+    def created(method, kind, namespace, name, desired):
+        value = original(method, kind, namespace, name, desired)
+        if kind == "VirtualMachine":
+            injected_vm_defaults(value)
+            api.values[kind, value["metadata"]["name"]] = deepcopy(value)
+        return value
+
+    monkeypatch.setattr(api, "request", created)
+    monkeypatch.setattr(deploy, "write_state", write)
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    deploy.observe(api, root(api))
+    entries = [
+        entry
+        for state in snapshots
+        for key, entry in state.get("creates", {}).items()
+        if key.startswith("VirtualMachine:") and entry.get("uid")
+    ]
+    assert entries and all(entry.get("allocations") for entry in entries)
+    vm = api.rows("VirtualMachine", "ns")[0]
+    assert vm["spec"]["runStrategy"] == "Halted"
+    vm["spec"]["template"]["spec"]["domain"]["machine"]["type"] = "changed-machine"
+    api.values["VirtualMachine", vm["metadata"]["name"]] = vm
+    with pytest.raises(power.ManagedPowerError, match="allocation_changed"):
+        deploy.observe(api, root(api))
+
+
+@pytest.mark.parametrize("field", list(deploy._VM_ALLOCATIONS))
+def test_vm_injected_values_cannot_change_or_override_explicit_plan(api, field):
+    expected = next(
+        v
+        for v in deploy.render(root(api), "synthetic-reviewed-storage")
+        if v["kind"] == "VirtualMachine"
+    )
+    actual = deepcopy(expected)
+    injected_vm_defaults(actual)
+    saved = deploy.server_allocations(expected, actual)
+    deploy.verify_spec(expected, actual, allocations=saved)
+    path = deploy._VM_ALLOCATIONS[field]
+    changed = deepcopy(actual)
+    node = changed["spec"]
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = {
+        "architecture": "arm64",
+        "machine": "changed-machine",
+        "pciTopology": "v4",
+        "firmwareSerial": "057c26a0-9664-47f3-9865-7cd1206a782d",
+        "firmwareUUID": "057c26a0-9664-47f3-9865-7cd1206a782d",
+    }[field]
+    with pytest.raises(power.ManagedPowerError, match="allocation_changed"):
+        deploy.verify_spec(expected, changed, allocations=saved)
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(actual, changed)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("architecture", True),
+        ("architecture", ""),
+        ("machine", "bad value"),
+        ("machine", "x" * 129),
+        ("pciTopology", "latest"),
+        ("firmwareSerial", "not-a-uuid"),
+        ("firmwareUUID", "not-a-uuid"),
+    ],
+)
+def test_vm_injected_value_shapes_are_bounded(api, field, value):
+    expected = next(
+        v
+        for v in deploy.render(root(api), "synthetic-reviewed-storage")
+        if v["kind"] == "VirtualMachine"
+    )
+    actual = deepcopy(expected)
+    injected_vm_defaults(actual)
+    node = actual["spec"]
+    path = deploy._VM_ALLOCATIONS[field]
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = value
+    with pytest.raises(power.ManagedPowerError, match="allocation_invalid"):
+        deploy.verify_spec(expected, actual)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("template", "spec", "domain", "firmware", "unknown"),
+        ("template", "spec", "domain", "machine", "unknown"),
+        ("template", "metadata", "annotations", "unknown"),
+    ],
+)
+def test_vm_allocation_allowlist_does_not_remove_unknown_siblings(api, path):
+    expected = next(
+        v
+        for v in deploy.render(root(api), "synthetic-reviewed-storage")
+        if v["kind"] == "VirtualMachine"
+    )
+    actual = deepcopy(expected)
+    injected_vm_defaults(actual)
+    node = actual["spec"]
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = "unknown"
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(expected, actual)
+
+
+@pytest.mark.parametrize("injected", [False, True])
+def test_vm_observation_requires_receipt_only_for_injected_values(api, injected):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    body = api.values["TroshkaProject", "project"]
+    for key, entry in body["status"]["managedDeployment"]["creates"].items():
+        if key.startswith("VirtualMachine:"):
+            entry.pop("allocations")
+    if injected:
+        vm = next(v for (kind, _), v in api.values.items() if kind == "VirtualMachine")
+        injected_vm_defaults(vm)
+        with pytest.raises(power.ManagedPowerError, match="allocation_unbound"):
+            deploy.observe(api, root(api))
+    else:
+        deploy.observe(api, root(api))
+
+
 @pytest.mark.parametrize("source", ["library", "snapshot", "pattern", "unknown"])
 def test_nonblank_storage_source_rejects_even_without_resolved_path(api, source):
     body = root(api)
