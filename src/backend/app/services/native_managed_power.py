@@ -1260,12 +1260,17 @@ def expected_stop(db, project, rows):
     root = measurement_row(rows)
     if (root.observation_id or "").startswith("managed-off:"):
         request_id = root.observation_id.removeprefix("managed-off:")
-        run = (
+        runs = (
             db.query(QuotaAction)
             .filter_by(project_id=project.id, kind="stop_run")
-            .one_or_none()
+            .all()
         )
-        proof = run.details.get("managed_off_proof", {}) if run else {}
+        matches = [
+            run for run in runs if run.details.get("managed_stop_id") == request_id
+        ]
+        if len(matches) != 1:
+            raise AccountingUnavailable("Native settled stop episode unavailable")
+        proof = matches[0].details.get("managed_off_proof", {})
         if proof.get("request_id") != request_id or proof.get(
             "generation"
         ) != operations._generation(root):

@@ -72,6 +72,54 @@ def managed(ledger):
     return power, api, context, row, support
 
 
+@pytest.mark.parametrize("change", [None, "missing", "ambiguous", "generation"])
+def test_expected_stop_selects_exact_episode_with_prior_history(
+    managed, ledger, change
+):
+    from app.models.quota import QuotaAction
+    from app.schemas.quota import AccountingUnavailable
+
+    db, project, _, _, _ = ledger
+    row = managed[3]
+    row.observation_id = "managed-off:current-stop"
+    generation = native.operations._generation(row)
+    requests = ["previous-stop", "current-stop"]
+    if change == "missing":
+        requests = ["previous-stop", "another-stop"]
+    elif change == "ambiguous":
+        requests.append("current-stop")
+    for index, request_id in enumerate(requests):
+        db.add(
+            QuotaAction(
+                scope="project",
+                scope_id=project.id,
+                project_id=project.id,
+                policy_revision=index,
+                period_key="test",
+                kind="stop_run",
+                threshold=100,
+                state="completed",
+                details={
+                    "managed_stop_id": request_id,
+                    "managed_off_proof": {
+                        "request_id": request_id,
+                        "generation": "wrong" if change == "generation" else generation,
+                        "inventory_digest": request_id + "-digest",
+                    },
+                },
+            )
+        )
+    db.flush()
+    if change is None:
+        assert native.expected_stop(db, project, [row]) == (
+            "current-stop",
+            "current-stop-digest",
+        )
+    else:
+        with pytest.raises(AccountingUnavailable, match="stop episode"):
+            native.expected_stop(db, project, [row])
+
+
 def stop(managed):
     power, api, context, _, _ = managed
     proof = native.stop_and_observe(
