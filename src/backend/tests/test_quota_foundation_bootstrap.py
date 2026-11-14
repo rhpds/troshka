@@ -300,3 +300,26 @@ def test_prepare_does_not_adopt_same_display_name(preparation):
     _assert_foundation(sessions)
     with sessions() as db:
         assert db.query(ManagedGroup).count() == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "normalized"),
+    [("Default organization", "default organization"), ("Engineering", "engineering")],
+)
+def test_prepare_preserves_foundation_after_group_name_edit(
+    preparation, name, normalized
+):
+    """Ordinary group edits must not break subsequent application upgrades."""
+    engine, sessions = preparation
+    database_access.prepare_database()
+    with sessions.begin() as db:
+        group = db.get(ManagedGroup, GROUP_ID)
+        group.name, group.normalized_name = name, normalized
+        owner = User(email="retained@test.invalid", organization_id=GROUP_ID)
+        db.add(owner)
+        db.flush()
+        db.add(Project(name="retained project", owner_id=owner.id, state="draft"))
+        db.get(QuotaPolicy, POLICY_ID).cpu = 7
+    before = _snapshot(engine)
+    database_access.prepare_database()
+    assert _snapshot(engine) == before

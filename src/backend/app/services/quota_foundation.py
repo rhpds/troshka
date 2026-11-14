@@ -17,6 +17,18 @@ _GROUP_KEY = "quota-default-" + DEFAULT_ORGANIZATION_ID
 _POLICY_ID = "cc4ecf45-0811-48a5-bca2-e440a3fbc55c"
 
 
+def _group_name_matches(db, group):
+    if group.normalized_name == _GROUP_KEY:
+        return True
+    policy = db.get(QuotaPolicy, _POLICY_ID)
+    return (
+        group.normalized_name == group.name.casefold()
+        and policy is not None
+        and policy.scope == "organization"
+        and policy.scope_id == DEFAULT_ORGANIZATION_ID
+    )
+
+
 def _group(db):
     rows = (
         db.query(ManagedGroup)
@@ -30,7 +42,7 @@ def _group(db):
     )
     if any(
         row.id != DEFAULT_ORGANIZATION_ID
-        or row.normalized_name != _GROUP_KEY
+        or not _group_name_matches(db, row)
         or not row.is_organization
         for row in rows
     ):
