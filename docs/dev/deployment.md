@@ -18,6 +18,30 @@ deployment, check out that release and run
 the build when queried, the script reports this resume command without promoting
 anything. Never move a published release tag.
 
+For a release that installs native storage collection, add
+`--collector-access-plan /absolute/path/to/approved-plan.json`. This explicitly
+opts in only the provider clusters and namespaces in that administrator-reviewed
+plan; it does not grant collector access on all seven operator clusters.
+The plan uses the online-enrollment preflight `domains` entries: `backend.kubeconfig`,
+the pinned `backend.toolbox` namespace/name/UID, and `pins.provider_clusters`,
+`pins.project_roots`, and `pins.cache_roots`. Keep credentials out of this file.
+Use an absolute kubeconfig path for each target. No live UIDs or credentials are
+checked into the permission template.
+
+`scripts/deploy_collector_rbac.py` renders the read-only namespace permissions
+from `infra/storage-collector-rbac.yaml` (JSON syntax, valid YAML), adds inventory
+access and an exact-toolbox-pod exec grant, and server-dry-runs every target.
+It rechecks cluster, namespace, project, and toolbox identities before applying
+the grants, ahead of image promotion. A changed toolbox UID requires a reviewed
+plan update. Toolbox exec carries Ceph privileges; the API cannot restrict the
+commands executed inside that pod. Project Role/RoleBinding objects are owned by
+their pinned TroshkaProject; cache grants are shared and unowned. This does not
+issue credentials, configure collector profiles, or enable quota enforcement.
+New projects or replacement identities need a freshly reviewed plan; the deploy
+script never expands scope through discovery. Omitting the option leaves existing
+collector grants untouched. For an online compatibility release also use
+`--skip-project-pods` to avoid restarting project helper services.
+
 The script preflights all ten images and cluster access, requires idle RQ queues,
 promotes and verifies every destination digest, applies CRDs and RBAC without
 overwriting SCC membership, and rolls operators and persistent project services

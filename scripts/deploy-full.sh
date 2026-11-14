@@ -10,8 +10,9 @@ SKIP_OPERATORS=false
 SKIP_PROJECT_PODS=false
 FORCE_NS_RBAC=false
 RELEASE_TAG=""
+COLLECTOR_ACCESS_PLAN=""
 usage() {
-  echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac]"
+  echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac] [--collector-access-plan FILE]"
   echo "Default: create vYYYY.MM.DD-HHMMSS (UTC) at HEAD and push HEAD to main plus the tag."
   echo "Resume an existing release with --skip-push --tag vNAME from its clean checkout."
 }
@@ -22,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     --skip-operators) SKIP_OPERATORS=true; shift ;;
     --skip-project-pods) SKIP_PROJECT_PODS=true; shift ;;
     --sync-ns-rbac) FORCE_NS_RBAC=true; shift ;;
+    --collector-access-plan) [ "$#" -ge 2 ] || { usage; exit 2; }; COLLECTOR_ACCESS_PLAN=$2; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -93,6 +95,10 @@ if [ "$SKIP_OPERATORS" = false ]; then
   done
 fi
 python3 scripts/deploy_release.py idle --kubeconfig "$KC"
+if [ -n "$COLLECTOR_ACCESS_PLAN" ]; then
+  python3 scripts/deploy_collector_rbac.py --plan "$COLLECTOR_ACCESS_PLAN" --output "$STATE/collector-access"
+  python3 scripts/deploy_collector_rbac.py --apply --output "$STATE/collector-access"
+fi
 ./scripts/promote-to-production.sh "$RELEASE_TAG"
 
 apply_rbac() {
