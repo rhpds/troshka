@@ -147,9 +147,23 @@ def verify_clone_binding(intent, creation, dv, pvc, pv):
     """New dynamic clone may rebind its PV from CSI's temporary request PVC."""
     from uuid import UUID
 
+    from app.services import native_managed_deploy as deploy
     from app.services.kubevirt_storage_enrollment import utc
 
     meta, spec, pmeta, pspec = pvc["metadata"], pvc["spec"], pv["metadata"], pv["spec"]
+    deploy.helpers().verify_populator_source(pvc, dv)
+    annotations = meta.get("annotations", {})
+    require(
+        annotations.get("cdi.kubevirt.io/cloneType") == "csi-clone"
+        and annotations.get("cdi.kubevirt.io/clonePhase") == "Succeeded"
+        and not any(
+            v["metadata"]
+            .get("annotations", {})
+            .get("cdi.kubevirt.io/cloneFallbackReason")
+            for v in (dv, pvc)
+        ),
+        "clone is not a completed CSI population",
+    )
     UUID(pmeta["name"].removeprefix("pvc-"))
     require(
         pmeta["name"].startswith("pvc-") and not pmeta.get("deletionTimestamp"),

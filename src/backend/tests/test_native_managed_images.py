@@ -743,6 +743,19 @@ def prepare_verified_image_operation(q, monkeypatch, *, publish_initialization=T
             )
             pvc["metadata"]["namespace"] = namespace
             pvc["spec"]["volumeName"] = "tenant-clone-pv"
+            source_ref = {
+                "apiGroup": "cdi.kubevirt.io",
+                "kind": "VolumeCloneSource",
+                "name": "volume-clone-source-" + value["metadata"]["uid"],
+            }
+            pvc["spec"].update(
+                dataSource=deepcopy(source_ref), dataSourceRef=source_ref
+            )
+            pvc["metadata"]["annotations"] = {
+                "cdi.kubevirt.io/dataSourceNamespace": value["spec"]["source"]["pvc"][
+                    "namespace"
+                ]
+            }
             pvc["status"] = {"phase": "Bound"}
             api.values["PersistentVolumeClaim", pvc["metadata"]["name"]] = pvc
             pv = q.support.resource(

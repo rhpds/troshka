@@ -1,7 +1,8 @@
 """Cancel an original, unreleased native initialization through managed cleanup.
 
 Unknown interrupted creates use Kubernetes/CSI settlement after namespace removal.
-Known retained storage never takes this path. No create or journal repair occurs.
+Known initialized storage keeps its measured bindings and backend absence boundary.
+No create, clone-success receipt, or journal repair occurs.
 """
 
 import json
@@ -34,7 +35,6 @@ def validate(db, project, rows):
         or target.get("running_proof")
         or row.observed.get("cpu")
         or row.observed.get("ram_bytes")
-        or row.observed.get("storage_bytes")
         or not identity
         or identity.get("root") != target.get("root")
         or owner is None
@@ -97,7 +97,17 @@ def prepare(db, project, rows, mode):
     _, _, pinned, _ = quota_native._measurement_binding(
         db, project, root, domain, identity
     )
-    require_no_known_storage(db, domain.id, pinned)
+    bindings, owned = [], []
+    from app.models.kubevirt_storage import NativeRetainedBinding
+    from app.services.kubevirt_storage_enrollment import root_key
+
+    if (
+        row.observed.get("storage_bytes")
+        or db.query(NativeRetainedBinding).filter_by(root_key=root_key(pinned)).first()
+    ):
+        bindings, owned = known_storage(db, project, row, identity, pinned, domain)
+    else:
+        require_no_known_storage(db, domain.id, pinned)
     if not domain.latest_report_id:
         raise AccountingUnavailable("Pending cleanup enrollment report unavailable")
     action = enforcement._action(
@@ -131,8 +141,8 @@ def prepare(db, project, rows, mode):
         enrollment_id=domain.enrollment_id,
         initial_report_id=domain.latest_report_id,
         root=pinned,
-        owned_images=[],
-        bindings=[],
+        owned_images=owned,
+        bindings=bindings,
         stop_action_id=action.id,
         prepared_at=operations.now(),
         pending_initialization=pending,
@@ -142,6 +152,54 @@ def prepare(db, project, rows, mode):
     project.state = "cleanup_pending"
     project.deploy_error = "Cleanup pending: cancelling original initialization and waiting for Kubernetes/CSI settlement"
     return value
+
+
+def known_storage(db, project, row, identity, pinned, domain):
+    """Use existing measurement authority, never clone success, for cleanup."""
+    from app.models.kubevirt_storage import (
+        NativeProjectRoot,
+        NativeRetainedBinding,
+        NativeStorageSnapshot,
+    )
+    from app.schemas.kubevirt_storage import NativeStorageReport
+    from app.services import quota_native
+    from app.services.kubevirt_storage_graph import _ownership
+    from app.services.kubevirt_storage_reports import normalized_inventory
+
+    measurement = quota_native.storage_measurement(
+        db, project, row.operation_id, identity, operations.now()
+    )
+    source = NativeStorageReport.model_validate(
+        db.get(NativeStorageSnapshot, measurement.report_id).payload
+    )
+    roots = cleanup.active_roots(
+        db, db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
+    )
+    inventory = normalized_inventory(
+        source,
+        roots,
+        db.query(NativeRetainedBinding).filter_by(domain_id=domain.id).all(),
+    )
+    cache = set(b.image_key for b in inventory.cache_bindings)
+    _, nodes, _ = _ownership(inventory, {i.key: i for i in source.images}, cache, 32)
+    owned = nodes[pinned.project_id] - cache
+    bindings = {
+        b.pvc_uid: b
+        for b in source.volume_bindings + source.retained_bindings
+        if b.root == pinned
+    }
+    if (
+        not owned
+        or not bindings
+        or any(s.root == pinned for s in source.snapshot_evidence)
+        or any(i.snapshots for i in source.images if i.key in owned)
+    ):
+        raise AccountingUnavailable(
+            "Pending cleanup requires complete snapshot-free owned storage"
+        )
+    return sorted(bindings.values(), key=lambda b: b.pvc_uid), sorted(
+        owned, key=lambda k: k.model_dump_json()
+    )
 
 
 def stop(db, provider, intent):
@@ -163,7 +221,24 @@ def stop(db, provider, intent):
             != current.pending_initialization["target_digest"]
         ):
             raise AccountingUnavailable("Pending cleanup deployment changed")
-        require_no_known_storage(db, str(current.domain_id), current.root)
+        if current.bindings:
+            from app.services import quota_native
+
+            _, domain = quota_native._measurement_domain(
+                db, project.id, rows[0].dispatch_metadata["native_storage_identity"]
+            )
+            bindings, owned = known_storage(
+                db,
+                project,
+                rows[0],
+                rows[0].dispatch_metadata["native_storage_identity"],
+                current.root,
+                domain,
+            )
+            if bindings != current.bindings or owned != current.owned_images:
+                raise AccountingUnavailable("Pending cleanup storage identity changed")
+        else:
+            require_no_known_storage(db, str(current.domain_id), current.root)
         db.commit()
         proof = power.with_client(provider, cancel_and_observe, current)
         if proof is None:
@@ -180,13 +255,16 @@ def stop(db, provider, intent):
 
 
 def wanted(intent):
-    return {
+    value = {
         "version": 1,
         "mode": "stopped",
         "requestId": intent.stop_action_id,
         "allocationGeneration": intent.generation,
         "pendingInitialization": intent.pending_initialization["request"],
     }
+    if intent.bindings:
+        value["pendingStorage"] = [b.model_dump(mode="json") for b in intent.bindings]
+    return value
 
 
 def cancel_and_observe(api, intent):
@@ -262,6 +340,11 @@ def seal(api, intent):
             uid=v["metadata"]["uid"],
             namespace=v["metadata"].get("namespace"),
             resource_version=v["metadata"]["resourceVersion"],
+            reclaim_policy=(
+                v["spec"].get("persistentVolumeReclaimPolicy")
+                if v["kind"] == "PersistentVolume"
+                else None
+            ),
             namespace_bootstrap=power.helpers().cleanup_bootstrap(
                 v, {o["metadata"]["uid"]: o for o in rows}
             ),

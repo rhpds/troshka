@@ -189,7 +189,7 @@ def prepare(db, project, *, host_id):
 
 def payload_demand(payload, profile):
     root = {**deepcopy(payload), "metadata": {**payload["metadata"], "uid": "pending"}}
-    planned = helpers().render(root, profile.target.storage_class_name)
+    planned = helpers().render_observed(root, profile.target.storage_class_name)
     if payload["spec"].get("managedVncImage") != initialization.implementation(
         profile
     ).vnc_image or payload["spec"].get("managedPlanDigest") != helpers().plan_digest(

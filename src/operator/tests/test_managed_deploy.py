@@ -216,6 +216,18 @@ def clone_api(api, monkeypatch):
                 deepcopy(value["spec"]["pvc"]),
             )
             pvc["spec"]["volumeName"] = "clone-pv"
+            source_ref = {
+                "apiGroup": "cdi.kubevirt.io",
+                "kind": "VolumeCloneSource",
+                "name": "volume-clone-source-" + value["metadata"]["uid"],
+            }
+            pvc["spec"].update(
+                dataSource=deepcopy(source_ref), dataSourceRef=source_ref
+            )
+            pvc["metadata"]["annotations"] = {
+                "cdi.kubevirt.io/storage.usePopulator": "true",
+                "cdi.kubevirt.io/dataSourceNamespace": "platform-cache",
+            }
             pvc["status"] = {"phase": "Bound"}
             api.values["PersistentVolumeClaim", pvc["metadata"]["name"]] = pvc
             pv = resource(
@@ -247,6 +259,9 @@ def test_clone_real_render_journals_only_dv_and_holds_runtime_until_release(clon
         c[0] == "POST" and c[1][0] == "PersistentVolumeClaim" for c in api.calls
     )
     dv = rows["DataVolume"][0]
+    assert (
+        dv["metadata"]["annotations"]["cdi.kubevirt.io/storage.usePopulator"] == "true"
+    )
     assert dv["spec"]["pvc"]["resources"]["requests"]["storage"] == "40Gi"
     assert "storageClassName" not in dv["spec"]
     assert dv["spec"]["pvc"]["storageClassName"] == "synthetic-reviewed-storage"
@@ -262,6 +277,30 @@ def test_clone_real_render_journals_only_dv_and_holds_runtime_until_release(clon
     release(api)
     deploy.reconcile(api, root(api))
     assert api.rows("VirtualMachine", "ns")[0]["spec"]["runStrategy"] != "Halted"
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_frozen_legacy_clone_plan_is_read_only_compatible(clone_api, drift):
+    body = root(clone_api)
+    storage_class = power.intent(body)["storageClass"]
+    legacy = deploy.render(body, storage_class)
+    dv = next(v for v in legacy if v["kind"] == "DataVolume")
+    dv["metadata"]["annotations"]["cdi.kubevirt.io/storage.usePopulator"] = "false"
+    body["spec"]["managedPlanDigest"] = deploy.plan_digest(legacy)
+    if drift:
+        body["spec"]["managedSources"]["disk-one"]["name"] = "unrelated-source"
+        with pytest.raises(power.ManagedPowerError):
+            deploy.render_observed(body, storage_class)
+    else:
+        assert deploy.render_observed(body, storage_class) == legacy
+        current = deploy.render(body, storage_class)
+        assert deploy.plan_digest(current) != body["spec"]["managedPlanDigest"]
+        assert (
+            next(v for v in current if v["kind"] == "DataVolume")["metadata"][
+                "annotations"
+            ]["cdi.kubevirt.io/storage.usePopulator"]
+            == "true"
+        )
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
@@ -340,7 +379,16 @@ def test_clone_runtime_replay_rejects_generated_storage_identity_changes(
 
 
 @pytest.mark.parametrize(
-    "change", ["unknown_source", "owner", "extra_pvc", "writer", "failed"]
+    "change",
+    [
+        "unknown_source",
+        "missing_ref",
+        "source_namespace",
+        "owner",
+        "extra_pvc",
+        "writer",
+        "failed",
+    ],
 )
 def test_clone_unknown_generated_shape_or_writer_stays_off(clone_api, change):
     api = clone_api
@@ -353,6 +401,12 @@ def test_clone_unknown_generated_shape_or_writer_stays_off(clone_api, change):
             "apiGroup": "cdi.kubevirt.io",
             "name": "unexpected",
         }
+    elif change == "missing_ref":
+        pvc["spec"].pop("dataSource")
+    elif change == "source_namespace":
+        pvc["metadata"]["annotations"][
+            "cdi.kubevirt.io/dataSourceNamespace"
+        ] = "unrelated"
     elif change == "owner":
         pvc["metadata"]["ownerReferences"][0]["uid"] = "replacement"
     elif change == "extra_pvc":

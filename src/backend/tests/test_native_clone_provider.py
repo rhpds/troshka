@@ -18,7 +18,21 @@ native_case = native_case_fixture
 
 
 @pytest.mark.parametrize(
-    "change", [None, "copy", "wrong_parent", "source_uid", "old_pv", "claim", "driver"]
+    "change",
+    [
+        None,
+        "copy",
+        "wrong_parent",
+        "source_uid",
+        "old_pv",
+        "claim",
+        "driver",
+        "copy_marker",
+        "fallback",
+        "source_ref",
+        "source_namespace",
+        "missing_ref",
+    ],
 )
 def test_concrete_clone_observer_requires_new_exact_dynamic_rebind_and_cow(
     native_case, monkeypatch, change
@@ -89,6 +103,31 @@ def test_concrete_clone_observer_requires_new_exact_dynamic_rebind_and_cow(
             },
         },
     }
+    ref = {
+        "apiGroup": "cdi.kubevirt.io",
+        "kind": "VolumeCloneSource",
+        "name": "volume-clone-source-" + creation.dv_uid,
+    }
+    pvc["spec"].update(dataSource=deepcopy(ref), dataSourceRef=ref)
+    pvc["metadata"]["annotations"] = {
+        "cdi.kubevirt.io/cloneType": "csi-clone",
+        "cdi.kubevirt.io/clonePhase": "Succeeded",
+        "cdi.kubevirt.io/dataSourceNamespace": birth.namespace,
+    }
+    if change == "copy_marker":
+        pvc["metadata"]["annotations"]["cdi.kubevirt.io/cloneType"] = "copy"
+    elif change == "fallback":
+        dv["metadata"]["annotations"] = {
+            "cdi.kubevirt.io/cloneFallbackReason": "fallback"
+        }
+    elif change == "source_ref":
+        pvc["spec"]["dataSourceRef"]["name"] = "unrelated"
+    elif change == "source_namespace":
+        pvc["metadata"]["annotations"][
+            "cdi.kubevirt.io/dataSourceNamespace"
+        ] = "unrelated"
+    elif change == "missing_ref":
+        pvc["spec"].pop("dataSource")
     head = receipt.image_key.model_copy(update={"image_id": "new-tenant-head"})
     middle = receipt.image_key.model_copy(update={"image_id": "new-private-temp"})
     infos = {
@@ -153,9 +192,11 @@ def test_concrete_clone_observer_requires_new_exact_dynamic_rebind_and_cow(
     monkeypatch.setattr(
         adapter,
         "_objects",
-        lambda namespace, name: deepcopy((source["dv"], source["pvc"], source["pv"]))
-        if namespace == birth.namespace
-        else deepcopy((dv, pvc, pv)),
+        lambda namespace, name: (
+            deepcopy((source["dv"], source["pvc"], source["pv"]))
+            if namespace == birth.namespace
+            else deepcopy((dv, pvc, pv))
+        ),
     )
     monkeypatch.setattr(deploy.power.helpers(), "PowerClient", lambda api: object())
     monkeypatch.setattr(

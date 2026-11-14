@@ -263,7 +263,7 @@ def clone_manifest(name, namespace, source, size, storage_class):
     )
     value["spec"]["pvc"]["storageClassName"] = storage_class
     value["spec"]["pvc"]["volumeMode"] = "Filesystem"
-    value["metadata"]["annotations"] = {"cdi.kubevirt.io/storage.usePopulator": "false"}
+    value["metadata"]["annotations"] = {"cdi.kubevirt.io/storage.usePopulator": "true"}
     if source.get("storage_request"):
         power.require(
             value["spec"]["pvc"]["resources"]["requests"]["storage"]
@@ -741,7 +741,7 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         if runtime
         else wanted["phase"] in {"initializing", "runtime"}
     )
-    planned = render(root, wanted["storageClass"])
+    planned = render_observed(root, wanted["storageClass"])
     rows, by_uid = power.inventory(api, root, deployment_support=False)
     support_inventory(api, root, planned, rows, by_uid)
     expected = {
@@ -817,11 +817,18 @@ def verify_generated_claim(actual, dv, rows):
     )
     spec = deepcopy(actual["spec"])
     spec.pop("volumeName", None)
-    # Supported direct CDI CSI clone. An unexpected populator/snapshot/selector
-    # shape is never silently canonicalized away.
+    populator = (
+        dv["metadata"]
+        .get("annotations", {})
+        .get("cdi.kubevirt.io/storage.usePopulator")
+        == "true"
+    )
+    if populator:
+        verify_populator_source(actual, live[0])
+    # Keep old frozen non-populator plans observable for cleanup.
     for field in ("dataSource", "dataSourceRef"):
         source = spec.pop(field, None)
-        if source is not None:
+        if source is not None and not populator:
             expected = {
                 "kind": "PersistentVolumeClaim",
                 "name": dv["spec"]["source"]["pvc"]["name"],
@@ -838,6 +845,41 @@ def verify_generated_claim(actual, dv, rows):
         "managed_clone_pvc_changed",
     )
     power.require(not actual["metadata"].get("deletionTimestamp"))
+
+
+def verify_populator_source(pvc, dv):
+    expected = {
+        "apiGroup": "cdi.kubevirt.io",
+        "kind": "VolumeCloneSource",
+        "name": "volume-clone-source-" + dv["metadata"]["uid"],
+    }
+    power.require(
+        all(
+            pvc["spec"].get(field) == expected
+            for field in ("dataSource", "dataSourceRef")
+        )
+        and pvc["metadata"]
+        .get("annotations", {})
+        .get("cdi.kubevirt.io/dataSourceNamespace")
+        == dv["spec"]["source"]["pvc"]["namespace"],
+        "managed_clone_datasource_changed",
+    )
+
+
+def render_observed(root, storage_class):
+    """Recognize an exact frozen pre-populator plan without authorizing creates."""
+    planned = render(root, storage_class)
+    frozen = root["spec"].get("managedPlanDigest")
+    if not frozen or frozen == plan_digest(planned):
+        return planned
+    legacy = deepcopy(planned)
+    for value in legacy:
+        if value["kind"] == "DataVolume" and "pvc" in value["spec"].get("source", {}):
+            value["metadata"]["annotations"][
+                "cdi.kubevirt.io/storage.usePopulator"
+            ] = "false"
+    power.require(frozen == plan_digest(legacy), "managed_plan_changed")
+    return legacy
 
 
 def plan_digest(planned):
@@ -873,7 +915,7 @@ def support_inventory(api, root, planned, rows, by_uid):
 def retained_support(api, root, rows, by_uid):
     """Only new managed deployments include fixed support in retained proofs."""
     state = root["status"]["managedDeployment"]
-    planned = render(root, state["storageClass"])
+    planned = render_observed(root, state["storageClass"])
     power.require(
         root["spec"].get("managedPlanDigest") == plan_digest(planned),
         "managed_plan_changed",
@@ -924,13 +966,15 @@ def observe_pending_cleanup(api, root):
         == wanted["clusterKey"],
         "managed_cluster_changed",
     )
-    planned = render(root, wanted["storageClass"])
+    planned = render_observed(root, wanted["storageClass"])
     power.require(
         plan_digest(planned)
         == wanted["planDigest"]
         == root["spec"]["managedPlanDigest"],
         "managed_plan_changed",
     )
+    if power.intent(root).get("pendingStorage"):
+        return observe_initialized_cleanup(api, root, wanted, state)
     kinds = (
         set(power.KINDS) - {"Namespace", "PersistentVolume", "TroshkaProject"}
     ) | set(power.CLEANUP_KINDS)
@@ -971,6 +1015,80 @@ def observe_pending_cleanup(api, root):
         "pending_cleanup_known_storage",
     )
     return rows, journal
+
+
+def observe_initialized_cleanup(api, root, wanted, state):
+    """Observe original initialized storage without authorizing runtime or clones."""
+    original = deepcopy(root)
+    original["metadata"]["annotations"][power.ANNOTATION] = json.dumps(wanted)
+    rows, _, _ = observe(api, original)
+    verify_retained_claims(api, rows, state)
+    for values in rows.values():
+        for value in values:
+            if value["kind"] == "PersistentVolumeClaim" and value["metadata"][
+                "name"
+            ] in state.get("generatedClaims", {}):
+                continue
+            entry = state.get("creates", {}).get(
+                value["kind"] + ":" + value["metadata"]["name"], {}
+            )
+            power.require(
+                entry.get("uid") == value["metadata"]["uid"], "managed_target_changed"
+            )
+    known = {v["metadata"]["uid"] for values in rows.values() for v in values}
+    kinds = (set(power.KINDS) | set(power.CLEANUP_KINDS)) - {
+        "Namespace",
+        "PersistentVolume",
+        "TroshkaProject",
+    }
+    full = [
+        v
+        for kind in sorted(kinds)
+        for v in api.rows(kind, root["metadata"]["namespace"])
+    ]
+    by_uid = {v["metadata"]["uid"]: v for v in [root, *full]}
+    power.require(len(full) <= 1000 and len(by_uid) == len(full) + 1)
+    for value in full:
+        power.require(
+            value["metadata"]["uid"] in known
+            or power.cleanup_bootstrap(value, by_uid) is not None,
+            "managed_unrelated_resource",
+        )
+    bindings = {b["pvc_uid"]: b for b in power.intent(root)["pendingStorage"]}
+    power.require(
+        set(bindings) == {v["metadata"]["uid"] for v in rows["PersistentVolumeClaim"]},
+        "cleanup_storage_inventory_changed",
+    )
+    namespace_pvs = {
+        v["metadata"]["uid"]
+        for v in api.rows("PersistentVolume", None)
+        if v.get("spec", {}).get("claimRef", {}).get("namespace")
+        == root["metadata"]["namespace"]
+    }
+    power.require(
+        namespace_pvs == {b["pv_uid"] for b in bindings.values()},
+        "cleanup_pv_inventory_changed",
+    )
+    for pvc in rows["PersistentVolumeClaim"]:
+        full.append(initialized_cleanup_pv(api, pvc, bindings[pvc["metadata"]["uid"]]))
+    return full, {
+        "creates": deepcopy(state.get("creates", {})),
+        "generatedClaims": deepcopy(state.get("generatedClaims", {})),
+    }
+
+
+def initialized_cleanup_pv(api, pvc, binding):
+    pv = api.get("PersistentVolume", None, pvc["spec"]["volumeName"])
+    spec = pv["spec"]
+    power.require(
+        pv["metadata"]["uid"] == binding["pv_uid"]
+        and spec["claimRef"]["uid"] == binding["pvc_uid"]
+        and spec.get("csi", {}).get("driver") == binding["csi_driver"]
+        and spec.get("csi", {}).get("volumeHandle") == binding["volume_handle"]
+        and spec.get("persistentVolumeReclaimPolicy") in {"Delete", "Retain"},
+        "cleanup_pv_identity_changed",
+    )
+    return pv
 
 
 def verify_pending_object(api, root, value, expected, journal, by_uid):

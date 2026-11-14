@@ -871,7 +871,7 @@ def _settle_native(db, project, rows, intent):
     from app.schemas.kubevirt_storage import NativeStorageReport
     from app.services import quota_native, quota_storage
 
-    if intent.pending_initialization is not None:
+    if intent.pending_initialization is not None and not intent.bindings:
         from app.services.native_pending_cleanup import require_no_known_storage
 
         require_no_known_storage(db, str(intent.domain_id), intent.root)
@@ -959,9 +959,11 @@ def _finish_native(db, project, intent):
         db.commit()
         notify_project(
             project_id,
-            {"type": "project-deleted"}
-            if intent.mode == "delete"
-            else {"type": "project-state", "state": "draft"},
+            (
+                {"type": "project-deleted"}
+                if intent.mode == "delete"
+                else {"type": "project-state", "state": "draft"}
+            ),
         )
 
 

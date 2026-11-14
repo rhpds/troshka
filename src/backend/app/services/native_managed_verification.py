@@ -164,7 +164,7 @@ def transfer_creation(sessions, operation_id, target, reader):
         creates = root.get("status", {}).get("managedDeployment", {}).get("creates", {})
         planned = {
             v["metadata"]["name"]: v
-            for v in deploy.helpers().render(root, wanted["storageClass"])
+            for v in deploy.helpers().render_observed(root, wanted["storageClass"])
             if v["kind"] == "DataVolume"
         }
         for claim, lineage in target.get("clone_lineages", {}).items():

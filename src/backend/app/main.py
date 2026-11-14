@@ -202,7 +202,19 @@ def _resume_or_skip_deploying(project, enqueue_job) -> None:
     )
 
 
-def _handle_stuck_project(project, enqueue_job, delete_progress) -> None:
+def _project_has_native_handoff(db, project) -> bool:
+    from app.core.redis import get_job_info, is_redis_available
+    from app.services.native_managed_deploy import has_pending_handoff
+
+    if project.state != "deploying":
+        return False
+    job_info = get_job_info(project.id) if is_redis_available() else None
+    return has_pending_handoff(db, project, (job_info or {}).get("status") or "")
+
+
+def _handle_stuck_project(db, project, enqueue_job, delete_progress) -> None:
+    if _project_has_native_handoff(db, project):
+        return  # The original worker handed ownership to durable reconciliation.
     old_state = project.state
     if old_state == "deploying" and project.deploy_step:
         _resume_or_skip_deploying(project, enqueue_job)
@@ -236,7 +248,7 @@ def _startup_reset_stuck_projects():
             .all()
         )
         for p in stuck:
-            _handle_stuck_project(p, enqueue_job, _delete_deploy_progress)
+            _handle_stuck_project(db, p, enqueue_job, _delete_deploy_progress)
         if stuck:
             db.commit()
     finally:

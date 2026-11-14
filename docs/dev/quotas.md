@@ -251,14 +251,23 @@ remain platform-owned; tenant head and private intermediate bytes remain charged
 through retained stop/resume and cleanup settlement. Ambiguous creates never cause
 source recreation or adoption of a same-name clone DV.
 
-This is a source-supported profile awaiting installed-CDI acceptance. The installed
-CDI must honor `cdi.kubevirt.io/storage.usePopulator: "false"` for the new import and
-clone, and produce the explicitly supported generated-PVC and dynamic CSI clone
-provenance. PV request identity may differ from the final PVC UID after a supported
-rebind; original DV ownership, new dynamic provisioning, exact CSI journal mapping
-and the verified backend chain are still required. Unknown populator/snapshot or
-adoption shapes stay blocked. Unit/transport fixtures do not authorize deployment,
-quota enablement or historical source adoption.
+Cache imports retain `cdi.kubevirt.io/storage.usePopulator: "false"`; tenant clones
+request `"true"`, since disabling the populator selects CDI's host-assisted copy
+path. Read-only inspection of existing installed CDI 4.20.35 clones confirmed both
+final PVC source references name `volume-clone-source-<original-DV-UID>` with kind
+`VolumeCloneSource`, API group `cdi.kubevirt.io`, and the exact source-namespace
+annotation. New clones require this shape and completed `csi-clone` markers with
+no fallback. Old frozen non-populator plans remain observable for cleanup.
+
+PV request identity may differ from the final PVC UID after rebind. Original DV
+ownership, new dynamic provisioning, final PV claim ownership, exact CSI journal
+mapping and the verified backend chain remain required. Transient temporary-PVC
+continuity is not independently attested: inspected final PVs do not retain its
+original name or namespace. Upstream CDI's temporary-PVC/rebind implementation
+explains this shape; it does not replace backend ancestry proof. Unknown source
+references and adoption shapes stay blocked. A new Troshka API generation still
+requires installed end-to-end acceptance; existing-object inspection and test
+fixtures do not authorize quota enablement or historical source adoption.
 
 This policy explicitly accepts temporary storage overage during creation. Every
 complete measured byte stays charged. Allocation above the allowance retains the
