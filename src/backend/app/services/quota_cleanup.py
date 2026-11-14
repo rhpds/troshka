@@ -99,8 +99,8 @@ def _native_lock(db, project_id):
 def _namespace_authority(rows):
     originals = [row for row in rows if row.operation_id == operations._generation(row)]
     if len(originals) != 1:
-        operations.deny_unsupported(
-            "Original native namespace ownership is unavailable"
+        raise accounting.AccountingUnavailable(
+            "Original native namespace ownership is unavailable; verified ownership enrollment is required before cleanup"
         )
     row = originals[0]
     target = row.dispatch_metadata.get("native_deploy", {})
@@ -108,7 +108,7 @@ def _namespace_authority(rows):
     if target.get("base_grants_mode") != "managed" or target.get(
         "create_namespace_uid"
     ) != identity.get("root", {}).get("namespace_uid"):
-        operations.deny_unsupported(
+        raise accounting.AccountingUnavailable(
             "Original native namespace ownership is external or unknown"
         )
     return "managed"
@@ -116,10 +116,7 @@ def _namespace_authority(rows):
 
 def prepare_native(db, project, mode):
     """Persist the original cleanup identity before queue, credentials or teardown."""
-    if (
-        not accounting.quotas_enabled()
-        or operations.select_adapter(db, project) != "kubevirt"
-    ):
+    if operations.select_adapter(db, project) != "kubevirt":
         return None
     if not project.host_id and project.state == "draft":
         return None
@@ -172,10 +169,10 @@ def prepare_native(db, project, mode):
         or source.snapshot_evidence
         or any(i.snapshots for i in source.images if i.key in owned)
     ):
-        operations.deny_unsupported(
+        raise accounting.AccountingUnavailable(
             "Native cleanup requires a complete supported original storage graph"
         )
-    action_id = request_native_stop(db, project)
+    action_id = request_native_stop(db, project, for_cleanup=True)
     if not action_id:
         raise accounting.AccountingUnavailable(
             "Native cleanup stop identity unavailable"
@@ -324,7 +321,6 @@ def _complete_unclaimed_native(db, project, mode):
     """
     if (
         mode != "undeploy"
-        or not accounting.quotas_enabled()
         or operations.select_adapter(db, project) != "kubevirt"
         or not _unclaimed_candidate(
             operations.current_generation(operations._rows(db, project.id))
@@ -968,23 +964,16 @@ def _finish_native(db, project, intent):
 
 
 def guard_supported_cleanup(db, project):
-    """Native deletion has no backend-retention settlement receipt yet.
-
-    Reject before credentials, EIPs, runtime, or ledger fences change. A native
-    draft with no host or operation history still uses complete_empty normally.
-    """
-    if (
-        not accounting.quotas_enabled()
-        or operations.select_adapter(db, project) != "kubevirt"
-    ):
+    """Never fall back to unverified native deletion, even with quotas disabled."""
+    if operations.select_adapter(db, project) != "kubevirt":
         return
     if (
         project.host_id
         or project.state != "draft"
         or operations.current_generation(operations._rows(db, project.id))
     ):
-        operations.deny_unsupported(
-            "Native Delete/Undeploy requires original-generation absence and retained backend-storage settlement; use managed Stop to retain assets"
+        operations.unavailable(
+            "Native Delete/Undeploy requires verified original ownership and backend-storage settlement"
         )
 
 

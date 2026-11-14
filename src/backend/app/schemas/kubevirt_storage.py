@@ -144,6 +144,23 @@ class BackendImageInventory(PoolKey):
     trash_ids: list[Text] = Field(max_length=10000)
     collected_at: datetime
 
+    def excludes(self, key):
+        return key.image_id not in set(self.active_images.values()) | set(
+            self.trash_ids
+        )
+
+
+class BackendImageState(ImageKey):
+    """Two complete directory-ID/all-source trash reads for one immutable image."""
+
+    method: Literal["rbd-directory-id-v1"] = "rbd-directory-id-v1"
+    active: bool
+    trash: bool
+    collected_at: datetime
+
+    def excludes(self, key):
+        return self.image_id == key.image_id and not self.active and not self.trash
+
 
 class ProjectRoot(Evidence):
     project_id: UUID
@@ -176,6 +193,13 @@ class CleanupObject(Evidence):
     namespace_bootstrap: dict | None = None
 
 
+class NativeTrashRemoval(Evidence):
+    image_key: ImageKey
+    report_id: UUID
+    submitted_at: datetime
+    status: Literal["submitted", "accepted", "uncertain"] = "submitted"
+
+
 class NativeCleanupIntent(Evidence):
     version: Literal["native-cleanup-v1"] = "native-cleanup-v1"
     intent_id: UUID
@@ -206,12 +230,17 @@ class NativeCleanupIntent(Evidence):
     settled_at: datetime | None = None
     last_error: str | None = None
     pending_initialization: dict | None = None
+    trash_removals: dict[str, NativeTrashRemoval] = Field(
+        default_factory=dict, max_length=10000
+    )
 
     @model_serializer(mode="wrap")
     def serialize_pending(self, handler):
         value = handler(self)
         if self.pending_initialization is None:
             value.pop("pending_initialization", None)
+        if not self.trash_removals:
+            value.pop("trash_removals", None)
         return value
 
 
@@ -258,9 +287,9 @@ class CSISnapshotEvidence(Evidence):
     csi_driver: Text | None
     ready_to_use: bool
     snapshot_handle_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
-    source_snapshot_handle_sha256: Annotated[
-        str, Field(pattern=r"^[a-f0-9]{64}$")
-    ] | None
+    source_snapshot_handle_sha256: (
+        Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
+    )
     source_volume_handle_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None
     reference_snapshot_uid: Text | None = None
     reference_snapshot_name: Text | None = None
@@ -329,7 +358,7 @@ class ImageObservation(Evidence):
     measurement_status: Status
     command_version: Annotated[str, Field(max_length=256)]
     measurement_semantics_version: Annotated[str, Field(max_length=256)] | None
-    absence: BackendImageInventory | None = None
+    absence: BackendImageInventory | BackendImageState | None = None
 
     @model_serializer(mode="wrap")
     def serialize_absence(self, handler):
@@ -349,8 +378,7 @@ class ImageObservation(Evidence):
                 or self.measurement_semantics_version != "kubevirt-rbd-absence-v1"
                 or (proof.ceph_fsid, proof.pool_id, proof.rbd_namespace)
                 != (self.key.ceph_fsid, self.key.pool_id, self.key.rbd_namespace)
-                or self.key.image_id
-                in set(proof.active_images.values()) | set(proof.trash_ids)
+                or not proof.excludes(self.key)
                 or self.collected_at != proof.collected_at
                 or self.parent
                 or self.snapshots

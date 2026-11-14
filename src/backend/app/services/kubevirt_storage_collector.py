@@ -301,7 +301,7 @@ def _retiring_image(reader, key, version, limits, clock):
         if result.status != "complete":
             raise _ReadFailure(result.status)
         proof = result.value
-        if key.image_id in set(proof.active_images.values()) | set(proof.trash_ids):
+        if not proof.excludes(key):
             return None
         return ImageObservation(
             key=key,

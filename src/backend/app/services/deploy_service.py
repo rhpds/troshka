@@ -14218,52 +14218,15 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
 
 
 def _destroy_kubevirt_native(project_id, host, session, delete_record):
-    """Destroy a project via KubeVirt operator and wait for namespace cleanup."""
-    from app.models.provider import Provider
-    from app.services.providers import get_provider_driver
+    """Compatibility entry point for queued jobs; use verified cleanup in all modes."""
+    from app.models.project import Project
+    from app.services.quota_cleanup import request_native
 
-    provider = session.query(Provider).filter_by(id=host.provider_id).first()
-    if not provider:
-        if delete_record:
-            _delete_project_record(project_id)
-        return
-
-    from app.models.elastic_ip import ElasticIp
-    from app.services.eip_service import release_eip
-
-    project_eips = session.query(ElasticIp).filter_by(project_id=project_id).all()
-    for eip in project_eips:
-        try:
-            release_eip(session, eip)
-        except Exception:
-            logger.warning(
-                "Destroy %s: failed to release EIP %s", project_id[:8], eip.public_ip
-            )
-
-    driver = get_provider_driver(provider)
-    try:
-        driver.destroy_project(provider, project_id)
-        logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
-    except Exception as e:
-        logger.exception("Destroy %s: kubevirt cleanup failed", project_id[:8])
-        _set_destroy_error(project_id, str(e))
-        return
-
-    terminated = _wait_for_namespace_deletion(provider, project_id)
-    if not terminated:
-        # Namespace is stuck Terminating (finalizers) — its PVCs/DataVolumes are
-        # still consuming cluster storage. Keep the project record (in error) so
-        # the leak stays visible/retryable and the namespace GC can reconcile it,
-        # rather than deleting the record and orphaning the storage silently.
-        if delete_record:
-            _set_destroy_error(
-                project_id,
-                "Namespace stuck terminating; cluster storage may remain. "
-                "Retry destroy or let GC reconcile.",
-            )
-        return
-    if delete_record:
-        _delete_project_record(project_id)
+    project = session.get(Project, project_id)
+    if project is not None:
+        return request_native(
+            session, project, "delete" if delete_record else "undeploy"
+        )
 
 
 def _destroy_container(host, project_id, ctr, topo, pool):
@@ -14622,14 +14585,7 @@ def _destroy_single_host_resources(s, ctx, project, delete_record: bool) -> bool
         return False
 
     if host.host_type == "kubevirt-cluster":
-        from app.services.quota_accounting import quotas_enabled
-        from app.services.quota_cleanup import guard_supported_cleanup
-
-        guard_supported_cleanup(s, project)
-
-        _destroy_kubevirt_native(
-            project_id, host, s, delete_record and not quotas_enabled()
-        )
+        _destroy_kubevirt_native(project_id, host, s, delete_record)
         return False
 
     vni_map = ctx.get("vni_map", {})
@@ -14666,8 +14622,13 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
             return
 
         from app.services.quota_accounting import quotas_enabled
-        from app.services.quota_cleanup import guard_supported_cleanup
+        from app.services.quota_cleanup import guard_supported_cleanup, request_native
 
+        if (
+            request_native(s, project, "delete" if delete_record else "undeploy")
+            is not None
+        ):
+            return False
         guard_supported_cleanup(s, project)
 
         if quotas_enabled():

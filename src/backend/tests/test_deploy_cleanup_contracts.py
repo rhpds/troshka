@@ -113,50 +113,8 @@ def test_namespace_short_poll_distinguishes_absent_unknown_and_pending(
     assert deploy._poll_namespace_until_gone(core, "project-ns", "p", 2) is expected
 
 
-@pytest.mark.parametrize("deleted", [False, True])
-def test_destroy_kubevirt_retains_record_until_namespace_confirmed(
-    namespace_clients, monkeypatch, deleted
-):
-    _, core, _, _ = namespace_clients
-    core.read_namespace.side_effect = (
-        ApiException(status=404) if deleted else ConnectionError("offline")
-    )
-    provider, eip = Mock(), SimpleNamespace(public_ip="203.0.113.1")
-    db = Mock()
-    db.query.side_effect = lambda model: Mock(
-        **{
-            "filter_by.return_value.first.return_value": provider,
-            "filter_by.return_value.all.return_value": [eip],
-        }
-    )
-    driver, release, delete, error = Mock(), Mock(), Mock(), Mock()
-    monkeypatch.setattr("app.services.providers.get_provider_driver", lambda _: driver)
-    monkeypatch.setattr("app.services.eip_service.release_eip", release)
-    monkeypatch.setattr(deploy, "_delete_project_record", delete)
-    monkeypatch.setattr(deploy, "_set_destroy_error", error)
-    deploy._destroy_kubevirt_native(
-        "project", SimpleNamespace(provider_id="provider"), db, True
-    )
-    driver.destroy_project.assert_called_once_with(provider, "project")
-    release.assert_called_once_with(db, eip)
-    assert delete.called is deleted
-    assert error.called is not deleted
-
-
-def test_destroy_kubevirt_provider_error_preserves_record(monkeypatch):
-    db = Mock()
-    db.query.return_value.filter_by.return_value.all.return_value = []
-    driver = Mock()
-    driver.destroy_project.side_effect = RuntimeError("operator offline")
-    monkeypatch.setattr("app.services.providers.get_provider_driver", lambda _: driver)
-    delete, error = Mock(), Mock()
-    monkeypatch.setattr(deploy, "_delete_project_record", delete)
-    monkeypatch.setattr(deploy, "_set_destroy_error", error)
-    deploy._destroy_kubevirt_native(
-        "project", SimpleNamespace(provider_id="provider"), db, True
-    )
-    delete.assert_not_called()
-    error.assert_called_once_with("project", "operator offline")
+# Native deletion is exercised with real persisted ownership and settlement in
+# test_native_cleanup_completion.py; namespace absence alone is not completion.
 
 
 @pytest.mark.parametrize("agent_error", [False, True])

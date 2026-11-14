@@ -279,9 +279,9 @@ def test_running_first_deploy_original_receipt_enters_cleanup(
                 "annotations": annotations,
             },
             "data": {
-                "ca.crt"
-                if name == "kube-root-ca.crt"
-                else "service-ca.crt": "synthetic public CA"
+                (
+                    "ca.crt" if name == "kube-root-ca.crt" else "service-ca.crt"
+                ): "synthetic public CA"
             },
         }
     if grant_shape == "foreign":
@@ -459,7 +459,7 @@ def collect_cleanup(q, intent, *, gone=False, failed=False):
 
     class Transport:
         def run(self, operation, **kwargs):
-            if failed and operation == "active":
+            if failed and operation == "directory_keys":
                 return ReadResult(
                     status="unavailable", collected_at=FixedDatetime.current
                 )
@@ -468,6 +468,7 @@ def collect_cleanup(q, intent, *, gone=False, failed=False):
                 "pools": [{"poolname": "pool", "poolnum": 1}],
                 "version": "test",
                 "active": list(images),
+                "directory_keys": "\n".join("id_" + image for image in images),
                 "trash_all": [],
                 "trash": [],
                 "namespaces": [],
@@ -500,7 +501,11 @@ def collect_cleanup(q, intent, *, gone=False, failed=False):
                 value = values[operation]
             return ReadResult(
                 status="complete",
-                value=value if operation in {"fsid", "version"} else json.dumps(value),
+                value=(
+                    value
+                    if operation in {"fsid", "version", "directory_keys"}
+                    else json.dumps(value)
+                ),
                 collected_at=FixedDatetime.current,
             )
 
@@ -545,6 +550,8 @@ def collect_cleanup(q, intent, *, gone=False, failed=False):
         "partial_marker",
         "namespace_presend",
         "namespace_deleting",
+        "quotas_disabled",
+        "quotas_disabled_queue_loss",
     ],
 )
 def test_cleanup_worker_waits_for_original_resource_and_physical_settlement(
@@ -556,6 +563,10 @@ def test_cleanup_worker_waits_for_original_resource_and_physical_settlement(
     from app.services import quota_cleanup
 
     q = cleanup_case
+    if condition.startswith("quotas_disabled"):
+        monkeypatch.setattr(
+            "app.services.quota_accounting.quotas_enabled", lambda: False
+        )
     api = q.apis[q.project_ids[0]]
     if condition == "root_presend":
         submit = quota_cleanup.submit_native_teardown
@@ -632,7 +643,7 @@ def test_cleanup_worker_waits_for_original_resource_and_physical_settlement(
         )(project.id, db.get(User, q.owner_id), db)
         assert result["status"] == "cleanup_pending"
     fn, args = q.queued.pop()
-    if condition == "queue_loss":
+    if condition in {"queue_loss", "quotas_disabled_queue_loss"}:
         from app.services.quota_enforcement import run_once
 
         run_once()  # The original queue delivery was lost; durable poll recovers it.
@@ -1127,8 +1138,9 @@ def test_last_retirement_preserves_cache_and_next_admission(cleanup_case, condit
 
 
 @pytest.mark.parametrize("mode", ["delete", "undeploy"])
+@pytest.mark.parametrize("enabled", [True, False])
 def test_native_cleanup_routes_persist_original_intent_and_visible_pending(
-    cleanup_case, monkeypatch, mode
+    cleanup_case, monkeypatch, mode, enabled
 ):
     from app.api import projects
     from app.models.project import Project
@@ -1136,6 +1148,7 @@ def test_native_cleanup_routes_persist_original_intent_and_visible_pending(
     from app.services import quota_cleanup, quota_operations
 
     q = cleanup_case
+    monkeypatch.setattr("app.services.quota_accounting.quotas_enabled", lambda: enabled)
     queued = []
     monkeypatch.setattr(
         "app.core.redis.enqueue_job",
@@ -1163,6 +1176,66 @@ def test_native_cleanup_routes_persist_original_intent_and_visible_pending(
             > 0
         )
         assert len(queued) == 1
+
+
+@pytest.mark.parametrize("entry", ["delete", "undeploy", "worker"])
+def test_quota_off_cleanup_retains_project_without_original_ownership(
+    cleanup_case, monkeypatch, entry
+):
+    from fastapi import HTTPException
+
+    from app.api import projects
+    from app.models.project import Project
+    from app.models.user import User
+    from app.services import deploy_service, quota_operations
+
+    q = cleanup_case
+    monkeypatch.setattr("app.services.quota_accounting.quotas_enabled", lambda: False)
+    pid = q.project_ids[0]
+    with q.sessions() as db:
+        for row in quota_operations._rows(db, pid):
+            row.dispatch_metadata = {**row.dispatch_metadata, "native_deploy": {}}
+        db.commit()
+        before = db.get(Project, pid).topology
+        if entry == "worker":
+            deploy_service._destroy_project_inner(
+                {"project_id": pid}, delete_record=True
+            )
+        else:
+            endpoint = (
+                projects.delete_project
+                if entry == "delete"
+                else projects.undeploy_project
+            )
+            with pytest.raises(HTTPException) as error:
+                endpoint(pid, db.get(User, q.owner_id), db)
+            assert error.value.status_code == 409
+        db.expire_all()
+        project = db.get(Project, pid)
+        assert project.owner_id == q.owner_id
+        assert project.topology == before
+        assert not any(call[0] == "DELETE" for call in q.apis[pid].calls)
+
+
+@pytest.mark.parametrize("entry", ["worker", "helper"])
+def test_old_destroy_worker_uses_strong_cleanup_with_quotas_off(
+    cleanup_case, monkeypatch, entry
+):
+    from app.models.project import Project
+    from app.services import deploy_service, quota_cleanup
+
+    q = cleanup_case
+    monkeypatch.setattr("app.services.quota_accounting.quotas_enabled", lambda: False)
+    pid = q.project_ids[0]
+    if entry == "worker":
+        deploy_service._destroy_project_inner({"project_id": pid}, delete_record=True)
+    else:
+        with q.sessions() as db:
+            deploy_service._destroy_kubevirt_native(pid, None, db, True)
+    with q.sessions() as db:
+        project = db.get(Project, pid)
+        assert project.state == "cleanup_pending"
+        assert quota_cleanup.native_intent(db, pid).mode == "delete"
 
 
 def test_pending_cleanup_rejects_organization_transfer_without_reassigning_receipt(
@@ -1448,27 +1521,31 @@ def test_original_image_absence_requires_complete_stable_identity_inventory(cond
                 "pools": [{"poolname": "pool", "poolnum": 1}],
                 "namespaces": [],
                 "active": ["other"],
+                "directory_keys": "id_other-id\nname_other",
                 "trash_all": [],
             }
             if condition == "pool_changed":
                 values["pools"][0]["poolnum"] = 2
             if condition == "trash":
                 values["trash_all"] = [{"id": "original", "name": "old"}]
-            if operation == "info":
+            if operation == "directory_keys":
                 self.reads += 1
                 if condition == "unresolved":
                     return ReadResult(status="unavailable", collected_at=NOW)
-                value = {
-                    "id": "original"
+                value = (
+                    "id_original"
                     if condition == "changed" and self.reads > 1
-                    else "other-id",
-                    "name": kwargs["image"],
-                }
+                    else values[operation]
+                )
             else:
                 value = values[operation]
             return ReadResult(
                 status="complete",
-                value=value if operation == "fsid" else json.dumps(value),
+                value=(
+                    value
+                    if operation in {"fsid", "directory_keys"}
+                    else json.dumps(value)
+                ),
                 collected_at=NOW,
             )
 
@@ -1485,5 +1562,5 @@ def test_original_image_absence_requires_complete_stable_identity_inventory(cond
         assert result.status != "complete"
     else:
         assert result.status == "complete"
-        assert ("original" in result.value.trash_ids) == (condition == "trash")
-        assert "original" not in result.value.active_images.values()
+        assert result.value.trash == (condition == "trash")
+        assert not result.value.active

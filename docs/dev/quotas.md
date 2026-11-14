@@ -149,7 +149,7 @@ The original Project, owner, organization, host, slot and storage charges remain
 visible as `cleanup_pending`. Full managed Stop proof closes compute first.
 Scoped operator/CSI teardown uses sealed original UIDs and resource versions,
 preserves shared images/patterns/caches, and never forces finalizers or directly
-deletes backend images. Original child cleanup markers are independently read
+deletes active backend images. Original child cleanup markers are independently read
 back before parent deletion so foreground garbage collection cannot invoke
 legacy name-based cleanup. After interruption, fresh original-state observations
 may complete missing marker writes or UID/RV-bound submissions. Accepted/deleting
@@ -158,7 +158,7 @@ replacement observations remain pending; retries never adopt replacements.
 
 The existing managed collector continues observing the original root after its
 namespace disappears. Retained original backend keys remain in the graph. Only
-bounded, stable public active-image name/immutable-ID inventories plus
+bounded, stable reads of immutable IDs in `rbd_directory` plus
 `rbd trash ls --all` can establish backend absence; command errors and namespace
 404 are never zero. Retain-policy PVs/storage remain pending and charged.
 Partial/stale/latest failed evidence retains prior charges. Fresh complete
@@ -169,6 +169,30 @@ FK-free reservation row. Settled roots remain in append-only history while
 receipt-authorized active-root selection permits successor enrollment. Late old
 queue deliveries cannot change a later generation. Organization transfers and
 configuration edits reject while cleanup is pending.
+
+Native Delete/Undeploy uses this workflow whether quota enforcement is enabled or
+disabled. The recovery poll also runs with quotas disabled, but does not evaluate
+limits or dispatch overage shutdowns. Older projects without verified original
+ownership records require ownership enrollment before cleanup; they are retained
+and rejected explicitly, never passed to legacy name-based deletion. New deployments
+made through the legacy quota-off deploy path do not yet create these records.
+
+The managed collector automatically removes only original project disks that CSI
+has already moved to trash as part of pending cleanup. It requires
+the current imported cleanup report, original owner/operation/root, fresh namespace
+absence, an original `Delete`-policy PV binding, and complete target-ID directory
+and all-source trash reads. Cache and other-root bindings are excluded. The fixed
+command is `rbd trash rm <immutable-id> --pool <pinned-pool> --namespace <pinned-namespace>
+--force`; `--force` permits removal before the trash deferment expires, not removal
+of dependent clones or a pool-wide purge. A receipt is committed before submission.
+Unknown outcomes are not retried automatically. Acceptance alone never releases
+quota: the next complete report must prove the disk absent from both directory and
+trash, including `REMOVING` entries. `Retain` volumes remain charged and untouched.
+Collection without a pending authorized cleanup remains read-only. The ID-directory read avoids
+opening unrelated images, so an unrelated broken header cannot block settlement.
+The directory and trash semantics are pinned to the supported Ceph profile; see
+[Ceph directory implementation](https://github.com/ceph/ceph/blob/v19.2.1/src/cls/rbd/cls_rbd.cc)
+and [trash removal command](https://github.com/ceph/ceph/blob/v19.2.1/src/tools/rbd/action/Trash.cc).
 
 An empty never-deployed draft still uses the existing confirmed-empty path.
 Native disk wipe is also rejected even when automatic restart is false, because

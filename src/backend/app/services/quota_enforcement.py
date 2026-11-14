@@ -61,9 +61,11 @@ def _lock_inventory(db, project_id=None):
     before = _snapshot(db, project_id)
     lock_rows(
         db,
-        user_ids={r.owner_id for r in before}
-        if project_id is None
-        else {r.owner_id for r in before if r.id == project_id},
+        user_ids=(
+            {r.owner_id for r in before}
+            if project_id is None
+            else {r.owner_id for r in before if r.id == project_id}
+        ),
         organization_ids={r.organization_id for r in before if r.organization_id},
         project_ids={r.id for r in before},
     )
@@ -161,6 +163,8 @@ def _spending_causes(db, project, now, cache):
 
 
 def _evaluate_project(db, project, now, cache):
+    if not accounting.quotas_enabled():
+        return set(), False
     current, unavailable = _spending_causes(db, project, now, cache)
     spending_exhausted = bool(current)
     storage_causes, storage_unavailable = _storage_causes(db, project, now)
@@ -172,12 +176,16 @@ def _evaluate_project(db, project, now, cache):
     marker.checked_at = now
     marker.details = {
         "accounting_status": "unavailable" if unavailable else "ready",
-        "spending_state": "budget_exceeded_shutdown_pending"
-        if spending_exhausted
-        else ("accounting_unavailable" if unavailable else "within_budget"),
-        "storage_state": "storage_exceeded_shutdown_pending"
-        if storage_causes
-        else ("storage_unavailable" if storage_unavailable else "within_allowance"),
+        "spending_state": (
+            "budget_exceeded_shutdown_pending"
+            if spending_exhausted
+            else ("accounting_unavailable" if unavailable else "within_budget")
+        ),
+        "storage_state": (
+            "storage_exceeded_shutdown_pending"
+            if storage_causes
+            else ("storage_unavailable" if storage_unavailable else "within_allowance")
+        ),
         "cause_ids": [
             row.id for row in _stops(db, project.id) if _cause_key(row) in current
         ],
@@ -339,16 +347,15 @@ def _ensure_run(db, project, cause_ids, now):
         run.details = {}
 
 
-def request_native_stop(db, project, off_action="stop"):
+def request_native_stop(db, project, off_action="stop", *, for_cleanup=False):
     """Persist an ordinary native stop using the existing retry/proof contract.
 
     Caller commits before dispatch. The explicit request survives policy
     corrections and process loss, just like an already issued overage stop.
     """
     if (
-        not accounting.quotas_enabled()
-        or operations.select_adapter(db, project) != "kubevirt"
-    ):
+        not accounting.quotas_enabled() and not for_cleanup
+    ) or operations.select_adapter(db, project) != "kubevirt":
         return None
     if off_action != "stop":
         operations.deny_unsupported("Native pause/hibernate (use project Stop)")
@@ -462,9 +469,9 @@ def project_status(db, project_id):
         "action_reasons": sorted(reasons),
         "action_state": run.state if run else None,
         "attempts": run.attempts if run else 0,
-        "next_attempt_at": run.next_attempt_at.isoformat()
-        if run and run.next_attempt_at
-        else None,
+        "next_attempt_at": (
+            run.next_attempt_at.isoformat() if run and run.next_attempt_at else None
+        ),
         "last_error": run.last_error if run else None,
     }
 
@@ -734,10 +741,10 @@ def reconcile_action(db, action_id, now):
     Owns transaction boundaries. The persisted coordinator survives queue/process
     loss; retrying a known stop is idempotent, bounded by backoff, and protected by a
     cross-process execution mutex. A stop service return is never completion proof."""
-    if not accounting.quotas_enabled():
-        return
     action = db.get(QuotaAction, action_id)
     if not action or action.kind != "stop_run":
+        return
+    if not accounting.quotas_enabled() and not action.details.get("explicit_stop"):
         return
     project_id = action.project_id
     db.commit()  # Acquire session execution mutex before any transactional locks.
@@ -933,8 +940,6 @@ def _deliver_warning(db, identity):
 
 
 def run_once():
-    if not accounting.quotas_enabled():
-        return
     from app.core.database import SessionLocal
     from app.services import quota_storage
 
@@ -953,6 +958,8 @@ def run_once():
         if cleanup and cleanup.phase != "finalized":
             reconcile_native(project_id, str(cleanup.intent_id))
             continue
+        if not accounting.quotas_enabled():
+            continue
         try:
             quota_storage.reconcile_project(project_id)
             from app.services.native_managed_power import reconcile as reconcile_resume
@@ -963,6 +970,8 @@ def run_once():
                 "Physical storage observation unavailable for %s; growth remains fenced by freshness",
                 project_id,
             )
+    if not accounting.quotas_enabled():
+        return
     with SessionLocal() as db:
         evaluate(db, _now())
         db.commit()
@@ -1065,7 +1074,7 @@ def reconcile_worker(action_id):
 def start_enforcement_poll():
     """Startup pass plus periodic durable-action recovery, including without Redis."""
     global _poll_started
-    if not accounting.quotas_enabled() or _poll_started:
+    if _poll_started:
         return
     _poll_started = True
 

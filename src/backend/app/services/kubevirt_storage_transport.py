@@ -1,4 +1,4 @@
-"""Constrained read-only Ceph transport. Never expose raw command failures."""
+"""Constrained Ceph reads and single-ID trash removal; never expose raw failures."""
 
 import json
 import os
@@ -13,7 +13,7 @@ from uuid import UUID
 from pydantic import Field, model_serializer
 
 from app.schemas.kubevirt_storage import (
-    BackendImageInventory,
+    BackendImageState,
     Bytes,
     Evidence,
     ImageKey,
@@ -60,6 +60,10 @@ def command_argv(
         return ["rbd", "namespace", "list", "--pool", _token(pool), "--format", "json"]
     pool, namespace = _token(pool), _token(namespace, empty=True)
     opts = ["--pool", pool, "--namespace", namespace]
+    if operation == "directory_keys":
+        return ["rados", *opts, "listomapkeys", "rbd_directory"]
+    if operation == "trash_remove":
+        return ["rbd", "trash", "rm", _token(image), *opts, "--force"]
     directories = {
         "active": ["ls"],
         "trash_all": ["trash", "ls", "--all"],
@@ -348,6 +352,24 @@ def parse_usage(payload, image_id):
     )
 
 
+def _directory_ids(value, max_objects):
+    """Pinned Ceph directory format; failed/truncated/unknown output is not absence."""
+    if not isinstance(value, str):
+        raise ValueError("invalid image directory")
+    keys = value.splitlines()
+    if len(keys) > 2 * max_objects + 1 or len(keys) != len(set(keys)):
+        raise ValueError("incomplete image directory")
+    ids = set()
+    for key in keys:
+        if key.startswith("id_"):
+            ids.add(_token(key[3:]))
+        elif not key.startswith("name_") and key != "state":
+            raise ValueError("unknown image directory key")
+    if len(ids) > max_objects:
+        raise ValueError("image directory limit exceeded")
+    return ids
+
+
 class RbdReader:
     """Explicit reader interface with configured pool and CSI journal ownership."""
 
@@ -551,6 +573,18 @@ class RbdReader:
         p = self._pool(key)
         return self._read("trash", pool=p.name, namespace=p.rbd_namespace)
 
+    def remove_trash(self, key):
+        """One immutable ID only; caller must durably authorize original cleanup."""
+        pool = self._pool(key)
+        if self._verify_binding_target().status != "complete":
+            return ReadResult(status="identity_changed", collected_at=utcnow())
+        return self.transport.run(
+            "trash_remove",
+            pool=pool.name,
+            namespace=pool.rbd_namespace,
+            image=key.image_id,
+        )
+
     def _inventory_value(self, operation, timestamps, **kwargs):
         result = self._read(operation, **kwargs)
         if result.status != "complete":
@@ -558,35 +592,24 @@ class RbdReader:
         timestamps.append(result.collected_at)
         return result.value
 
-    def _inventory_round(self, pool, timestamps, max_objects):
+    def _inventory_round(self, pool, key, timestamps, max_objects):
         args = {"pool": pool.name, "namespace": pool.rbd_namespace}
-        names = self._inventory_value("active", timestamps, **args)
-        if not isinstance(names, list) or len(names) > max_objects:
-            raise ValueError("incomplete image directory")
-        active = {}
-        for name in names:
-            name = _token(name)
-            if name in active:
-                raise ValueError("duplicate image name")
-            info = self._inventory_value("info", timestamps, image=name, **args)
-            if not isinstance(info, dict) or info.get("name") != name:
-                raise ValueError("image name changed")
-            active[name] = _token(info["id"])
-        if len(set(active.values())) != len(active):
-            raise ValueError("duplicate image identity")
+        directory = self._inventory_value(
+            "directory_keys", timestamps, json_output=False, **args
+        )
+        active = _directory_ids(directory, max_objects)
         trash = self._inventory_value("trash_all", timestamps, **args)
         if not isinstance(trash, list) or len(trash) + len(active) > max_objects:
             raise ValueError("incomplete trash directory")
         ids = [_token(row["id"]) for row in trash]
         if len(set(ids)) != len(ids):
             raise ValueError("duplicate trash identity")
-        return active, sorted(ids)
+        return key.image_id in active, key.image_id in ids
 
     def image_inventory(self, key, *, max_objects):
-        """No ENOENT inference; unresolved active names invalidate the whole read.
+        """Read immutable directory IDs without opening unrelated image headers.
 
-        Ceph v19.2.1 long ls can omit failed image opens, and default trash ls
-        excludes REMOVING sources. Use plain ls, every info, and short --all trash.
+        Only successful complete reads count; short --all trash includes REMOVING.
         """
         timestamps = []
         try:
@@ -599,16 +622,17 @@ class RbdReader:
                 )
                 if pool.rbd_namespace not in namespaces:
                     raise ValueError("backend namespace changed")
-            before = self._inventory_round(pool, timestamps, max_objects)
-            after = self._inventory_round(pool, timestamps, max_objects)
+            before = self._inventory_round(pool, key, timestamps, max_objects)
+            after = self._inventory_round(pool, key, timestamps, max_objects)
             if before != after or self._verify_binding_target().status != "complete":
                 raise ValueError("backend inventory changed")
-            value = BackendImageInventory(
+            value = BackendImageState(
                 ceph_fsid=key.ceph_fsid,
                 pool_id=key.pool_id,
                 rbd_namespace=key.rbd_namespace,
-                active_images=before[0],
-                trash_ids=before[1],
+                image_id=key.image_id,
+                active=before[0],
+                trash=before[1],
                 collected_at=min(timestamps),
             )
             return ReadResult(

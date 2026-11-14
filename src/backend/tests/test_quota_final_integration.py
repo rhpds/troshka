@@ -54,7 +54,6 @@ def test_native_cleanup_rejected_before_any_side_effect(
     with pytest.raises(HTTPException) as error:
         getattr(projects, action)(project.id, owner, db)
     assert error.value.status_code == 409
-    assert error.value.detail["reason"] == "unsupported_quota_operation"
     assert project.state == state and project.host_id == host.id
     side_effect.assert_not_called()
 

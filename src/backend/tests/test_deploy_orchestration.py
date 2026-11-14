@@ -3345,7 +3345,10 @@ class TestDestroyProjectInner:
 
         host = _make_host(ip=None)
         mock_session = MagicMock()
-        mock_session.query.return_value.filter_by.return_value.first.return_value = host
+        mock_session.query.return_value.filter_by.return_value.first.side_effect = [
+            _make_project(),
+            host,
+        ]
 
         ctx = {"project_id": PROJECT_ID, "host_id": HOST_ID}
 
@@ -3458,7 +3461,9 @@ class TestDestroyProjectInner:
 
         def mock_filter_by(**kwargs):
             result = MagicMock()
-            if "id" in kwargs and kwargs["id"] == HOST_ID:
+            if kwargs.get("id") == PROJECT_ID:
+                result.first.return_value = _make_project()
+            elif "id" in kwargs and kwargs["id"] == HOST_ID:
                 result.first.return_value = host
             elif "id" in kwargs and kwargs["id"] == "dns-prov-1":
                 result.first.return_value = dns_provider
@@ -3585,110 +3590,8 @@ class TestDestroyTroshkadResources:
         mock_teardown.assert_called_once()
 
 
-class TestDestroyKubevirtNative:
-    """Tests for _destroy_kubevirt_native."""
-
-    @patch(f"{SVC}._delete_project_record")
-    def test_no_provider_deletes_record(self, mock_delete):
-        """No provider found still deletes record."""
-        from app.services.deploy_service import _destroy_kubevirt_native
-
-        host = _make_host(host_type="kubevirt-cluster")
-        session = MagicMock()
-        session.query.return_value.filter_by.return_value.first.return_value = None
-
-        _destroy_kubevirt_native(PROJECT_ID, host, session, True)
-
-        mock_delete.assert_called_once_with(PROJECT_ID)
-
-    @patch(f"{SVC}._delete_project_record")
-    @patch(f"{SVC}._set_destroy_error")
-    def test_driver_exception_sets_error(self, mock_set_err, mock_delete):
-        """Driver exception sets destroy error, does not delete record."""
-        from app.services.deploy_service import _destroy_kubevirt_native
-
-        host = _make_host(host_type="kubevirt-cluster")
-        provider = MagicMock()
-        provider.type = "kubevirt"
-        session = MagicMock()
-        session.query.return_value.filter_by.return_value.first.return_value = provider
-
-        mock_driver = MagicMock()
-        mock_driver.destroy_project.side_effect = RuntimeError("k8s error")
-
-        with patch(
-            "app.services.providers.get_provider_driver", return_value=mock_driver
-        ):
-            _destroy_kubevirt_native(PROJECT_ID, host, session, True)
-
-        mock_set_err.assert_called_once()
-        mock_delete.assert_not_called()
-
-    @patch(f"{SVC}._delete_project_record")
-    def test_happy_path_waits_for_namespace(self, mock_delete):
-        """Happy path: destroys project, waits for namespace deletion."""
-        from kubernetes.client.exceptions import ApiException
-
-        from app.services.deploy_service import _destroy_kubevirt_native
-
-        host = _make_host(host_type="kubevirt-cluster")
-        provider = MagicMock()
-        provider.type = "kubevirt"
-        session = MagicMock()
-        session.query.return_value.filter_by.return_value.first.return_value = provider
-
-        mock_driver = MagicMock()
-        mock_core_api = MagicMock()
-        # First call returns namespace, second raises 404
-        mock_core_api.read_namespace.side_effect = [
-            ApiException(status=404),
-        ]
-
-        with patch(
-            "app.services.providers.get_provider_driver", return_value=mock_driver
-        ), patch(
-            f"{KV_MOD}._get_k8s_clients",
-            return_value=(None, mock_core_api, None),
-        ), patch(
-            f"{KV_MOD}._project_ns", return_value="troshka-test-ns"
-        ):
-            _destroy_kubevirt_native(PROJECT_ID, host, session, True)
-
-        mock_driver.destroy_project.assert_called_once()
-        mock_delete.assert_called_once_with(PROJECT_ID)
-
-    @patch("time.sleep")
-    @patch(f"{SVC}._set_destroy_error")
-    @patch(f"{SVC}._delete_project_record")
-    def test_stuck_namespace_keeps_record(self, mock_delete, mock_set_err, _sleep):
-        """A namespace stuck Terminating past the timeout must NOT delete the DB
-        record — that would orphan its PVCs/DataVolumes with nothing to retry or
-        reconcile against. Set a destroy error and keep the record instead."""
-        from app.services.deploy_service import _destroy_kubevirt_native
-
-        host = _make_host(host_type="kubevirt-cluster")
-        provider = MagicMock()
-        provider.type = "kubevirt"
-        session = MagicMock()
-        session.query.return_value.filter_by.return_value.first.return_value = provider
-
-        mock_driver = MagicMock()
-        mock_core_api = MagicMock()
-        # Namespace never 404s — stuck Terminating on finalizers.
-        mock_core_api.read_namespace.return_value = MagicMock()
-
-        with patch(
-            "app.services.providers.get_provider_driver", return_value=mock_driver
-        ), patch(
-            f"{KV_MOD}._get_k8s_clients",
-            return_value=(None, mock_core_api, None),
-        ), patch(
-            f"{KV_MOD}._project_ns", return_value="troshka-test-ns"
-        ):
-            _destroy_kubevirt_native(PROJECT_ID, host, session, True)
-
-        mock_delete.assert_not_called()
-        mock_set_err.assert_called_once()
+# Native deletion is exercised with real persisted ownership and settlement in
+# test_native_cleanup_completion.py; namespace absence alone is not completion.
 
 
 class TestStopUnexpectedError:

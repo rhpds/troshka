@@ -567,9 +567,9 @@ def test_membership_transfer_rechecks_queued_cause_and_destination_handoff(
     monkeypatch.setattr(
         accounting,
         "spend",
-        lambda db, scope, identity, now: Decimal(1)
-        if identity == org.id
-        else Decimal(0),
+        lambda db, scope, identity, now: (
+            Decimal(1) if identity == org.id else Decimal(0)
+        ),
     )
     enforcement.evaluate(db, NOW)
     run = actions(db, project, "stop_run")[0]
@@ -601,16 +601,33 @@ def test_membership_transfer_rechecks_queued_cause_and_destination_handoff(
     db.commit()
 
 
-def test_disabled_periodic_evaluator_does_no_database_work(monkeypatch):
+def test_disabled_periodic_recovery_does_not_dispatch_budget_stop(ledger, monkeypatch):
+    db, project, user, org, amounts = ledger
+    compute(db, project, user, org)
+    amounts["project"] = Decimal(100)
+    enforcement.evaluate(db, NOW)
+    run = actions(db, project, "stop_run")[0]
+    before = {
+        row.id: (row.kind, row.state, row.attempts)
+        for row in db.query(QuotaAction).filter(QuotaAction.scope_id == project.id)
+    }
+    assert any(kind == "warning" for kind, _, _ in before.values())
+    db.commit()
     monkeypatch.setattr(accounting, "quotas_enabled", lambda: False)
-    session = Mock(side_effect=AssertionError("disabled evaluator must not access DB"))
-    monkeypatch.setattr("app.core.database.SessionLocal", session)
+    dispatch = Mock(
+        side_effect=AssertionError("disabled quotas must not stop workloads")
+    )
+    monkeypatch.setattr(enforcement, "_dispatch", dispatch)
     enforcement.run_once()
-    session.assert_not_called()
-    thread = Mock()
-    monkeypatch.setattr(enforcement.threading, "Thread", thread)
-    enforcement.start_enforcement_poll()
-    thread.assert_not_called()
+    enforcement.reconcile_action(db, run.id, NOW)
+    db.expire_all()
+    assert run.attempts == 0
+    assert run.state == "pending"
+    assert {
+        row.id: (row.kind, row.state, row.attempts)
+        for row in db.query(QuotaAction).filter(QuotaAction.scope_id == project.id)
+    } == before
+    dispatch.assert_not_called()
 
 
 def test_failed_stop_error_remains_retryable_with_durable_exhaustion_proof(

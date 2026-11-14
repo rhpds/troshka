@@ -320,7 +320,15 @@ def reconcile_allocations(sessions, manifest):
         reconcile_native(project_id, intent_id)
 
 
-def cycle(sessions, pins, target_id, collector_id, readers, backend, collect):
+def cycle(
+    sessions,
+    pins,
+    target_id,
+    collector_id,
+    readers,
+    backend,
+    collect,
+):
     """Call repeatedly from the existing collector schedule, never per project."""
     started = datetime.now(UTC)
     try:
@@ -378,6 +386,9 @@ def cycle(sessions, pins, target_id, collector_id, readers, backend, collect):
         )
         db.commit()
     try:
+        from app.services.native_trash_cleanup import reconcile
+
+        reconcile(sessions, report, readers, backend)
         reconcile_allocations(sessions, manifest)
     except Exception:
         pass  # Imported partial attempts invalidate readiness; old charges remain.
