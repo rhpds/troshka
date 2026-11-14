@@ -33,6 +33,7 @@ from app.services import quota_baseline as legacy
 from app.services import quota_native as native
 from app.services import quota_operations as operations
 from app.services import quota_storage as storage
+from app.services.quota_cleanup import active_roots, native_intents, settled_root_keys
 from app.services.quota_locks import lock_rows
 from app.services.quota_policy import get_limits
 from app.services.quota_resources import topology_resources
@@ -100,7 +101,9 @@ def _receipt(db):
 
 
 def _native_identity(db, project):
-    roots = db.query(NativeProjectRoot).filter_by(project_id=project.id).all()
+    roots = active_roots(
+        db, db.query(NativeProjectRoot).filter_by(project_id=project.id).all()
+    )
     _require(len(roots) == 1, "Native project needs one current enrolled root")
     root = roots[0]
     domain = db.get(NativeCollectionDomain, root.domain_id)
@@ -111,7 +114,9 @@ def _native_identity(db, project):
     enrollment = db.get(NativeEnrollment, domain.enrollment_id)
     _require(enrollment is not None, "Native enrollment is missing")
     manifest = VerifiedEnrollment.model_validate(enrollment.payload)
-    pins = [r for r in manifest.pins.project_roots if str(r.project_id) == project.id]
+    from app.services.kubevirt_storage_enrollment import root_key
+
+    pins = [r for r in manifest.pins.project_roots if root_key(r) == root.key]
     _require(len(pins) == 1, "Native enrolled project identity is ambiguous")
     return {
         "domain_id": root.domain_id,
@@ -157,7 +162,9 @@ def _empty(db, project, rows):
         and not db.query(MeteringInterval)
         .filter_by(project_id=project.id, ended_at=None)
         .first()
-        and not db.query(NativeProjectRoot).filter_by(project_id=project.id).first()
+        and not active_roots(
+            db, db.query(NativeProjectRoot).filter_by(project_id=project.id).all()
+        )
     )
 
 
@@ -215,6 +222,7 @@ def inventory(db):
 
 
 def _retained_inventory(db):
+    retired = settled_root_keys(db)
     roots = [
         dict(row)
         for row in db.execute(
@@ -238,8 +246,13 @@ def _retained_inventory(db):
             if row["state"] not in {"released", "confirmed"}
             or any(row["observed"].values())
         ],
-        "native_roots": roots,
-        "native_retained_bindings": _binding_inventory(db, roots),
+        "native_roots": [r for r in roots if r["key"] not in retired],
+        "retired_native_domains": sorted(
+            {r["domain_id"] for r in roots if r["key"] in retired}
+        ),
+        "native_retained_bindings": _binding_inventory(
+            db, [r for r in roots if r["key"] not in retired]
+        ),
         "open_sources": [
             dict(row)
             for row in db.execute(
@@ -258,9 +271,23 @@ def _retained_inventory(db):
 
 
 def _binding_inventory(db, roots):
+    from app.services.kubevirt_storage_reports import _binding_identity, binding_key
+
+    # Historical bindings stay in the database. Only the exact sealed identities
+    # covered by a durable zero-storage settlement are no longer live capacity.
+    settled = {
+        (str(intent.domain_id), binding_key(binding)): _binding_identity(binding)
+        for intent in native_intents(db)
+        if intent.phase in {"settled", "finalized"}
+        and intent.settlement_report_id
+        and intent.settled_at
+        for binding in intent.bindings
+    }
     by_key = {root["key"]: root for root in roots}
     entries = []
     for binding in db.query(NativeRetainedBinding).order_by(NativeRetainedBinding.key):
+        if settled.get((binding.domain_id, binding.key)) == binding.payload:
+            continue
         root = by_key.get(binding.root_key)
         coverage = "unresolved"
         if root is not None and root["domain_id"] == binding.domain_id:
@@ -796,7 +823,7 @@ def _confirm(db, rows, vectors, entry, observed):
         legacy._confirmed_baseline(db, row, target, observed)
 
 
-def _inventory_blockers(db, source):
+def _inventory_blockers(db, source, now=None):
     _require(
         not source["external_ips"],
         "Retained external IP capacity has no supported quota adapter",
@@ -825,7 +852,7 @@ def _inventory_blockers(db, source):
             "Deleted project retains an enrolled native root",
         )
     _work_coverage(source, projects)
-    _binding_coverage(source)
+    _binding_coverage(source, _cache_only_domains(db, source, now))
 
 
 def _work_coverage(source, projects):
@@ -841,7 +868,31 @@ def _work_coverage(source, projects):
         )
 
 
-def _binding_coverage(source):
+def _cache_only_domains(db, source, now):
+    """Retired tenant roots may leave enrolled platform cache, never tenant bytes."""
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.services.kubevirt_storage_enrollment import validated_enrollment
+
+    active = {r["domain_id"] for r in source["native_roots"]}
+    candidates = set(source.get("retired_native_domains", [])) - active
+    caches = {
+        b["domain_id"]
+        for b in source["native_retained_bindings"]
+        if b["coverage"] == "platform_cache"
+    }
+    covered = candidates & caches
+    for domain_id in sorted(covered):
+        domain = db.get(NativeCollectionDomain, domain_id)
+        _require(domain is not None, "Retired native collection domain is missing")
+        enrollment = db.get(NativeEnrollment, domain.enrollment_id)
+        _require(enrollment is not None, "Retired native enrollment is missing")
+        native._measurement_report(
+            db, domain, [], validated_enrollment(enrollment), now or operations.now()
+        )
+    return covered
+
+
+def _binding_coverage(source, cache_only_domains=()):
     projects = {p["project_id"]: p for p in source["projects"]}
     covered_domains = set()
     for root in source["native_roots"]:
@@ -854,7 +905,11 @@ def _binding_coverage(source):
     for binding in source["native_retained_bindings"]:
         _require(
             binding["coverage"] in {"project", "platform_cache"}
-            and binding["domain_id"] in covered_domains,
+            and (
+                binding["domain_id"] in covered_domains
+                or binding["coverage"] == "platform_cache"
+                and binding["domain_id"] in cache_only_domains
+            ),
             "Standalone native retained binding lacks complete imported domain/root coverage",
         )
 
@@ -1090,7 +1145,7 @@ def run(db, *, evidence=None, now=None, apply=False):
             db.rollback()
             return replay
         since = _envelope(evidence, source, now)
-        _inventory_blockers(db, source)
+        _inventory_blockers(db, source, now)
         protected = preservation(db)
         coverage = {}
         for item in source["projects"]:
@@ -1244,7 +1299,7 @@ def _runtime_current(db, details, now):
         ],
         **_retained_inventory(db),
     }
-    _inventory_blockers(db, source)
+    _inventory_blockers(db, source, now)
     for project in projects:
         _runtime_project(db, project, now)
     return projects

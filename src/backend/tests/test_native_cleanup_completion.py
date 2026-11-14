@@ -843,6 +843,38 @@ def test_cleanup_worker_waits_for_original_resource_and_physical_settlement(
         == 1
     )
     if condition == "complete":
+        from app.services import quota_capacity_baseline as capacity
+        from app.services import quota_storage
+
+        quota_storage.reconcile_project(q.project_ids[1])
+        with q.sessions() as db:
+            source = capacity.inventory(db)
+            capacity._inventory_blockers(db, source, FixedDatetime.current)
+            if mode == "undeploy":
+                assert next(
+                    p for p in source["projects"] if p["project_id"] == q.project_ids[0]
+                )["empty"]
+            readiness = capacity.check_ready(db)
+            assert readiness["ready"], json.dumps(readiness, default=str)
+            from app.schemas.quota import Resources
+            from app.services import quota_admission
+
+            next_project = (
+                project
+                if mode == "undeploy"
+                else Project(name="next-draft", owner_id=q.owner_id)
+            )
+            if mode == "delete":
+                db.add(next_project)
+                db.flush()
+            quota_admission.reserve(
+                db,
+                next_project.id,
+                "next-admission",
+                Resources(projects=1),
+                FixedDatetime.current,
+            )
+            db.rollback()
         successor_id, new_operation = enroll_successor(q, final, mode)
         before_calls = deepcopy(api.calls)
         fn(*args)  # Exact old delivery after successor enrollment AND allocation.
@@ -934,6 +966,9 @@ def enroll_successor(q, receipt, mode):
         }
         selected, _ = quota_native._measurement_domain(db, project.id, identity)
         assert selected.payload["namespace_uid"] == "successor-namespace-uid"
+        from app.services import quota_capacity_baseline as capacity
+
+        assert capacity._native_identity(db, project) == identity
         from app.models.quota import QuotaAllocation, QuotaReservation
 
         operation_id = "successor-generation"
@@ -965,6 +1000,130 @@ def enroll_successor(q, receipt, mode):
         project.state = "active"
         db.commit()
         return project.id, operation_id
+
+
+def finish_original(q, project_id):
+    """Drive original cleanup through operator absence and collected settlement."""
+    from app.api import projects
+    from app.models.project import Project
+    from app.models.user import User
+    from app.services import native_managed_power as power
+    from app.services import quota_cleanup
+    from app.services.kubevirt_storage_reports import import_report
+
+    api = q.apis[project_id]
+    with q.sessions() as db:
+        projects.undeploy_project(project_id, db.get(User, q.owner_id), db)
+    fn, args = q.queued.pop()
+    fn(*args)
+    with q.sessions() as db:
+        intent = quota_cleanup.native_intent(db, project_id)
+        assert intent.phase == "pending", intent.last_error
+    root = api.rows("TroshkaProject", None)[0]
+    for _ in range(8):
+        if power.helpers().cleanup_delete(api, root):
+            break
+    else:
+        raise AssertionError("Original cleanup did not settle")
+    del api.values["TroshkaProject", root["metadata"]["name"]]
+    fn(*args)
+    for key in list(api.values):
+        if key[0] == "PersistentVolume":
+            del api.values[key]
+    FixedDatetime.current += timedelta(seconds=1)
+    report = collect_cleanup(q, intent, gone=True)
+    with q.sessions() as db:
+        import_report(
+            db,
+            report,
+            enrollment_id=q.enrollment_id,
+            expected_enrollment_digest=q.digest,
+            now=FixedDatetime.current,
+        )
+        db.commit()
+    fn(*args)
+    with q.sessions() as db:
+        final = quota_cleanup.native_intent(db, project_id)
+        assert final.phase == "finalized", final.last_error
+        assert db.get(Project, project_id).state == "draft"
+    # Later scans cannot rediscover the absent original images.
+    q.report = q.report.model_copy(
+        update={
+            "images": [i for i in q.report.images if i.key not in intent.owned_images]
+        }
+    )
+    return final
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["complete", "stale", "unknown_binding", "changed_binding", "unsettled"],
+)
+def test_last_retirement_preserves_cache_and_next_admission(cleanup_case, condition):
+    from app.models.kubevirt_storage import NativeProjectRoot, NativeRetainedBinding
+    from app.models.project import Project
+    from app.schemas.quota import Resources
+    from app.services import quota_admission, quota_cleanup, quota_storage
+    from app.services import quota_capacity_baseline as capacity
+
+    q = cleanup_case
+    first = finish_original(q, q.project_ids[0])
+    quota_storage.reconcile_project(q.project_ids[1])
+    final = finish_original(q, q.project_ids[1])
+    with q.sessions() as db:
+        assert db.query(NativeProjectRoot).count() == 2
+        bindings_before = db.query(NativeRetainedBinding).count()
+        if condition == "stale":
+            FixedDatetime.current += timedelta(minutes=16)
+        elif condition == "unknown_binding":
+            from uuid import uuid4
+
+            db.add(
+                NativeRetainedBinding(
+                    key=str(uuid4()),
+                    root_key="unknown",
+                    domain_id=str(final.domain_id),
+                    payload={"unknown": "retained-storage"},
+                )
+            )
+            db.commit()
+        elif condition == "unsettled":
+            quota_cleanup._save_native(
+                db, first, phase="pending", settlement_report_id=None, settled_at=None
+            )
+            db.commit()
+        elif condition == "changed_binding":
+            binding = (
+                db.query(NativeRetainedBinding)
+                .filter(NativeRetainedBinding.root_key != "cache")
+                .first()
+            )
+            binding.payload = {**binding.payload, "volume_handle": "replacement"}
+            db.commit()
+        source = capacity.inventory(db)
+        readiness = capacity.check_ready(db)
+        if condition != "complete":
+            assert not readiness["ready"], readiness
+            return
+        assert not source["native_roots"]
+        assert source["native_retained_bindings"]
+        assert all(
+            b["coverage"] == "platform_cache"
+            for b in source["native_retained_bindings"]
+        )
+        assert all(p["empty"] for p in source["projects"])
+        assert readiness["ready"], json.dumps(readiness, default=str)
+        assert db.query(NativeRetainedBinding).count() == bindings_before
+        next_project = Project(name="after-last-retirement", owner_id=q.owner_id)
+        db.add(next_project)
+        db.flush()
+        quota_admission.reserve(
+            db,
+            next_project.id,
+            "after-retirement",
+            Resources(projects=1),
+            FixedDatetime.current,
+        )
 
 
 @pytest.mark.parametrize("mode", ["delete", "undeploy"])
