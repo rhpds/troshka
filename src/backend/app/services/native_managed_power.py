@@ -642,9 +642,22 @@ def verify_helper_running(value, rows, replicas, module):
             "managed_helper_pending",
         )
         module.require(
-            all(module.manifest_matches(expected, p["spec"]) for p in pods),
+            all(helper_pod_matches(expected, p["spec"], module) for p in pods),
             "managed_helper_configuration_changed",
         )
+
+
+def helper_pod_matches(expected, actual, module):
+    from app.services.native_initialization_observer import remove_token_injection
+
+    if module.manifest_matches(expected, actual):
+        return True
+    normalized = deepcopy(actual)
+    try:
+        remove_token_injection(normalized, expected)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+    return module.manifest_matches(expected, normalized)
 
 
 def verify_runtime_pods(rows, by_uid, bare, module):
@@ -1596,10 +1609,14 @@ def billing_snapshot(db, project, rows=None, proof=None):
         "observed_at": observed.isoformat(),
         "project_state": "active" if active else "stopped",
         "vms": nodes,
-        "disks": []
-        if pending
-        and not rows[0].dispatch_metadata["native_deploy"].get("initialized_report")
-        else metering._snapshot_disks(project, operations.retained_topology(project)),
+        "disks": (
+            []
+            if pending
+            and not rows[0].dispatch_metadata["native_deploy"].get("initialized_report")
+            else metering._snapshot_disks(
+                project, operations.retained_topology(project)
+            )
+        ),
         "eips": [],
         "ceph": [],
         "native_profile": "configured-workloads-v1",
