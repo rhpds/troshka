@@ -52,6 +52,16 @@ async function loaded(admin = false) {
 function click(name: string) { fireEvent.click(screen.getByRole("button", { name })); }
 
 describe("application shell", () => {
+  it("opens About above Getting Started and closes it without navigating", async () => {
+    await loaded();
+    const about = screen.getByText("About");
+    expect(about.compareDocumentPosition(screen.getByText("Getting Started")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(about);
+    expect(screen.getByRole("dialog", { name: "About Troshka" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close About" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(harness.push).not.toHaveBeenCalled();
+  });
   it("shows authenticated navigation and toggles the persisted theme", async () => {
     await loaded();
     expect(screen.getByText("Projects")).toBeInTheDocument();

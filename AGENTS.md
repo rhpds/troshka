@@ -1,5 +1,15 @@
 # Troshka Development Guide
 
+## Changelog
+
+Keep root `CHANGELOG.md` updated in the same change as user-visible features,
+fixes, and operational behavior changes. Group related changes by feature area
+under the current month, newest month first; do not add an Unreleased section or
+one entry per commit. Use `## ` monthly headings and `- ` change bullets; the
+About modal renders this format directly. Preserve historical notes and the
+release-tag index in `docs/dev/changelog-history.md`; append new release mappings
+when releasing. Do not invent historical changes or claim deployment from a tag.
+
 ## Production Hotpatching
 
 For targeted production debugging, temporary immutable ConfigMap overlays can mount

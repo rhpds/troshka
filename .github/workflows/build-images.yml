@@ -7,6 +7,7 @@ on:
     paths:
       - 'src/backend/**'
       - 'src/frontend/**'
+      - 'CHANGELOG.md'
       - 'src/troshkad/**'
       - 'src/operator/**'
       - 'deploy/containerfiles/**'
@@ -37,7 +38,7 @@ jobs:
           echo "Files changed since last push:"
           echo "$DIFF"
           echo "backend=$(echo "$DIFF" | grep -qE '^src/backend/|^src/troshkad/|^src/troshka-vncd/|^src/operator/crds/|^src/operator/helpers/|^scripts/(import|collect)_kubevirt_storage\.py$|^deploy/containerfiles/Containerfile\.backend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "frontend=$(echo "$DIFF" | grep -qE '^src/frontend/|^deploy/containerfiles/Containerfile\.frontend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(echo "$DIFF" | grep -qE '^src/frontend/|^CHANGELOG\.md$|^deploy/containerfiles/Containerfile\.frontend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "operator=$(echo "$DIFF" | grep -q '^src/operator/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   build-backend:
@@ -99,8 +100,11 @@ jobs:
           fi
 
       - name: Build frontend image
+        env:
+          TROSHKA_BUILD_VERSION: ${{ steps.tags.outputs.version_tag || steps.tags.outputs.sha_tag }}
         run: |
           podman build --no-cache \
+            --build-arg "TROSHKA_BUILD_VERSION=$TROSHKA_BUILD_VERSION" \
             -f deploy/containerfiles/Containerfile.frontend \
             -t quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-frontend:latest \

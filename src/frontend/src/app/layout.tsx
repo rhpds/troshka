@@ -30,6 +30,7 @@ import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import SignOutAltIcon from "@patternfly/react-icons/dist/esm/icons/sign-out-alt-icon";
 import { ConfirmHost, appConfirm } from "@/lib/confirm";
 import { agentUpdateMessage, updateHostAgents } from "@/lib/updateHostAgents";
+import AboutModal from "@/components/AboutModal";
 
 interface UserInfo {
   id: string;
@@ -99,6 +100,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   const pathname = usePathname();
   const router = useRouter();
   const [isDark, setIsDark] = useState(true);
+  const [showAbout, setShowAbout] = useState(false);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -492,6 +494,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <PageSidebarBody>
         <Nav>
           <NavList>
+            <NavItem itemId="about" component="button" onClick={() => setShowAbout(true)}>About</NavItem>
             {navItems.map((item) => {
               const shine = item.path === "/getting-started" && showGettingStartedShine;
               return (
@@ -674,6 +677,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           )}
           {renderContent()}
           <ConfirmHost />
+          {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
         </Page>
       </body>
     </html>

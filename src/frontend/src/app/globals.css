@@ -1434,3 +1434,22 @@ html:not(.pf-v6-theme-dark) .vm-node-warning {
   border-radius: 4px;
   box-shadow: 0 0 8px rgba(108, 99, 255, 0.3);
 }
+/* About uses the shared native dialog for focus trapping and Escape dismissal. */
+.about-modal {
+  background: var(--pf-t--global--background--color--primary--default);
+  color: var(--pf-t--global--text--color--regular);
+  border-radius: 12px;
+  padding: 24px;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  display: grid;
+  gap: 16px;
+}
+.about-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.about-modal h1 { font-size: 24px; font-weight: 600; }
+.about-modal h2 { font-size: 18px; font-weight: 600; }
+.about-release { border-top: 1px solid var(--pf-t--global--border--color--default); padding-top: 12px; }
+.about-release summary { cursor: pointer; font-weight: 600; }
+.about-release ul { padding-left: 24px; margin-top: 12px; list-style: disc; }
+.about-release li + li { margin-top: 8px; }

@@ -80,6 +80,15 @@ elif [[ ! -f "$CONTEXT/Dockerfile" && ! -f "$CONTEXT/Containerfile" ]]; then
     exit 1
 fi
 
+if [[ "$FILE" == "deploy/containerfiles/Containerfile.frontend" ]]; then
+    BUILD_VERSION=$(git -C "$CONTEXT" describe --tags --match 'v*' --always --dirty 2>/dev/null || echo Development)
+    if [[ ! "$BUILD_VERSION" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "Error: build version contains unsupported characters" >&2
+        exit 1
+    fi
+    BUILD_ARGS+=(--build-arg "TROSHKA_BUILD_VERSION=$BUILD_VERSION")
+fi
+
 RDIR="/tmp/troshka-build-$(date +%s)-$$"
 echo ">> Streaming build context ($CONTEXT) to host $HOST:$RDIR"
 tar czf - "${TAR_EXCLUDES[@]}" -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"

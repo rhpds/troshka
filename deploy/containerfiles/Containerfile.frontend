@@ -6,7 +6,10 @@ COPY --chown=1001:1001 src/frontend/package.json src/frontend/package-lock.json 
 RUN npm ci
 
 COPY --chown=1001:1001 src/frontend/ .
+COPY --chown=1001:1001 CHANGELOG.md ./CHANGELOG.md
 
+ARG TROSHKA_BUILD_VERSION=Development
+ENV TROSHKA_BUILD_VERSION=${TROSHKA_BUILD_VERSION}
 ENV STANDALONE=true
 ENV BACKEND_URL=http://troshka-backend:8200
 RUN npm run build
@@ -18,6 +21,7 @@ WORKDIR /opt/app-root/src
 COPY --chown=1001:1001 --from=builder /opt/app-root/src/.next/standalone ./
 COPY --chown=1001:1001 --from=builder /opt/app-root/src/.next/static ./.next/static
 COPY --chown=1001:1001 --from=builder /opt/app-root/src/public ./public
+COPY --chown=1001:1001 --from=builder /opt/app-root/src/CHANGELOG.md ./CHANGELOG.md
 
 ENV NODE_ENV=production
 ENV PORT=3000

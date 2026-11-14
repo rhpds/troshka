@@ -1,5 +1,92 @@
 # Changelog
 
-## November 2026
+User-visible changes are recorded here in monthly sections, newest first, with
+related work grouped by feature area. Update the current month's section in the
+same commit as the implementation, consolidating related entries instead of
+listing every commit. There is no separate Unreleased section. Release tags
+identify builds; monthly notes describe development and do not confirm deployment.
+
+The historical backfill below groups all development from June 4 through
+November 14, 2026 into monthly summaries, including the newest releases.
+These summaries describe work recorded in Git, not deployment verification or
+an exhaustive list of every fix. Exact release tags and all 3,053 historical
+commits are preserved in the [historical index](docs/dev/changelog-history.md).
+
+## November 2026 — Groups, quotas, and native storage accounting
 
 - OpenShift deployment validation: reject fresh OCP installs before placement or job submission when the project owner has no pull secret; direct users to configure an OCP pull secret or pull-through registry credentials, while allowing OKD and captured-cluster re-certification. Bulk Deploy reports failures by project while continuing other deployments. Confirmed installer failures show “OpenShift Install Failed” with a safe reason, and API timeouts explicitly identify OpenShift without replacing a confirmed install failure.
+- About and release history: added an About overlay above Getting Started with the build version, author information, and expandable monthly release notes; reconstructed development history back to June 4. Notes reload each time About opens, so local changelog edits need no frontend restart; production reads the file packaged in its deployed image.
+- Group administration and billing: added managed groups, delegated managers, searchable membership pickers, team billing, and a unified Groups interface for membership, quotas, and reporting.
+- Usage attribution: preserved asset ownership and historical attribution during group transfers and fresh accounting setup; corrected invoice month boundaries and marked active spend unavailable when interval evidence was missing.
+- Access control: made the database authoritative for user access and roles, and preserved quota access revocation during native usage reporting.
+- Quotas: added delegated quotas, copy-on-write accounting, staged migration, startup allowances, and measured settlement; kept tenant quotas independent of platform cache totals.
+- Native storage evidence: introduced a read-only KubeVirt collector and allocation reporting, verified enrollment and live PVC bindings, tracked clone lineage and retained snapshots, and preserved unknown usage when evidence was incomplete.
+- Native lifecycle safety: added guarded deployment, observation, maintenance halt, quarantine tooling, verified cleanup, and recovery for interrupted initialization and teardown; tied restart verification to the corresponding stop episode.
+- Collector operation: moved native collection into scoped RQ workers and installed explicit collector permissions during releases. Collector roles now exclude Secrets; full Secret custody checks remain with the worker/operator, while storage settlement still requires namespace and disk absence. Use protected TLS-verified collector credentials for CSI readiness and confirm receipt-backed cache sources through discovery on the first scan. Full deployment now applies the common read-only collector RBAC YAML across the OCPV host fleet, including empty hosts. New project deployments receive scoped collector bindings automatically; single-provider enrollment can explicitly use the protected collector transport.
+- Existing environments: added enrollment of existing native projects without downtime, support for explicitly reviewed legacy topology pairs, and preservation of edited foundation organizations during database preparation.
+- Deployment and networking: added exact searchable OpenShift release selection, aligned the CI RQ dependency with the worker API, and repaired orphaned-network cleanup retries and permissions during namespace deletion.
+- Release milestones: includes the November 2–3, November 11–12, and November 14 tagged releases, through v2026.11.14-214005. Test-only releases are recorded in the historical index.
+
+## October 2026 — Metering, power controls, and workshop access
+
+- Metering and billing: introduced project metering, reconciliation, budget auto-stop, dedicated-host and nested usage factors, monthly invoices, owner-scoped reporting, and invoice export improvements.
+- Power controls: added per-VM pause, resume, and hibernate, plus a project Off mode selector; aligned state reporting and ensured paused VMs continued to accrue compute usage.
+- OpenShift access: added laptop oc access through Troshka API tunnels, moved long-lived relays to a dedicated tunnel service, and improved reconnect behavior, authentication, and API forwarding.
+- Workshop experience: refreshed Showroom access on open, preserved workload logs during recovery, provisioned workshop VS Code, and routed AAP access by hostname.
+- Canvas and libraries: added ownership filters, an OpenShift Info flyout, clearer template validation errors, stop confirmation, and light/dark theme repairs for previews and canvas views.
+- Nested networking: added nested-MAC network controls, OVN forwarding repairs, and a consistent host CPU model for nested-virtualization project VMs.
+- OpenShift lifecycle: clarified rebuild versus re-certification choices, replayed template workload chains on redeploy, and improved disk-write completion, media eject, and installer recovery behavior.
+- Operations: added an AgnosticV-to-Troshka migration skill, complete tagged-release deployment and rollout verification, dependency updates, and more reliable pre-push and CI quality checks.
+- Release milestone: v2026.10.27-workshop-web-tabs; later October fixes were included in the November release sequence.
+
+## September 2026 — Multi-cluster canvas and automated workloads
+
+- Cluster canvas: introduced resizable OpenShift cluster boundaries, drag-and-drop membership, count-driven VM creation, per-role disks, network attachment, shared DNS configuration, and cluster-aware template import/export.
+- OpenShift installation: made ops-pod installation available across host types, added bastionless templates, per-cluster logs and progress, elapsed timers, credentials display, and recovery of interrupted install monitors.
+- Re-certification: automated pattern re-certification and health monitoring, added a usable-control-plane milestone, and improved credential delivery, console readiness checks, and stale-pod recovery.
+- Workload execution: added ad-hoc AgnosticD runs with configurable execution environments, cluster or VM targeting, Ansible groups, extra variables, run history, live logs, and restart recovery.
+- Scoped access: added project-scoped API keys and workload access permissions, mounted ops-pod secrets as files, and narrowed provider/operator mutations through namespace bindings and resource-specific permissions.
+- Networking: added per-network MTU configuration and host-aware placement, propagated MTU settings into OpenShift and KubeVirt, and added Showroom TLS termination and certificate handling.
+- Showroom and terminals: added cluster terminal tabs with oc and merged kubeconfigs, persistent terminal sessions, service-starting feedback, and automatic console-proxy configuration.
+- Patterns and storage: expanded pattern-location tracking and synchronization, exposed capture progress, and improved cleanup of abandoned imports, images, and namespaces.
+- Operational controls: added semantic Apply Changes previews, host-agent update warnings, database-aware worker scaling, a host placement toggle, ingress-domain settings, and native-host container build scripts.
+- Reliability and validation: improved KubeVirt teardown, BMC media handling, stuck-pod recovery, dependency maintenance, and sharded test execution for constrained CI runners.
+
+## August 2026 — Multi-host deployment and pattern portability
+
+- Multi-host projects: added WireGuard mesh orchestration, capacity-based placement across hosts, affinity and anti-affinity groups, cross-host state polling, console routing, and coordinated teardown.
+- Placement reliability: corrected stale capacity accounting, host assignment formats, per-host topology handling, and private-IP mesh endpoint selection.
+- KubeVirt access: expanded Redfish virtual-media support and improved boot-order updates and BMC recovery.
+- Console sessions: introduced session gating and Force Connect, reduced reconnect loops, and improved multi-viewer behavior on troshkad hosts.
+- Pattern portability: introduced local object-store capture, per-disk progress, pattern locations, central synchronization, storage-readiness checks, and public or per-user sharing controls.
+- Storage tools: added asynchronous disk wipe with progress reporting and improved scratch-space handling during capture.
+- App updates: added update availability and image-digest details in the UI, rollout actions, and development restart support for backend workers.
+- Provider setup: added optional host provisioning on provider registration and centralized package delivery for dedicated OpenShift Virtualization hosts.
+- Release milestone: v1.1.0 on August 6 combined the early-August deployment and console improvements with a broad test and code-quality sweep; subsequent August development is included in later tags.
+
+## July 2026 — KubeVirt-native environments and scalable workers
+
+- KubeVirt-native provider: introduced the Troshka operator and custom resources, provider administration, automatic operator installation, configurable namespaces, and native project deployment and teardown.
+- Native VM lifecycle: added start, stop, restart, Apply Changes, routed VNC consoles, guest-agent/SSH/console execution, and deployment progress from DataVolume downloads.
+- External access: added MetalLB external IPs and gateway port forwarding for KubeVirt-native projects.
+- Native storage: added golden-image PVC caching, authenticated image downloads, capacity reporting, and pattern capture through VolumeSnapshots and object-storage exports.
+- OpenShift support: added native cluster monitoring, optional bastion use, re-certification jobs before VM boot, deploy-time cloud-init regeneration, and clearer status and elapsed-time reporting.
+- Host resilience: added mutual TLS and rate limiting to troshkad, NFS resilience, and automatic networking and BMC restoration when hosts reconnect.
+- Background work: introduced Redis/RQ job queues, horizontal worker scaling, queue positions, failed-job management, in-flight deployment tracking, and an admin Job Queue page.
+- Deployment operations: added Helm packaging, OpenShift group-based access controls, operator update controls, image-update integration, a full-release deployment script, and improved concurrent deployment feedback.
+- Release milestone: v1.0.0 on July 31 captured the initial June–July development period, alongside testing and code-quality improvements.
+
+## June 2026 — Initial platform and lab-building capabilities
+
+- Project foundation: started the repository on June 4 with the monorepo scaffold, configuration, database models, test infrastructure, and a canvas editor synchronized with the backend API.
+- VM lifecycle: added host provisioning, automatic capacity expansion, deploy and Apply Changes flows, per-VM power controls, VNC consoles, cloud-init, SSH keys, boot-order controls, and deployment progress.
+- Canvas editing: added undo/redo, topology validation, unique-name checks, automatic layout, snapshots, reusable patterns, bulk deployment, and template YAML import/export.
+- Libraries: added S3-backed images and ISOs, URL imports, multipart transfers, sharing, central read-only libraries, pattern synchronization, and S4 object storage support.
+- Isolated networking: added VXLAN networking, per-project network namespaces, DHCP/static addressing, gateways, external IP lifecycle management, port forwarding, DNS providers, and HAProxy load balancers.
+- Host agents: introduced troshkad with authenticated TLS endpoints, background jobs, health checks, self-update, diagnostics, garbage collection, and real-time VM state updates.
+- Hardware-style controls: added PXE and UEFI boot support, virtual BMC/Redfish integration, live boot-order display, serial access, VM file transfer, and offline guest-filesystem modification.
+- Shared storage: added storage pools, shared caches, live and cold migration, migration certificates, pattern-buffer workers, storage warnings, and automatic or manual capacity extension.
+- Cloud providers: expanded AWS provisioning and added OpenShift Virtualization, GCP, and Azure support, provider image discovery, managed storage integration, and Red Hat Image Builder workflows.
+- OpenShift labs: added agent-based installation templates, version selection, health monitoring, pattern capture preparation, clock backdating, registry mirrors, and SNO re-certification integration.
+- Lab delivery: added container and pod canvas nodes, AgnosticD integration, Showroom access, auto-stop/delete timers, multi-VM console views, and the Getting Started guide.
+- App deployment: introduced backend/frontend container definitions, OpenShift manifests, deployment playbooks, SSO-related overlays, and runtime API proxying for standalone frontend builds.

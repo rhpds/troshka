@@ -1,0 +1,3108 @@
+# Troshka historical commit index
+
+This archive records all 3053 commits reachable from `43513205fa50a2afe6b7807742931ec9c9490bdd` (2026-11-14), including merges, back to the initial commit on 2026-06-04. It preserves commit subjects as historical evidence; they are not claims about current behavior or deployment status. Dates are the commit dates recorded by Git.
+
+See [CHANGELOG.md](../../CHANGELOG.md) for curated release summaries shown in About. This is a historical snapshot; future changes belong in CHANGELOG.md, not a regenerated copy of this archive.
+
+## Release tag index
+
+Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags sharing a day remain separate here even though the changelog groups their changes together. A tag records a source revision, not proof of deployment.
+
+| Tag | Date (UTC) | Source commit |
+| --- | --- | --- |
+| v2026.11.14-214005 | 2026-11-14 | [43513205](https://github.com/rhpds/troshka/commit/43513205fa50a2afe6b7807742931ec9c9490bdd) |
+| v2026.11.14-211118 | 2026-11-14 | [eed8dc2a](https://github.com/rhpds/troshka/commit/eed8dc2ac693196e3d4bc6ae52f5cd8c058505b7) |
+| v2026.11.14-204655 | 2026-11-14 | [38fef0e3](https://github.com/rhpds/troshka/commit/38fef0e322c32a46801f0b81cab79fd2c476a000) |
+| v2026.11.14-203846 | 2026-11-14 | [30fe9e78](https://github.com/rhpds/troshka/commit/30fe9e7819d81ec73ed033b7fdafe652087ffd61) |
+| v2026.11.14-194131 | 2026-11-14 | [708e2dc8](https://github.com/rhpds/troshka/commit/708e2dc8ac908c24539634c8fd56ada1ba50b5c8) |
+| v2026.11.14-165118 | 2026-11-14 | [5a2e8b6f](https://github.com/rhpds/troshka/commit/5a2e8b6fc1e6a085a592e3842467d2ff44a9072d) |
+| v2026.11.12-042127 | 2026-11-12 | [046761fd](https://github.com/rhpds/troshka/commit/046761fd2f7ffe240fb6075eac75c8fe394116c2) |
+| v2026.11.12-040723 | 2026-11-12 | [51667b38](https://github.com/rhpds/troshka/commit/51667b382c135c70b18c22d6839bc329eced5b0f) |
+| v2026.11.12-004635 | 2026-11-12 | [d77af553](https://github.com/rhpds/troshka/commit/d77af55332101463ee041c40a97e0e86d3d8c7df) |
+| v2026.11.11-220921 | 2026-11-11 | [252c2ba7](https://github.com/rhpds/troshka/commit/252c2ba74597c4f356a766d46e68fc5e1e9a79ea) |
+| v2026.11.11-220206 | 2026-11-11 | [94b74910](https://github.com/rhpds/troshka/commit/94b74910a77150d0df9a6316c90e1698b8f02834) |
+| v2026.11.11-155624 | 2026-11-11 | [e3710aa3](https://github.com/rhpds/troshka/commit/e3710aa3d99efd7e17b59918925a90896440c167) |
+| v2026.11.03-173149 | 2026-11-03 | [4f647012](https://github.com/rhpds/troshka/commit/4f6470122206f7f2702a2ac7fe174b4dd321fbd8) |
+| v2026.11.03-170727 | 2026-11-03 | [9ec7f096](https://github.com/rhpds/troshka/commit/9ec7f0969bb3acf80b89473b87dc4422565afb5a) |
+| v2026.11.03-163820 | 2026-11-03 | [00defd90](https://github.com/rhpds/troshka/commit/00defd9088bf2df2479805b9d36b8ea488ead714) |
+| v2026.11.03-004939 | 2026-11-03 | [f2b6141e](https://github.com/rhpds/troshka/commit/f2b6141e8d767a66969dad3289b6a6fc93ebe152) |
+| v2026.11.02-213721 | 2026-11-02 | [65fee624](https://github.com/rhpds/troshka/commit/65fee624381869055a69b895241f2e515e4876a1) |
+| v2026.11.02-180008 | 2026-11-02 | [0cb37d6b](https://github.com/rhpds/troshka/commit/0cb37d6b3d17a393cf7004ba4961eb44dbf12db9) |
+| v2026.11.02-174928 | 2026-11-02 | [f38bc2d6](https://github.com/rhpds/troshka/commit/f38bc2d6d6d9b35884a58e0d5b2b0e558a58b364) |
+| v2026.11.02-174438 | 2026-11-02 | [e2414697](https://github.com/rhpds/troshka/commit/e2414697aaecb3355d02cc813aa463e40bf49f5f) |
+| v2026.10.27-workshop-web-tabs | 2026-10-27 | [60456529](https://github.com/rhpds/troshka/commit/604565297d06bc9c0e5af63e533f115ec446d801) |
+| v1.1.0 | 2026-08-06 | [81343793](https://github.com/rhpds/troshka/commit/81343793552188f3ee70954d9d95acdc1e9c93bb) |
+| v1.0.0 | 2026-07-31 | [1fe04d87](https://github.com/rhpds/troshka/commit/1fe04d8714cfb9b2d3487795b965ef24a2fd1f31) |
+
+## 2026-11
+
+- 2026-11-14 [43513205](https://github.com/rhpds/troshka/commit/43513205fa50a2afe6b7807742931ec9c9490bdd) — Allow exact reviewed topology pairs for legacy native custody
+- 2026-11-14 [eed8dc2a](https://github.com/rhpds/troshka/commit/eed8dc2ac693196e3d4bc6ae52f5cd8c058505b7) — Preserve edited foundation organizations during database preparation
+- 2026-11-14 [38fef0e3](https://github.com/rhpds/troshka/commit/38fef0e322c32a46801f0b81cab79fd2c476a000) — Exclude credential reads from shared cache collector grants
+- 2026-11-14 [30fe9e78](https://github.com/rhpds/troshka/commit/30fe9e7819d81ec73ed033b7fdafe652087ffd61) — Install explicitly scoped collector RBAC during full releases
+- 2026-11-14 [708e2dc8](https://github.com/rhpds/troshka/commit/708e2dc8ac908c24539634c8fd56ada1ba50b5c8) — Enroll existing native projects for verified cleanup without downtime
+- 2026-11-14 [5a2e8b6f](https://github.com/rhpds/troshka/commit/5a2e8b6fc1e6a085a592e3842467d2ff44a9072d) — Run native storage collection in scoped RQ workers
+- 2026-11-13 [45b9a030](https://github.com/rhpds/troshka/commit/45b9a0308b8ae82f5b164c350d3e2da0de0a7f56) — Settle verified native COW clones during project cleanup
+- 2026-11-13 [688e314d](https://github.com/rhpds/troshka/commit/688e314d09a2917627cd20a98edf82771cdae773) — Match native restart to its exact stop episode
+- 2026-11-13 [b77b081a](https://github.com/rhpds/troshka/commit/b77b081ac9c3c325c9aa48bbd1d10c6b66167da6) — Verify standard token projection in native helper pods
+- 2026-11-13 [e87ab77b](https://github.com/rhpds/troshka/commit/e87ab77b1de4813a43589c6a08368682e0bbd65a) — Preserve native observation time during startup billing
+- 2026-11-13 [52488d93](https://github.com/rhpds/troshka/commit/52488d939d64cf11cffc93f6700d75f5ae14c3d0) — Verify OpenShift defaults during managed native deployment
+- 2026-11-13 [c620f48e](https://github.com/rhpds/troshka/commit/c620f48eb0236464e768746827e7b3df0653dd8d) — Account for CSI snapshots retained by live clones
+- 2026-11-13 [f679da3f](https://github.com/rhpds/troshka/commit/f679da3f1b0e1aea3a6c5998fc0c659614fd6235) — Use verified native cleanup regardless of quota enforcement
+- 2026-11-13 [a960d468](https://github.com/rhpds/troshka/commit/a960d468134a231d80fa3268c5a48d1ed919144e) — fix: reconcile VM server defaults and partial initialization cleanup
+- 2026-11-13 [421fa742](https://github.com/rhpds/troshka/commit/421fa742002867ed8aed887890e7e211788dcdd3) — fix: support CSI clones and cleanup of measured initialization
+- 2026-11-13 [a1db4363](https://github.com/rhpds/troshka/commit/a1db4363ad084ec44ad820a76025a0784bb0a214) — fix: collect accounting during native initialization publication
+- 2026-11-13 [fef3e14c](https://github.com/rhpds/troshka/commit/fef3e14ce3c10691725d829051e39f739b6d0b2d) — fix: allow native redeploy after settled reservations
+- 2026-11-13 [c6c34a77](https://github.com/rhpds/troshka/commit/c6c34a77a91a76aac01462d06b7e9eee798345e0) — fix: recover unclaimed native deployments through undeploy
+- 2026-11-13 [2b813737](https://github.com/rhpds/troshka/commit/2b8137377bc65a0d30f93de0b8b1ffad19127ad7) — fix: validate reserved native drafts before placement
+- 2026-11-13 [cb7ed20b](https://github.com/rhpds/troshka/commit/cb7ed20b7504fdcd4eb61c6098e10b83024820b9) — fix: retire settled native allocations from quota baseline
+- 2026-11-13 [47cba9cd](https://github.com/rhpds/troshka/commit/47cba9cdd3f91c3717ba1a2a426fb70c1aa2d4fc) — fix: exclude cancelled deploys from pending image verification
+- 2026-11-13 [3b1d89f7](https://github.com/rhpds/troshka/commit/3b1d89f7a97ec522e9c96393f666b82edb1c8a90) — fix: recognize original project deletion generation transition
+- 2026-11-13 [ddcd78fe](https://github.com/rhpds/troshka/commit/ddcd78fe9c66f24c97cb24bc6565ba7ab0d03474) — fix: allow provider cleanup support inventory reads
+- 2026-11-13 [c89a834d](https://github.com/rhpds/troshka/commit/c89a834dd5d9ae208b15dbc11160069b5a568b5b) — fix: validate cluster-scoped managed resource inventories
+- 2026-11-13 [bfde4a53](https://github.com/rhpds/troshka/commit/bfde4a53bf8ad95ccc6281edf7eaa75e9aed82b0) — fix: recognize ODH namespace bootstrap during managed cleanup
+- 2026-11-13 [31e5c33b](https://github.com/rhpds/troshka/commit/31e5c33b3081c38827bcbe7ba7295e616a672dca) — fix: recover interrupted native initialization through undeploy
+- 2026-11-13 [7bdc843a](https://github.com/rhpds/troshka/commit/7bdc843aed690def5da9dbe7bc1d77e16db5841b) — Normalize documented TroshkaVM defaults in managed deployment proofs
+- 2026-11-13 [03016614](https://github.com/rhpds/troshka/commit/030166147e26c89af912ba380509464d18b1e353) — Keep measured tenant quotas independent of platform cache totals
+- 2026-11-13 [d3fb3913](https://github.com/rhpds/troshka/commit/d3fb39132c38aa4cc9a441b3629dcaac8cadc29d) — Account for verified removal of retained cache import storage
+- 2026-11-13 [4bb20ef6](https://github.com/rhpds/troshka/commit/4bb20ef68a3acfb8074dec67c557003d0d120302) — Preserve managed deployment reconciliation after worker handoff
+- 2026-11-13 [50022654](https://github.com/rhpds/troshka/commit/5002265448ad18ae112ad5d19a8593ad13398c6c) — Accept canonical central image catalog entries in managed quota deploys
+- 2026-11-13 [53c2b3f6](https://github.com/rhpds/troshka/commit/53c2b3f68f118f8063ed545bdeff3fa13c7bf254) — Expose quota enforcement through shared Helm configuration
+- 2026-11-13 [60682966](https://github.com/rhpds/troshka/commit/60682966d766097da685d2e46694c59a850f62c9) — Initialize missing quota foundation rows during database preparation
+- 2026-11-13 [1e4d61dc](https://github.com/rhpds/troshka/commit/1e4d61dcc5363f638f5048c2ebf24d9d009686a4) — Integrate managed central-image COW quota deployment
+- 2026-11-13 [87b82547](https://github.com/rhpds/troshka/commit/87b82547b44a218444d2c0d769c2165618e3a1b6) — Bootstrap verified native accounting before the first project
+- 2026-11-13 [c3d51e73](https://github.com/rhpds/troshka/commit/c3d51e73722520bb1ffe1f9e890546699d84c99d) — Account for verified managed COW clone lineage
+- 2026-11-13 [09c51014](https://github.com/rhpds/troshka/commit/09c510149ee1e6018a3f984676eb0ef1996b44a0) — Record verified creation receipts for managed cache imports
+- 2026-11-13 [f424fa63](https://github.com/rhpds/troshka/commit/f424fa63c839e164ce1cdcead46139be1ce32a90) — Record permanent dev parser rollout and API COW evidence
+- 2026-11-13 [f96abc95](https://github.com/rhpds/troshka/commit/f96abc951ec62a5268eeacf11e9db7385b4e870c) — Parse Kubernetes allocatable CPU quantities
+- 2026-11-13 [8e124170](https://github.com/rhpds/troshka/commit/8e124170b0401cf58bb865ac582d2077211c2f70) — Read published Ceph capacity when attaching an operator
+- 2026-11-13 [6a813556](https://github.com/rhpds/troshka/commit/6a81355639b63ff96c0b6253dcd08a35830b5f04) — Allow API attachment to a verified existing KubeVirt operator
+- 2026-11-13 [7084b315](https://github.com/rhpds/troshka/commit/7084b315df1b8d9e9bf60e9b1695109e66c7ef74) — Record verified startup allowance rollout to persistent dev
+- 2026-11-13 [65ec8e67](https://github.com/rhpds/troshka/commit/65ec8e671c2407c41c82c3217a43db5409e17ffd) — Support explicit native disk startup allowances with measured settlement
+- 2026-11-13 [e01ee17f](https://github.com/rhpds/troshka/commit/e01ee17ffa7361d10f2d8e3194c09bdca5afb1e2) — Validate OpenShift CSI admission defaults against live dependencies
+- 2026-11-13 [0b76bd03](https://github.com/rhpds/troshka/commit/0b76bd033e5a24bb7b41c56fd7f6d502e85a0039) — Recognize OpenShift service CA projection in CSI observer
+- 2026-11-13 [10cecf96](https://github.com/rhpds/troshka/commit/10cecf9649a03a559f7e5eed4182692fc82b070e) — Configure isolated Troshka app on ocpvdev01
+- 2026-11-13 [500edb40](https://github.com/rhpds/troshka/commit/500edb408d7ded5616867d0d4887947106d0a09d) — Complete native quota cleanup and interrupted teardown recovery
+- 2026-11-13 [e4d4318e](https://github.com/rhpds/troshka/commit/e4d4318e4724d16d7eb8feda70989aac2ced5559) — Connect quota safety checks to native application actions
+- 2026-11-13 [6c832e5e](https://github.com/rhpds/troshka/commit/6c832e5eaf3a1d629d000cc97ba0f2609d10a32f) — Observe native storage installations without pool guarantees
+- 2026-11-13 [b171ccd2](https://github.com/rhpds/troshka/commit/b171ccd2f81f0f1449a695035c25d156671de932) — Automate managed native deployment enrollment and accounting
+- 2026-11-13 [a459c4e6](https://github.com/rhpds/troshka/commit/a459c4e675a5f282c86e400cd0b923326bbff77e) — Stage managed native workloads behind deployment guards
+- 2026-11-13 [38bf77f3](https://github.com/rhpds/troshka/commit/38bf77f36550c48cbe2253881a428688b0e2f4da) — Preserve native quota identities across enrollment expansion
+- 2026-11-12 [e93a7400](https://github.com/rhpds/troshka/commit/e93a7400a9a016aa1dbd2c9e270651e085d7f1ef) — Admit and verify managed native workload resume
+- 2026-11-12 [597866ea](https://github.com/rhpds/troshka/commit/597866eac517b0b8714097b6a54c5baf1ad5759b) — Import verified current capacity after fresh quota conversion
+- 2026-11-12 [baa9accf](https://github.com/rhpds/troshka/commit/baa9accf58cb6529d18d8b99c7db7244670c5c14) — Stop managed native workloads on verified quota overage
+- 2026-11-12 [f4ef4570](https://github.com/rhpds/troshka/commit/f4ef457096ff4f309d1810249c6ad229204b0eff) — Reconcile verified native storage into quota accounting
+- 2026-11-12 [058641b9](https://github.com/rhpds/troshka/commit/058641b9eff9d8b232ab478c88f7aed62c9e578b) — Prevent incomplete snapshot ancestry from reporting full storage totals
+- 2026-11-12 [122283c2](https://github.com/rhpds/troshka/commit/122283c240a28d98d2d8860a6eb173add7455712) — Record read-only base grants validation on ocpvdev01
+- 2026-11-12 [601254c3](https://github.com/rhpds/troshka/commit/601254c30eaa7d89df808ac94913fe0cdf4b3360) — Support externally administered base namespace grants
+- 2026-11-12 [c31bc4ff](https://github.com/rhpds/troshka/commit/c31bc4ffd184ae4e466768a90e7137820939dc6f) — Record corrected bare Pod maintenance acceptance
+- 2026-11-12 [b6217cfd](https://github.com/rhpds/troshka/commit/b6217cfd6adc0d1dfc699ac0f878c6ad1c4e9f87) — Fix bare Pod DELETE dry-run body semantics
+- 2026-11-12 [ce7ab2d0](https://github.com/rhpds/troshka/commit/ce7ab2d0b9f3b26a4e815d995c8761816a16c6e2) — Support explicit retained bare Pod maintenance deletion
+- 2026-11-12 [17c04c76](https://github.com/rhpds/troshka/commit/17c04c7617889855c783287a8f0f7b33363eea18) — Record scoped native controller stop acceptance
+- 2026-11-12 [f04c40e3](https://github.com/rhpds/troshka/commit/f04c40e3654c25259f520d0af7b57b243c9a96cd) — Verify missing runtime list types with pinned resource reads
+- 2026-11-12 [c0854501](https://github.com/rhpds/troshka/commit/c08545019d8960b70dc58d7a09ccec9543da5702) — Extend native maintenance halt to retained helper controllers
+- 2026-11-12 [76f44e31](https://github.com/rhpds/troshka/commit/76f44e31c2bc88ac6090afb5f94ec1b5ee9b3290) — Add explicit native VM maintenance halt command
+- 2026-11-12 [d4ad92f9](https://github.com/rhpds/troshka/commit/d4ad92f9437fa0054b27cc9ea87ef8db5b0f0a84) — Bound native observer HTTP error responses before decoding
+- 2026-11-12 [913eb55c](https://github.com/rhpds/troshka/commit/913eb55c5621bcc3047697709d810aa0890b1d05) — Add read-only native workload observation command
+- 2026-11-12 [f234e088](https://github.com/rhpds/troshka/commit/f234e08850790a55aa0a5e3b6b4b853b80497893) — Fix quarantine admission compatibility and record dev acceptance
+- 2026-11-12 [0591c8b1](https://github.com/rhpds/troshka/commit/0591c8b1e2c5caa33442484a71e1586f113e91d0) — Handle API metadata during exact quarantine cleanup
+- 2026-11-12 [d3c7c070](https://github.com/rhpds/troshka/commit/d3c7c070eb76d2ed983e155bc2779424f3f20f7a) — Document ordered quarantine release rollback
+- 2026-11-12 [91ef30e9](https://github.com/rhpds/troshka/commit/91ef30e98a66348266f6c816a73dfd86beb491ff) — Add offline native quarantine bundle and acceptance runbook
+- 2026-11-12 [8cc76c70](https://github.com/rhpds/troshka/commit/8cc76c7043251cfb87a56973b97a1e71c4d8de20) — Add isolated native quota quarantine admission service
+- 2026-11-12 [deb25fe9](https://github.com/rhpds/troshka/commit/deb25fe9f1c7e1abdc5e4fc911d4a88eb25de8cf) — Clarify quarantine credential isolation prerequisites
+- 2026-11-12 [7f835f8c](https://github.com/rhpds/troshka/commit/7f835f8c1c3c955c28c0159b12a534745859c139) — Plan isolated native quota quarantine validation
+- 2026-11-12 [3c54f647](https://github.com/rhpds/troshka/commit/3c54f647acb440401c5d58d3089ee432d7782bb1) — Reserve native intent receipt and fence capacity
+- 2026-11-12 [6d544935](https://github.com/rhpds/troshka/commit/6d5449358cdf33ed2412de763516c471237070d9) — Add durable native issuance protocol foundation
+- 2026-11-12 [b675e0e2](https://github.com/rhpds/troshka/commit/b675e0e28a1d09cc19a4ac91be1a6dc973b272ee) — Keep native demand plans blocked on controller concurrency
+- 2026-11-12 [8da67f7d](https://github.com/rhpds/troshka/commit/8da67f7dc82bd5ee47523d7f6bbe001b77769827) — Add fail-closed native execution demand plans
+- 2026-11-11 [046761fd](https://github.com/rhpds/troshka/commit/046761fd2f7ffe240fb6075eac75c8fe394116c2) — Align quota fixtures with authoritative membership and retention
+- 2026-11-11 [51667b38](https://github.com/rhpds/troshka/commit/51667b382c135c70b18c22d6839bc329eced5b0f) — Clarify group attribution and accounting start in project spend
+- 2026-11-11 [c67fb93b](https://github.com/rhpds/troshka/commit/c67fb93be9decc426dec4b072105b39fea60f3a6) — Start unified group accounting without changing asset ownership
+- 2026-11-11 [587ef8f7](https://github.com/rhpds/troshka/commit/587ef8f7f6c2d6341032c962502bc23fa9b4bca8) — Use one Groups interface for membership quotas and reporting
+- 2026-11-11 [2367270d](https://github.com/rhpds/troshka/commit/2367270d0b8dbef09c9e47684226063ca8d35632) — Simplify group rollout to fresh accounting and preserve assets
+- 2026-11-11 [776e2402](https://github.com/rhpds/troshka/commit/776e2402cf466c1d9a74c2d185a94d38894d6e8b) — Bound group reporting overlap checks as ledger grows
+- 2026-11-11 [1bec8897](https://github.com/rhpds/troshka/commit/1bec8897e7685a21476c3feb95d723ea9516e57b) — Report group-attributed usage independently of quota readiness
+- 2026-11-11 [2be10475](https://github.com/rhpds/troshka/commit/2be104757cfe401dcc6fc09681b619f75421d45b) — Reject inconsistent project ledger ownership during transfers
+- 2026-11-11 [ee57206b](https://github.com/rhpds/troshka/commit/ee57206beebfa7cffb095ceeca6dde4b476c9eb1) — Unify group membership through authoritative transfers
+- 2026-11-11 [340b0e17](https://github.com/rhpds/troshka/commit/340b0e170fa09f2efa614593f1583e3f674925aa) — Retain attributed history after EIP cleanup commits
+- 2026-11-11 [f02eb914](https://github.com/rhpds/troshka/commit/f02eb914a73059df2cea730e85aabc5f2537b4f6) — Preserve metering attribution independently of quota enforcement
+- 2026-11-11 [e331ad9e](https://github.com/rhpds/troshka/commit/e331ad9e60e83ba8920588cb40539ffa60ca921c) — Define unified group migration and compact transfer help
+- 2026-11-11 [012cf403](https://github.com/rhpds/troshka/commit/012cf40305d2614abc8d94276a02e92fe99a90f2) — Accept verified live PVC bindings in first partial snapshot report
+- 2026-11-11 [d77af553](https://github.com/rhpds/troshka/commit/d77af55332101463ee041c40a97e0e86d3d8c7df) — Preserve retained snapshot evidence and invalidate unverified allocation
+- 2026-11-11 [2ab5ec23](https://github.com/rhpds/troshka/commit/2ab5ec23b83ea0a4b4feeff0b9f05ea61c65af0a) — Reject executable kubeconfig authentication in native reporting
+- 2026-11-11 [50bae4a4](https://github.com/rhpds/troshka/commit/50bae4a4c46b7a38aff23beeb1e57f0a7ed67f1c) — Verify native storage enrollment through pinned Ceph toolbox
+- 2026-11-11 [d3c60376](https://github.com/rhpds/troshka/commit/d3c60376b43441e4106ab89eb5fe0e7f0cb4b25b) — Preserve unknown native usage and quota access revocation
+- 2026-11-11 [f286c799](https://github.com/rhpds/troshka/commit/f286c79994e3ee5ed08bd6bc7b0755593b11e21e) — Show native RBD allocation reports in quota modals
+- 2026-11-11 [4cba420d](https://github.com/rhpds/troshka/commit/4cba420d427aa189e7f07323e1735da688381d40) — Reject conflicting native storage bindings within first reports
+- 2026-11-11 [92e62d05](https://github.com/rhpds/troshka/commit/92e62d05b4be31679fa8b7a396936559d19912b7) — Persist enrolled native storage reports and authorize scope usage
+- 2026-11-11 [ac2d7d33](https://github.com/rhpds/troshka/commit/ac2d7d335b6fbf634939a1b8f2d9518388d2239b) — Validate native snapshot coverage and final graph identity
+- 2026-11-11 [c4eed773](https://github.com/rhpds/troshka/commit/c4eed7739e5071a4af474079f1cb71c67b0208d4) — Add read-only native KubeVirt COW storage collector
+- 2026-11-11 [252c2ba7](https://github.com/rhpds/troshka/commit/252c2ba74597c4f356a766d46e68fc5e1e9a79ea) — Isolate quota test databases and restore fixture cleanup
+- 2026-11-11 [94b74910](https://github.com/rhpds/troshka/commit/94b74910a77150d0df9a6316c90e1698b8f02834) — Add delegated quotas with COW accounting and staged migration
+- 2026-11-11 [e3710aa3](https://github.com/rhpds/troshka/commit/e3710aa3d99efd7e17b59918925a90896440c167) — Make database authoritative for user access and roles
+- 2026-11-03 [4f647012](https://github.com/rhpds/troshka/commit/4f6470122206f7f2702a2ac7fe174b4dd321fbd8) — Simplify group management and team billing navigation
+- 2026-11-03 [9ec7f096](https://github.com/rhpds/troshka/commit/9ec7f0969bb3acf80b89473b87dc4422565afb5a) — Add searchable member and manager pickers to group editor
+- 2026-11-03 [00defd90](https://github.com/rhpds/troshka/commit/00defd9088bf2df2479805b9d36b8ea488ead714) — docs: record group billing validation and review
+- 2026-11-03 [ae569bf7](https://github.com/rhpds/troshka/commit/ae569bf7b9f7de7d9c9af154f1c36d42438c2272) — Mark active spend unavailable without interval evidence
+- 2026-11-03 [23edf4de](https://github.com/rhpds/troshka/commit/23edf4deedc755113e547ea3838947e5cafae12d) — Respect half-open UTC month boundaries in invoice filters
+- 2026-11-03 [b285c72b](https://github.com/rhpds/troshka/commit/b285c72ba601c6c868816425a967ed19d29dba8c) — Add managed group administration and team billing UI
+- 2026-11-03 [cd124384](https://github.com/rhpds/troshka/commit/cd124384bf3bfa551c72aeb8810bdb58c2639efc) — docs: preserve personal billing scope in group plan
+- 2026-11-03 [ce840cae](https://github.com/rhpds/troshka/commit/ce840cae5b9bfdc0c9c4767fc19e7d0c6d7ac6ce) — Preserve exact email identity in manager assignment
+- 2026-11-03 [311e6d9b](https://github.com/rhpds/troshka/commit/311e6d9b7225d98d3a0441712659a3512ff626b6) — Add managed groups and scoped team billing APIs
+- 2026-11-03 [01c13649](https://github.com/rhpds/troshka/commit/01c1364917f582068c077a79391a28e139392263) — docs: plan group billing and delegated management
+- 2026-11-03 [1f6eefea](https://github.com/rhpds/troshka/commit/1f6eefea351acbb3c762e471e08b395a95af04aa) — docs: design managed groups and team billing
+- 2026-11-02 [f2b6141e](https://github.com/rhpds/troshka/commit/f2b6141e8d767a66969dad3289b6a6fc93ebe152) — Fix network cleanup permissions during namespace deletion
+- 2026-11-02 [65fee624](https://github.com/rhpds/troshka/commit/65fee624381869055a69b895241f2e515e4876a1) — fix: retry orphaned network cleanup during namespace deletion
+- 2026-11-02 [0cb37d6b](https://github.com/rhpds/troshka/commit/0cb37d6b3d17a393cf7004ba4961eb44dbf12db9) — fix: align CI RQ dependency with the production worker API
+- 2026-11-02 [f38bc2d6](https://github.com/rhpds/troshka/commit/f38bc2d6d6d9b35884a58e0d5b2b0e558a58b364) — test: exercise current full-release verification gate
+- 2026-11-02 [e2414697](https://github.com/rhpds/troshka/commit/e2414697aaecb3355d02cc813aa463e40bf49f5f) — fix: select and install exact OCP releases with searchable versions
+
+## 2026-10
+
+- 2026-10-27 [56b36a18](https://github.com/rhpds/troshka/commit/56b36a185977e7d508c50ad8d47c0ad663da3031) — fix: preserve OBC storage configuration in project CRD
+- 2026-10-27 [0f678cae](https://github.com/rhpds/troshka/commit/0f678cae0daf338110e5ff864436a55591ba638e) — fix: deploy complete tagged releases and verify every rollout
+- 2026-10-27 [60456529](https://github.com/rhpds/troshka/commit/604565297d06bc9c0e5af63e533f115ec446d801) — fix: make local Sonar scan conditional on credentials and VPN
+- 2026-10-27 [d8b0f676](https://github.com/rhpds/troshka/commit/d8b0f67613c136517475821691ce2cfb7c75530e) — fix: provision workshop VS Code and route AAP by hostname
+- 2026-10-21 [e5e94985](https://github.com/rhpds/troshka/commit/e5e9498573d0d3087cef8096eb02d1343d83b9a1) — Merge pull request #42 from rhpds/codex/catalog-migration-skill
+- 2026-10-21 [3745916f](https://github.com/rhpds/troshka/commit/3745916f8a1c407de748df84c9a0c2e89be0c682) — docs: limit migration skill branch to skill package
+- 2026-10-21 [89dd3dad](https://github.com/rhpds/troshka/commit/89dd3dad4fb2ed4aca787ef7084c21f56b154067) — docs: prefer existing RHEL base images for migrations
+- 2026-10-21 [a96af4a6](https://github.com/rhpds/troshka/commit/a96af4a6b0f804283b7f8c32d7baa1749f3c2b34) — docs: close migration skill gaps found across nine catalog items
+- 2026-10-21 [e1ece63d](https://github.com/rhpds/troshka/commit/e1ece63db815d2cc096433faa27dc2224527f209) — docs: assess LB1758 migration and require hardware capability checks
+- 2026-10-21 [a075774f](https://github.com/rhpds/troshka/commit/a075774f1eb8f2cf325d68765133b363a3a763f3) — docs: explain how to use the catalog migration skill
+- 2026-10-21 [c8979717](https://github.com/rhpds/troshka/commit/c8979717ce544fadba173ac59f01d1a1e0cda33c) — feat: add AgnosticV to Troshka migration skill
+- 2026-10-21 [7e700812](https://github.com/rhpds/troshka/commit/7e700812257ebc33db9b190d2854025489305935) — docs: specify catalog migration skill workflow
+- 2026-10-21 [f63ff7cc](https://github.com/rhpds/troshka/commit/f63ff7cc099d8dda2f9db82d5530cf4038b1a0fd) — Merge pull request #40 from rhpds/dependabot/pip/src/backend/certifi-2026.10.19
+- 2026-10-21 [836c24f9](https://github.com/rhpds/troshka/commit/836c24f9e7142f105fd68e9d5d6379e2fd89d503) — update dev services and agents
+- 2026-10-21 [e0936360](https://github.com/rhpds/troshka/commit/e09363609f5f364c5bdf0ef8335e2484a098b590) — Bump certifi from 2026.7.22 to 2026.10.19 in /src/backend
+- 2026-10-21 [dca2cbc2](https://github.com/rhpds/troshka/commit/dca2cbc258ad9fbee17262163b05d118ac043a68) — Run backend tests once per pre-push check
+- 2026-10-21 [1d1f7c02](https://github.com/rhpds/troshka/commit/1d1f7c0253f85f1518f21d799f9fa447444a912f) — Keep backend Kubernetes client below incompatible v37 API
+- 2026-10-21 [79276ab5](https://github.com/rhpds/troshka/commit/79276ab56fc6c7101c7c172cb689fad85dc07acc) — Fix Sonar hook test isolation and canonical temporary database paths
+- 2026-10-21 [f9a7b701](https://github.com/rhpds/troshka/commit/f9a7b701524d49ceb08446d32652049f294775be) — Gate pushes on reachable Sonar analysis and validate storage endpoints
+- 2026-10-21 [d1f47c56](https://github.com/rhpds/troshka/commit/d1f47c5671dd90f9dd6f3d3600c4b15a1da1eaff) — Route gold imports correctly and reject implicit S3 fallbacks
+- 2026-10-20 [da685be4](https://github.com/rhpds/troshka/commit/da685be4306c219ec0c5fd38a2541ec657279878) — Resolve Sonar findings and restore quality gate coverage
+- 2026-10-20 [58708617](https://github.com/rhpds/troshka/commit/58708617a4aa804f33c0cc743f3a8939fc17db60) — Keep disposable CI SQLite databases off checkout storage
+- 2026-10-20 [abbf0262](https://github.com/rhpds/troshka/commit/abbf0262c4bd38aa32959d3e2e1095552c95d866) — Simplify API tunnel discovery and test fallback paths
+- 2026-10-20 [57ef85eb](https://github.com/rhpds/troshka/commit/57ef85eb69666a50fb4bb8bd64224b094db72cc3) — Simplify health failure and tunnel relay handling
+- 2026-10-20 [4611d80e](https://github.com/rhpds/troshka/commit/4611d80e4bcd1434b7b5939e429cfd66f88076b0) — Review Sonar false positives and secure project passwords
+- 2026-10-20 [4d7e0410](https://github.com/rhpds/troshka/commit/4d7e04105a6aac5fc13bf2efcf47a1556d0d9796) — Update frontend dependencies to resolve security alerts
+- 2026-10-20 [8de7832f](https://github.com/rhpds/troshka/commit/8de7832f183175d2f21adbce64e773bb794aee8d) — Resolve priority Sonar findings and harden tunnel authentication
+- 2026-10-20 [dc9adb31](https://github.com/rhpds/troshka/commit/dc9adb31abbcd867d19f348c6fb84f617ea0c4aa) — Bound frontend coverage workers and CI memory
+- 2026-10-20 [e1804b62](https://github.com/rhpds/troshka/commit/e1804b62fdeced8337ab8407ea32f9a050860e3d) — Patch serial client factory where tests consume it
+- 2026-10-20 [d643cbae](https://github.com/rhpds/troshka/commit/d643cbaeb13a606576bd6b620829af7bafcb98d0) — Resolve Sonar findings and enable frontend coverage analysis
+- 2026-10-20 [5771b4bf](https://github.com/rhpds/troshka/commit/5771b4bfdffc82ed87d8da2dc2ae1ddeacf824df) — Refresh Showroom access on open and await host agent updates
+- 2026-10-16 [7464bb73](https://github.com/rhpds/troshka/commit/7464bb7377d6a9cd8c5844510d52042ae93870fa) — Heal nested MAC ports across every OVN node database
+- 2026-10-15 [4fd0b5c8](https://github.com/rhpds/troshka/commit/4fd0b5c827d0399e123a63575c081b92dcc0aa99) — Ignore Kubernetes-managed namespace finalizer drift
+- 2026-10-15 [0b3404b7](https://github.com/rhpds/troshka/commit/0b3404b753f0974b50476a1bc66903bf4c8e697b) — Avoid OAuthClient drift from omitted OpenShift defaults
+- 2026-10-14 [d094ae2f](https://github.com/rhpds/troshka/commit/d094ae2f63868351dc7ce00f2d02ee5f7cd4bd7a) — Align template validation tests with OCP-only definitions
+- 2026-10-14 [0696ddb9](https://github.com/rhpds/troshka/commit/0696ddb95732437caaa2b01c5b69c219bb85c5ad) — Preserve workload logs and isolate Showroom access during recovery
+- 2026-10-14 [0da12cc7](https://github.com/rhpds/troshka/commit/0da12cc7854a3d2b412fe1736a15abc9b833f45d) — Harden OCP templates and pattern deployment reliability
+- 2026-10-14 [e99ce2cc](https://github.com/rhpds/troshka/commit/e99ce2ccda4dbc63c23eab92c29b28a0046c7470) — Set OVN force\_fdb\_lookup for nested-MAC virt-launcher ports.
+- 2026-10-14 [f3c5486d](https://github.com/rhpds/troshka/commit/f3c5486d165be8f2d02fc90f3d41720d3a5fc325) — Pin nested-virt project VMs to one host CPU model.
+- 2026-10-13 [e8bfa142](https://github.com/rhpds/troshka/commit/e8bfa142452b94881f04b85cdae25f3f17d042b1) — Allow GET on pods/exec for OVN nested-MAC port\_security clear.
+- 2026-10-13 [4e73a777](https://github.com/rhpds/troshka/commit/4e73a777bdfab1913e82342732a71589776ed28c) — Clear OVN virt-launcher port\_security for nested-MAC networks.
+- 2026-10-10 [e6373c23](https://github.com/rhpds/troshka/commit/e6373c238e7c5f41b7e9dfdff994f0468246ff2b) — Ignore deploy route-api extIpId in gateway Apply Changes diff.
+- 2026-10-10 [32afafc4](https://github.com/rhpds/troshka/commit/32afafc4174e8f6a38114d863fa9f3ba3ef04ecf) — Keep migration nested MACs on when CRD injects allowNestedMacs false.
+- 2026-10-10 [679f816a](https://github.com/rhpds/troshka/commit/679f816ab84013f2b7e65e37941b73b443871af2) — Fix Apply Changes noise and network type UI for nested MACs.
+- 2026-10-09 [89dca834](https://github.com/rhpds/troshka/commit/89dca834c5e09addd83ba5da1d0f3b021fef5fbb) — Fix reconfigure unchanged-VM tests and sync template schema.
+- 2026-10-09 [d39630f1](https://github.com/rhpds/troshka/commit/d39630f1e13b68214e832e5d7eaa2b31cedbf85e) — Add allowNestedMacs on networks for CCLM migration L2.
+- 2026-10-09 [9f2beac8](https://github.com/rhpds/troshka/commit/9f2beac8c2890e598886a629eee93f5f1f922689) — Warn when troshkad is unreachable due to backend egress IP.
+- 2026-10-09 [20db00bd](https://github.com/rhpds/troshka/commit/20db00bd34649dcf7727f10110c30f8c3cce6f61) — Harden public API and tunnel abuse controls for event NATs.
+- 2026-10-09 [3525f501](https://github.com/rhpds/troshka/commit/3525f501365aa358d15f63b8491d5ef8b6143b70) — Fix troshka-oc reconnect stampede on dual-context switches.
+- 2026-10-08 [062a9ad8](https://github.com/rhpds/troshka/commit/062a9ad8f70d51dd774ef71a2641d66f6b856a31) — Re-dial troshka-oc tunnels on demand instead of keeping idle WS alive.
+- 2026-10-08 [f0dc319c](https://github.com/rhpds/troshka/commit/f0dc319c3bf213e7367bdcf91fbade24c2a6ed56) — Speed up deploy-full: parallel cluster ops and skip unchanged NS RBAC.
+- 2026-10-08 [3beef225](https://github.com/rhpds/troshka/commit/3beef2254f2088fbfe6a5f4c3065752d239a43b1) — Keep parked troshka-tunnel sessions alive across idle stream gaps.
+- 2026-10-08 [8807233c](https://github.com/rhpds/troshka/commit/8807233c81299a2250d35ce8afbbee759c81abd9) — Use route-api placeholder when ensuring OCP API forwards without an EIP.
+- 2026-10-08 [8bf6680a](https://github.com/rhpds/troshka/commit/8bf6680a6e1bf416831e1391eac6c891d9ca4641) — Always ensure OCP API port-forwards on gateway for every cluster.
+- 2026-10-08 [8c01d14d](https://github.com/rhpds/troshka/commit/8c01d14dfc4835a3d1b7052c57f51e3827253c6e) — Fix kubevirt-exec TLS relay and roll troshka-tunnel on updates.
+- 2026-10-08 [e759a12b](https://github.com/rhpds/troshka/commit/e759a12b073a1235971aab9abb14e671231c4b84) — Fix kubevirt API tunnel dial for showroom-only gateways.
+- 2026-10-08 [d3442b4e](https://github.com/rhpds/troshka/commit/d3442b4e1db4bb86780c3722e21df756c9cd416e) — Heal KubeVirt ops pods stuck with OVN annotations or wrong Running IP.
+- 2026-10-08 [1cb00655](https://github.com/rhpds/troshka/commit/1cb00655d040d470767c910799017a8d24772f79) — Move nested OCP API tunnels off the API worker onto troshka-tunnel.
+- 2026-10-08 [11139c22](https://github.com/rhpds/troshka/commit/11139c224664ff3f08b0314bc92d15f8c2e78ff6) — Give each Troshka API env export its own copy button.
+- 2026-10-08 [5eab286a](https://github.com/rhpds/troshka/commit/5eab286ab184858f5f574de8451a82f637f86077) — Release DB session before long-lived API tunnel bridges.
+- 2026-10-08 [225589a1](https://github.com/rhpds/troshka/commit/225589a13e376fa36c93aa6e3a93dbb71992c8b2) — Fail modify-fs when guestfish cannot wipe RHCOS disks.
+- 2026-10-08 [62c77b23](https://github.com/rhpds/troshka/commit/62c77b23683ac6386bf69f3cc37d2bf84ff7f198) — Fix API tunnel relay dropping mid-response bytes.
+- 2026-10-08 [43067c94](https://github.com/rhpds/troshka/commit/43067c9497caf089458437cd9b53326e2f18a06e) — Add laptop oc access via troshka-oc API tunnel.
+- 2026-10-08 [9f56f7d6](https://github.com/rhpds/troshka/commit/9f56f7d64993d3f6578e8bfc2e5c14684a2444b4) — Add ownership filters on projects, images, and patterns lists.
+- 2026-10-08 [8aaeaae0](https://github.com/rhpds/troshka/commit/8aaeaae013b0c5f76ec1d22a4fbf5d48d7f67979) — Confirm before project Stop from the canvas toolbar.
+- 2026-10-07 [7e803590](https://github.com/rhpds/troshka/commit/7e8035903d5ae42ca79c1e2d8018ff1e272346bf) — Fix hibernate async path and Off-action review findings.
+- 2026-10-07 [c707be68](https://github.com/rhpds/troshka/commit/c707be68fc337e96aaa9f46a3cb282721b80e536) — Align WS and UI state labels for pause and hibernate.
+- 2026-10-07 [fe3222bb](https://github.com/rhpds/troshka/commit/fe3222bb4526b4c460fc2caece67dbfeb7622fab) — Grey out VM card Hibernate button when unsupported.
+- 2026-10-07 [d841e54a](https://github.com/rhpds/troshka/commit/d841e54a61b951ae8aa88ccf4e96db2136901f22) — Expose pause and hibernate on VM nodes and menus.
+- 2026-10-07 [828a3499](https://github.com/rhpds/troshka/commit/828a3499a42036c46f7e6d4af15b07df766c0d16) — Fix pause state flicker and disable caret with primary Off.
+- 2026-10-07 [f54de79e](https://github.com/rhpds/troshka/commit/f54de79e6968a749269979707176075f80d52133) — Add project Off mode split control for pause and hibernate.
+- 2026-10-07 [114cfeb3](https://github.com/rhpds/troshka/commit/114cfeb3921358e849ec65aeeec0e4d8a8079b88) — Expose supports\_hibernate on project responses.
+- 2026-10-07 [2617512e](https://github.com/rhpds/troshka/commit/2617512e05479ce7fe0f6d43c465cc3e177ac858) — Honor off\_action in project stop and start cascades.
+- 2026-10-07 [a3826e21](https://github.com/rhpds/troshka/commit/a3826e21850f087c6a8bbd62991b618e8e155bd5) — Add test for start\_vm resume-from-paused path.
+- 2026-10-07 [b667e7d6](https://github.com/rhpds/troshka/commit/b667e7d60627292fecacd128f445768a800e27af) — Add per-VM pause, unpause, and hibernate APIs.
+- 2026-10-07 [5d5dc248](https://github.com/rhpds/troshka/commit/5d5dc248a93f7c2cafbaa32d9cc9a5a52a3034c4) — Add troshkad pause, resume, and managedsave hibernate.
+- 2026-10-07 [b9e4d534](https://github.com/rhpds/troshka/commit/b9e4d5347af6c91306f59fae1aaadb0991764a7d) — Fix metering so paused VMs still accrue compute.
+- 2026-10-07 [42813e55](https://github.com/rhpds/troshka/commit/42813e553c60d24ed4bd66c718a930f3e3903c86) — Add project off\_action and power\_warn\_dismissed fields.
+- 2026-10-07 [f20da2e9](https://github.com/rhpds/troshka/commit/f20da2e960c949352b1db8e176afbb81bbdf8f7a) — Add pause/hibernate implementation plan; rename field to off\_action.
+- 2026-10-07 [62cd6198](https://github.com/rhpds/troshka/commit/62cd619800413f7a10807fa93b1bab5dd96072e9) — Add design spec for VM pause and hibernate.
+- 2026-10-07 [c253c8ec](https://github.com/rhpds/troshka/commit/c253c8ec3c70e80c92fd775c07f9564fd6b40664) — Fix template export/import schema round-trip and show validation errors.
+- 2026-10-06 [4ccc8b3b](https://github.com/rhpds/troshka/commit/4ccc8b3b48e6e44d2ea1e976fee32862e69b94ed) — Add OpenShift Info flyout and reorganize the canvas palette.
+- 2026-10-06 [1ac3d76a](https://github.com/rhpds/troshka/commit/1ac3d76aaf8e83d4fa4e24672267431a8d7d10e8) — Scope metering by owner and improve invoice export.
+- 2026-10-05 [a98d6d41](https://github.com/rhpds/troshka/commit/a98d6d414a543757c1a3d590299da91e0d83bb2e) — Fix metering Hours to use wall-clock coverage per kind.
+- 2026-10-05 [9687fd68](https://github.com/rhpds/troshka/commit/9687fd68ccb325de5a4627355ff832820d36b2a8) — Polish metering UI, library badges, and BMC canvas info.
+- 2026-10-05 [71a28e4c](https://github.com/rhpds/troshka/commit/71a28e4cdaac6422f8aff326d0182b14e69b3ab8) — Add nested metering factor, dedicated hosts, and monthly invoices.
+- 2026-10-05 [25314fdf](https://github.com/rhpds/troshka/commit/25314fdf463c2ff9d0d0926b25ca7f6addcdb0f3) — Add metering reconcile, budget auto-stop, and invoices.
+- 2026-10-05 [366ff3b2](https://github.com/rhpds/troshka/commit/366ff3b27046c721b5545d5ae219aaca9d08a628) — Add project metering plan, schema, and rate math.
+- 2026-10-05 [22da74ee](https://github.com/rhpds/troshka/commit/22da74eecfb402a0f7b503b5d5eeaf3aebd02990) — Add native project metering design spec.
+- 2026-10-03 [5f35ef8f](https://github.com/rhpds/troshka/commit/5f35ef8f450d081b99f6ed29ba2d8a8913c2579e) — Add Troshka reporting-api ingest plan.
+- 2026-10-03 [11456a79](https://github.com/rhpds/troshka/commit/11456a791910f767bf4e59538fd50450f3ec8e67) — Extract helpers so Sonar new-code complexity stays under the gate.
+- 2026-10-03 [6e2de343](https://github.com/rhpds/troshka/commit/6e2de343f5db71da5807e3b45194f3f289e460ee) — Drop autouse session close that raced with leftover deploy threads.
+- 2026-10-03 [d2778125](https://github.com/rhpds/troshka/commit/d2778125a7419fd5bae358c4dc5c63147c9c4502) — Use NullPool and WAL for SQLite tests so GitLab shards do not hang.
+- 2026-10-02 [7703d4fe](https://github.com/rhpds/troshka/commit/7703d4fef3143027995cc6ba47263a9a42d1efed) — Fix test SQLite deadlocks with a single file-backed engine.
+- 2026-10-02 [4d6a3552](https://github.com/rhpds/troshka/commit/4d6a35527da6f303e78021dc68ef653b502c8aa0) — Run backend pytest on pre-push to catch CI failures earlier.
+- 2026-10-02 [7214b9c3](https://github.com/rhpds/troshka/commit/7214b9c39b6fb0c9b28e4a265f2bdde9b322ab88) — Fix ops-pod resume tests and import-template 400 detail.
+- 2026-10-02 [4b8734ea](https://github.com/rhpds/troshka/commit/4b8734ea24674c1e3e90bb2c291887fb5715d0e2) — Enable image and host update buttons on quickstart installs.
+- 2026-10-02 [38a788d1](https://github.com/rhpds/troshka/commit/38a788d1fef6eec038137ab897c289ff53f125f9) — Enable ip\_forward inside project netns for guest outbound.
+- 2026-10-02 [d83c9133](https://github.com/rhpds/troshka/commit/d83c91335cf6e95cb7149c24f8abe378587a9412) — Enable DNS on test-web getting-started network.
+- 2026-10-02 [984f60d2](https://github.com/rhpds/troshka/commit/984f60d22a982f398a67adca11b83c526c1d13c5) — Poll CloudFormation every 60s by default.
+- 2026-10-02 [ed47a542](https://github.com/rhpds/troshka/commit/ed47a54206bd172dfe5f5ad70823903b8b73a5f6) — Assign console domain before agent install so vncd starts.
+- 2026-10-02 [2d6329de](https://github.com/rhpds/troshka/commit/2d6329de2dbc2016979ad273ef5dda9dcc2e3fa6) — Fix EKS compute IAM wait using empty AWS\_PROFILE.
+- 2026-10-02 [73863786](https://github.com/rhpds/troshka/commit/738637865fd16bac7589e57a94a911ea16861223) — Fix pattern preview and canvas light/dark theming.
+- 2026-10-02 [e32d0def](https://github.com/rhpds/troshka/commit/e32d0def74d830cec62b481c1a4f5658f6919f59) — Seed sslip.io console during EKS compute setup.
+- 2026-10-02 [d451523b](https://github.com/rhpds/troshka/commit/d451523b75774dad65d8df97690f6df3993a7b49) — Wait for deferred-worker node ISO HTTP server before Redfish.
+- 2026-10-02 [95fc1388](https://github.com/rhpds/troshka/commit/95fc138897adc18d92ea77decd7fd5be05f105c7) — Retry EKS compute seed through IAM key propagation.
+- 2026-10-02 [0b5b8e61](https://github.com/rhpds/troshka/commit/0b5b8e6128d7bdb9329987f1b69d20b5748263fd) — Fix OCP disk-write eject by host type and showroom access URLs.
+- 2026-10-01 [f8214df8](https://github.com/rhpds/troshka/commit/f8214df80484bd3d1bf5637b6a92ac7f8bc013c8) — Gate showroom behind static capability tokens in nginx.
+- 2026-10-01 [5ef649fa](https://github.com/rhpds/troshka/commit/5ef649fa5471bb73f61178cca85c880eb8ecf36b) — Fix OCP post-disk-write hang flap and keep Republish usable.
+- 2026-10-01 [b58d3691](https://github.com/rhpds/troshka/commit/b58d3691ca94b1bc74f2b9223529e1ec7f53f932) — Fix Add IP no-op on ocpvirt by marking user-added EIPs.
+- 2026-10-01 [48fc7106](https://github.com/rhpds/troshka/commit/48fc71068bf9c2fc3068bac1d74081418f8ab584) — Show template workload chain and replay it on redeploy.
+- 2026-10-01 [c7e0cae7](https://github.com/rhpds/troshka/commit/c7e0cae737267af5e310e0059bb4503970210fe6) — Fix OCP rebuild status and agent ISO serve race.
+- 2026-10-01 [5e230777](https://github.com/rhpds/troshka/commit/5e2307777ed0ce10e83598f931576e271644b03a) — Show OCP cluster status labels and keep Ready/Re-cert in sync.
+- 2026-10-01 [74a6cb22](https://github.com/rhpds/troshka/commit/74a6cb224b5900c5db157e08f7d91a38afb5ef23) — Allow provider SA to patch Deployments in project namespaces.
+- 2026-10-01 [b69d5bc7](https://github.com/rhpds/troshka/commit/b69d5bc79ee5d877480b8217c766c033e31e4e68) — Inject bastion VM when install\_via=bastion on bastionless OCP templates.
+- 2026-10-01 [5546a571](https://github.com/rhpds/troshka/commit/5546a571f7b651bd33c9446ed65633b984c87377) — Add vulture dead-code checks to backend CI and pre-commit.
+- 2026-10-01 [2c1ed7d0](https://github.com/rhpds/troshka/commit/2c1ed7d0555bf65c10f1dd250c26dad83ce8e212) — Require rebuild vs re-cert choice when redeploying OCP projects.
+
+## 2026-09
+
+- 2026-09-30 [262ad36b](https://github.com/rhpds/troshka/commit/262ad36b107a576aaebb2f3b6aada4ee40a74e8d) — Fix job\_id in troshkad main-container helper unit test.
+- 2026-09-30 [496a3e0d](https://github.com/rhpds/troshka/commit/496a3e0de66b01af31b85cab74ba4b7a54e94ad3) — Cover ns-service wait/delete and stuck-pod guards for Sonar gate.
+- 2026-09-30 [a5765bbb](https://github.com/rhpds/troshka/commit/a5765bbb0681e8bd62f9552421ed8dde815ccd36) — Push new\_coverage past Sonar 80% with more helper unit tests.
+- 2026-09-30 [26a5958b](https://github.com/rhpds/troshka/commit/26a5958b60903a4f1cf2d30dd288d4a8b4bf721d) — Cover remaining pod-net and rollout-heal branches for Sonar 80%.
+- 2026-09-30 [e4ab376d](https://github.com/rhpds/troshka/commit/e4ab376dd8b04620a4cceb4e6bcde8a1485825cd) — Raise new\_coverage over Sonar's 80% gate with helper unit tests.
+- 2026-09-30 [9c8e3fbc](https://github.com/rhpds/troshka/commit/9c8e3fbcca250f84cfadddbfaac7afe004da0f80) — Add unit coverage for Sonar helper extractions in kubevirt and app\_updater.
+- 2026-09-30 [6e67a2e6](https://github.com/rhpds/troshka/commit/6e67a2e62eb47574d67fc89b6b32c1c630a0b177) — Clear Sonar new\_violations: complexity, duplicate literals, unused param.
+- 2026-09-30 [70709410](https://github.com/rhpds/troshka/commit/70709410748adee16f53e0d3b52f66a42fcdceab) — Fix kubevirt deploy\_operator tests that OOM via MagicMock file handles.
+- 2026-09-30 [c9eedeb6](https://github.com/rhpds/troshka/commit/c9eedeb62256400afa3a7323c23cc2cdcfef610d) — Run ALM heavy kubevirt tests one-per-process with 8Gi limit.
+- 2026-09-30 [31cf46cf](https://github.com/rhpds/troshka/commit/31cf46cfb323be712d282b41c5b7aa2d9faa565b) — Batch kubevirt coverage tests in subprocesses to cap ALM RSS.
+- 2026-09-30 [bf95dd7f](https://github.com/rhpds/troshka/commit/bf95dd7f2162bb2bdf3cba34035d4a8aff3ccb3a) — Run kubevirt coverage tests without the coverage tracer on ALM.
+- 2026-09-30 [099e6aaf](https://github.com/rhpds/troshka/commit/099e6aaf0e8aa58eb5bc967ca62bc4ab32eb833b) — Isolate kubevirt coverage tests that OOM on ALM runners.
+- 2026-09-30 [c107afbd](https://github.com/rhpds/troshka/commit/c107afbd1a67d876a5ef6781dcbf5d30e14d5b02) — Ease ALM OOM: more shards, smaller memory asks, ctrace coverage.
+- 2026-09-30 [5d4026f3](https://github.com/rhpds/troshka/commit/5d4026f3c95f591eca96f8083b1428214cc7e35d) — Run one test file per coverage process on GitLab ALM shards.
+- 2026-09-30 [d963b9b4](https://github.com/rhpds/troshka/commit/d963b9b469efcdc04acac65be64ea8c3228f6144) — Cap GitLab coverage batches by line budget and accept no-host error text.
+- 2026-09-30 [af2bc11c](https://github.com/rhpds/troshka/commit/af2bc11cdd0a956595303614ee6dca5d4dfd6dbb) — Batch pytest-cov within GitLab shards to avoid ALM OOM.
+- 2026-09-30 [ffdcddeb](https://github.com/rhpds/troshka/commit/ffdcddeb7a953116b337c7a62567b54cefd15314) — Balance GitLab backend shards by size and fix last no-host deploy assert.
+- 2026-09-30 [e282fbd5](https://github.com/rhpds/troshka/commit/e282fbd570d796907bf7c32b96f41df3c3668266) — Clear Sonar new-code violations in stuck-pod heal and ingress labeling.
+- 2026-09-30 [f1a5b867](https://github.com/rhpds/troshka/commit/f1a5b8679a03e65616b91b8de7c201d513ec1a31) — Shard GitLab backend tests to stop ALM runner OOM kills.
+- 2026-09-30 [1bb85a4c](https://github.com/rhpds/troshka/commit/1bb85a4c306baa0c06c872073397451c3bc9bb92) — Harden KubeVirt project teardown so orphan Services cannot crash OVN.
+- 2026-09-30 [5656e522](https://github.com/rhpds/troshka/commit/5656e5221e489ce3e21f3a6c83e4cf3ec6d2cc47) — Default OCP canvas control-plane RAM to 32 GB.
+- 2026-09-30 [552ef598](https://github.com/rhpds/troshka/commit/552ef598ee8dcf797cd6e3e0f6952de4def490b3) — ForceRestart after disk-write ISO eject so live domain boots disk.
+- 2026-09-30 [23f1a210](https://github.com/rhpds/troshka/commit/23f1a2107da161068bb9f471466c8e8c5b36ec08) — Soft-skip KubeVirt ops pod create when the namespace is terminating.
+- 2026-09-30 [450a2617](https://github.com/rhpds/troshka/commit/450a2617709ce1a5884d24453196a0c0304209f7) — Eject Continuous Cd and clear boot override at disk-write 100%.
+- 2026-09-30 [a4222345](https://github.com/rhpds/troshka/commit/a42223456cbad50a9af28d121e6f07d9c27cfa64) — Fix KubeVirt OCP disk volume name collisions from \[:8\] truncation.
+- 2026-09-30 [6fc73533](https://github.com/rhpds/troshka/commit/6fc735332b74ea2f053f1dd6eff47349bddb8180) — Note post-disk-write reboot pause in agent install logs.
+- 2026-09-30 [4d7de7e2](https://github.com/rhpds/troshka/commit/4d7de7e2b17705a176795db46c0de1ac55b3bcdc) — Add host provision-pool toggle to soft-cordon placement.
+- 2026-09-30 [c0666d9b](https://github.com/rhpds/troshka/commit/c0666d9b3e368cb05041f8c75d77f0c07c2a15d7) — Poll VirtualMedia Inserted after InsertMedia POST flakes.
+- 2026-09-30 [ae766856](https://github.com/rhpds/troshka/commit/ae766856bff991c616a6ce15cbb8803268bdccca) — Fix cluster disk UI sync, skip duplicate bastion ISO, harden BMC InsertMedia.
+- 2026-09-30 [55d0ee0d](https://github.com/rhpds/troshka/commit/55d0ee0da07834e6963de6413d5b2cb43f283851) — Increase disk size from 120 GB to 250 GB
+- 2026-09-30 [dcdc6c79](https://github.com/rhpds/troshka/commit/dcdc6c799296a73975cf9fdfeaa0a5e7fe65634c) — Scope provider and operator namespaced mutate via per-NS RoleBindings.
+- 2026-09-30 [92d486a0](https://github.com/rhpds/troshka/commit/92d486a0eae040a44089f4c2119d5cc183e5f40c) — Tighten provider/operator ClusterRole mutate verbs to Troshka-owned names.
+- 2026-09-30 [3e488b3d](https://github.com/rhpds/troshka/commit/3e488b3df7be98875978796146a61d05363e927b) — Scope provider ceph patch/delete to troshka-ceph CR names only.
+- 2026-09-30 [89c0e08e](https://github.com/rhpds/troshka/commit/89c0e08ee15ca975eacf353e438151531550ebcd) — Ensure kubevirt-controller SCC ClusterRole so provider exec RBAC cannot poison namespaces.
+- 2026-09-30 [4967de82](https://github.com/rhpds/troshka/commit/4967de8256d10bc0fb3858a37edc439bd91a4be9) — Self-heal Multus-stuck app pods during Apply update.
+- 2026-09-29 [7bdd800f](https://github.com/rhpds/troshka/commit/7bdd800f1ba0b4446bed2ce4d7acb801f6459a85) — Serve agent ISO on BMC net and seed OCP cdrom0.
+- 2026-09-29 [0bda76dc](https://github.com/rhpds/troshka/commit/0bda76dc00bf4fa25b7de12fc158d725644d0a38) — Fix ops-pod collection pin for ansible-galaxy (comma, not @sha).
+- 2026-09-29 [3ff00aad](https://github.com/rhpds/troshka/commit/3ff00aad39e22b087781c87acf358dc07960c5e9) — Heal project pods stuck Terminating or in Multus sandbox.
+- 2026-09-29 [cb7c2715](https://github.com/rhpds/troshka/commit/cb7c271549abc9ee75a6d526edf9520c1aa9346c) — Fix troshka-terminal: allow wetty npm install scripts again.
+- 2026-09-29 [62f538ba](https://github.com/rhpds/troshka/commit/62f538bacdc72c51919aef0a059fdc759d5c72f7) — Simplify IngressController help text to default-when-unset.
+- 2026-09-29 [99869092](https://github.com/rhpds/troshka/commit/99869092b3593fbdbf1cbb8990f2a275600d6989) — Show IngressController setting using /auth/me role.
+- 2026-09-29 [4319cde6](https://github.com/rhpds/troshka/commit/4319cde6536dbf06b159a0a8c2b6910e12fa935c) — Use generic apps.\<cluster\> examples in IngressController help text.
+- 2026-09-29 [8b6b4d45](https://github.com/rhpds/troshka/commit/8b6b4d450977a0af06c870dcf2d2074e43e0c7a0) — Move IngressController setting to Settings page.
+- 2026-09-29 [69ab2f18](https://github.com/rhpds/troshka/commit/69ab2f1814977259371b98251a897df690a042c8) — Add admin IngressController setting for route apps domains.
+- 2026-09-29 [6b22e08c](https://github.com/rhpds/troshka/commit/6b22e08cc2ec63c0e8df6a657e50409195246d73) — Merge pull request #35 from rhpds/fix/ocp-canvas-cluster-defaults
+- 2026-09-29 [ebb3ecad](https://github.com/rhpds/troshka/commit/ebb3ecaddc5a07a3965879ef15cb30ef3107539a) — Merge pull request #34 from rhpds/chore/frontend-postcss-sharp-security
+- 2026-09-29 [43681e2e](https://github.com/rhpds/troshka/commit/43681e2e1c7ba0276a67b25bdfb348222298e54d) — fix(canvas): SNO .10 IPs, VIP prereqs, gateway outbound defaults
+- 2026-09-29 [9e74133b](https://github.com/rhpds/troshka/commit/9e74133b6d94727e6401f0dc03562dc10e26637f) — chore(deps): bump postcss and sharp for npm advisories
+- 2026-09-29 [ee6ab85d](https://github.com/rhpds/troshka/commit/ee6ab85dc5cbc01022739be5e61dc94d3a385e75) — Merge pull request #33 from rhpds/dependabot/pip/src/backend/backend-deps-45222304fa
+- 2026-09-29 [bdbe2ced](https://github.com/rhpds/troshka/commit/bdbe2ced551f25b2817d3cddec8e3de032cb2da3) — fix(deps): pin pydantic\_core to 2.46.5 for pydantic 2.13.5
+- 2026-09-29 [6d3eaad2](https://github.com/rhpds/troshka/commit/6d3eaad295ffb70ce3042bb36e3791e53b23eeaf) — Merge pull request #30 from rhpds/dependabot/github\_actions/github-actions-e91bde37dc
+- 2026-09-29 [6dbe7dcb](https://github.com/rhpds/troshka/commit/6dbe7dcb8ae1125c587e22890e557b486ce4c8a2) — Merge pull request #32 from rhpds/dependabot/npm\_and\_yarn/src/frontend/frontend-tooling-patches-fe19f38dc7
+- 2026-09-29 [f29331d8](https://github.com/rhpds/troshka/commit/f29331d887e938f4a87a42f85583b505f944c376) — Merge branch 'main' into dependabot/pip/src/backend/backend-deps-45222304fa
+- 2026-09-29 [220721fb](https://github.com/rhpds/troshka/commit/220721fbb1d81f9a49a1d484ffb04813440d93bf) — Merge branch 'main' into dependabot/github\_actions/github-actions-e91bde37dc
+- 2026-09-29 [1ad34e30](https://github.com/rhpds/troshka/commit/1ad34e304f660f6ec46e2e183cb1ada0ded7c225) — Fix ruff UP042 by using StrEnum in redis coverage test.
+- 2026-09-29 [9167568c](https://github.com/rhpds/troshka/commit/9167568ca157d9a6a3617dd0f7d15154c14cc7eb) — Clear Sonar quality gate for new code.
+- 2026-09-29 [1521dd0a](https://github.com/rhpds/troshka/commit/1521dd0a2f42159573b027640359d5d6560c446a) — Cut more S3776 debt and cover new deploy helpers.
+- 2026-09-29 [cd4cdecb](https://github.com/rhpds/troshka/commit/cd4cdecb40a6d45a78a4f3977fb1e27bc0dcf73b) — Further cut deploy\_service cognitive complexity.
+- 2026-09-29 [0f7b855b](https://github.com/rhpds/troshka/commit/0f7b855b0bcb0e7e4a6f1e17a6a651eb8d2c8462) — Reduce deploy\_service cognitive complexity for Sonar S3776.
+- 2026-09-29 [9fc3bd5e](https://github.com/rhpds/troshka/commit/9fc3bd5eeddc243d820da30c54ee73968c44478e) — Address Sonar bugs and quick security findings.
+- 2026-09-29 [62833c48](https://github.com/rhpds/troshka/commit/62833c484d68e035fb5cce18e7365f3c3c1f31fe) — chore(deps): bump the backend-deps group in /src/backend with 40 updates
+- 2026-09-29 [b6d52bb7](https://github.com/rhpds/troshka/commit/b6d52bb7be16febfe4cc13599ed324a4580fdd4e) — chore(deps): bump the frontend-tooling-patches group
+- 2026-09-29 [ef135c0e](https://github.com/rhpds/troshka/commit/ef135c0e2863e1d339308c667813dd6e5cef866f) — chore(deps): bump the github-actions group with 2 updates
+- 2026-09-29 [152d0b4c](https://github.com/rhpds/troshka/commit/152d0b4c82be3e87757615a208d0e659098f71bb) — Tune Dependabot: monthly, grouped, ignore Next/Vite majors.
+- 2026-09-29 [f71d6f7d](https://github.com/rhpds/troshka/commit/f71d6f7dcd32468282ac1814eb80d3a755ee9cd1) — Revert next to 16.2.11 after 16.3.3 blank-page crash.
+- 2026-09-29 [5ce53cb7](https://github.com/rhpds/troshka/commit/5ce53cb715e52cc31ee2595ddf6dfc1f0d2842d2) — Merge pull request #28 from rhpds/deps/dependabot-safe-batch
+- 2026-09-29 [1efbaff7](https://github.com/rhpds/troshka/commit/1efbaff7a6b8fe2f7eccb8d8c7d9c7b9d2c7fde4) — Bump safe Dependabot deps; leave vite/vitest majors.
+- 2026-09-29 [cce65f67](https://github.com/rhpds/troshka/commit/cce65f67c2564a1c0f91b226a95d672cf5232c54) — Delete .claude/TODO-sonarqube.md
+- 2026-09-29 [430e405b](https://github.com/rhpds/troshka/commit/430e405b13e69bf67bc39620b8b9435d1ea31464) — Bump CCLM source control plane to 16 vCPU / 64 GB.
+- 2026-09-29 [3f5c169c](https://github.com/rhpds/troshka/commit/3f5c169cbda9a9ef3cb8bb4a382c4b6b63d9160e) — Add Troshka AWS reference architecture diagrams.
+- 2026-09-29 [d2eaeb19](https://github.com/rhpds/troshka/commit/d2eaeb1953ce748ee39b2306b4a007857d771340) — Add template schema validation and PTR credential probe.
+- 2026-09-28 [258faaff](https://github.com/rhpds/troshka/commit/258faaff079536788e62f71e786e06ba7d0c9c9c) — Stop treating installer Install complete! as ops-pod done.
+- 2026-09-28 [44b817d4](https://github.com/rhpds/troshka/commit/44b817d400eb6bf6f613e59a9972f47440aedc0a) — Block kubevirt-only create/deploy when no kubevirt-cluster host is available.
+- 2026-09-28 [b3ed9dca](https://github.com/rhpds/troshka/commit/b3ed9dcad43e80c4442450ab16e2fc63ba02f7a9) — Fix kubevirt-only template host picking, OCP 5 as secondary default, and showroom/cred harvest.
+- 2026-09-28 [e9381ed3](https://github.com/rhpds/troshka/commit/e9381ed38bc61b6a198b504c6602950a78564005) — Handle paused OCP Virt hosts with resume, live migrate, and safer install logs.
+- 2026-09-25 [eaf05b64](https://github.com/rhpds/troshka/commit/eaf05b64548b044d810c1807e695f02edf7a85e8) — Add OKD SNO quickstart with GitHub SCOS installer downloads.
+- 2026-09-25 [9ea74115](https://github.com/rhpds/troshka/commit/9ea74115714b05388c308a28320872f984d1167f) — Harden EKS teardown: skip dead API cleanup and delete troshka-vpc.
+- 2026-09-25 [5aa54a30](https://github.com/rhpds/troshka/commit/5aa54a30af820c877dcdf3f23bc7f76d2ec160d1) — Wipe projects before deleting hosts in EKS teardown.
+- 2026-09-25 [29d68e51](https://github.com/rhpds/troshka/commit/29d68e5151eda0ceb9fa09d99838089273b16e9d) — Simplify example/bastion-builder templates and add YAML import credentials.
+- 2026-09-25 [33a6f763](https://github.com/rhpds/troshka/commit/33a6f7634a9561af7a9ca4d17df1bb6c4ba27600) — Recover stuck deploys when RQ leaves a zombie started job.
+- 2026-09-25 [9019a6f8](https://github.com/rhpds/troshka/commit/9019a6f81103af4986a85fd67c15420dad478e38) — Sync public IP from cloud status when non-KubeVirt hosts reconnect.
+- 2026-09-25 [99627290](https://github.com/rhpds/troshka/commit/996272902e629cf6685d1c15e4ecfafdc6d2fd03) — Sync cloud power state for disconnected non-KubeVirt hosts.
+- 2026-09-25 [289a3cb7](https://github.com/rhpds/troshka/commit/289a3cb7bba30ffe57976c64787da54f6c34e2c2) — Allow Setup Console via sslip.io with Let's Encrypt HTTP-01.
+- 2026-09-25 [56e998f0](https://github.com/rhpds/troshka/commit/56e998f08cd970f06d9b3cb5222fe08b6f1bc98a) — Fix Backend CI tests for S3 config mock, CCLM workloads, and ops-pod heal.
+- 2026-09-25 [f9491a75](https://github.com/rhpds/troshka/commit/f9491a75b29c532a9a2ed2a3c8f2758ef1591dcf) — Silence Azure SDK pyright mismatches in storage pool service.
+- 2026-09-25 [68493132](https://github.com/rhpds/troshka/commit/6849313258f66c1a87e0dd01c4cd84cd250f9150) — Add Serial only (headless) for canvas, templates, and KubeVirt.
+- 2026-09-25 [6fe2b342](https://github.com/rhpds/troshka/commit/6fe2b342759dcfca8a5e146aca782d80322cd499) — Expose S4 for EKS hosts via Ingress and dual S3 endpoints.
+- 2026-09-25 [9f2f2744](https://github.com/rhpds/troshka/commit/9f2f27447edc7bd58dc0b58194b3f058cf8866c7) — EKS quickstart seed, Fedora discover images, and template library alternates.
+- 2026-09-25 [2781d150](https://github.com/rhpds/troshka/commit/2781d150ebd9005dbb4caf3767f8f3683e66fd2c) — Use print\_cfn\_failure\_events on EKS install failures.
+- 2026-09-25 [3612da1c](https://github.com/rhpds/troshka/commit/3612da1cfc75755b64fa3f9fa2d8ed28d70b1b9b) — Fix EBS CSI IAM policy ARN and print real CFN failure events.
+- 2026-09-25 [f5d45dca](https://github.com/rhpds/troshka/commit/f5d45dca3a8f6e1109b1cf1990051a0ed6d0ff85) — Ask before deleting a failed stack after create failure too.
+- 2026-09-25 [538e8e7b](https://github.com/rhpds/troshka/commit/538e8e7b4de68c7755a9ab1bd2351e33760b95e8) — Ask before deleting a failed EKS CloudFormation stack.
+- 2026-09-25 [535aa713](https://github.com/rhpds/troshka/commit/535aa7134f16d6c93ad28a42d59da64042577073) — Poll CloudFormation status so failed stacks fail fast.
+- 2026-09-25 [57046ed6](https://github.com/rhpds/troshka/commit/57046ed6d4191907675ef6948c6db6a540ef09d0) — Fix EKS addon ResolveConflicts enum and fail on ROLLBACK\_COMPLETE.
+- 2026-09-25 [584640f7](https://github.com/rhpds/troshka/commit/584640f74a618808b6d1e4a0a3c8a045b62a5fe6) — Document AWS access-key env vars alongside profile in EKS tips.
+- 2026-09-25 [0a6ef58c](https://github.com/rhpds/troshka/commit/0a6ef58ca5b93b43fbf50c91492b6517f00d837b) — Warn on unset KUBECONFIG and print richer EKS setup tips.
+- 2026-09-25 [60a311c9](https://github.com/rhpds/troshka/commit/60a311c962f4c82194e9c627f8146c72de431dff) — Add --quiet/--no-verify aliases to skip EKS account confirms.
+- 2026-09-25 [32aa79d9](https://github.com/rhpds/troshka/commit/32aa79d9f10f236c69249ac05616f0bdc74cfd35) — Show AWS region source in EKS install/teardown confirmation.
+- 2026-09-25 [21de4e5d](https://github.com/rhpds/troshka/commit/21de4e5d0df5df94b419068856bea18432495d9d) — Prompt before EKS install/teardown with the target AWS account.
+- 2026-09-25 [e6beb00f](https://github.com/rhpds/troshka/commit/e6beb00f4f8fd3c9ae5bbdb343478e08e2bf32e9) — Improve quickstart pre-run checks with install hints.
+- 2026-09-25 [1b0e6f98](https://github.com/rhpds/troshka/commit/1b0e6f987e6ab89200139642984e9ae7bdb17781) — Add OCP, EKS, and local install quickstarts with shared teardown.
+- 2026-09-25 [d5d1da50](https://github.com/rhpds/troshka/commit/d5d1da502ed21f33cf79cf05c61dd13a268324b5) — Follow the next chain run in the open workload log modal.
+- 2026-09-25 [a5ee95b4](https://github.com/rhpds/troshka/commit/a5ee95b433732772055db9153cafe7d5e7619659) — Add Cancel for in-flight workloads and quiet early run.log noise.
+- 2026-09-25 [9a241515](https://github.com/rhpds/troshka/commit/9a241515269a7d567574e72d14a128fa46513e0b) — Show Workload N/M Retry to resume the unfinished template chain.
+- 2026-09-25 [8de12e4e](https://github.com/rhpds/troshka/commit/8de12e4ebb660829803abc570b7478faae17ed5f) — Spread control-plane pods and fix stuck workload interrupt/retry.
+- 2026-09-25 [ab7ebd8b](https://github.com/rhpds/troshka/commit/ab7ebd8bda19f57db8fda08fe5e36bac6c814416) — fix(ui): gate disruptive project actions while OCP/workloads busy
+- 2026-09-25 [c114ca1b](https://github.com/rhpds/troshka/commit/c114ca1b81564efec5e627136fe965ba7a574e65) — feat(ui): highlight other-user ownership on projects, images, and patterns
+- 2026-09-24 [2842ca72](https://github.com/rhpds/troshka/commit/2842ca72046efea4de6595eee7d17aeaa5d5e3ed) — fix(kubevirt): clean orphan PVs on destroy and GC with optional RBD reclaim
+- 2026-09-24 [05f86701](https://github.com/rhpds/troshka/commit/05f86701260583b34f36282ae32bd26aa48b66fd) — fix(kubevirt): reclaim capture temps on destroy and warn at 80% storage
+- 2026-09-24 [e43fb8d8](https://github.com/rhpds/troshka/commit/e43fb8d8a5943ca7a5b6262462fa5599991e11b1) — docs(cclm): note dual cluster vs VM sizing must stay in sync
+- 2026-09-24 [1056ecb2](https://github.com/rhpds/troshka/commit/1056ecb280c41f8816401fbde75b8f5ebb264769) — fix(workloads): heal stuck ops pods and wait for all cluster APIs
+- 2026-09-24 [b3dc4dbf](https://github.com/rhpds/troshka/commit/b3dc4dbf76dd1e42a2db80928e309f80813c08bc) — fix(workloads): keep join converge + persist run logs
+- 2026-09-24 [734f2f68](https://github.com/rhpds/troshka/commit/734f2f68822213444e05a7def610888ef925e655) — fix(canvas): clear false dirty after deferred-worker join
+- 2026-09-24 [7a9a8daa](https://github.com/rhpds/troshka/commit/7a9a8daa66b30301ab060e907a9ac5c507c7d664) — feat(workloads): per-role runOnce + live status chip
+- 2026-09-24 [45f4fa17](https://github.com/rhpds/troshka/commit/45f4fa17930c679d7e9134ad794b2cdc3284abad) — fix(operator): reschedule virt-launchers stuck in ContainerCreating
+- 2026-09-24 [799b7dac](https://github.com/rhpds/troshka/commit/799b7dac840060b985cc3d558f9374e97edc3b94) — fix(workloads): keep template chain through canvas save and auto-enqueue
+- 2026-09-24 [a9c97710](https://github.com/rhpds/troshka/commit/a9c977105d1703cc290d360bba5e3031d41a8cc6) — fix(showroom): reserve Multus IP at .9, not DNS .2
+- 2026-09-23 [9cb2d0ba](https://github.com/rhpds/troshka/commit/9cb2d0ba9d6c78dc25b3121840039686b72044b4) — fix(cclm): correct destination sizing comment wording
+- 2026-09-23 [9737538e](https://github.com/rhpds/troshka/commit/9737538ebfee30d29b5a5a2b532f64bb447681ed) — fix(cclm): size destination SNO at 16 vCPU / 64 GiB
+- 2026-09-23 [52568b11](https://github.com/rhpds/troshka/commit/52568b11fbd6f521204925f1e9f96e3cd6ef95b2) — fix(ceph): export rook-format CSI details so ODF external reaches Ready
+- 2026-09-23 [74366467](https://github.com/rhpds/troshka/commit/74366467dbb58f670b83f18fd55d066027e0ffd3) — fix(workloads): mint each cluster with its own K8S\_AUTH\_KUBECONFIG
+- 2026-09-23 [0dc7a410](https://github.com/rhpds/troshka/commit/0dc7a410a642d85ec5fd97a606e213d40be5e0e6) — fix(workloads): balance Jinja braces in multi-cluster mint accumulate
+- 2026-09-23 [3a34e0b3](https://github.com/rhpds/troshka/commit/3a34e0b36a143d6271efaaba733e4e2013722830) — fix(helm): include workloads config in mounted ConfigMap
+- 2026-09-23 [9f5ac33e](https://github.com/rhpds/troshka/commit/9f5ac33e37e05824191a05754b0cbb9f2713d47c) — fix: recert timer, stale reconfigure VM poll, and Auto-start=powerOnAtDeploy
+- 2026-09-23 [e3a9bf96](https://github.com/rhpds/troshka/commit/e3a9bf96fc7f5cb8000192cb8c84cc6173a0d95c) — fix(hosts): hide agent/power bulk actions for kubevirt cluster hosts
+- 2026-09-23 [7e054f07](https://github.com/rhpds/troshka/commit/7e054f07ff8ef13386f07fb7cab6bb01ebcd4580) — fix(kubevirt): verify admin-owned cluster RBAC instead of writing it as the provider SA
+- 2026-09-23 [50d3fc78](https://github.com/rhpds/troshka/commit/50d3fc784a4ff8d08f49775025ebd91df68aacf2) — fix(kubevirt): stabilize VM start/stop against ghost-record spin
+- 2026-09-23 [aa309967](https://github.com/rhpds/troshka/commit/aa30996749c434b22e830148f834c6d1c9db5673) — fix(patterns): capture from deployed\_topology, not editable canvas topology
+- 2026-09-23 [49833693](https://github.com/rhpds/troshka/commit/49833693f750bd3438d5f70810ffd14362b0d189) — feat(operator): watchdog to reap crash-looping golden imports
+- 2026-09-23 [a3de9264](https://github.com/rhpds/troshka/commit/a3de9264a54f954408074d6366f8112d96695e37) — chore(deploy): operator cluster list = ocpv01/02/06/07/08/09 + ocpvdev01
+- 2026-09-23 [62560f76](https://github.com/rhpds/troshka/commit/62560f769c75f4f9fbd1121d88e2ea883eab569c) — fix(kubevirt): ship provider RBAC in image and default operator namespace
+- 2026-09-23 [05001add](https://github.com/rhpds/troshka/commit/05001addfd58fd0aed2ba8c5b5113bb8ebe62364) — fix(ceph-restore): map disk source central-\>central-S4, gold-\>gold store
+- 2026-09-23 [3e5f3a97](https://github.com/rhpds/troshka/commit/3e5f3a97d23182f6ea1e1d04a2016b717c80825e) — fix(patterns): ship operator helpers package in backend image for Ceph capture
+- 2026-09-23 [7344a223](https://github.com/rhpds/troshka/commit/7344a22348ea6e3ee7bc52ca7012db783da2e0cb) — fix(showroom): parse namespace from any showroom route port, not just 443
+- 2026-09-22 [390b9ca2](https://github.com/rhpds/troshka/commit/390b9ca2a4a00ef0d43ddbf5b25087268b0bb916) — test(showroom): update showroom :443 PF expectations to TLS terminator .2
+- 2026-09-22 [8aa43067](https://github.com/rhpds/troshka/commit/8aa43067b94e4b33d096761b51f0752acda78914) — fix(ocp): tolerate late cluster convergence in ops-pod install-complete
+- 2026-09-22 [2b91d838](https://github.com/rhpds/troshka/commit/2b91d8383ce1292dc35631247eb77fea7dfea4f7) — fix(ocp): suspend ImagePruner on nested clusters to unblock install-complete
+- 2026-09-22 [2988d92f](https://github.com/rhpds/troshka/commit/2988d92f51ac1f6fc2c52fb88774b133c999fa9b) — fix(bastion-builder): switch to graphical target after first-boot setup
+- 2026-09-22 [35bb1267](https://github.com/rhpds/troshka/commit/35bb1267f3dcbb0be9bb0945ca8b3afe677e0b74) — fix(ocp): isolate agent create-image cache per cluster
+- 2026-09-22 [0ca8a31b](https://github.com/rhpds/troshka/commit/0ca8a31b6d760a59e2e5dee6a08b266bdce67ac2) — feat(ocp): enable OCP 5 preview versions in deployed Troshka config
+- 2026-09-22 [6e0bb8ca](https://github.com/rhpds/troshka/commit/6e0bb8caa81b405f666e722b0c047c93f3747124) — fix(ocp): log create-image lock waits for parallel cluster installs
+- 2026-09-22 [e702df54](https://github.com/rhpds/troshka/commit/e702df5415c7bfacfae7fd7a676e700dfed2eb40) — fix(ocp): flip deferred workers to powerOnAtDeploy after join converges
+- 2026-09-22 [25e1fca4](https://github.com/rhpds/troshka/commit/25e1fca4e9409a470b24192997081cd4fcb745dc) — fix(troshkad): never -F raw when qcow2 backing probe fails
+- 2026-09-22 [9bb95c83](https://github.com/rhpds/troshka/commit/9bb95c83d0b0718b736e4678a46c366896f4cd45) — fix(showroom): write ui-config via containers/exec
+- 2026-09-22 [7c71c6ad](https://github.com/rhpds/troshka/commit/7c71c6ad65033a38e8ddaedea0699df815d8648d) — fix(showroom): LE sslip.io on cloud EIP with iframe SANs
+- 2026-09-22 [a3d349f2](https://github.com/rhpds/troshka/commit/a3d349f210cf90539c52f07340f108a6019883f2) — fix(deploy): stop masking VM start as ceph restore; retry disk clones
+- 2026-09-22 [cb7fc76f](https://github.com/rhpds/troshka/commit/cb7fc76f27456689df69af19de041f10235addd1) — fix(ceph): adopt restored BlueStore OSDs instead of recreating them
+- 2026-09-22 [5e56d7a5](https://github.com/rhpds/troshka/commit/5e56d7a58b960789d7dd7bb45b5ad66de8b85fee) — fix(hosts): fast-fail storage status for unreachable hosts; make storage tests hermetic
+- 2026-09-22 [bd2566ee](https://github.com/rhpds/troshka/commit/bd2566eeb32e4311e62b4ccd32b8d75bba9a6721) — fix(hosts): keep host reachable across stop/start when a project EIP is on its ENI
+- 2026-09-22 [ae571c68](https://github.com/rhpds/troshka/commit/ae571c68a771e688a09ec979a8f9cc60e7c8175d) — Merge feat/showroom-tls-edge: troshkad showroom TLS edge
+- 2026-09-22 [9e6c6a2d](https://github.com/rhpds/troshka/commit/9e6c6a2d2d137c490fa51e9150149aec6572e391) — fix(showroom-tls): route providers keep .3:80 showroom PF; harden TLS setup
+- 2026-09-22 [d388065d](https://github.com/rhpds/troshka/commit/d388065d0740e9d7078e4fabf12f3bb0eaf2fa87) — fix(vxlan): handle stale :443 forwards and recognize legacy showroom PFs
+- 2026-09-22 [762e375b](https://github.com/rhpds/troshka/commit/762e375b6ecb74388d295406312fab8c069b38cf) — fix(deploy): restore local dns\_service imports (Batch D regression)
+- 2026-09-22 [ec6c5d49](https://github.com/rhpds/troshka/commit/ec6c5d49685e5aeffcedc25232379c3c778e92cb) — feat(deploy): wire showroom TLS edge into troshkad deploy + destroy
+- 2026-09-22 [c1d8e288](https://github.com/rhpds/troshka/commit/c1d8e288a73cbb0aee1312687e0e9a2ed57569d2) — feat(deploy): \_teardown\_showroom\_tls (stop terminator + delete DNS)
+- 2026-09-22 [f3a10cc5](https://github.com/rhpds/troshka/commit/f3a10cc532ec51727928294de6a0429d283f6c16) — feat(deploy): \_ensure\_showroom\_tls orchestration (DNS + cert + terminator)
+- 2026-09-22 [249f9e47](https://github.com/rhpds/troshka/commit/249f9e47e3d1f99323abfa21d2236342e74a1d3d) — fix(deploy): guard \_showroom\_route\_target against missing showroom node
+- 2026-09-22 [bb92bcd5](https://github.com/rhpds/troshka/commit/bb92bcd5b4f903da3f22e2ddfa90bffb30f02562) — feat(vxlan): point showroom :443 forward at the TLS terminator
+- 2026-09-22 [957cb7bc](https://github.com/rhpds/troshka/commit/957cb7bc5735b201024688477f3d5b0e97467dd3) — feat(deploy): \_showroom\_fqdn helper for showroom TLS
+- 2026-09-22 [ed2f3d3d](https://github.com/rhpds/troshka/commit/ed2f3d3d26657d201430aa339fbd5c6ccf88c325) — fix(troshkad): validate upstream IP in TLS proxy + test improvements
+- 2026-09-22 [2fc8a96e](https://github.com/rhpds/troshka/commit/2fc8a96e3487a794afcd596fec5ed01aae3839f5) — feat(troshkad): restore showroom TLS terminators on startup
+- 2026-09-22 [52cb7258](https://github.com/rhpds/troshka/commit/52cb7258167db6e5253e6ba2f0b21bca2558990c) — feat(troshkad): gateway/tls-proxy start+stop command handlers
+- 2026-09-22 [b6ac405f](https://github.com/rhpds/troshka/commit/b6ac405f31c9746a3211f534bda311cdd5cc9b15) — feat(troshkad): TLS terminator start/stop (socat in netns) with descriptor
+- 2026-09-22 [5a425660](https://github.com/rhpds/troshka/commit/5a425660d5778df6a2c47c73432968c1b65121b9) — fix(troshkad): validate EIP before deriving CN in gateway/tls-cert handler
+- 2026-09-22 [60e7f289](https://github.com/rhpds/troshka/commit/60e7f289c067a03a37a8db51bfec1ab157f23013) — feat(troshkad): gateway/tls-cert handler (LE or self-signed, validated)
+- 2026-09-22 [7b5b9212](https://github.com/rhpds/troshka/commit/7b5b9212fd41fa2cf4a328e711725a8f6cc470a5) — feat(troshkad): Let's Encrypt cert via Route53 DNS-01 with self-signed fallback
+- 2026-09-22 [82a10650](https://github.com/rhpds/troshka/commit/82a106509adc689d9a05ae86bc583cef24a1022a) — feat(troshkad): self-signed cert generation for showroom TLS
+- 2026-09-22 [2caa596c](https://github.com/rhpds/troshka/commit/2caa596c9fbdac1acf3c7c772ea5251609e592e9) — fix(operator): carry Ceph osdIps into CR spec + reserve them in dnsmasq
+- 2026-09-22 [af3587de](https://github.com/rhpds/troshka/commit/af3587debc2d4901161246f303a063a996aaf93f) — feat(troshkad): add socat to host package set for showroom TLS edge
+- 2026-09-22 [7f2c9ba2](https://github.com/rhpds/troshka/commit/7f2c9ba20b7ca6d399643ced3b0ae66e14df5e97) — fix(ceph): allocate collision-free OSD IPs top-down, reserve in dnsmasq
+- 2026-09-22 [903d3f2d](https://github.com/rhpds/troshka/commit/903d3f2dd4657385e5d2e605cc82629aa9373225) — docs(plan): troshkad showroom TLS edge implementation plan
+- 2026-09-22 [88e14723](https://github.com/rhpds/troshka/commit/88e1472304a98a656602e80a5d2c9c624b72ef9a) — docs(spec): troshkad showroom TLS edge design
+- 2026-09-22 [6956438b](https://github.com/rhpds/troshka/commit/6956438bd5e9bcec0decdebf21aa2ba54820c870) — fix(ocp): probe recert apiserver via validated apiVip, not the captured kubeconfig
+- 2026-09-22 [40fcab03](https://github.com/rhpds/troshka/commit/40fcab039574995cd3b8403c6f77aeb8cfbf47aa) — fix(ocp): deferred worker nodes-config uses real device names
+- 2026-09-22 [d47270eb](https://github.com/rhpds/troshka/commit/d47270eb6bb4a38c83b1bd0efc0f78f9b1168918) — fix(ocp): detect pattern-captured clusters as recert by disk source, not ocpKubeconfig
+- 2026-09-22 [9135330a](https://github.com/rhpds/troshka/commit/9135330ae81754a610819686a32c3e3f2babe247) — feat(agent): single-source host package set, installed at bootstrap and self-healed on update
+- 2026-09-22 [ba945701](https://github.com/rhpds/troshka/commit/ba94570188c3aea89010c677fc51e25204289921) — fix(deploy): fail pattern recert on kubelet-PKI wipe failure instead of reinstalling OCP
+- 2026-09-22 [53c9b778](https://github.com/rhpds/troshka/commit/53c9b778af7521f58846116b70adb2b5de20b08e) — feat(patterns): pattern-location tracking/sync + CCLM worker DNS stamp
+- 2026-09-22 [cffe0c03](https://github.com/rhpds/troshka/commit/cffe0c036ed6bff6a6a4dae5e3efbbe935886e6c) — fix(ocp): deferred workers get dnsmasq DNS + gateway route on join
+- 2026-09-22 [12ce0c04](https://github.com/rhpds/troshka/commit/12ce0c043851d85316a0c21a53dca29b1bbb797a) — fix(deploy): correct EIP-skip for empty gateway + tighten k8s typing
+- 2026-09-22 [15e30804](https://github.com/rhpds/troshka/commit/15e30804161a54eed25f9045b37eb16a267666ab) — fix(ocp): serialize agent create image across parallel clusters
+- 2026-09-22 [9cd05b77](https://github.com/rhpds/troshka/commit/9cd05b779c7aa78a150d249d3d8951927646e85b) — fix(ceph): prepare OSDs with mkfs instead of ceph-volume
+- 2026-09-22 [a5814ad4](https://github.com/rhpds/troshka/commit/a5814ad4d10e31991f6fa8147c7a6c9a14b73bf1) — fix(ocp): periodically re-attach per-project ops-pod install monitors
+- 2026-09-21 [b0383196](https://github.com/rhpds/troshka/commit/b0383196eb426ecb364efd06e74a0276850072b6) — fix(kubevirt): name API routes by logical port, not gateway listen key
+- 2026-09-21 [bf441789](https://github.com/rhpds/troshka/commit/bf441789cd73d5ac123f1e5f965257a1211c31c9) — Fix Ceph appliance bring-up and multi-cluster API Routes.
+- 2026-09-21 [6b06bcbc](https://github.com/rhpds/troshka/commit/6b06bcbc8ef72e8b5110f826fcb95224632e6a83) — fix(templates): carry cephCluster through resolve\_template
+- 2026-09-21 [1b6196c5](https://github.com/rhpds/troshka/commit/1b6196c5a28d82d72c9afc7327097072bf992400) — fix(reconfigure): valid gateway image tag + provision container PVCs
+- 2026-09-21 [ffa4b412](https://github.com/rhpds/troshka/commit/ffa4b412d7bfdb38a04e27b42513baa23bb4bb50) — fix(canvas): correct route-served forward display on OCP-ingress gateways
+- 2026-09-21 [05516377](https://github.com/rhpds/troshka/commit/055163778a866536a6fa22422dff4d97c6b163dd) — fix(ws): per-project VM-state polling on shared kubevirt clusters
+- 2026-09-21 [59e2c474](https://github.com/rhpds/troshka/commit/59e2c47444d7ee875b603527dfa2db1ca9edbbeb) — fix(gateway): showroom owns 443/80 and forces nat-portforward
+- 2026-09-21 [5330c9d8](https://github.com/rhpds/troshka/commit/5330c9d8fed29b1ed427e153f1bf54c3aee9456c) — fix(ocp): apply wizard-selected OCP version to all clusters
+- 2026-09-21 [c076c30a](https://github.com/rhpds/troshka/commit/c076c30add7b895906a37c7e3d4af5160a494443) — Replace parent Rook TroshkaCeph with a Multus Ceph appliance.
+- 2026-09-21 [afd23320](https://github.com/rhpds/troshka/commit/afd233206aab028bdce7d89eac8a133b4978cd51) — fix(ceph): restore project Ceph identity on pattern deploy
+- 2026-09-21 [a9acc833](https://github.com/rhpds/troshka/commit/a9acc8335758af6b002801c15cce428d6fc9b8d8) — fix(ocp): narrow imagepolicy failure marker to avoid false install failures
+- 2026-09-21 [8b13dcf3](https://github.com/rhpds/troshka/commit/8b13dcf317e60057cc65e5f4ab2a97cfc4c39201) — fix(canvas): don't delete cluster-ocp box when it's a real single cluster's box
+- 2026-09-21 [3dfd370b](https://github.com/rhpds/troshka/commit/3dfd370b61dab84aceec0c565aba393e92a7d202) — Merge: keep sole single-cluster OCP on canvas (legacy-ghost collision fix)
+- 2026-09-21 [3cf5dd48](https://github.com/rhpds/troshka/commit/3cf5dd4835398a4c995d32d73d6415f57d336d71) — fix(canvas): keep sole single-cluster OCP (stop treating cluster-ocp as a ghost)
+- 2026-09-21 [d9e90d4b](https://github.com/rhpds/troshka/commit/d9e90d4b68ad7b0c8d6dc3ce69938fc0aa70b464) — feat(patterns): show project Ceph capture progress in the disk list
+- 2026-09-21 [7ace44b7](https://github.com/rhpds/troshka/commit/7ace44b786d5b23a3cd28ec0521edf8c1c55f357) — fix(operator): KubeVirt capture fscheck must mount read-write (journal replay)
+- 2026-09-21 [c23e546e](https://github.com/rhpds/troshka/commit/c23e546e0ccb8bbba435173e7a6698f533d44847) — fix(ceph): unblock project Ceph pattern capture freeze and export
+- 2026-09-21 [e41dcbdf](https://github.com/rhpds/troshka/commit/e41dcbdf0f7494d761ed00134cc65a386f687e39) — Merge: honor Boot Order on deploy (both providers), OCP rootDeviceHints, capture boot-disk correction
+- 2026-09-21 [8419e773](https://github.com/rhpds/troshka/commit/8419e7735a9dafb2c2a2ff5c774ee0c3f61a4cd0) — fix(capture): repoint Boot Order off an empty disk to the OS disk
+- 2026-09-21 [80238ca4](https://github.com/rhpds/troshka/commit/80238ca438fc9a82f958c26ef676f114acc72deb) — fix(ocp): pin RHCOS install to the boot disk via rootDeviceHints
+- 2026-09-21 [b4e9c187](https://github.com/rhpds/troshka/commit/b4e9c1875b7ef95af144e33b769538c2edbf12ce) — fix(deploy): honor Boot Order for disk order (troshkad + kubevirt)
+- 2026-09-21 [b32d63e0](https://github.com/rhpds/troshka/commit/b32d63e0f57ad0bc3426c0889f6c85707675682a) — Merge branch 'feat/project-ceph-pattern-capture'
+- 2026-09-21 [86823363](https://github.com/rhpds/troshka/commit/8682336348a372141ed5b423664de9b96ffbd4e9) — Capture and restore project Ceph identity Secrets/ConfigMap
+- 2026-09-21 [f62cecdb](https://github.com/rhpds/troshka/commit/f62cecdb04f71ca2303a62c0ef2091e7a254511d) — Merge: fix stale VM-state spinner (troshkad reconcile) + bastionless OCP monitor + pyright
+- 2026-09-21 [0d90e45f](https://github.com/rhpds/troshka/commit/0d90e45f2c979e2d84feca46361a0eabb8faa1e7) — fix(troshkad): resolve pyright type errors
+- 2026-09-21 [0471656e](https://github.com/rhpds/troshka/commit/0471656e604f297cb3136a2016c666e7a9429692) — fix(ocp): bastionless per-VM monitor stands down cleanly; pyright test helpers
+- 2026-09-21 [a615b640](https://github.com/rhpds/troshka/commit/a615b6408ef0f7186b893e159d451fa268f00b0a) — fix(troshkad): reconcile VM state cache with live libvirt; console + test fixes
+- 2026-09-21 [0abeb374](https://github.com/rhpds/troshka/commit/0abeb3749bc5d6488face9ea132debc8ca56789f) — Document manual E2E checklist for project Ceph pattern capture.
+- 2026-09-21 [813fbd36](https://github.com/rhpds/troshka/commit/813fbd365ee49bb4673fb50745027eebb81fd134) — Add failure and legacy matrix tests for project Ceph capture.
+- 2026-09-21 [0e04e741](https://github.com/rhpds/troshka/commit/0e04e7416efeb6bcf399cf2011c9d4ac0c02ffa7) — Gate VM power-on on restored Ceph Ready.
+- 2026-09-21 [3ca87c95](https://github.com/rhpds/troshka/commit/3ca87c95ab217a716a1a2ad60a0986b192b17e50) — Merge: skip install-config validation for recert clusters on troshkad ops-pod path
+- 2026-09-21 [fadfff52](https://github.com/rhpds/troshka/commit/fadfff523568a271742b188912255f2484fe39a4) — fix(deploy): skip install-config validation for recert clusters on troshkad ops-pod path
+- 2026-09-21 [9f4ce6eb](https://github.com/rhpds/troshka/commit/9f4ce6ebeb431e7dc1c4826e4126371fcd155b0a) — Materialize Ceph mon/OSD PVCs from pattern disks on restore deploy.
+- 2026-09-21 [6b875b36](https://github.com/rhpds/troshka/commit/6b875b36d6940951d4f9ee0817c1f15602b68cff) — fix(agent-deployer): create BMC venv and define PIP\_ARGS before console-TLS block
+- 2026-09-21 [fe588a20](https://github.com/rhpds/troshka/commit/fe588a20b9a537350f654d332d00be5b3aa173f4) — Wire project Ceph capture into pattern\_service KubeVirt capture.
+- 2026-09-21 [04cb4c98](https://github.com/rhpds/troshka/commit/04cb4c98f08c3cb54a6c7024aafd6db909ac0df6) — Add parallel Ceph device snapshot + export to pattern capture.
+- 2026-09-21 [a926bc37](https://github.com/rhpds/troshka/commit/a926bc37d07e8de93dcc72339d1f1d30f2e99897) — Add Ceph freeze/unfreeze helpers for pattern capture.
+- 2026-09-21 [dd33e214](https://github.com/rhpds/troshka/commit/dd33e2147ce1261a4b09b0dc394f9e75d96364dd) — Add TroshkaCeph restore mode to build\_ceph\_cluster and ceph handler.
+- 2026-09-21 [a3540bdf](https://github.com/rhpds/troshka/commit/a3540bdff20be803a97fbb55190bb71168659c2d) — Discover mon and OSD PVCs for project Ceph capture.
+- 2026-09-21 [0e5b2c96](https://github.com/rhpds/troshka/commit/0e5b2c96ecd10f6ea11489dfa4c3bc6436a6358c) — Remap cephClusterNode refs on pattern deploy.
+- 2026-09-21 [6f7524c6](https://github.com/rhpds/troshka/commit/6f7524c6f893bf3f49ed8d27be75f0f6a040c26c) — Add topology helpers for project Ceph pattern capture.
+- 2026-09-21 [101dd6b8](https://github.com/rhpds/troshka/commit/101dd6b8bb6ab80c2de3bc7da76ee022965c4235) — Add PatternDisk metadata columns for Ceph mon/OSD captures.
+- 2026-09-21 [c9262a68](https://github.com/rhpds/troshka/commit/c9262a684ea3575dbdd255e3c0bf10083cd301fe) — Close doc gaps in Rook PVC-adopt spike findings.
+- 2026-09-21 [1289b3fb](https://github.com/rhpds/troshka/commit/1289b3fb8e2d6dca2d7d21e78ae1161511aff3c0) — Document Rook PVC-adopt findings for Ceph pattern restore.
+- 2026-09-21 [58cbe967](https://github.com/rhpds/troshka/commit/58cbe967550849a4242cfa9de333f23430118f6e) — Ignore local .worktrees directory for isolated feature work.
+- 2026-09-21 [d67dd07d](https://github.com/rhpds/troshka/commit/d67dd07dbf76ff00ee8a36115b778f939f196fe3) — Add implementation plan for project Ceph pattern capture.
+- 2026-09-21 [4ebc2619](https://github.com/rhpds/troshka/commit/4ebc26199f28d7810029e4d9155c81b9ba538cf0) — Add design for identity-preserving project Ceph pattern capture.
+- 2026-09-19 [9dfc6e4c](https://github.com/rhpds/troshka/commit/9dfc6e4cd2cb64d8c6fc357566ee210a0b62e8a3) — Point ocp-cclm showroom at showroom-troshka-cclm.
+- 2026-09-19 [bebdabe9](https://github.com/rhpds/troshka/commit/bebdabe9523ecac60e8f8129c833cdb702e48e52) — Wire ocp-cclm template workloads and auto-enqueue after install.
+- 2026-09-19 [ea3f8d74](https://github.com/rhpds/troshka/commit/ea3f8d74c07097944fd5fdaa08e881c7abe6c53c) — Default Ceph labIp to .4 and align ocp-cclm template.
+- 2026-09-19 [944a4d91](https://github.com/rhpds/troshka/commit/944a4d91d5e69f190ef61ec51ab43fe4a1b8e505) — Export nested Ceph mon as hostNetwork:3300 for ODF krbd.
+- 2026-09-17 [453d209e](https://github.com/rhpds/troshka/commit/453d209e6eccdbe38d4be696494861f738516b14) — Avoid Ceph labIp colliding with the project exec pod.
+- 2026-09-17 [92656353](https://github.com/rhpds/troshka/commit/9265635359a5513c19036df3bd8f723f57330237) — Forward Ceph mgr metrics port on the mon bridge.
+- 2026-09-17 [6acb9386](https://github.com/rhpds/troshka/commit/6acb9386ca14d0ad6366751cb6f03707d5511e47) — Fix project Ceph export job and Rook operator RBAC.
+- 2026-09-16 [c7ffecdf](https://github.com/rhpds/troshka/commit/c7ffecdfef16f66d752a1729b83e49a0273ce749) — Re-apply provider RBAC on kubevirt operator deploy.
+- 2026-09-16 [bf7ca303](https://github.com/rhpds/troshka/commit/bf7ca3034311d87e835522a4ee010f36ffbb0b87) — Export ODF external\_cluster\_details for project Ceph consumers.
+- 2026-09-16 [5fd464b9](https://github.com/rhpds/troshka/commit/5fd464b9eee70aef4d8033cf2d52e5f8c1319221) — Fix project Ceph bootstrap on OpenShift with ODF.
+- 2026-09-16 [379cced4](https://github.com/rhpds/troshka/commit/379cced4b20dddf6599f2a359f4ba69894e8ff1a) — Add minimal Troshka-owned Rook RBAC for project Ceph on ODF.
+- 2026-09-15 [cf43c808](https://github.com/rhpds/troshka/commit/cf43c8082178227ed1775275b33d3ee4509a4aab) — Isolate project Ceph from ODF and fix canvas layout.
+- 2026-09-15 [fe414c48](https://github.com/rhpds/troshka/commit/fe414c48bd3554901a4084cf6b97fa742b83ae16) — Fix auto-layout placing Ceph on top of cluster boxes.
+- 2026-09-15 [525f290c](https://github.com/rhpds/troshka/commit/525f290ce3f6473b93cc177ac6c6f0712ad3a8d9) — Fix ceph layout, reconfigure provisioning, and teardown.
+- 2026-09-15 [9d1393c5](https://github.com/rhpds/troshka/commit/9d1393c567abe46826941b73b4c2189920705c38) — Fix CRD apply tests for TroshkaCeph CRD.
+- 2026-09-15 [e7b16ca5](https://github.com/rhpds/troshka/commit/e7b16ca508dddf0d7d4ba85e209bb0f58202b5e3) — Add project Ceph storage for KubeVirt labs.
+- 2026-09-15 [12078b9b](https://github.com/rhpds/troshka/commit/12078b9b683c8f1d7ca7307e4cf22a4436e10462) — Fix backend CI failures from ops-pod and cred validation drift.
+- 2026-09-15 [76b80792](https://github.com/rhpds/troshka/commit/76b80792570843f4629cf999a69e45304226bc1f) — Fix CCLM worker egress, multi-cluster install progress, and BMC vmedia HEAD.
+- 2026-09-15 [500c0c51](https://github.com/rhpds/troshka/commit/500c0c51814cf0af610c2b15d8f0dd1a581b3ce5) — Add pop-out window for OCP cluster install status and log.
+- 2026-09-15 [f89175b7](https://github.com/rhpds/troshka/commit/f89175b75dd58c0c828e1412e3b0f5d081095b64) — Improve CCLM worker join, install cancel, and cluster terminal creds.
+- 2026-09-14 [65e33646](https://github.com/rhpds/troshka/commit/65e336462952b0d508e6517fffd041040ae6af3d) — Fix CCLM deferred worker join and multi-cluster terminal UX.
+- 2026-09-14 [9d8063c4](https://github.com/rhpds/troshka/commit/9d8063c471a61775701f002d57572514d7f72207) — Allow migration networkType in TroshkaNetwork CRD for CCLM deploys.
+- 2026-09-14 [f25f1b2e](https://github.com/rhpds/troshka/commit/f25f1b2e76e450c0e345ad3eda89089b3f1f7928) — Exclude migration network from CCLM SNO agent install configs.
+- 2026-09-14 [1dcd570a](https://github.com/rhpds/troshka/commit/1dcd570a50218f4df7e7b26aba9bb8b315d205f6) — Join deferred workers after SNO install for CCLM source cluster.
+- 2026-09-14 [f2dd007b](https://github.com/rhpds/troshka/commit/f2dd007bcf7f66a9e840786a23a7f171b3f20ac3) — Fix SNO+workers agent install using platform none with compute replicas.
+- 2026-09-14 [25e837c8](https://github.com/rhpds/troshka/commit/25e837c89ddd2e0ac2bee5d22b1e6ce4cb9b4755) — Enable DNS on CCLM shared cluster network for showroom.
+- 2026-09-14 [1396d58e](https://github.com/rhpds/troshka/commit/1396d58e2307498186c51ff7c875b21c689c5bef) — Fix CCLM deploy: preserve placement on save, split source ingress VIP.
+- 2026-09-14 [e7aa48b5](https://github.com/rhpds/troshka/commit/e7aa48b56f3ecbba9d286b40c8db22ee99c74df9) — CCLM: shared cluster network, clusterAnchor edges, BMC auto-assign.
+- 2026-09-14 [48f0b936](https://github.com/rhpds/troshka/commit/48f0b936ce88a7cd3b88ea34a8ec8f956cd21f09) — Add ocp-cclm template with KubeVirt-only placement.
+- 2026-09-14 [08962060](https://github.com/rhpds/troshka/commit/0896206060b142203b21db60fedd5e328fe136ed) — Multi-network OCP clusters: agent-config NICs, layout, and BMC fixes.
+- 2026-09-14 [571de91d](https://github.com/rhpds/troshka/commit/571de91d815b3d6f26bf7aec590e2adaec8d7152) — Harden OCP restart install and fix multi-cluster showroom proxy routes.
+- 2026-09-14 [45107eee](https://github.com/rhpds/troshka/commit/45107eeea8c183e2e3244ed6264e034bd9b6f80b) — Fix post-boot OCP restart on ocpvirt troshkad hosts.
+- 2026-09-14 [29b72dc7](https://github.com/rhpds/troshka/commit/29b72dc7f3177e123f3700c19e28be04a304234a) — Fix build-image-on-host when no build-args are passed.
+- 2026-09-14 [d92dd59c](https://github.com/rhpds/troshka/commit/d92dd59ce7ba498f1f8d79e36711c4fccacdf276) — Fix pyright type on ops-pod cluster list in deploy\_service.
+- 2026-09-14 [04f123d9](https://github.com/rhpds/troshka/commit/04f123d9724bd8b274d3266d2f6e6c67316e393d) — OCP ops-pod restart install, PTR toggle, and deploy pipeline fixes.
+- 2026-09-13 [b2894e52](https://github.com/rhpds/troshka/commit/b2894e5232e3eeb6d799b2565dcb9ac77567f344) — KubeVirt reconfigure parity and multi-cluster ops-pod fixes.
+- 2026-09-13 [62e11838](https://github.com/rhpds/troshka/commit/62e1183893422203058dc9a4003f3c61e74be50b) — fix(ocp): canvas-added clusters get full install on pattern projects
+- 2026-09-13 [0ab6ce97](https://github.com/rhpds/troshka/commit/0ab6ce97cf11df3db40abd95ad20f703eca000aa) — fix(canvas): stop false dirty after pattern deploy
+- 2026-09-13 [7d668e12](https://github.com/rhpds/troshka/commit/7d668e12929299634ef0809df424b6ffe8e250fd) — fix(patterns): hide DNS integration when no providers exist
+- 2026-09-13 [6be678a8](https://github.com/rhpds/troshka/commit/6be678a8ad54ea949c21b8a047bfb547ddc2e184) — fix(quickstart): always enable external access for OpenShift templates
+- 2026-09-13 [700f8f4f](https://github.com/rhpds/troshka/commit/700f8f4fd7fec04b12a5e6670a0c003d353377f6) — feat(canvas): BMC setup, install-on-deploy, and cluster heal on save
+- 2026-09-13 [4b9df169](https://github.com/rhpds/troshka/commit/4b9df169885c900cc7668d9393423803c224bd9d) — fix(workloads): never require a bastion — always use troshka connection, drop require\_bastion
+- 2026-09-13 [424f8cbd](https://github.com/rhpds/troshka/commit/424f8cbd40df263c6bffb2c2c8ed35419363a480) — fix(canvas): heal legacy OCP cluster ghost on project load
+- 2026-09-13 [3950fe3a](https://github.com/rhpds/troshka/commit/3950fe3a9079a86cecb6eb127229d006d1da00b0) — fix(workloads): VM-target runs use bastionless troshka connection mode
+- 2026-09-13 [b4bd5fbe](https://github.com/rhpds/troshka/commit/b4bd5fbe617581b0a2f67c53bc26cb5c12de4f68) — fix(workloads): best-effort cluster fan-out, reqs precedence, drop dead inventory-preview, exclude cluster VMs
+- 2026-09-13 [d53b020e](https://github.com/rhpds/troshka/commit/d53b020e3e70b85ae6749b4321e81cf1f1e69027) — feat(workloads): right-click pre-seed Run Workload + Target column in run history
+- 2026-09-13 [6f1a17de](https://github.com/rhpds/troshka/commit/6f1a17deb53972ff596c003ad990533c6b96b30a) — feat(workloads): add targeted run support (cluster\_id, vm\_names, extra\_vars)
+- 2026-09-13 [98438208](https://github.com/rhpds/troshka/commit/98438208988e06a3a2541a24bdb99204a08442ff) — feat(workloads): multi-select clusters/VMs, extra vars, pre-seed in RunWorkloadModal
+- 2026-09-13 [815fd3d8](https://github.com/rhpds/troshka/commit/815fd3d8dcf69496b2f0b6e6caa9830ea3988c6c) — fix(workloads): wire ee\_image override, scope run-detail WS nudge, document log\_ref
+- 2026-09-13 [4fb71cef](https://github.com/rhpds/troshka/commit/4fb71cef4248b27b0680218bb05836ed42dc6de4) — feat(workloads): run-history modal + launcher
+- 2026-09-13 [fc3fc9d4](https://github.com/rhpds/troshka/commit/fc3fc9d4d4fe7913a35b6c9fbe8911bb73ded3fc) — feat(workloads): run-detail modal with polled logs + WS nudge
+- 2026-09-13 [267d2911](https://github.com/rhpds/troshka/commit/267d2911304ebdcf8d45dd9b18a6cf95c2c91028) — feat(workloads): Run Workload ad-hoc trigger form + action-bar button
+- 2026-09-13 [41b4a171](https://github.com/rhpds/troshka/commit/41b4a1714cac2554806d761261938c97325b6e3e) — feat(workloads): surface workload-progress on the project socket
+- 2026-09-13 [3954e04d](https://github.com/rhpds/troshka/commit/3954e04d1431fc97d95a9eb22330b58b906f256d) — feat(workloads): first-class Ansible Groups field on VM nodes
+- 2026-09-13 [fb7226b4](https://github.com/rhpds/troshka/commit/fb7226b4ccc25f871c90804c5293086ee8ccd83a) — test(workloads): guard Optional db.get results in workload tests
+- 2026-09-13 [c232934f](https://github.com/rhpds/troshka/commit/c232934f0136efd2f1538120aa6b46c2d797afc4) — feat(workloads): target\_map cluster mode skips VM inventory validation
+- 2026-09-13 [fb2bbc1c](https://github.com/rhpds/troshka/commit/fb2bbc1c8f2d440c413bc082d9885a426c1487a0) — feat(workloads): inventory-preview endpoint (groups + contract errors)
+- 2026-09-13 [2333e15d](https://github.com/rhpds/troshka/commit/2333e15d12110c7590ccd79a3d639e007fb71118) — feat(workloads): GET /workloads/{id}/log (live read + persisted fallback)
+- 2026-09-13 [ba78d56c](https://github.com/rhpds/troshka/commit/ba78d56c5611c260e4886884ae8f4923bc38f492) — feat(workloads): persist bounded run-log tail to log\_ref on finalize
+- 2026-09-13 [b081836a](https://github.com/rhpds/troshka/commit/b081836a348bfffcc332ec9c72976087fa05c64e) — docs(workloads): Plan 3 UI (ad-hoc) implementation plan
+- 2026-09-13 [21289357](https://github.com/rhpds/troshka/commit/212893579588a6c78699b04e7ec01d0212f21e07) — docs(workloads): Plan 3 UI (ad-hoc) design spec
+- 2026-09-13 [307f58e6](https://github.com/rhpds/troshka/commit/307f58e63a3bcbff935c0765294c7b0a023b76de) — docs(roadmap): add DNS upstream forwarding (functional/honest/consistent) item
+- 2026-09-13 [ea621503](https://github.com/rhpds/troshka/commit/ea62150354bf00ab11e8f183a547e6226133ed77) — fix(workloads): read troshkad runner logs via podman logs (works on exited)
+- 2026-09-13 [617c9aa0](https://github.com/rhpds/troshka/commit/617c9aa090294e3be5a3cfbd4fd66bc8a92b0ee9) — fix(kubevirt): delete-then-create ops/runner Secret on re-run (SA lacks update)
+- 2026-09-13 [6c1b1063](https://github.com/rhpds/troshka/commit/6c1b10631b208a2a9cc0f493e692d4a3bca791d1) — fix(troshkad): report container exit\_code in /containers/states
+- 2026-09-13 [fcf62b9a](https://github.com/rhpds/troshka/commit/fcf62b9a55a8a70f24db84259924f14e3382f320) — fix(workloads): distinct transit IP for troshkad runner pod (avoid ops-pod collision)
+- 2026-09-13 [0aab351d](https://github.com/rhpds/troshka/commit/0aab351dc7b9588c5b8520f743d1240756c01be1) — docs(dns): revise spec — drop no-op firewall fix; scope to dnsUpstream gating (defer impl)
+- 2026-09-13 [4b89e731](https://github.com/rhpds/troshka/commit/4b89e73156ab4aa4eff46f33ad462fb467b30517) — docs(dns): spec — make dnsUpstream functional, honest, consistent (both providers) + 53/udp firewall fix
+- 2026-09-13 [38ec8a71](https://github.com/rhpds/troshka/commit/38ec8a715dba1bddb14a7ff290081a0c96efd456) — fix(workloads): troshkad runner start + monitor container-name
+- 2026-09-13 [cdb86865](https://github.com/rhpds/troshka/commit/cdb868657ebcb54f5ac485c213c6c59070656757) — config(workloads): default EE to agnosticd ee-multicloud:chained-latest
+- 2026-09-13 [adab04a4](https://github.com/rhpds/troshka/commit/adab04a421f5d6053a2e1bf165d49939c8c31766) — fix(workloads): give runner pod project-network reachability (both providers)
+- 2026-09-13 [31a6c78e](https://github.com/rhpds/troshka/commit/31a6c78eb7b8c177d833cafa78f028b2b6382319) — fix(workloads): mint via delivered kubeconfig using K8S\_AUTH\_KUBECONFIG
+- 2026-09-13 [c68cf48f](https://github.com/rhpds/troshka/commit/c68cf48fa096ae599e430a530c5641c7603481b1) — fix(workloads): run mint prelude adjacent to main.yml so agnosticd.core resolves
+- 2026-09-13 [351a9950](https://github.com/rhpds/troshka/commit/351a9950b56493e780ff3d4714fa33e09a8d7e56) — feat(workloads): default ad-hoc runs to agnosticd ee-multicloud:chained-latest
+- 2026-09-13 [3c1d9c7c](https://github.com/rhpds/troshka/commit/3c1d9c7cb49a38b25a177ad18115f0d848c4d184) — feat(workloads): pass AgnosticD requirements\_content through ad-hoc runs
+- 2026-09-13 [fcf885b0](https://github.com/rhpds/troshka/commit/fcf885b0afe21264fd236956f5a54c32bbf7dca7) — fix(workloads): resolve KubeVirt runner-pod namespace from host provider
+- 2026-09-13 [abe77753](https://github.com/rhpds/troshka/commit/abe7775393074a06b1f71680696f619c3b208e67) — test(workloads): make OCP-no-kubeconfig guard test type-clean
+- 2026-09-13 [5b8c75d8](https://github.com/rhpds/troshka/commit/5b8c75d83a26c0ad769bfe899414ab2d65f21e81) — fix(workloads): guard OCP-no-kubeconfig, tee mint log, no\_log token, drop vestigial cluster\_access
+- 2026-09-13 [201acfd8](https://github.com/rhpds/troshka/commit/201acfd8af564e40b29e53b1ae105e5b593204a0) — feat(ui): show control-plane-usable milestone in recert Status & Log
+- 2026-09-13 [f2c7c7f5](https://github.com/rhpds/troshka/commit/f2c7c7f5e5a54e5fc618a4a73ead4b01d7f2db43) — feat(workloads): mint cluster-admin token in-pod for workloads
+- 2026-09-13 [013b560c](https://github.com/rhpds/troshka/commit/013b560cf762b9a07dc4ca1ab0f83ea01ccaf203) — feat(workloads): deliver admin kubeconfig to runner pod
+- 2026-09-13 [cd8e9066](https://github.com/rhpds/troshka/commit/cd8e906694293c6f78bef0531928c88cf986a642) — refactor(workloads): remove backend cluster-access (moved in-pod)
+- 2026-09-13 [47ed0a05](https://github.com/rhpds/troshka/commit/47ed0a059c2ee361a8a8c1dbdad77c44574977b0) — feat(workloads): gate runs on minimal control-plane-usable
+- 2026-09-13 [e6809357](https://github.com/rhpds/troshka/commit/e680935720c04892a6e3bc9e5d31b20f440359c9) — fix(workloads): add kube-apiserver Progressing check, fix type signature, prevent progress spam
+- 2026-09-13 [1f6edba1](https://github.com/rhpds/troshka/commit/1f6edba1e766606b8d92398b6fcaff78eb3e94df) — feat(workloads): persist minimal control-plane-usable recert milestone
+- 2026-09-13 [68ad2f63](https://github.com/rhpds/troshka/commit/68ad2f63b6b49b3eede975b5ec4cc26bfc03f350) — docs(workloads): plan for cluster-access rework + recert-usable gate
+- 2026-09-13 [c94ca0c8](https://github.com/rhpds/troshka/commit/c94ca0c8f13aff1ae037b3b9f5de01cbd46bb958) — docs(workloads): spec rework — in-pod cluster access (D7), backend-minimal (D12), recert-usable gate + timestamp (D13)
+- 2026-09-13 [1e3bfcf9](https://github.com/rhpds/troshka/commit/1e3bfcf9db61f4ac24d812cf9a0c61aa778967a4) — fix(workloads): use pullable default EE image (troshka-ops-pod:latest)
+- 2026-09-13 [3a098e48](https://github.com/rhpds/troshka/commit/3a098e4843ddc7479eb9a1ad85e54533d84350e2) — fix(workloads): set ANSIBLE\_CONFIG to repo root in runner pod
+- 2026-09-13 [b2c27abf](https://github.com/rhpds/troshka/commit/b2c27abf9a74ed793a11931923f7deb2a8e2287d) — feat(workloads): runner pod clones agnosticd-v2 at runtime
+- 2026-09-13 [2685d54a](https://github.com/rhpds/troshka/commit/2685d54a36b39c06c1ae9912e46dfee6dc1c67f9) — fix(mtu): warn on sub-1280 floor bump + stop MTU input reset mid-edit
+- 2026-09-13 [8405ba5f](https://github.com/rhpds/troshka/commit/8405ba5ffd31a6d5cfe56bb48c273fd29af5d128) — docs(mtu): record deferred MTU niceties in design roadmap (§11)
+- 2026-09-13 [e59f1c59](https://github.com/rhpds/troshka/commit/e59f1c59fc69539f53c3d30222ea4b0ad3aa2b2a) — fix(patterns): remap clusters\[\].networkIds/dnsNetworkId on pattern deploy (fixes false DNS ⛔ + dirty canvas)
+- 2026-09-12 [fddbc3c4](https://github.com/rhpds/troshka/commit/fddbc3c401ef6b9a81747f50b0554fa4d194b43f) — fix(workloads): final-review fixes for Plan 2
+- 2026-09-12 [9843987e](https://github.com/rhpds/troshka/commit/9843987e09d27a21c7ef6e8c732fb3d75ec81df5) — Merge branch 'main' into feat/workloads-plan2
+- 2026-09-12 [b3f8a226](https://github.com/rhpds/troshka/commit/b3f8a22626fcfe2b2885e3c4b70f12a2dd0afe35) — feat(workloads): WorkloadRun retention pruning
+- 2026-09-12 [af031e6f](https://github.com/rhpds/troshka/commit/af031e6f34998b0cdf5084fc48d04549cbcdcdb1) — fix(config): annotate config export as Any so Pyright resolves Dynaconf dynamic access
+- 2026-09-12 [8f5b94c7](https://github.com/rhpds/troshka/commit/8f5b94c7d3b2a61aae7678b36e59caf65c4fe649) — feat(workloads): run trigger/status/list API
+- 2026-09-12 [85e51aef](https://github.com/rhpds/troshka/commit/85e51aef6c216a2c1e4efc97d51d33debe3de4ae) — fix(ci): rebuild backend on CRD changes (backend bundles+applies operator CRDs)
+- 2026-09-12 [f0afd514](https://github.com/rhpds/troshka/commit/f0afd514799f6e49388fa676cd465f529b7fa74f) — feat(workloads): implement real I/O for workload monitor
+- 2026-09-12 [7e5847b7](https://github.com/rhpds/troshka/commit/7e5847b723af83157d5778fa44009d57984963aa) — fix(mtu): add mtu field to TroshkaNetwork CRD schema (was pruned, breaking NAD mtu)
+- 2026-09-12 [ff26b61f](https://github.com/rhpds/troshka/commit/ff26b61f230c95dee03eb398a01a6a417ddd94aa) — feat(workloads): workload-run monitor + restart recovery
+- 2026-09-12 [6d13f63a](https://github.com/rhpds/troshka/commit/6d13f63a2676885c5adf9a6b91a817ccc06566ce) — fix(workloads): pyright guards + \_prepare\_agnosticd session fix
+- 2026-09-12 [5ee787b3](https://github.com/rhpds/troshka/commit/5ee787b33b1402d21a1d635526132c5bc81e69fb) — fix(mtu): carry network MTU through operator topology flattening into NAD
+- 2026-09-12 [81b0af4f](https://github.com/rhpds/troshka/commit/81b0af4f8d76dd6ed3e207f8a516d3cfa440a005) — feat(workloads): run orchestration service + enqueued RQ job
+- 2026-09-12 [6e2cf559](https://github.com/rhpds/troshka/commit/6e2cf5598d4aee5b390e5607620fc6751878224b) — fix(workloads): pristine compliance + test assertion for pod\_launch
+- 2026-09-12 [229cd527](https://github.com/rhpds/troshka/commit/229cd5270af6bc39ca1944701f21dcc03b4b48ba) — feat(workloads): runner-pod launch with EE image + artifact mounts
+- 2026-09-12 [ee8129c5](https://github.com/rhpds/troshka/commit/ee8129c542283250d3d382f48a972bbee8e1ff72) — fix(mtu): synchronous KubeVirt uplink read + hard-fail both providers + SA RBAC for networks.config
+- 2026-09-12 [4ac1766b](https://github.com/rhpds/troshka/commit/4ac1766bae4e367f1fbf0de49cc441add7afca9b) — feat(workloads): inventory emitter + AnsibleGroup validation
+- 2026-09-12 [f8f8a8d0](https://github.com/rhpds/troshka/commit/f8f8a8d04ac9a693c35b69d3a240f9fad6aadfca) — fix(workloads): add owner/role authorization guard to cluster-access endpoint
+- 2026-09-12 [4702cd88](https://github.com/rhpds/troshka/commit/4702cd887a223c54a4e997ed05babef99264523a) — feat(mtu): MTU-aware host placement (exclude/fail hosts that can't meet required MTU)
+- 2026-09-12 [2658f63c](https://github.com/rhpds/troshka/commit/2658f63ce195c7dfcc36fd8570c9e4b50a15c508) — feat(workloads): cluster-access endpoint + scoped run key
+- 2026-09-12 [97b00094](https://github.com/rhpds/troshka/commit/97b000948442f44fdf44d6bc04bbd1189e59bbee) — fix(workloads): pristine constraints - unused params, type annotation
+- 2026-09-12 [893d7195](https://github.com/rhpds/troshka/commit/893d719569060ce79be53e65bbd30deff928e2f3) — test(mtu): type KubeVirt driver concretely so pyright resolves \_read\_cluster\_network\_mtu
+- 2026-09-12 [b9d0c3ef](https://github.com/rhpds/troshka/commit/b9d0c3efdf51c621e62232aff3bf6f37fdfa82de) — feat(workloads): cluster-admin SA token minting for cluster access
+- 2026-09-12 [1a2f1984](https://github.com/rhpds/troshka/commit/1a2f198467b07985d9d5c68a44e2bbf7e5286cdb) — feat(mtu): KubeVirt-native hosts report uplink MTU via clusterNetworkMTU (parity)
+- 2026-09-12 [7a49c237](https://github.com/rhpds/troshka/commit/7a49c237485faa6e5309f9dd74a9928630b9f274) — feat(workloads): add WorkloadRun model + migration
+- 2026-09-12 [e3b142c2](https://github.com/rhpds/troshka/commit/e3b142c251db4726f2c37b695d0214f9685abe84) — docs(workloads): Plan 2 (execution) + spec refinements (EE-as-pod, SA token)
+- 2026-09-12 [2d2e47ec](https://github.com/rhpds/troshka/commit/2d2e47ec56442c66ca42d625541fa3cbf8653cf9) — fix(mtu): synchronously fetch host uplink MTU at deploy; fail loud vs silent 1500
+- 2026-09-12 [4399fc44](https://github.com/rhpds/troshka/commit/4399fc44b91eb0f1065fb8a52d0cade426d869d1) — Merge branch 'feat/workloads-plan1': workloads Plan 1 (foundational backend)
+- 2026-09-12 [be55299d](https://github.com/rhpds/troshka/commit/be55299d0e80bdd67ee6942a92eec2baf9614cec) — fix(workloads): private-repo auth and empty-decrypt resilience
+- 2026-09-12 [ebd396af](https://github.com/rhpds/troshka/commit/ebd396af6db4d49effdaeb85d460853ccc5a1f22) — fix(workloads): install agnosticv to /opt/app-root/bin for UBI9 user 1001 permissions
+- 2026-09-12 [4ba4eb0d](https://github.com/rhpds/troshka/commit/4ba4eb0d262172a37c048ef1a03dcb88072f902d) — build(workloads): install agnosticv binary in backend image
+- 2026-09-12 [8850a233](https://github.com/rhpds/troshka/commit/8850a233808ffa821bc4ef4439636da4d1a5aa7d) — fix(workloads): pristine test lambdas and use guard instead of assert
+- 2026-09-12 [6911d92c](https://github.com/rhpds/troshka/commit/6911d92c3964042b9a31b8764b7bcba6babe13e8) — feat(workloads): add catalog item resolver entry point
+- 2026-09-12 [44945efc](https://github.com/rhpds/troshka/commit/44945efcf17c8cdeac0e0f9eedbc84da1952061a) — feat(workloads): drive agnosticv binary for list/merge + vault decrypt
+- 2026-09-12 [c85aae84](https://github.com/rhpds/troshka/commit/c85aae84448b573ca05354e5b5f80e629789342c) — fix(workloads): harden repo cache eviction against stray files
+- 2026-09-12 [98fa86ab](https://github.com/rhpds/troshka/commit/98fa86ab78646604fad2ed898cebe00f88f9722f) — feat(workloads): add disk-bounded git repo cache
+- 2026-09-12 [16cb9c4b](https://github.com/rhpds/troshka/commit/16cb9c4bfc07375b9a962ffbd70f347a8f919077) — feat(workloads): add self-contained ansible-vault decrypt
+- 2026-09-12 [4c1c8750](https://github.com/rhpds/troshka/commit/4c1c87508517dc091dc6ecbe82dd1292e9e9fd8d) — fix(workloads): add type annotations and assertion guards for pyright
+- 2026-09-12 [43414603](https://github.com/rhpds/troshka/commit/43414603675a64f60daec0351b940bdc6fa71094) — feat(workloads): add central secret store
+- 2026-09-12 [67862c41](https://github.com/rhpds/troshka/commit/67862c415486924a8a44ec86260a64246a587402) — docs(workloads): add design spec and Plan 1 (foundational backend)
+- 2026-09-11 [6355e88a](https://github.com/rhpds/troshka/commit/6355e88ab7e35c56547b8a544a1a2eabc34244e8) — test: fix flaky health-monitor test (assert\_any\_call vs assert\_called\_once)
+- 2026-09-11 [8bfd9ba6](https://github.com/rhpds/troshka/commit/8bfd9ba634e68b1b4213724313f88e00505e0a38) — fix(mtu): emit resolved MTU into troshkad network-setup payloads; drop unused import
+- 2026-09-11 [8d707c5e](https://github.com/rhpds/troshka/commit/8d707c5e0159ff765ff878f2052dc0ae7acfe2e8) — fix(mtu): do not persist out-of-range MTU values
+- 2026-09-11 [dd562703](https://github.com/rhpds/troshka/commit/dd562703fc2dd97f5cc85287da6c282be2fc2dc8) — feat(mtu): per-network MTU field in canvas node inspector
+- 2026-09-11 [8aa6add8](https://github.com/rhpds/troshka/commit/8aa6add817d7732d63f5ae714441ba27d7d31ee1) — feat(mtu): recert gate fast-fails on OVN MTU mismatch
+- 2026-09-11 [18103c6d](https://github.com/rhpds/troshka/commit/18103c6db25ecc209b035e109832c637495b46de) — feat(mtu): freeze resolved MTU into captured pattern topology
+- 2026-09-11 [18798172](https://github.com/rhpds/troshka/commit/18798172a24aa7fd8851ce96d9d38ba76d29c31d) — feat(mtu): set clusterNetworkMTU in OCP install-config
+- 2026-09-11 [4f9a6487](https://github.com/rhpds/troshka/commit/4f9a64870f8dc6b3666c927af5b89b7837a17a19) — fix(mtu): annotate NAD config dict type for int mtu value
+- 2026-09-11 [553b953b](https://github.com/rhpds/troshka/commit/553b953bcbf620296b3d53bd4fff34ecde09a95a) — feat(mtu): KubeVirt NAD carries resolved MTU (parity)
+- 2026-09-11 [348ca2a3](https://github.com/rhpds/troshka/commit/348ca2a39aa8f8360f00d8944baf7c4518e29cae) — feat(mtu): troshkad sets NIC/bridge/vxlan MTU from resolved value
+- 2026-09-11 [658d0d19](https://github.com/rhpds/troshka/commit/658d0d19b3ef87bff82cdf46e613175dd34e46fe) — fix(mtu): thread mtu\_map through multi-host deploy path
+- 2026-09-11 [74610164](https://github.com/rhpds/troshka/commit/7461016466871de0c1bd343357183a0912baaa39) — feat(mtu): resolve per-network MTU at deploy and inject into net dicts
+- 2026-09-11 [fd9245f5](https://github.com/rhpds/troshka/commit/fd9245f5e15c1a09d12e027b17731bb443ac9022) — style(mtu): black-format troshkad default-route MTU test
+- 2026-09-11 [3de47b9d](https://github.com/rhpds/troshka/commit/3de47b9df63c607421c9d14a2a474540d285cd72) — feat(mtu): report host default-route MTU via health poll
+- 2026-09-11 [bb07bc62](https://github.com/rhpds/troshka/commit/bb07bc623e47c53bcccb5abe250251c07355b3fc) — feat(mtu): add Host.uplink\_mtu column + migration
+- 2026-09-11 [b34e8020](https://github.com/rhpds/troshka/commit/b34e80207d8f58ccc4005e24fdb0ceb40ea63c46) — feat(mtu): add per-network MTU resolver
+- 2026-09-11 [9757345e](https://github.com/rhpds/troshka/commit/9757345eb931465f35dde3750a4588bbf7c125fb) — docs(mtu): per-network MTU design spec + implementation plan
+- 2026-09-11 [ba42495e](https://github.com/rhpds/troshka/commit/ba42495e93ebbbf4f9032807cd12eeade0373282) — Merge pull request #26 from rhpds/docs/readme-screenshots-canvas-demo
+- 2026-09-11 [469bc724](https://github.com/rhpds/troshka/commit/469bc724dd1fe1415ae1dc07eceb20df552f4d92) — docs(readme): add canvas-build demo GIF and deployed-project screenshots
+- 2026-09-11 [18ad3434](https://github.com/rhpds/troshka/commit/18ad3434f520123dfd41a962cba76dd64aaa8a76) — Fix central pattern deploy downloads and add gold S4 copy tooling.
+- 2026-09-11 [e7c98cec](https://github.com/rhpds/troshka/commit/e7c98cec7215fc824251df3f3391482b2df2f785) — feat(terminal): cluster-building banner, tmux persistence, clear/watch
+- 2026-09-11 [fcfe9f0a](https://github.com/rhpds/troshka/commit/fcfe9f0a3f2875414775891fcfb678f5bf4884d3) — fix(ui): show host health age as a human-readable duration
+- 2026-09-11 [8eb093b2](https://github.com/rhpds/troshka/commit/8eb093b2c3d9f003f6db1a010d91e85bc53d312c) — feat(ui): show agent-update-needed warning on the host card too
+- 2026-09-11 [48152872](https://github.com/rhpds/troshka/commit/48152872c32a8f03ed0d45127b0dc6e40913b520) — test(recert): assert legacy recertEnabled flag is cleared, not preserved
+- 2026-09-11 [a5045559](https://github.com/rhpds/troshka/commit/a504555956dbd6020ab3425baa7197cee446e50d) — feat(gc): detect orphaned KubeVirt namespaces and unreferenced goldens (report-only)
+- 2026-09-11 [288deac4](https://github.com/rhpds/troshka/commit/288deac4937479b853af1055d0e6095cd3b64311) — feat(ui): warn in nav when a host's troshkad agent needs an update
+- 2026-09-11 [6c624e74](https://github.com/rhpds/troshka/commit/6c624e74d25217bbff73b28938f557c4af21722c) — fix(kubevirt): don't delete project record when namespace is stuck terminating
+- 2026-09-11 [4a804e96](https://github.com/rhpds/troshka/commit/4a804e96027016384938577103a80c4bed533f9f) — fix(gc): stop reaping in-use BMC bridges (labs need virtual media)
+- 2026-09-11 [6559f0af](https://github.com/rhpds/troshka/commit/6559f0af3b76dd9481d1cda4ecc512789c953165) — feat(gc): reclaim leftover agent ISOs and dangling images (root-disk leaks)
+- 2026-09-11 [2e74bd36](https://github.com/rhpds/troshka/commit/2e74bd367b8b3488a84c332b6d3be233f6a198a3) — fix(showroom): chown served www/ui-config.yml so content server can rewrite it
+- 2026-09-11 [d4883e9e](https://github.com/rhpds/troshka/commit/d4883e9e1fa6a47a63db7b0afe3f2504c317c655) — fix(patterns): replicate troshkad OBC captures to central S4 for cross-provider deploys
+- 2026-09-11 [b6d54780](https://github.com/rhpds/troshka/commit/b6d54780fa36b59adfed23d75bd527182cf852e1) — test(troshkad): cap time.sleep in tests to kill multi-second delays
+- 2026-09-11 [dcfcc596](https://github.com/rhpds/troshka/commit/dcfcc596d218336058b72aa54c27a9790edb2b7b) — fix(showroom): chown www to antora uid instead of world-writable 0777
+- 2026-09-11 [ee60db15](https://github.com/rhpds/troshka/commit/ee60db15da1ac0d0f0516f2a0d82ed15fb9a0f62) — fix(test): update pod-destroy test for hashed netns name and lexists
+- 2026-09-11 [fac2e2e2](https://github.com/rhpds/troshka/commit/fac2e2e2d0c762e7a108a072830b8f8e18d07fda) — fix(troshkad): pod-aware orphan cleanup, honest BMC kill logging, pool-before-dir GC order
+- 2026-09-11 [76eb3627](https://github.com/rhpds/troshka/commit/76eb3627ac686af685cac943df4f3b56a9533c89) — feat(patterns): show delete button on public/central patterns for admins
+- 2026-09-11 [cf149161](https://github.com/rhpds/troshka/commit/cf1491617cf3c18f05c8938efa01082397ba3f61) — fix(showroom): make /showroom/www writable so non-root antora build succeeds
+- 2026-09-11 [3e56e911](https://github.com/rhpds/troshka/commit/3e56e911e579f76864b110d8ed2dd0ca502b6d91) — fix(troshkad): unique per-pod netns/veth names to stop cross-project collision
+- 2026-09-11 [f64c7954](https://github.com/rhpds/troshka/commit/f64c79542894d3e6ff494053949e115cfed5e52f) — fix(gc): dedup cleanup lists and report consistent orphan counts
+- 2026-09-11 [72416eef](https://github.com/rhpds/troshka/commit/72416eef86db1f738548a6c71923855c48217e28) — fix(terminal): use single-file copy target, not the KUBECONFIG list
+- 2026-09-11 [f609a9ab](https://github.com/rhpds/troshka/commit/f609a9abb7868272546f9274f288952066407fb7) — chore(deploy): apply operator ClusterRole in deploy-full Step 3b
+- 2026-09-11 [06223ed5](https://github.com/rhpds/troshka/commit/06223ed5a1a3fede6e982cbc9539dbd4b4f8aa31) — fix(terminal): kubeconfig fallback so terminal opened during install picks it up
+- 2026-09-11 [d10f9fc0](https://github.com/rhpds/troshka/commit/d10f9fc070eae52b8ef412efb80ce35ba08a7848) — fix(kubevirt): guestfish-only OCP recert, halt VM during recert, xfs repair
+- 2026-09-10 [29f8e7a9](https://github.com/rhpds/troshka/commit/29f8e7a9fd63fa23665535bd6d450dafadc1f28b) — fix(security): shlex.quote the path in \_captured\_kubeconfig\_works (command injection)
+- 2026-09-10 [e6cb1fc5](https://github.com/rhpds/troshka/commit/e6cb1fc593d81d5bcec9f79702ce8ab5eda094ef) — Revert "fix(recert): force kube-apiserver roll (restart operator) to clear 401 fast"
+- 2026-09-10 [d6866305](https://github.com/rhpds/troshka/commit/d68663053cf4187bdfcaa90d88fc5e8afad96e3d) — perf(recert): lazy kubeconfig delivery — skip snapshot pull when captured one works
+- 2026-09-10 [e17fb8f6](https://github.com/rhpds/troshka/commit/e17fb8f666d66328360abbf544c2ee423d7cbd90) — fix(recert): force kube-apiserver roll (restart operator) to clear 401 fast
+- 2026-09-10 [acebf689](https://github.com/rhpds/troshka/commit/acebf689f2001e38a3015d70e8123c49971946c6) — fix(recert): elapsed timer no longer jumps backward at completion
+- 2026-09-10 [416faa54](https://github.com/rhpds/troshka/commit/416faa54b250736eddd882b377c3f754169e2fab) — fix(recert): ordered control-plane recovery (scheduler+kcm, then aggregated apiservers)
+- 2026-09-10 [3d592d40](https://github.com/rhpds/troshka/commit/3d592d408953a0191b4a9232a4be29d6b7c28086) — fix(patterns): remap container-mount edge handle so showroom volume line survives clone
+- 2026-09-10 [2aa8091d](https://github.com/rhpds/troshka/commit/2aa8091dbb8aae7ea465cb74f280c1a23f70d0bc) — fix(recert): surgical nudge of aggregated apiservers to clear post-recert 401 fast
+- 2026-09-10 [821cffca](https://github.com/rhpds/troshka/commit/821cffca7807d0dbf7dc77da29d7f3cf6612908f) — fix(recert): robust per-CSR approval + gate on aggregated route API (fixes multinode console)
+- 2026-09-10 [e0de8095](https://github.com/rhpds/troshka/commit/e0de80955d914420811904dfca97713191b59dde) — fix(recert): stop overdoing it — let cluster self-heal, gate on operators reliably
+- 2026-09-10 [be2429db](https://github.com/rhpds/troshka/commit/be2429db0ac4790c8e6225b0955d74a8bcace336) — fix(recert): force kube-apiserver redeploy on ALL clusters, not just multinode
+- 2026-09-10 [b1ad426b](https://github.com/rhpds/troshka/commit/b1ad426b9402d4ed19db738eea828faf9ad473a0) — feat(recert): elapsed timer counts from deployment start, not log timestamps
+- 2026-09-10 [dff7e24d](https://github.com/rhpds/troshka/commit/dff7e24d115a326796d3cc08fb580bfc11cab9f9) — perf(recert): parallelize kubelet-PKI wipe across nodes
+- 2026-09-10 [44098d90](https://github.com/rhpds/troshka/commit/44098d9092a56f4a22705f18f6112746ff494590) — fix(recert): select whichever admin kubeconfig authenticates; skip OLM packageserver gate
+- 2026-09-10 [1a26b4f0](https://github.com/rhpds/troshka/commit/1a26b4f01a151481b42e5fd257c21754a3299185) — fix(recert): open ops-pod install.log in append mode to stop clobbered breadcrumbs
+- 2026-09-10 [b0b58d8f](https://github.com/rhpds/troshka/commit/b0b58d8f5eeb1120ec3c5310a98bc6e963a477d3) — fix(recert): don't gate on monitoring; console status on its own log line
+- 2026-09-10 [605154d7](https://github.com/rhpds/troshka/commit/605154d7d7d6d8db1bfd88fa201ab7ddc6d9752f) — chore(recert): label the guestfish phase 'wiping kubelet PKI' (not 'regenerating certificates')
+- 2026-09-10 [fb8fd0b0](https://github.com/rhpds/troshka/commit/fb8fd0b0bae02de51d7cdcd870fd9c145b26ed9a) — feat(recert): gate on the console actually HTTP-responding, not just operator Available
+- 2026-09-10 [f199c267](https://github.com/rhpds/troshka/commit/f199c267d3bcdca6c297d8750cd9f075b90acfee) — fix(recert): reap ALL zombie pods (not just crashlooping) + keep approving CSRs
+- 2026-09-10 [a9c53cb7](https://github.com/rhpds/troshka/commit/a9c53cb769e3f09047dc54faecb247a2293214dd) — fix(filepull): try each candidate in a separate guestfish call (chain abort)
+- 2026-09-10 [9cec52a3](https://github.com/rhpds/troshka/commit/9cec52a3da9b3137004b3fbeeeaf05458d1802ca) — fix(filepull): unique overlay name + guaranteed cleanup + mount log-recovery
+- 2026-09-10 [06057c0c](https://github.com/rhpds/troshka/commit/06057c0cb580dec339fe8a62017782c745a05e48) — feat(frontend): recert status badge (Re-Certing, violet) not Installing
+- 2026-09-10 [f6b45248](https://github.com/rhpds/troshka/commit/f6b45248354f8fe94e76674fa6bb45c15b0eadff) — feat(frontend): recert-specific install checklist (not the fresh-install steps)
+- 2026-09-10 [21f050cb](https://github.com/rhpds/troshka/commit/21f050cb06474154d08ea0d4606e2e184290dc12) — feat(recert): smart pod reaper to clear stale post-recert credentials
+- 2026-09-10 [a59dc330](https://github.com/rhpds/troshka/commit/a59dc330208d8326878f5106a535822dc95b3e29) — fix(recert): retry kubeconfig pull until ready + log delivery progress
+- 2026-09-10 [bfa0ed19](https://github.com/rhpds/troshka/commit/bfa0ed19ec5afb165215ce033907d773073381e7) — fix(filepull): guestfish the pre-snapshot frozen base; richer recert log
+- 2026-09-10 [7cd7fb6c](https://github.com/rhpds/troshka/commit/7cd7fb6cdb84828859e53f32e016ea96f2fe082a) — fix(recert): parse 'recert failed' breadcrumb as PHASE\_FAILED (fail fast)
+- 2026-09-10 [b8b605e5](https://github.com/rhpds/troshka/commit/b8b605e58aa8b2d6d8b3c8084fff998289c91cc5) — fix(recert): bash syntax error (stray }}) crash-looped the ops-pod
+- 2026-09-10 [ef190c9c](https://github.com/rhpds/troshka/commit/ef190c9c54f08d0226f2bab8a9c6197f6286bde5) — feat(troshkad): pull\_file parity via snapshot+guestfish (agent + provider)
+- 2026-09-10 [51e41080](https://github.com/rhpds/troshka/commit/51e41080d2d9c0f0317d18b9d036d5fbe4848b54) — feat(recert): deliver lb-ext.kubeconfig into ops pod via snapshot+guestfish
+- 2026-09-10 [baea4ab2](https://github.com/rhpds/troshka/commit/baea4ab275fc2070a4f89deb22986755c61b92c8) — feat(recert): ops-pod uses backend-delivered lb-ext.kubeconfig, no oauth (fail-closed)
+- 2026-09-10 [b80e8fe3](https://github.com/rhpds/troshka/commit/b80e8fe37a3ebc0c8455886eddcf330eae6fdd77) — feat(backend): pull\_file provider seam + KubeVirt impl (snapshot-\>guestfish)
+- 2026-09-10 [2d24aa21](https://github.com/rhpds/troshka/commit/2d24aa21249c24e456a0c92d6ea4ea0e63af9200) — feat(operator): file-pull-request annotation handler (snapshot-\>guestfish-\>status)
+- 2026-09-10 [52c39cb4](https://github.com/rhpds/troshka/commit/52c39cb4544bfcec4f371e9a964a0a2d20cd8f26) — feat(operator): snapshot-based VM file-pull core (helpers/filepull)
+- 2026-09-10 [4253cf68](https://github.com/rhpds/troshka/commit/4253cf683221ca4de76807832937d1a069c0c3e8) — fix(kubevirt): showroom pod uses managed lab DNS, not host cluster kube-dns
+- 2026-09-10 [a1b07bc8](https://github.com/rhpds/troshka/commit/a1b07bc897afd8c464c70bf6ec83eebd1197be97) — fix(kubevirt): enable VM console/serial exec (SCC) + reliable pod-exec stream
+- 2026-09-10 [5018092a](https://github.com/rhpds/troshka/commit/5018092a8aad8f049b6cfea59183e4dd6eae091a) — fix(kubevirt): console exec tolerates no-stdout virsh commands; vm-exec prod key
+- 2026-09-10 [81c3baf2](https://github.com/rhpds/troshka/commit/81c3baf27e7357d138449a8e1ccab4478c54c201) — fix(recert): mint fresh kubeconfig, fail-closed gate, inject to terminal
+- 2026-09-10 [babd5dfb](https://github.com/rhpds/troshka/commit/babd5dfb35a5a1560342cce13e22e09fd36c4f12) — fix(operator): guestfish kubelet-PKI recert actually works on RHCOS
+- 2026-09-09 [f1ac19a2](https://github.com/rhpds/troshka/commit/f1ac19a2934354e9cfdab09856ee173ed24bfa01) — fix(terminal): non-root shell via CAP\_SETUID (keep wetty root)
+- 2026-09-09 [0ac5d102](https://github.com/rhpds/troshka/commit/0ac5d102c1f4dea0e5be351b66ebcacc1bd92ed3) — fix(terminal): revert runAsUser:1000 — wetty needs root to spawn shell
+- 2026-09-09 [2f259e5c](https://github.com/rhpds/troshka/commit/2f259e5c3591f280dac066102775f98e742371a1) — fix(terminal): run cluster terminal as uid 1000 (non-root under KubeVirt)
+- 2026-09-09 [a67546c0](https://github.com/rhpds/troshka/commit/a67546c0fc51af03f32d44e1ffd8cc80adb61aa4) — fix(operator): run guestfish recert Job as troshka-recert SA
+- 2026-09-09 [9837e114](https://github.com/rhpds/troshka/commit/9837e114647342a6957ecaa996d7b81d3a12a5dd) — fix(capture): fsfreeze + fail-closed rootfs validation for pattern capture
+- 2026-09-09 [95b02797](https://github.com/rhpds/troshka/commit/95b027972696e13715faac77117096da6f370e38) — fix(ocp): KubeVirt parity — wipe kubelet PKI via guestfishCommands
+- 2026-09-09 [e3afe7ba](https://github.com/rhpds/troshka/commit/e3afe7baa220886d94f95c3aa634d0407e2c253b) — fix(ocp): unify recert on guestfish for all node types; drop backdating + RH recert tool
+- 2026-09-08 [2f12cd20](https://github.com/rhpds/troshka/commit/2f12cd20a66c2447bc235198ee74d82ab5982b6f) — fix(showroom): rewrite pid-specific ui-config on pattern deploys (console tab)
+- 2026-09-08 [77e3b1fd](https://github.com/rhpds/troshka/commit/77e3b1fd6d4c2024a65be745dc583fc5923c3f5d) — fix(operator): gate KubeVirt recert Job on CDI clone completion (RWO Multi-Attach)
+- 2026-09-08 [6f45efb0](https://github.com/rhpds/troshka/commit/6f45efb04e94b7b2c48c76a7affda9288cf0be96) — fix(patterns): remap container/pod volume mount diskNodeId on clone
+- 2026-09-08 [9a4c2f47](https://github.com/rhpds/troshka/commit/9a4c2f47229faa2bde4c1b95a2c4ca111369eca6) — fix(ocp): derive recert from OCP cluster in shared prep (KubeVirt parity)
+- 2026-09-08 [e8de2992](https://github.com/rhpds/troshka/commit/e8de2992f95ed62fe1fd8a7e27a41f4db993732e) — feat(ocp): recert + health monitoring are automatic; drop obsolete UI toggles
+- 2026-09-08 [1afba921](https://github.com/rhpds/troshka/commit/1afba9210ee7a540dfc76476bf8a15b462d5d549) — feat(ocp): route bastionless pattern deploys to ops-pod recert mode
+- 2026-09-08 [dda6e814](https://github.com/rhpds/troshka/commit/dda6e814eeda501ef50234c21fc00f0cdfbb1409) — feat(ocp): ops-pod recert-mode script builder for pattern deploys
+- 2026-09-08 [8523a26d](https://github.com/rhpds/troshka/commit/8523a26d2dcea74590aa78f560c92548e8db17b6) — fix(ocp): always recert OCP pattern deploys; route multi-node to guestfish
+- 2026-09-08 [620b307e](https://github.com/rhpds/troshka/commit/620b307e9c698c8163ee1bf1878d01fcd528b616) — fix(patterns): honest .qcow2 naming through export/import, reconfigure, KubeVirt
+- 2026-09-08 [c0b728d7](https://github.com/rhpds/troshka/commit/c0b728d764eb0a3b4af536b12198492bf4f713b7) — fix(patterns): honest .qcow2 naming for pattern cache + robust raw materialization
+- 2026-09-08 [ed4b5648](https://github.com/rhpds/troshka/commit/ed4b56489f89f2e2e667ceec240b6c6f8b845bfa) — fix(troshkad): pattern deploy of raw disks — reflink-copy backing, not create -b
+- 2026-09-08 [3f42de5b](https://github.com/rhpds/troshka/commit/3f42de5bf4e3e7fed8857e8cdd91dfb159ec052a) — fix(ocp): pattern deploy loses install-log — clusterNode missing clusterId
+- 2026-09-08 [c51f8c9f](https://github.com/rhpds/troshka/commit/c51f8c9f7b2e4124c0763ade2810e0c9db511b43) — feat(admin): DB-capped worker scaling + DB pool controls on the Job Queue page
+- 2026-09-08 [36810393](https://github.com/rhpds/troshka/commit/3681039397eb5a52bc78c7ffab1f54d1272f5aea) — feat(showroom): friendly "service starting" page + terminal API-readiness wait
+- 2026-09-08 [0083ca21](https://github.com/rhpds/troshka/commit/0083ca2133ba392e06ba85cb3a1d2a61d959607a) — fix(ocp): retry Redfish eject so it can't abort the install subshell
+- 2026-09-08 [2b32e4a8](https://github.com/rhpds/troshka/commit/2b32e4a88800962afb4f4ce73e9573c2c30cf530) — feat(ocp): auto-recover errored pod-installs whose ops pod is still alive
+- 2026-09-08 [87088c67](https://github.com/rhpds/troshka/commit/87088c6710d4b545bc35d08c2faabf64a765dd51) — fix(ocp): don't false-fail install on slow ops-pod start; show status in log
+- 2026-09-08 [dc20ecc4](https://github.com/rhpds/troshka/commit/dc20ecc482ac47e93ca724613f3aa0c7da8dfafc) — fix(ocp): reserve infra IPs, warn on template overlap, move OCP VIPs off .2/.3
+- 2026-09-08 [45c108c7](https://github.com/rhpds/troshka/commit/45c108c7e8e6c86f0cab50f34986f7a998a8c9b8) — chore(templates): drop "(Agent Installer)" from OCP template display names
+- 2026-09-08 [db70382f](https://github.com/rhpds/troshka/commit/db70382fa024c4def1b075d4aafca27f84df49c7) — fix(ocpvirt): unique transit port per project so showrooms don't collide
+- 2026-09-08 [96e16df7](https://github.com/rhpds/troshka/commit/96e16df778dc77be39b2270fcacd89d809e97839) — fix(ocp): serve every node's BMC on multi-node KubeVirt installs
+- 2026-09-08 [d99a5155](https://github.com/rhpds/troshka/commit/d99a51550f3238d9f16bc1fd442d3c0223aa3cc2) — fix(showroom): cluster-terminal kubeconfig uses apiVip, not the DNS name
+- 2026-09-08 [a74ddd04](https://github.com/rhpds/troshka/commit/a74ddd0413067d1b43464d53b43380e4ed62c500) — fix(showroom): inject cluster-terminal kubeconfig into KubeVirt showroom pod
+- 2026-09-07 [f0771ff2](https://github.com/rhpds/troshka/commit/f0771ff2c650729f92336bb0e2a76ed90233881f) — fix(ops-pod): mount emptyDir at workdir so kubeadmin creds survive restart
+- 2026-09-07 [0403803a](https://github.com/rhpds/troshka/commit/0403803a848c45f8e32f80c00d17dff003ad5b54) — fix(terminal): probe setpriv instead of euid (KubeVirt runs root w/o CAP\_SETUID)
+- 2026-09-07 [ed23e704](https://github.com/rhpds/troshka/commit/ed23e704ae76a25d5097f06071b0cd6a3916c395) — fix(showroom): app-proxy routes use auto-generated hosts (drop custom-host)
+- 2026-09-07 [5f320021](https://github.com/rhpds/troshka/commit/5f320021ca8a918326b070051d4c82d90901bea4) — fix(showroom): KubeVirt cluster terminal + console app-proxy under restricted SCC
+- 2026-09-07 [b29674f9](https://github.com/rhpds/troshka/commit/b29674f98a842cbff7da124fd01476162f5e3dec) — fix(showroom): KubeVirt-native deploy bakes full showroom pod from tabs
+- 2026-09-07 [86158594](https://github.com/rhpds/troshka/commit/86158594fb75efc783d57b592b4ad5803ba7a2cb) — feat(showroom): redeploy recreates app-proxy console/oauth routes
+- 2026-09-07 [0fdeccf6](https://github.com/rhpds/troshka/commit/0fdeccf671b52b67e4271ba780b841153a9e315b) — fix(deploy): re-apply provider RBAC (not SCCs) in deploy-full Step 3b
+- 2026-09-07 [f7500ed2](https://github.com/rhpds/troshka/commit/f7500ed2523ac8cadd91c52423aee747d1c91580) — fix(ocpvirt): reap partial resources when host provisioning fails (no orphans)
+- 2026-09-07 [f8253834](https://github.com/rhpds/troshka/commit/f8253834d6295e1164e5d6f213d712393a55fa24) — fix(showroom): defer app-proxy upstream resolution so nginx doesn't crashloop
+- 2026-09-06 [69bb2074](https://github.com/rhpds/troshka/commit/69bb20743f1cf87027bda85fd018dc0e65151d94) — fix(ocp): run ops-pod install monitor as an RQ job so it survives (Linux fork)
+- 2026-09-06 [dd36f6f2](https://github.com/rhpds/troshka/commit/dd36f6f2527ce50f6106eef6fd234de337899a56) — fix(ocp): KubeVirt ops pod resolves via the lab dnsmasq so wait-for completes
+- 2026-09-06 [863f1696](https://github.com/rhpds/troshka/commit/863f16965b55fa4b4f74695e9d83547aa4304236) — feat(ocp): surface the effective DNS IP in the palette after deploy
+- 2026-09-06 [776d6bad](https://github.com/rhpds/troshka/commit/776d6bad6ad308686701166b7b00185fa493a19b) — feat(canvas): cleaner DNS Server IP field with override validation
+- 2026-09-06 [effa5c8c](https://github.com/rhpds/troshka/commit/effa5c8c08a6c15dcba31ac508f92d32e440950c) — fix(ocp): provider-aware node DNS for bastionless installs
+- 2026-09-06 [3c20b807](https://github.com/rhpds/troshka/commit/3c20b807f84b330e45d1e6d700b440f3500fb48c) — fix(ocp): serve the agent ISO to the KubeVirt BMC on the BMC network
+- 2026-09-06 [b041f1ff](https://github.com/rhpds/troshka/commit/b041f1ffb59c0ceeb22fc53a0a40ca8f3c871e71) — fix(ocp): KubeVirt BMC can reboot a node into an attached CDROM
+- 2026-09-06 [4cdaee2a](https://github.com/rhpds/troshka/commit/4cdaee2a8b13c9e9dfa15ee2a79fb0d854aa7f17) — fix(ocp): serve Redfish VirtualMedia under the Systems tree so bastionless ISO attaches
+- 2026-09-05 [d93b3e66](https://github.com/rhpds/troshka/commit/d93b3e6656ffe0617704a32d3e6d9c7eb2eb9aa5) — fix(update): detect ArgoCD annotation-tracking so prod hides "Apply update"
+- 2026-09-05 [030c46e2](https://github.com/rhpds/troshka/commit/030c46e22789dbf05575c338c76c0b0924337cd1) — fix(ocp): give the KubeVirt ops pod lab-network IPs so bastionless installs work
+- 2026-09-05 [6a013a3d](https://github.com/rhpds/troshka/commit/6a013a3d7b2a8a0d8f64160776baf459b111b6d2) — fix(ocp): ops pod must only attach to lab-network NADs, not the gateway
+- 2026-09-05 [798a79b1](https://github.com/rhpds/troshka/commit/798a79b16477a0d985c9b1361b88d73eadf112cf) — fix(db): size Postgres connections to the worker fleet, shrink per-process pool
+- 2026-09-05 [f7134f24](https://github.com/rhpds/troshka/commit/f7134f243d214a12911141f3deda62b4724800ae) — fix(image): ship troshka\_serial in the backend image
+- 2026-09-05 [ec4f64c0](https://github.com/rhpds/troshka/commit/ec4f64c0612f3a49070dc5f44854e7f8cc82104e) — fix(canvas): stop a deployed cluster's own VIP reading as "IP in use"
+- 2026-09-05 [7c452956](https://github.com/rhpds/troshka/commit/7c452956aa36afcb5aa0f657b657903ba37c14e4) — fix(dev-tunnel): add restart subcommand + guide the user on a stale tunnel
+- 2026-09-05 [0bd12b94](https://github.com/rhpds/troshka/commit/0bd12b94b817dae250eb423958a1a0a145a741f5) — fix(layout): keep unconnected networks clear of cluster boxes (bastionless BMC)
+- 2026-09-05 [506b3db8](https://github.com/rhpds/troshka/commit/506b3db836a381110781cc6075a074af6b6a68c3) — feat(templates): convert ocp-compact + ocp-standard to bastionless
+- 2026-09-04 [9c58a1c5](https://github.com/rhpds/troshka/commit/9c58a1c55e20c1ce64cc841c0da203a42348a196) — feat(canvas): Apply Changes review modal with semantic topology diff
+- 2026-09-04 [807e6ecc](https://github.com/rhpds/troshka/commit/807e6ecce4e9d120a31921b2805c98a11b2430fe) — fix(canvas): exclude deploy-derived showroom containers from dirty; stop nic-edge warning
+- 2026-09-04 [3e48ee31](https://github.com/rhpds/troshka/commit/3e48ee31f0b0714030f40efa69d1daa15aaa7e1b) — fix(canvas): normalize gateway mode in dirty check for managed forward
+- 2026-09-04 [e01f3bf9](https://github.com/rhpds/troshka/commit/e01f3bf993070210abfc8737c859df6861829ae6) — debug(canvas): log the exact dirty reason to the console
+- 2026-09-04 [5601f64c](https://github.com/rhpds/troshka/commit/5601f64ceb868936cbd24ad4cf1158327f0570a9) — fix(canvas): ignore auto placeholder showroom EIP in dirty check
+- 2026-09-04 [04009820](https://github.com/rhpds/troshka/commit/040098203b93f731c9bb935ec4cb785f50af74f0) — fix(canvas): managed showroom forward -\> gateway nat-portforward at the source
+- 2026-09-04 [ff5835cc](https://github.com/rhpds/troshka/commit/ff5835cc5e6c61ac075bdf5d08de4e8354688b3f) — fix(canvas): show managed showroom gateway forward via nat-portforward mode
+- 2026-09-04 [f3d072af](https://github.com/rhpds/troshka/commit/f3d072af76ddf0333c90b8d6e6ff5510935f189e) — fix(canvas): show cluster-managed DNS + web-proxy tab as read-only
+- 2026-09-04 [a2e7ac85](https://github.com/rhpds/troshka/commit/a2e7ac85abcfae8dd10413ffd89bda4522dd84d4) — fix(showroom): re-fill app-proxy console URL after redeploy regen
+- 2026-09-04 [e04ffe7e](https://github.com/rhpds/troshka/commit/e04ffe7e6520c446152461e93af6b19b74ec66a0) — fix(canvas): exclude managed showroom gateway port-forward from dirty check
+- 2026-09-04 [25ef6319](https://github.com/rhpds/troshka/commit/25ef6319160a2d50bd4db7101bce20f60b51cead) — fix(terminal): start the shell in $HOME, not /
+- 2026-09-04 [36080c19](https://github.com/rhpds/troshka/commit/36080c1976cfef2aa01543a62f86946bb96b82fb) — fix(showroom): network setup before redeploy so infra-veth reachability survives
+- 2026-09-04 [b69927e5](https://github.com/rhpds/troshka/commit/b69927e55da15e697f66c324e35a7660585ddced) — fix(showroom): regenerate spec before the reconfigure diff gate
+- 2026-09-04 [cddaae08](https://github.com/rhpds/troshka/commit/cddaae088cef6712ca3d17dc7ddb8df0ef2765f8) — fix(showroom): regenerate showroom spec at pod (re)deploy, not just reconfigure
+- 2026-09-04 [2a600baf](https://github.com/rhpds/troshka/commit/2a600baf4e0f7df8d14bc8d345699e8d2bcdb6df) — fix(terminal): run wetty as root + drop to labuser via setpriv, copy kubeconfig
+- 2026-09-04 [2a184b12](https://github.com/rhpds/troshka/commit/2a184b12f74452634490760b09b3c8e7e336bc88) — feat(scripts): build-all-images-on-host.sh + --file/excludes + docs
+- 2026-09-04 [496fd000](https://github.com/rhpds/troshka/commit/496fd0001b4f2bbc6f7910f1ca08d49ded6dcf38) — feat(scripts): build-image-on-host.sh + node20 for terminal image
+- 2026-09-04 [08794a49](https://github.com/rhpds/troshka/commit/08794a4998f2258908bad66808732b75ce73d6f0) — refactor(showroom): rename terminal image troshka-cluster-terminal -\> troshka-terminal
+- 2026-09-04 [b39d373c](https://github.com/rhpds/troshka/commit/b39d373c0afeb7e80e596c62abd8192b3371c69f) — feat(showroom): purpose-built glibc cluster-terminal image with oc baked in
+- 2026-09-04 [94ef13be](https://github.com/rhpds/troshka/commit/94ef13be058e3db9fc8d224308aa073afcc1d0e2) — fix(showroom): rebuild transit DNAT after network re-setup on reconfigure
+- 2026-09-04 [5d16a7c5](https://github.com/rhpds/troshka/commit/5d16a7c51521e1244da30f17dd90c18d86b2e726) — fix(showroom): regenerate showroom container spec + routes on reconfigure
+- 2026-09-04 [e65828f0](https://github.com/rhpds/troshka/commit/e65828f03f23edd9861ecce3f8e8236a59ffbfff) — fix(showroom): OCP terminal drops privileges via su, not util-linux setpriv
+- 2026-09-03 [261fd074](https://github.com/rhpds/troshka/commit/261fd0742ec8ffb1782e21c9c7a1ccf3dc0a43a8) — fix(canvas): prevent empty-clusters drift from corrupting cluster metadata
+- 2026-09-03 [0a29dcb0](https://github.com/rhpds/troshka/commit/0a29dcb06eaba0087a9e6598bb3e436f22fcfd4f) — fix(reconfigure): re-establish showroom gateway forward + infra net after redeploy
+- 2026-09-03 [9dce0121](https://github.com/rhpds/troshka/commit/9dce0121fb5351f15bc0303427bb191f11786c61) — fix(reconfigure): Apply Changes no longer 400s on a deployed pod cluster
+- 2026-09-03 [63c9c931](https://github.com/rhpds/troshka/commit/63c9c93182c00b05a7d3137125b272a897a60435) — fix(canvas): normalize dnsRecords in dirty check (drops false network dirty)
+- 2026-09-03 [186299af](https://github.com/rhpds/troshka/commit/186299af2a797bee158755bec339f4d9507740f0) — fix(canvas): heal cluster baseDomain from deployed (fixes ocp.local drift)
+- 2026-09-03 [7a068ecc](https://github.com/rhpds/troshka/commit/7a068ecc329c8f518588550dcf6c63a21f82c004) — fix(canvas): dirty check compares only user-editable cluster fields
+- 2026-09-03 [b7484eb7](https://github.com/rhpds/troshka/commit/b7484eb7833a2238a5e7f12870b10e20bffbb345) — fix(canvas): dedup node ids on load (heals duplicated clusterNodes)
+- 2026-09-03 [16d2746c](https://github.com/rhpds/troshka/commit/16d2746cbdccc07adc64ebad0512cb831bedff2c) — fix(canvas): remove OCP STATUS panel from the palette
+- 2026-09-03 [e82ab5b0](https://github.com/rhpds/troshka/commit/e82ab5b0ca531a77a94d0b8bf2f01bfa2b3ee0e8) — feat(ocp): resume install monitors on worker startup (no more stuck "monitoring")
+- 2026-09-03 [4564af9e](https://github.com/rhpds/troshka/commit/4564af9ec935d58ba5ad154fc134ddf2d584fe94) — fix(canvas): OCP version read-only after deploy + heal drift from deployed
+- 2026-09-03 [df0984da](https://github.com/rhpds/troshka/commit/df0984da169f6e0d6393ff79e20b96fe3d647283) — fix(canvas): backfill cluster networkIds from member edges on load
+- 2026-09-03 [adc3ad2c](https://github.com/rhpds/troshka/commit/adc3ad2c31b64c8e524b1c5d405bd3631e8d812b) — fix(ocp): install-log endpoint reads deployed\_topology (logs no longer vanish)
+- 2026-09-03 [dc07398f](https://github.com/rhpds/troshka/commit/dc07398f5319a3f815b65cc709d99ac46fb674df) — feat(reconfigure): Apply Changes redeploys showroom + injects cluster creds
+- 2026-09-03 [a4d53a02](https://github.com/rhpds/troshka/commit/a4d53a0272195e79c2059e008e3b351254892787) — fix(canvas): trim cluster-terminal note (drop bastion/nothing-to-configure)
+- 2026-09-03 [61d246e1](https://github.com/rhpds/troshka/commit/61d246e19275d441ca01904ba41995c8907ba03b) — fix(canvas): lock tab type for the OpenShift Cluster Terminal
+- 2026-09-03 [bebc6906](https://github.com/rhpds/troshka/commit/bebc6906ffadb2e02611709abd39dbd53f4fdd44) — fix: cluster terminal tab is named "OpenShift Cluster Terminal"
+- 2026-09-03 [0b96d3b0](https://github.com/rhpds/troshka/commit/0b96d3b0b2e9848d286319222add2ab15920fe54) — fix(canvas): rename button to "+ OpenShift Cluster Terminal Tab"
+- 2026-09-03 [f5bcdde9](https://github.com/rhpds/troshka/commit/f5bcdde983d719cf153ede89a7cd88ed360458f7) — feat(canvas): "+ OpenShift Cluster(s) Terminal Tab" quick-add
+- 2026-09-03 [c954bb1a](https://github.com/rhpds/troshka/commit/c954bb1a76495a1f40282499d6172b68e19602c4) — feat(showroom): TLS-validated oc download (full ubi9/ubi + curl)
+- 2026-09-03 [8fe76f9d](https://github.com/rhpds/troshka/commit/8fe76f9d8035a883dc044021df90dd879cc4373f) — feat(showroom): verify oc download sha256 against published sums
+- 2026-09-03 [1a86077d](https://github.com/rhpds/troshka/commit/1a86077d48a868a42bd093cb4de021f63a8188d1) — fix(showroom): oc-fetch uses busybox (ubi-minimal lacks tar/gzip -\> exit 127)
+- 2026-09-03 [1092c261](https://github.com/rhpds/troshka/commit/1092c261c9bb20e4a98f5bcbd8d019987922189c) — fix(ocp): hold ops pod after success so credential harvest is reliable
+- 2026-09-03 [1ae0e208](https://github.com/rhpds/troshka/commit/1ae0e20811cc19bae6cb47890501cb63bc7a898e) — feat(templates): add bastionless cluster terminal to the SNO quickstart
+- 2026-09-03 [f2092384](https://github.com/rhpds/troshka/commit/f2092384635458a6bbe8d70ec5d4bb57003f6f19) — feat(ocp): inject merged kubeconfig into the showroom cluster terminal
+- 2026-09-03 [560fc02e](https://github.com/rhpds/troshka/commit/560fc02ee8c27ac6d427ac2d15ae07936931654e) — feat(showroom): cluster-terminal scaffold (local oc shell, unprivileged)
+- 2026-09-03 [81b1c589](https://github.com/rhpds/troshka/commit/81b1c589b83de863b0aae6b43ab70ae36384e298) — feat(ocp): kubeconfig merge helper for the showroom cluster terminal
+- 2026-09-03 [661f87a1](https://github.com/rhpds/troshka/commit/661f87a1d4d444d328580a7850ff4a5b85745a28) — fix(dev): UI "Restart backend" no longer aborts mid-stop (set -e + lsof race)
+- 2026-09-03 [087e2f51](https://github.com/rhpds/troshka/commit/087e2f51d82a2495081ca0f97212a1812566457a) — fix(dnsmasq): dont reserve a cluster VIP thats already a node NIC IP (SNO)
+- 2026-09-03 [253e7406](https://github.com/rhpds/troshka/commit/253e7406d51e3fcc6b651eff37da9f068c31b91c) — feat(ocp): surface kubeadmin/kubeconfig live in the status modal (no reload)
+- 2026-09-03 [b5ce6183](https://github.com/rhpds/troshka/commit/b5ce618307aa5a591dedfe30d91f96f7f2e306c6) — test: default 30s per-test timeout so accidental real I/O fails loudly
+- 2026-09-03 [39b7d3b3](https://github.com/rhpds/troshka/commit/39b7d3b3e1714693d000777f912932db465cf359) — fix(dnsmasq): dedup cluster VIP reservations (api==ingress no longer breaks deploy)
+- 2026-09-03 [68107192](https://github.com/rhpds/troshka/commit/681071922cdfd150c97c6fe29e8bde9ae1c93c5e) — feat(templates): pod-install SNO becomes the canonical ocp-sno (drop bastion)
+- 2026-09-03 [1579a349](https://github.com/rhpds/troshka/commit/1579a349d9a63030701fa690f604863dc6314b35) — test(destroy): mock get\_all\_vm\_states in destroy tests (20s → 0.3s)
+- 2026-09-03 [05738f18](https://github.com/rhpds/troshka/commit/05738f183a658a2c293949675517812db48223b7) — test(ops-pod): stop monitor tests doing real troshkad I/O (suite 7min→fast)
+- 2026-09-03 [2c8b7de5](https://github.com/rhpds/troshka/commit/2c8b7de5bd2ebeb749d8701c3358f7116773e8c9) — feat(operator): reserve cluster VIPs in dnsmasq (KubeVirt-native parity)
+- 2026-09-03 [6c73e2b7](https://github.com/rhpds/troshka/commit/6c73e2b71889814c4828cfe376941403c9fff262) — feat(ocp): harvest kubeadmin password + kubeconfig from ops pod on success
+- 2026-09-03 [fc2d1dd8](https://github.com/rhpds/troshka/commit/fc2d1dd8010e6197d76dcac5d031502fb7eb8e34) — fix(dnsmasq): reserve cluster VIPs with bogus MACs (kept out of DHCP pool)
+- 2026-09-03 [c12c3280](https://github.com/rhpds/troshka/commit/c12c328007636f95d710f7b568af4f09d52b466f) — fix(ocp): report install complete on ops-pod restart (no false-negative)
+- 2026-09-03 [b184625e](https://github.com/rhpds/troshka/commit/b184625ebad5f69d1afe4803ef3e0b7d70aee432) — fix(canvas): pack cluster boxes together in auto-layout
+- 2026-09-03 [cc92320f](https://github.com/rhpds/troshka/commit/cc92320f3e3940e12e6157acc123f22a4a7fded6) — test(canvas): align tests with editable console tab name + read-only cluster role
+- 2026-09-03 [e6d0642a](https://github.com/rhpds/troshka/commit/e6d0642aad717c3b61aaae714a9a5b1a1004be15) — feat(ocp): tidy status modal — Install complete last, drop noisy %/monitoring
+- 2026-09-03 [790ec719](https://github.com/rhpds/troshka/commit/790ec7192d4c2171b790dc040d6205712a3ea7e9) — fix(canvas): reserve cluster VIPs in the used-IP set (no collision)
+- 2026-09-03 [8d2c2c68](https://github.com/rhpds/troshka/commit/8d2c2c68a8dce4fd89ae22a672b946fbec3a197d) — fix(canvas): correct SNO VIP/DNS model — no VIP, static node IP drives DNS
+- 2026-09-03 [eb27b8e5](https://github.com/rhpds/troshka/commit/eb27b8e5488dc869f681f19bf863f2464a760c0d) — fix(canvas): SNO clusters generate DNS records (from the single node IP)
+- 2026-09-03 [19a742a0](https://github.com/rhpds/troshka/commit/19a742a04104579c9d50cbe0c8ea3d4d3d7ab413) — feat(canvas): flag a duplicate cluster name as a red error on the OCP box
+- 2026-09-03 [ae7722ce](https://github.com/rhpds/troshka/commit/ae7722ce9afa808ccf5f7f7d4d41955631bd4786) — fix(canvas): dragging a new OCP cluster generates a unique name
+- 2026-09-03 [a214dc90](https://github.com/rhpds/troshka/commit/a214dc90b6b3d68b35dcfe0c8c00c93409b412be) — feat(canvas): show cluster memory sizing in GB, not MB
+- 2026-09-03 [a281a09d](https://github.com/rhpds/troshka/commit/a281a09de4af33412b7522fcd711aade28bbb3d2) — fix(canvas): only standard clusters allow workers (lock for SNO/compact)
+- 2026-09-03 [2ef714aa](https://github.com/rhpds/troshka/commit/2ef714aaf2357cc299a0a001683f8d68daa7ff25) — fix(canvas): duplicating an OCP cluster clones config + members with a unique name
+- 2026-09-03 [037b366b](https://github.com/rhpds/troshka/commit/037b366be81737f3738ce720f8f7d5a8328127cd) — feat(canvas): OCP cluster dragged from the palette defaults to SNO
+- 2026-09-03 [bc7a2f62](https://github.com/rhpds/troshka/commit/bc7a2f6282821f433e447aacc96526911645393a) — fix(ocp): freeze the install timer on failure too, not just completion
+- 2026-09-03 [d31acc9f](https://github.com/rhpds/troshka/commit/d31acc9f5b9a5f06beafc0cbb702182a138e404e) — fix(ocp): live-tick the install elapsed timer between log polls
+- 2026-09-03 [17e845db](https://github.com/rhpds/troshka/commit/17e845db5162901c78dadf5efbb76ce539b9b6f3) — fix(canvas): lock cluster type + worker count once deployed
+- 2026-09-03 [5ddcb577](https://github.com/rhpds/troshka/commit/5ddcb57741d2cf6e6a5f8076dcd8ba24a97011f7) — feat(ocp): show elapsed install timer in the cluster status modal header
+- 2026-09-03 [c0de4d9d](https://github.com/rhpds/troshka/commit/c0de4d9df36e5cf336cc2796aa0f4d1c1493e770) — fix(canvas): preserve ocpInstallVia on topology auto-save
+- 2026-09-03 [cffcb5c2](https://github.com/rhpds/troshka/commit/cffcb5c27b76c46ddd56462c990ca22eb79c7366) — feat(ocp): color the cluster Status button by outcome; reap ops pod on success
+- 2026-09-03 [b954e0b5](https://github.com/rhpds/troshka/commit/b954e0b524aba2d5463e96ffc330f4cf7e1c6ae5) — fix(ocp): persist bastionless install log so status box survives the pod stopping
+- 2026-09-03 [4dfa0045](https://github.com/rhpds/troshka/commit/4dfa0045cf427b03481ef61f432ba60f7d4f8afa) — feat(ocp): cluster status box shows operators + kubeadmin/kubeconfig; drop palette log link
+- 2026-09-03 [a52476ad](https://github.com/rhpds/troshka/commit/a52476ad45a5e4867cb75120757bfc6d9beee94c) — feat(ocp): cluster status column shows install stages derived from the log
+- 2026-09-03 [6ae64387](https://github.com/rhpds/troshka/commit/6ae643871fef506985c6d342791f0fc21e85078b) — feat(ocp): cluster box modal shows status checklist beside the log; hide palette panel for pod
+- 2026-09-03 [566e55c4](https://github.com/rhpds/troshka/commit/566e55c49d55f741b1f9dfa4821f60f999f8c614) — feat(ocp): per-cluster install log + status button on each cluster box
+- 2026-09-03 [daccb339](https://github.com/rhpds/troshka/commit/daccb339b37d5b2645a181ecb708e8a31e821e07) — fix(ocp): hide bastion-browser option for pod installs; always show install log link
+- 2026-09-03 [66904f0c](https://github.com/rhpds/troshka/commit/66904f0c3a2047c45c6e33b19e136ab6981b7905) — fix(canvas): lock cluster members from dragging + poll their state during OCP install
+- 2026-09-03 [48bb84dd](https://github.com/rhpds/troshka/commit/48bb84dd6c01c50cebcaf702dc6b8b759a3ce90b) — fix(canvas): draw network line to OCP box + keep members inside it
+- 2026-09-03 [1000f2b6](https://github.com/rhpds/troshka/commit/1000f2b63198d0f7d2b009c46cb71fb4576ab471) — feat(ocp): default recert on for SNO, health monitoring on for all types
+- 2026-09-03 [c2c263b3](https://github.com/rhpds/troshka/commit/c2c263b30245402655fdf3119ecc92c98bcf126a) — fix(ops-pod): copy install/agent-config into workdir so create image can consume them
+- 2026-09-03 [4357242f](https://github.com/rhpds/troshka/commit/4357242fc7034e00615cd92ddb6d08bcc7f90d63) — fix(canvas): SNO VIP self-collision + editable managed console tab name
+- 2026-09-03 [753595e8](https://github.com/rhpds/troshka/commit/753595e8d96a742b986ce4283dbbcc0396d21f75) — fix(ops-pod): install nmstate so agent create image can build the ISO
+- 2026-09-03 [d9b46dd7](https://github.com/rhpds/troshka/commit/d9b46dd7b4aadb157d0e48e238ee4cb1ce940678) — fix(canvas): auto-layout is cluster-aware (members stay in the box)
+- 2026-09-03 [66e5bb6f](https://github.com/rhpds/troshka/commit/66e5bb6f34dac2884bea0ffae7d6931f22d4254e) — fix(canvas): SNO api/ingress VIP no longer flagged "IP in use"
+- 2026-09-03 [08c43612](https://github.com/rhpds/troshka/commit/08c43612c5d74582d228fc1461feddc3eba15a09) — feat(ocp): default OCP templates to 4.22 (latest Full Support)
+- 2026-09-03 [1cf37f55](https://github.com/rhpds/troshka/commit/1cf37f55c9fd85954584cc6787af3a8fa5d0e120) — feat(templates): OCP console showroom tab is cluster-managed, not hardcoded
+- 2026-09-03 [32560a5b](https://github.com/rhpds/troshka/commit/32560a5b8827c00ca09d86ce7b06753b155bf065) — fix(ocp): skip BMC-provisioner-VM requirement for pod-install OCP
+- 2026-09-03 [013e80ae](https://github.com/rhpds/troshka/commit/013e80aea4a0e707fc74ef8cb1460ca6c0c8980b) — fix(destroy): reap all project VM domains by prefix (no orphan on topology drift)
+- 2026-09-03 [2bd2150e](https://github.com/rhpds/troshka/commit/2bd2150ed4e5abfb6d26b70aa75fb64763c98357) — fix(ops-pod): monitor uses a session-detached host copy (no concurrent-session error)
+- 2026-09-03 [959580a1](https://github.com/rhpds/troshka/commit/959580a186188100f79f07169bce88d41b91355f) — fix(ops-pod): reap the ops pod on project destroy (troshkad path)
+- 2026-09-03 [9f5e226d](https://github.com/rhpds/troshka/commit/9f5e226d1d93c5bfa228f47237c69533e7179018) — fix(templates): cluster members render inside the box + infer networkIds on load
+- 2026-09-03 [51ffec53](https://github.com/rhpds/troshka/commit/51ffec531eb6eca9ef2d22ac49814d4514bcad3b) — fix(ocp): install-log viewer works for pod/bastionless installs
+- 2026-09-03 [d9f2e1e1](https://github.com/rhpds/troshka/commit/d9f2e1e19c509300194bfd5bba30c7cb3fb6a84d) — feat(templates): bastionless SNO template + fix TLD doubling (base\_domain -\> local)
+- 2026-09-03 [e5ec5e83](https://github.com/rhpds/troshka/commit/e5ec5e833e0b93fd09d879ea6c1f7e152cb39537) — fix(cluster): SNO api==ingress VIP is valid, not a duplicate
+- 2026-09-03 [2e05a9c1](https://github.com/rhpds/troshka/commit/2e05a9c1e206b2cd037c2cdf14d918b48de79077) — fix(ops-pod): redact secrets in troshkad cmd logs/errors + actionable image-pull hint
+- 2026-09-03 [162195ed](https://github.com/rhpds/troshka/commit/162195ed8f562e7c650d3cc5689159e051dca07a) — feat(dev): dev-tunnel.sh — expose local backend to remote hosts for ops-pod callbacks
+- 2026-09-03 [ff2c6c74](https://github.com/rhpds/troshka/commit/ff2c6c74f02f97baaddb96eb5f93c725bae910aa) — fix(cluster): make member VM 'Cluster role' read-only (managed by cluster)
+- 2026-09-03 [a89c9a23](https://github.com/rhpds/troshka/commit/a89c9a234a5eb688157f11d85040589eb4ac76db) — feat(cluster): OCP console proxy tabs are cluster-managed (name + routes)
+- 2026-09-03 [66ad1b7e](https://github.com/rhpds/troshka/commit/66ad1b7e8d65139aef19f890a1a6bb634632b1dd) — fix(dev): restart cooldown no longer blocks a genuine new-code restart
+- 2026-09-03 [4518deb8](https://github.com/rhpds/troshka/commit/4518deb81a59adcbec172e1c73743a7f57e35d09) — feat(cluster): OCP options on the cluster editor (frontend half) + FQDN header
+- 2026-09-03 [d7f4a0ee](https://github.com/rhpds/troshka/commit/d7f4a0ee9509cdbde9b0ea3b170e84da19bcc418) — fix(cluster): tighten member row spacing + relabel Base Domain as TLD
+- 2026-09-03 [90764d65](https://github.com/rhpds/troshka/commit/90764d65160f5854b5a96f649d79ffec465ed629) — feat(ocp): cluster-level OCP flags (recert/monitor/bastion-browser) projected onto members
+- 2026-09-03 [af3fd80f](https://github.com/rhpds/troshka/commit/af3fd80fffb6a14f59ae6a849b0664fe91b448b0) — feat(cluster): renaming a cluster updates its showroom console proxies
+- 2026-09-03 [b68fa28f](https://github.com/rhpds/troshka/commit/b68fa28f85bef8a53deec6685b664737f6d0aa61) — fix(cluster): warnings no longer render as a hard error on the box
+- 2026-09-03 [98f497d9](https://github.com/rhpds/troshka/commit/98f497d9ec156fe6a3e6a61ec49ed0707ef9705b) — fix(cluster): disable DNS on switched-off network + validate VIPs against member subnets
+- 2026-09-03 [4d59431b](https://github.com/rhpds/troshka/commit/4d59431b0959c6914889a51b821deada2382d248) — feat(cluster): show prerequisite warnings/errors on the OCP box
+- 2026-09-03 [e142cbd7](https://github.com/rhpds/troshka/commit/e142cbd77a5235c40459ffc66f8ddaef4b2d64c5) — fix(canvas): palette label 'OpenShift cluster' (drop 'boundary')
+- 2026-09-03 [a56e172b](https://github.com/rhpds/troshka/commit/a56e172bdd6a34692cb93f866f40e1155a11045f) — feat(cluster): single DNS network selector + default OCP version to latest Full Support
+- 2026-09-03 [98fc98c2](https://github.com/rhpds/troshka/commit/98fc98c29bc22a39dcf6c3934a27f17c52678ccb) — feat(cluster): shared base domain (fix api.ocp3.ocp3.local doubling)
+- 2026-09-03 [ecc8b521](https://github.com/rhpds/troshka/commit/ecc8b5213e9a7b4450488ff334b0853101c05468) — fix(cluster): suppress member-VM right-click menu pre-deploy
+- 2026-09-03 [e2878614](https://github.com/rhpds/troshka/commit/e2878614e6ead628e9ad5b5a388392a77d658fb1) — fix(cluster): drop member-VM connection anchors + hide resizer handles
+- 2026-09-03 [6cda704a](https://github.com/rhpds/troshka/commit/6cda704a7c4dc76bc091c1a68ae60ea0f14713ee) — feat(cluster): group managed DNS records + animate network connector
+- 2026-09-03 [767103cd](https://github.com/rhpds/troshka/commit/767103cd60b78c428594c4ae1c603c0ed7c5cb12) — fix(cluster): cleaner managed DNS record rows
+- 2026-09-03 [7fb86768](https://github.com/rhpds/troshka/commit/7fb86768424b1638d3658db45de6cd8900752098) — fix(cluster): size network DNS name/IP fields to their content
+- 2026-09-03 [5ab3096a](https://github.com/rhpds/troshka/commit/5ab3096a2fa0105a752af4d1dd0903d6d9bf1dd6) — feat(cluster): prerequisite checks — DNS network (required) + gateway outbound (warning)
+- 2026-09-03 [dbbf2a78](https://github.com/rhpds/troshka/commit/dbbf2a78b2f3114a345b415c049c69e43f98d975) — feat(cluster): clean up mirrored DNS on cluster delete + clearer managed rows
+- 2026-09-03 [3c99512c](https://github.com/rhpds/troshka/commit/3c99512c99ea11c60c31b0db1645776e5a06c31a) — feat(cluster): live-mirror OCP DNS records onto member networks
+- 2026-09-03 [4a2f33b6](https://github.com/rhpds/troshka/commit/4a2f33b6a60601faf4d1c5120c796866a8e9ab2a) — feat(canvas): OCP console proxy quick-add + protect cluster-member VMs
+- 2026-09-03 [1d1cf5c7](https://github.com/rhpds/troshka/commit/1d1cf5c70b4da3e0563b3fe12ad449b8ce6a23a7) — feat(cluster): lock base domain when deployed, auto-fill VIPs, OCP version dropdown
+- 2026-09-03 [0254bc5c](https://github.com/rhpds/troshka/commit/0254bc5c79dad2f92b62f4ecb42f402f40c1416e) — feat(cluster): rename copies name into base domain, unique-base-domain warning, base domain in box header
+- 2026-09-03 [bb7b9eee](https://github.com/rhpds/troshka/commit/bb7b9eee2e387a73cb599154282d001cbb10ecba) — fix(cluster): lock down member VMs (no dup/hide/drag), CP/worker rows, shrink-to-fit box, hide worker section at 0, network checkbox\<-\>anchor edge, red X disk-remove
+- 2026-09-03 [4ecba11f](https://github.com/rhpds/troshka/commit/4ecba11fbaafe88b177b3573087e8dd1e95391b9) — fix(showroom): derive OCP console apps domain per host, no hardcode
+- 2026-09-03 [d8ced45c](https://github.com/rhpds/troshka/commit/d8ced45c0b6714a0cffeb7e0828f15d4f996e54b) — fix(cluster): control-plane and worker members on separate rows
+- 2026-09-03 [b57446c4](https://github.com/rhpds/troshka/commit/b57446c4559186667818de67c3197bca72b5a583) — fix(cluster): exclusive Boot toggle (one boot disk/role) + full member grid reflow (rows wrap, no overlap)
+- 2026-09-02 [65d78743](https://github.com/rhpds/troshka/commit/65d787435509a84fa22085cd701639d809dc75bf) — fix(cluster): dedupe member names vs backend UUID ids, persist network anchor edge, backend collapses member sub-nodes (final-review fixes)
+- 2026-09-02 [30f73707](https://github.com/rhpds/troshka/commit/30f7370793440d606a407a240d893f6a99d3daee) — feat(cluster): export round-trip networkIds+disks + parity + regression (Task 10)
+- 2026-09-02 [fb447813](https://github.com/rhpds/troshka/commit/fb44781349aae570ca1233248ddda356cf3c8373) — feat(cluster): network anchor handles on box + gateway filter + collapse member NIC edges (Task 11)
+- 2026-09-02 [9f42d7dd](https://github.com/rhpds/troshka/commit/9f42d7dd33fb2d2f50dc8c56a6395953c6bf84e7) — feat(canvas): auto-encompassing resizable cluster boundaries with contained members
+- 2026-09-02 [d8467b62](https://github.com/rhpds/troshka/commit/d8467b62e59bffd041c0d48d5c73f2a0491274a8) — fix(cluster): draggable box header + grid cells fit VM cards + OpenShift Cluster label
+- 2026-09-02 [ec9b14fa](https://github.com/rhpds/troshka/commit/ec9b14fad0b71c24a6fdeb52586f31cf7a28a994) — feat(cluster): auto-size boundary + grid reflow (Task 9)
+- 2026-09-02 [67d394df](https://github.com/rhpds/troshka/commit/67d394df39304d44f5111310abf17f9cdeddd9b5) — fix(cluster): type editor code, drop any/require (Task 8 fix)
+- 2026-09-02 [dab18cf6](https://github.com/rhpds/troshka/commit/dab18cf6a5455c559b95163779bf294d8ec63d8d) — feat(cluster): editor auto-suggests unused VIPs + per-role disk-list editor (Task 8)
+- 2026-09-02 [78139e64](https://github.com/rhpds/troshka/commit/78139e64836b16203c2e931b7c7ca89b7dae397d) — feat(ocp): availability-checked auto-VIP with collision warning (Task 7)
+- 2026-09-02 [acdb9e35](https://github.com/rhpds/troshka/commit/acdb9e3506e834201023a93b6437503301be3c95) — feat(cluster): backend member per-role disks + uniform NICs, parity (Task 6)
+- 2026-09-02 [ba36e52e](https://github.com/rhpds/troshka/commit/ba36e52e76775484b363e402da1b7f7e0fdd44ec) — fix(cluster): applyClusterNetworks preserves NIC ids/MACs (idempotent) (Task 5 fix)
+- 2026-09-02 [84084ce2](https://github.com/rhpds/troshka/commit/84084ce25c24864fd9dd2c311c4e28c28d2340fc) — feat(cluster): attach cluster networks (edge + editor) driving member NICs (Task 5)
+- 2026-09-02 [13f5dea3](https://github.com/rhpds/troshka/commit/13f5dea3743e65007284c9c35bbe39a8884ae2b2) — feat(cluster): uniform member NICs on cluster networks (Task 4)
+- 2026-09-02 [86e73494](https://github.com/rhpds/troshka/commit/86e7349417ba7c1d93f5fec289300da2946bcc52) — feat(cluster): per-role multi-disk materialization on canvas (Task 3)
+- 2026-09-02 [8b88a8a9](https://github.com/rhpds/troshka/commit/8b88a8a9da3c91980af68b45fe3963e88a062e6d) — feat(cluster): materialize members on drop (Task 2)
+- 2026-09-02 [1a08916f](https://github.com/rhpds/troshka/commit/1a08916f72bde0d9e53195d34acac8e9b51112b3) — feat(cluster): DiskSpec + networkIds + per-role disks with legacy upgrade (Task 1)
+- 2026-09-02 [c57a7fad](https://github.com/rhpds/troshka/commit/c57a7fadfb94ef1d120096d29798d84373619155) — docs: cluster member fidelity implementation plan
+- 2026-09-02 [9ed0c3a5](https://github.com/rhpds/troshka/commit/9ed0c3a5ba4d7197390698edfcc8f0a53a303d74) — docs: cluster member fidelity + canvas UX design spec
+- 2026-09-02 [9bc097cd](https://github.com/rhpds/troshka/commit/9bc097cdf8d578c4611e8ecf1ea30d0cedc05051) — fix(live): sudo podman for rootful troshkad containers + tolerate transient host\_ssh errors in waiters
+- 2026-09-02 [38140c22](https://github.com/rhpds/troshka/commit/38140c22a7c9565ec17adf594e0e3186f8dc99a2) — fix(live): random/env-var common\_password, no hardcoded secret (sec review)
+- 2026-09-02 [9fea25d8](https://github.com/rhpds/troshka/commit/9fea25d8bf0af6fc794ed43fabe16f21f997f45b) — fix(live): supply common\_password in project\_factory (OCP create requires it)
+- 2026-09-02 [9fe4b073](https://github.com/rhpds/troshka/commit/9fe4b0738fb362490a8bd323868e219a3bd6d066) — fix(live): deploy after create + target host per provider; harden timeout parse (final-review C1/M4)
+- 2026-09-02 [71b4a42d](https://github.com/rhpds/troshka/commit/71b4a42d22e422d0d077e4219e3b64b531ae4653) — docs(live): harness README + checklist pointer + final self-check (Task 10)
+- 2026-09-02 [07602947](https://github.com/rhpds/troshka/commit/0760294773af0c37a741fbc8e964020297c7c3a4) — test(live): Tier-2 idempotent restart + bastion install (Task 9)
+- 2026-09-02 [43da1129](https://github.com/rhpds/troshka/commit/43da1129a5fb2ff37f53929df7dc3a6d4fb97690) — test(live): Tier-2 pod SNO install reaches ready (Task 8)
+- 2026-09-02 [a9459ad2](https://github.com/rhpds/troshka/commit/a9459ad274c380024cbb27479d447c2fe2f85761) — test(live): Tier-1 bastion makes no ops pod (Task 7)
+- 2026-09-02 [f5a44a1e](https://github.com/rhpds/troshka/commit/f5a44a1e4e289be8447d1fa6834d65e5c84243aa) — test(live): Tier-1 scoped-key least-privilege + revoke + cancel (Task 6)
+- 2026-09-02 [3a164463](https://github.com/rhpds/troshka/commit/3a1644631980cdc591484c0045645aa8e791c805) — test(live): Tier-1 ops-pod exists/running/no-secret-in-argv (Task 5)
+- 2026-09-02 [17c73231](https://github.com/rhpds/troshka/commit/17c73231d4a812b765d49ddd0fc87ec7d80fa70e) — test(live): fixtures (client/template/project\_factory) + scoped-key helper (Task 4)
+- 2026-09-02 [c20a44a6](https://github.com/rhpds/troshka/commit/c20a44a66c7e83ff6dfaa5fbafdfbba9e5450f2f) — fix(live): validate project\_id in ops\_pod\_apikey\_row (security guard, Task 3 fix)
+- 2026-09-02 [1c804a7e](https://github.com/rhpds/troshka/commit/1c804a7e5ff2e6a5173cbdc2367e577c6bca3ffc) — test(live): host-ssh/oc/host-db subprocess wrappers (Task 3)
+- 2026-09-02 [24deb4bc](https://github.com/rhpds/troshka/commit/24deb4bcf2b76927d5fbab3c9872795f62fc56ab) — test(live): LiveClient + poll\_ocp helper (Task 2)
+- 2026-09-02 [bd0c9a15](https://github.com/rhpds/troshka/commit/bd0c9a15fd50711af1f111d3bd6f040afe5a6106) — fix(live): Mapping-typed from\_env to satisfy pyright (Task 1 fix)
+- 2026-09-02 [614d70dc](https://github.com/rhpds/troshka/commit/614d70dcf941933ce8c2186b3bf58a460bc35b42) — test(live): live-env harness config + marker skip-guard (Task 1)
+- 2026-09-02 [f09daa7d](https://github.com/rhpds/troshka/commit/f09daa7db378bb73a8b7b5fc46cb76162e0da7cf) — docs: live-env verification harness implementation plan
+- 2026-09-02 [2471a372](https://github.com/rhpds/troshka/commit/2471a372e58a903412d53c96d1996e848ace2478) — docs: live-environment verification harness design spec
+- 2026-09-02 [0681bfad](https://github.com/rhpds/troshka/commit/0681bfad7cdb4556c7b70d07b03acbe32023de55) — fix(ocp): launch ops-pod install on kubevirt + multi-host deploy paths (Plan 4b final-review C1/I1)
+- 2026-09-02 [bc280703](https://github.com/rhpds/troshka/commit/bc280703d8a162e15d78343224617090c5783cde) — docs(ocp): Plan 4b \[LIVE-ENV\] verification checklist (pod-default install) (Task 11)
+- 2026-09-02 [4f305655](https://github.com/rhpds/troshka/commit/4f30565516a23e251933be2d5b761d82667c58d2) — test(ocp): deploy-side ops-pod param/wiring tests (Plan 4b Task 10)
+- 2026-09-02 [3dc93033](https://github.com/rhpds/troshka/commit/3dc930335bc92fd5393d70a88781722101cddac3) — feat(ocp): install-method toggle (pod default / bastion) in create dialog (Plan 4b Task 9)
+- 2026-09-02 [4b33b3fe](https://github.com/rhpds/troshka/commit/4b33b3feaddfcace1123a436fd966efa1bc37c66) — feat(ocp): provider-aware ops-pod monitor for kubevirt hosts (Plan 4b Task 8c)
+- 2026-09-02 [f4d0208f](https://github.com/rhpds/troshka/commit/f4d0208f142bf7a572099065a9d3fb4ac045f92f) — fix(ocp): handle kubevirt ops-pod redeploy race; align NAD id + project\_id
+- 2026-09-02 [10b48d10](https://github.com/rhpds/troshka/commit/10b48d1081102f2ab26bfb88d7fbbff2bf971035) — feat(ocp): kubevirt ops-pod path (Pod+Secret spec, provider branch)
+- 2026-09-02 [5cba4ae6](https://github.com/rhpds/troshka/commit/5cba4ae61e8f9aa8391b98d6e52dc7522f1e80be) — feat(ocp): deliver ops-pod secrets via mounted files, not argv
+- 2026-09-02 [1db5b648](https://github.com/rhpds/troshka/commit/1db5b648415e8268c56278be44a36c093c7d81fc) — feat(ocp): drive ocp\_status for pod (bastionless) installs
+- 2026-09-02 [94ec696e](https://github.com/rhpds/troshka/commit/94ec696e665a1e959fbb44024a4875d83b1d4875) — fix(ocp): cancel stops ops pod by destroying it, not cancelling a done job
+- 2026-09-02 [ffd3c904](https://github.com/rhpds/troshka/commit/ffd3c904b27de9dcb4489f1b5f575fffbcecd860) — fix(ocp): tolerate recoverable ops-pod restart before failing install
+- 2026-09-02 [502f60b4](https://github.com/rhpds/troshka/commit/502f60b427faec7a71852913493b249b5d0a7f5d) — feat(ocp): spawn ops-pod install monitor + dead-job → failed detection
+- 2026-09-02 [d9d88781](https://github.com/rhpds/troshka/commit/d9d88781946accf62b22f04db98c3d77abf7de9e) — feat(ocp): ops-pod install skip-guard for already-installed clusters
+- 2026-09-02 [d07b5cd7](https://github.com/rhpds/troshka/commit/d07b5cd74fbae880da32481a8f894eb34a6a3bfc) — feat(ocp): bake bastion by install\_via, not cluster count
+- 2026-09-02 [8c8a659d](https://github.com/rhpds/troshka/commit/8c8a659d9ab5e6b8a0028cc89462285612f73eb2) — feat(deploy): per-project install\_via selects ops pod (POD default, all host types)
+- 2026-09-02 [bc657dd8](https://github.com/rhpds/troshka/commit/bc657dd85689259b17ffd81481122404d05575c6) — fix(ocp): propagate template-level install\_via; narrow config except
+- 2026-09-02 [eb9b85fe](https://github.com/rhpds/troshka/commit/eb9b85fe184c78c6436059a37ead640d7a4d094c) — feat(ocp): per-project install\_via selector (bastion|pod), default pod
+- 2026-09-02 [47669d1d](https://github.com/rhpds/troshka/commit/47669d1d159020cee90212025bd915e1248a2838) — docs: Plan 4b — pod on all hosts (kubevirt parity) + file-mount secrets
+- 2026-09-02 [22b31e9e](https://github.com/rhpds/troshka/commit/22b31e9e1877f6e906de5caa6cfc15cd900cfa83) — docs: multi-cluster OCP Plan 4b (install-method choice, pod default)
+- 2026-09-02 [d5509726](https://github.com/rhpds/troshka/commit/d5509726b0b60c91898d2fbea8cc114741cd2c89) — fix(ocp): flag-gate ops-pod path; multi-cluster no longer auto-triggers
+- 2026-09-02 [802f342d](https://github.com/rhpds/troshka/commit/802f342db1a73eaba94764eddef365db7f25e71b) — test(ocp): ops-pod foundation regression + doc/Dockerfile cleanups
+- 2026-09-02 [2b605e3c](https://github.com/rhpds/troshka/commit/2b605e3cc41570db29382de09f42d90d73a5a7fe) — feat(ocp): ops-pod execution-environment image spec (CI-built)
+- 2026-09-02 [deb4a718](https://github.com/rhpds/troshka/commit/deb4a718bc9bf6d09cc190e9f2e84f07d72c4981) — feat(ocp): ops-pod install progress + cancellation
+- 2026-09-02 [5bf81fd8](https://github.com/rhpds/troshka/commit/5bf81fd89f20efdbe19542c38b212500921e1848) — fix(ocp): revoke scoped ops-pod key on project destroy
+- 2026-09-02 [2deee00f](https://github.com/rhpds/troshka/commit/2deee00f97fc794f57b79908ece68cfea78c3230) — feat(ocp): create ops pod during deploy (flagged)
+- 2026-09-02 [21365fa2](https://github.com/rhpds/troshka/commit/21365fa2285af35089bfff05ba4173a71f32c079) — fix(ocp): propagate ops-pod install failures + quote BMC pw + bastion golden
+- 2026-09-02 [1a355cb4](https://github.com/rhpds/troshka/commit/1a355cb43d1603bbd7ea049ffc8bcd63d08be0ad) — feat(ocp): per-cluster ops-pod install-runner script
+- 2026-09-02 [931f3e65](https://github.com/rhpds/troshka/commit/931f3e6571e6f25cb6a4cc9e72e3e3e989761dda) — feat(ocp): ops-pod network + spec builder
+- 2026-09-02 [fc11f5e2](https://github.com/rhpds/troshka/commit/fc11f5e2da87c9a84d3dca0813f5ed250d67757c) — feat(ocp): mint/revoke project-scoped ops-pod API key
+- 2026-09-02 [f805f397](https://github.com/rhpds/troshka/commit/f805f39710c1b3a95dbc0c2b2c8a2438c045276e) — fix(auth): enforce scoped-key default-deny globally in get\_current\_user (close api-keys escape)
+- 2026-09-02 [73131d0b](https://github.com/rhpds/troshka/commit/73131d0b86af67def616f40a6929590baa46c888) — fix(auth): extend scoped-key default-deny to project sub-routers and websockets
+- 2026-09-02 [84ab4b34](https://github.com/rhpds/troshka/commit/84ab4b34339bede588e614e454745777bd7b4469) — fix(auth): default-deny router guard for scoped API keys (close fail-open bypass)
+- 2026-09-02 [067ab341](https://github.com/rhpds/troshka/commit/067ab341d2de5d404f11eea3f33ac7418315f075) — feat(auth): enforce project scope + permissions for scoped API keys
+- 2026-09-02 [d61e11bb](https://github.com/rhpds/troshka/commit/d61e11bbc4b1881dcf13c9aa5e29223b3529ffc1) — feat(auth): project-scoped, limited-permission API keys (model+migration)
+- 2026-09-02 [09f31e40](https://github.com/rhpds/troshka/commit/09f31e408f4b23eaeae19ae3fbb8f303b9ac915a) — docs: multi-cluster OCP Plan 4 (ops pod foundation)
+- 2026-09-01 [7c55b20f](https://github.com/rhpds/troshka/commit/7c55b20fba2e367056b1f60c66afa001ee49a31c) — test(ocp): per-cluster deploy regression pass
+- 2026-09-01 [b3a82ddf](https://github.com/rhpds/troshka/commit/b3a82ddf5fb1b71dfd5e52b5fa5d3edf6296b9ee) — feat(ocp): export ocp cluster list + per-VM cluster membership
+- 2026-09-01 [5f8bd4d7](https://github.com/rhpds/troshka/commit/5f8bd4d78a93ca7914c9eec9bc5e381dd9fdc2bb) — feat(ocp): normalize OCP install fields on cluster members
+- 2026-09-01 [8dfec776](https://github.com/rhpds/troshka/commit/8dfec776f6355845988a18c8abcc043c10ee27dd) — feat(ocp): non-colliding per-cluster gateway port-forwards
+- 2026-09-01 [f8367aeb](https://github.com/rhpds/troshka/commit/f8367aeb72d9ef3dc8c322ac31ad42a84a17e27f) — fix(ocp): merge per-cluster DNS on shared network; drop dead \_resolve\_ocp\_vips
+- 2026-09-01 [93ef7fde](https://github.com/rhpds/troshka/commit/93ef7fde0fbbcf8206aff408b549bd23d6e2cd07) — feat(ocp): customize\_topology iterates clusters + per-cluster DNS
+- 2026-09-01 [f8dbab08](https://github.com/rhpds/troshka/commit/f8dbab0809a213d7d05c7c449c793a97f9a6571c) — feat(ocp): per-cluster agent-config generation
+- 2026-09-01 [f2406574](https://github.com/rhpds/troshka/commit/f2406574fe4c2487298697aec3fe02dcdafbdcdb) — feat(ocp): per-cluster install-config generation
+- 2026-09-01 [3c093c2e](https://github.com/rhpds/troshka/commit/3c093c2e3bcc4bd32791cd736e5ea0c84a01c2d9) — feat(ocp): per-cluster VIP resolution (explicit + SNO + legacy fallback)
+- 2026-09-01 [61261913](https://github.com/rhpds/troshka/commit/6126191317054165ac13eecbd20b02154a2d18cc) — feat(ocp): cluster-scoped OCP node selection + counting
+- 2026-09-01 [e5ac5fa9](https://github.com/rhpds/troshka/commit/e5ac5fa9c320b1daa9d4fd952233ecffc2c4e944) — docs: multi-cluster OCP Plan 3 (per-cluster deploy + export)
+- 2026-09-01 [5afbcd31](https://github.com/rhpds/troshka/commit/5afbcd318ed41c29ee8cb17c54178624c75ac19c) — fix(canvas): recognize backend-created OCP cluster members via AnsibleGroup
+- 2026-09-01 [6cec75ec](https://github.com/rhpds/troshka/commit/6cec75ecd7d066da1fbbb1b533cccb8533c0e0f4) — test(canvas): lock OCP back-compat seeding contract + fix dirty comment
+- 2026-09-01 [d137813b](https://github.com/rhpds/troshka/commit/d137813ba1150a7639b2838fa1619502632c4235) — feat(canvas): move OCP cluster config from create dialog onto the canvas
+- 2026-09-01 [c5480680](https://github.com/rhpds/troshka/commit/c5480680eebbac1dfd8a53b85927c8af946f47a7) — feat(canvas): cluster role dropdown for member VMs
+- 2026-09-01 [aa22c904](https://github.com/rhpds/troshka/commit/aa22c904d280e47f32ff7f100df626e8135c159c) — fix(canvas): cluster sizing propagation + cluster delete cleanup
+- 2026-09-01 [f34358cc](https://github.com/rhpds/troshka/commit/f34358ccb12ab09a80fd2b970be2c29ba48ca78e) — feat(canvas): cluster config editor in PropertiesPanel
+- 2026-09-01 [a2bf102d](https://github.com/rhpds/troshka/commit/a2bf102ddd234f2d7a03a76651df691dae3eec94) — fix(canvas): order VM child after cluster parent on reparent; set clusterId on boundary
+- 2026-09-01 [569ce6dc](https://github.com/rhpds/troshka/commit/569ce6dccfbfee0a408d1dd99cbaa36120c37ed6) — feat(canvas): drag a VM into/out of a cluster boundary to set membership
+- 2026-09-01 [13a6d541](https://github.com/rhpds/troshka/commit/13a6d541beca7334aed103931e757292dd0bbaa9) — fix(ocp): materialize cluster VMs with real sizing + propagate generated
+- 2026-09-01 [e7a1aa3d](https://github.com/rhpds/troshka/commit/e7a1aa3d20c0943030b97c587a8f6cfb5c35048d) — feat(canvas): count-driven cluster VM materialization (existence-aware)
+- 2026-09-01 [a28d2604](https://github.com/rhpds/troshka/commit/a28d2604d915faef36c520385d86a25cd4819df0) — fix(canvas): unique cluster ids per drop (random suffix)
+- 2026-09-01 [efdf0d68](https://github.com/rhpds/troshka/commit/efdf0d68eee50a4b821a9d34324b8f2078e1ec6c) — feat(canvas): OCP Cluster palette item + drop creates boundary
+- 2026-09-01 [a71ada62](https://github.com/rhpds/troshka/commit/a71ada628951ba9e8dc06c7cea31e45d3a6943ad) — feat(canvas): ClusterNode resizable boundary component
+- 2026-09-01 [49a18fac](https://github.com/rhpds/troshka/commit/49a18facef82b4312b0298f760149cc383e820c9) — test(canvas): type cluster persistence test fixtures (drop as-any casts)
+- 2026-09-01 [b494693b](https://github.com/rhpds/troshka/commit/b494693bcc6deee7098af61788b0e2d848ba29e5) — feat(canvas): persist topology.clusters + clusterId/parentId in store
+- 2026-09-01 [a1b5db59](https://github.com/rhpds/troshka/commit/a1b5db590658e5baaecd22b028d86995a67ec302) — test(frontend): add vitest + testing-library harness
+- 2026-09-01 [fe375d16](https://github.com/rhpds/troshka/commit/fe375d16f7da2c95114b549cb247a8fe9bca21a3) — refactor(ocp): use parentId (React Flow v12) for cluster membership
+- 2026-09-01 [b0f2207c](https://github.com/rhpds/troshka/commit/b0f2207c5c19967d652deed6314692aa82ebdd0b) — docs: multi-cluster OCP Plan 2 (canvas/frontend)
+- 2026-09-01 [7f2f2ee8](https://github.com/rhpds/troshka/commit/7f2f2ee8ba30cbaa65e9f806273a620251fd0826) — fix(ocp): dedupe sizing defaults, guard workers coercion, AnsibleGroup role fallback
+- 2026-09-01 [79e1ccda](https://github.com/rhpds/troshka/commit/79e1ccda56177ba90145e80711fafd5d893fbceb) — feat(ocp): rewrite shipped OCP templates to ocp list schema
+- 2026-09-01 [58e52cf9](https://github.com/rhpds/troshka/commit/58e52cf9a5c2869901e2e2ae8f5c974f4474e55c) — feat(ocp): remap cluster ids and member refs on topology clone
+- 2026-09-01 [d3c9e68c](https://github.com/rhpds/troshka/commit/d3c9e68cd95c152c306f81935440baa63de31ca5) — fix(ocp): migrated clusters\[\] entry carries generator sizing/registry defaults
+- 2026-09-01 [dd33d191](https://github.com/rhpds/troshka/commit/dd33d1916856cb406940e570721865b6830c24ca) — feat(ocp): lazily migrate legacy topology to clusters\[\]
+- 2026-09-01 [e2a48824](https://github.com/rhpds/troshka/commit/e2a488240f39bc6b4d605f3edcaa2437ab650895) — refactor(ocp): keep generator complexity-neutral; RHCOS-only membership + tests
+- 2026-09-01 [062d3d23](https://github.com/rhpds/troshka/commit/062d3d23cce41065aa1eb36715e8cb598083bee2) — feat(ocp): emit topology.clusters and stamp clusterId/parentNode on VMs
+- 2026-09-01 [df9673a7](https://github.com/rhpds/troshka/commit/df9673a7abb1ff9b02deccb5160976eb579048f0) — fix(ocp): existence-aware VM top-up never overwrites enumerated VMs
+- 2026-09-01 [6c5523c9](https://github.com/rhpds/troshka/commit/6c5523c9a485d93e722a1d36c8f0cb428d07ce93) — feat(ocp): materialize RHCOS cluster VMs from counts
+- 2026-09-01 [7e582849](https://github.com/rhpds/troshka/commit/7e5828498f81a14b6a23809918a7a34e5af7f362) — feat(ocp): derive cluster type/counts into topology cluster objects
+- 2026-09-01 [202ecbce](https://github.com/rhpds/troshka/commit/202ecbcef623508abdb75a1485cb6a50f7474a7c) — feat(ocp): normalize ocp section to cluster list (legacy + new schema)
+- 2026-09-01 [0be613ec](https://github.com/rhpds/troshka/commit/0be613ec4ce4051bff0f9652f9d3c338f95da9a5) — docs: multi-cluster OCP Plan 1 (data model, schema, back-compat)
+- 2026-09-01 [34dd2021](https://github.com/rhpds/troshka/commit/34dd2021921a4aa4d7db0e6e4abacb2363ec00de) — docs: multi-cluster OCP + bastionless install design spec
+- 2026-09-01 [61a74086](https://github.com/rhpds/troshka/commit/61a740869b82fff1f48646f0d3ebaab82886b8c8) — fix(update): image-mode Apply Update rolls out the worker too
+- 2026-09-01 [956ec582](https://github.com/rhpds/troshka/commit/956ec582c699e3b5709a5aa2b8b4d06ecaf06bcf) — fix(canvas): ignore cosmetic edge-handle drift in dirty comparison
+- 2026-09-01 [cb06a8f7](https://github.com/rhpds/troshka/commit/cb06a8f7843ebd84a0ddb6880dc7cd0805932299) — fix(dev): UI "Restart backend" no longer hangs (strip detached-supervisor env)
+- 2026-09-01 [9e560b9d](https://github.com/rhpds/troshka/commit/9e560b9daae4d350ef99656a21d44982c8c6c21f) — fix(canvas): stop false dirty from leaked VNIs and key-order in dirty compare
+- 2026-09-01 [2bf829c0](https://github.com/rhpds/troshka/commit/2bf829c029d584e6518e4f47364809b33f82d5b4) — fix(canvas): stop false "dirty" on deployed showroom projects
+- 2026-09-01 [f054d484](https://github.com/rhpds/troshka/commit/f054d4848c46bf4414d46692a571782ec529dfcd) — feat(dev): "Restart backend" in UI also restarts workers (checkbox, on by default)
+- 2026-09-01 [fa888a0e](https://github.com/rhpds/troshka/commit/fa888a0ed866f6aacc536a5ea8b403e7c85304cf) — fix(dev): reliable worker restart + honest status (Redis-aware)
+- 2026-09-01 [fa2f9514](https://github.com/rhpds/troshka/commit/fa2f951420406f1b79f04c5ddcf015b495873948) — fix(showroom): align gateway extIpId/gatewayMode front↔back to clear false dirty
+- 2026-09-01 [29c5480a](https://github.com/rhpds/troshka/commit/29c5480ab22ffde718b0d945715e1de4a5e62863) — fix(showroom): clear false dirty + self-heal allocated web-only EIP on route providers
+- 2026-09-01 [3ebbaf36](https://github.com/rhpds/troshka/commit/3ebbaf368c5f1c56de00efc6c4f502b9c2bccebd) — fix(showroom): no EIP for web-only showroom on ocpvirt/kubevirt (route-served)
+- 2026-09-01 [68c28e38](https://github.com/rhpds/troshka/commit/68c28e38fdc1470bf4322b3f225d20699e363f4c) — fix(canvas): commit node add/delete on projects without a showroom
+- 2026-09-01 [72cecd42](https://github.com/rhpds/troshka/commit/72cecd42fba2810642091201f6b33efd8271f0fe) — Size KubeVirt goldens from measured qcow2 virtual size; self-heal undersized goldens
+
+## 2026-08
+
+- 2026-08-31 [3d537d86](https://github.com/rhpds/troshka/commit/3d537d86def6366b2e3f1769ff2c43aae804d0ec) — Serve 443/80 forwards via Route (not EIP) on ocpvirt/kubevirt
+- 2026-08-31 [bd20d96e](https://github.com/rhpds/troshka/commit/bd20d96e7254f81ff563ade773418417b11a61c8) — docs: spec for migrating KubeVirt-native disks to Block volumeMode
+- 2026-08-31 [748578ba](https://github.com/rhpds/troshka/commit/748578bae8db5c73ed8370ce96d316c0c407c54d) — Size KubeVirt goldens from image on deploy; stop wrong-key golden crashloops
+- 2026-08-31 [ff5652f6](https://github.com/rhpds/troshka/commit/ff5652f6c0645bc7a9daac58637c0343cbf86fdd) — Size KubeVirt golden cache from actual image size, not disk sizeGb
+- 2026-08-31 [c125741f](https://github.com/rhpds/troshka/commit/c125741fc74c066318821a9573eefb71cc725eaf) — Operator: self-heal VMs stuck at ErrorPvcNotFound
+- 2026-08-31 [1e606c11](https://github.com/rhpds/troshka/commit/1e606c1175d70e8665f22937ff54a3db95d06a05) — Fix three KubeVirt reconfigure reliability bugs
+- 2026-08-31 [35cb8a32](https://github.com/rhpds/troshka/commit/35cb8a321e2e874370151c730f4c9150faed1f36) — Fix hanging golden-PVC operator tests and add pytest-timeout guardrail
+- 2026-08-31 [2a13782e](https://github.com/rhpds/troshka/commit/2a13782e93c27627c3eb06bbc167e1f3b126bc0e) — Add per-VM nested virtualization for KubeVirt native VMs
+- 2026-08-31 [87334cba](https://github.com/rhpds/troshka/commit/87334cba3b17d2bd6985f05f26e9d854aa84b463) — Merge pull request #16 from rhpds/showroom-console-oauth-proxy
+- 2026-08-31 [b7375152](https://github.com/rhpds/troshka/commit/b73751524b7ef3abe835ed4d7b8d8bb9cc1f4b63) — agent\_template: use shlex.quote for console\_url in autologin command
+- 2026-08-31 [b2ec12c4](https://github.com/rhpds/troshka/commit/b2ec12c4a353985d395259657dd25c6617f68df4) — address CodeRabbit review on #16
+- 2026-08-31 [8a059f59](https://github.com/rhpds/troshka/commit/8a059f596b30ac33702b42514d11c772d5198988) — frontend: only hide console preset when BOTH console + oauth hosts present
+- 2026-08-31 [e0c17cd2](https://github.com/rhpds/troshka/commit/e0c17cd20fbd4014d2cdd91bc20c1d7381157caf) — frontend: hide 'Insert OCP console hosts' once a console host is defined
+- 2026-08-31 [26b67cb6](https://github.com/rhpds/troshka/commit/26b67cb6b71d8843e77bd31357b8e038014bdae2) — frontend: '+ Add app host' + move OAuth app-hosts label below the buttons
+- 2026-08-31 [c0aa4794](https://github.com/rhpds/troshka/commit/c0aa479437887cc31a7b45ef629104b2301b1cce) — frontend: clearer preset button label 'Insert OCP console hosts'
+- 2026-08-31 [3b958bd4](https://github.com/rhpds/troshka/commit/3b958bd4ce11ef2199dc3f3a0ba72a48b300635d) — rbac: grant routes/custom-host for app-proxy routes; fix editor host-row layout
+- 2026-08-31 [a2ced4d5](https://github.com/rhpds/troshka/commit/a2ced4d5a1cb9f3388cc375b8773048391862215) — frontend: split showroom proxy tab into modes (VM / named host / OAuth app)
+- 2026-08-31 [963ad5e5](https://github.com/rhpds/troshka/commit/963ad5e5329c9db1ff20dfe9095c0d20acf339cb) — docs: refresh app-proxy spec to shipped design (Approach B, baked regex vhost)
+- 2026-08-31 [2a0da084](https://github.com/rhpds/troshka/commit/2a0da08470c3a6f07262a5bb9ee43958a6889cd9) — frontend: proxyHosts\[\] editor for embedded OAuth app tabs (OCP console)
+- 2026-08-31 [3eb79817](https://github.com/rhpds/troshka/commit/3eb79817c2c1fcc1520c7a69680bd5808ee02651) — deploy: auto-wire showroom app-proxy routes (ocpvirt+kubevirt) + bastion image sizing
+- 2026-08-31 [f5a42af2](https://github.com/rhpds/troshka/commit/f5a42af236f4b54daf3b0e1c64d428f6b6579fe8) — ocp: stack the kubeadmin bastion-path hint so it doesn't overlap the label
+- 2026-08-31 [2a2d8526](https://github.com/rhpds/troshka/commit/2a2d8526e6582eef3d97a06ae1216f9acb768765) — ocp: show the real kubeadmin password, not the bastion password
+- 2026-08-31 [2bf525f9](https://github.com/rhpds/troshka/commit/2bf525f9f57f147e910a3a7f72370193f0076988) — showroom: sub\_filter rewrite of .local host refs in app-proxy bodies
+- 2026-08-31 [54046a71](https://github.com/rhpds/troshka/commit/54046a71837c55a5159ef6705534d618ecf8546a) — showroom: bake app-proxy vhost with deterministic hostnames (Approach B)
+- 2026-08-31 [d1967b9f](https://github.com/rhpds/troshka/commit/d1967b9f533ebe1085b956dd016031bcde30eed9) — showroom: require explicit proxy\_hosts for app-proxy; convert OCP templates
+- 2026-08-31 [f92ebf70](https://github.com/rhpds/troshka/commit/f92ebf70475bffae039ae9cab9f6f58c8d637e95) — showroom: set nginx hash bucket sizes in base config before first map
+- 2026-08-31 [2642e5c2](https://github.com/rhpds/troshka/commit/2642e5c200d7141627185b2f7091a74194025c14) — showroom: app-proxy config generation for embedded console+oauth
+- 2026-08-31 [a176c9ae](https://github.com/rhpds/troshka/commit/a176c9aed23ae18a5e9b11d4361fe830355db47d) — docs: design for showroom embedded OCP console+oauth proxy (nested .local)
+- 2026-08-31 [54b6f240](https://github.com/rhpds/troshka/commit/54b6f2403bed5e37f5692035b6b9dadc7e39d33d) — troshkad: SNAT showroom-\>lab-bridge traffic (fixes nested console 504)
+- 2026-08-31 [6f41efee](https://github.com/rhpds/troshka/commit/6f41efee8a34222a6755a7867aba1db5e3af66a7) — fix(ocp): use Selenium autologin in agent install script instead of NSS.
+- 2026-08-31 [8d4c1dd9](https://github.com/rhpds/troshka/commit/8d4c1dd97a45bef39cadfef932b9b6d76f4cc1f2) — Clean up per-project storage pools (destroy + GC) to stop virt-install hang
+- 2026-08-31 [09b04ae2](https://github.com/rhpds/troshka/commit/09b04ae207423fd6e52a3881b50c866452e4f374) — Deploy progress: distinguish 'creating disks' from 'defining' per VM
+- 2026-08-31 [3d9396de](https://github.com/rhpds/troshka/commit/3d9396de89f1a39f6a0080b2d901bec754a4a2ce) — OCP install: test connectivity via TCP DNS, not ICMP ping
+- 2026-08-31 [eec4a38a](https://github.com/rhpds/troshka/commit/eec4a38a71946f89dcdf6f80717b766591b54bc3) — Add per-container redeploy (rebuild showroom content without touching VMs)
+- 2026-08-31 [292fa520](https://github.com/rhpds/troshka/commit/292fa520415f073e9977bfaab8f945f05cf1e899) — Fix quickstart dropping showroom (and other template sections)
+- 2026-08-31 [b339dea4](https://github.com/rhpds/troshka/commit/b339dea440307c291bb68f3dfca557a945eeac67) — OCP templates: add shared showroom (name-based OCP Console proxy)
+- 2026-08-31 [747093b8](https://github.com/rhpds/troshka/commit/747093b89c37df0aa5f434059244344675fa6740) — example\_templates: symlink the bundled backend templates
+- 2026-08-31 [c9a36b38](https://github.com/rhpds/troshka/commit/c9a36b3823c71aaa05d31c957c16ce34f44d9be1) — gitignore: ignore .generated/ build artifacts
+- 2026-08-31 [0e4ae22f](https://github.com/rhpds/troshka/commit/0e4ae22fd808d7a24806fb00a7450c69168d7177) — Fix all failing and hanging backend tests (4668 pass)
+- 2026-08-31 [ae658f22](https://github.com/rhpds/troshka/commit/ae658f22f5e6ffa0d1db4754a5917ac329f8e551) — Showroom: name-based web proxy (Host header + TLS SNI)
+- 2026-08-31 [2114310b](https://github.com/rhpds/troshka/commit/2114310bfe8b42a092f8487e2f985958eb41c17e) — Canvas: opaque network nodes above edges; legacyRootBus UI for KubeVirt.
+- 2026-08-31 [211a4432](https://github.com/rhpds/troshka/commit/211a44326424187fe14d4d4a03ff76aab25eccef) — Improve canvas auto-layout for router-lab topologies.
+- 2026-08-31 [83bf9138](https://github.com/rhpds/troshka/commit/83bf91382a56dc00941a78b2fc7170178e61c293) — Fix KubeVirt clone-size clamp, RQ redeploy/reconfigure resolution, exec None crash.
+- 2026-08-31 [2de583e1](https://github.com/rhpds/troshka/commit/2de583e172bb82349d1e77060742d7eed859485c) — net-automation rtr3: use e1000 for fxp0 (vSRX management NIC).
+- 2026-08-31 [a0a74f09](https://github.com/rhpds/troshka/commit/a0a74f096aa8c0e3948e5be5c60d0aa852e13d3a) — Apply operator CRDs in deploy-full.sh; set rtr3 legacyRootBus.
+- 2026-08-29 [593e06ef](https://github.com/rhpds/troshka/commit/593e06ef3cd1dc69cacfd92cd63c4542b8b862a8) — Add legacyRootBus for vEOS NIC visibility on KubeVirt q35.
+- 2026-08-27 [f20eaa3b](https://github.com/rhpds/troshka/commit/f20eaa3ba5c7b7103487e070e0cf6e9bf6701bc9) — KubeVirt VM redeploy, headless serial, and shared troshka\_serial stack.
+- 2026-08-27 [121252af](https://github.com/rhpds/troshka/commit/121252af156ecbf18ab61fec514559602e171ca8) — Fix KubeVirt deploy hang when VMs use runStrategy.
+- 2026-08-27 [bf490372](https://github.com/rhpds/troshka/commit/bf49037243e6cb5427ed911b0308f69a4c9631ee) — Fix KubeVirt bootstrap ISO import and net-automation workshop deploy.
+- 2026-08-26 [b38efb77](https://github.com/rhpds/troshka/commit/b38efb77effc4df541b33f0fc586b8e4680ee4f5) — Plumb VM serial I/O settings to KubeVirt and add Junos serial exec.
+- 2026-08-26 [0a999b07](https://github.com/rhpds/troshka/commit/0a999b07aef4916a4708e56b73ac4648d510803b) — Resize disks on reconfigure for KubeVirt and libvirt paths.
+- 2026-08-26 [092b6574](https://github.com/rhpds/troshka/commit/092b6574a60e15b2cdf0fa391a71aa049c9b6c3d) — Fix KubeVirt per-VM start/stop and harden networkRef handling.
+- 2026-08-26 [4eb6a363](https://github.com/rhpds/troshka/commit/4eb6a363ae1fc3eeef66b022568e20d28fadd19d) — Expose KubeVirt cluster capabilities and fix reconfigure false success.
+- 2026-08-26 [6df4c91b](https://github.com/rhpds/troshka/commit/6df4c91b6555c9c80ebd9ddb44496e37534ea77d) — Fix KubeVirt start/stop and preserve networkRef on reconfigure.
+- 2026-08-26 [1ae5bba3](https://github.com/rhpds/troshka/commit/1ae5bba3322a27e0b2ec0d3f4c379a3f317c5a54) — Allow TroshkaVM replace on provider clusters and add rollout script.
+- 2026-08-26 [2a8d892f](https://github.com/rhpds/troshka/commit/2a8d892ff1fd4d656a4b7075cfcc6e175e94714d) — KubeVirt operator: gate video config and surface admission warnings.
+- 2026-08-26 [3f23945d](https://github.com/rhpds/troshka/commit/3f23945daf4232f54044d7b79033332bde7c0d64) — Fix KubeVirt video device schema to use object type field.
+- 2026-08-26 [f68fdb59](https://github.com/rhpds/troshka/commit/f68fdb59025aca671d4b9de3af843a7ace048244) — Retrigger operator and frontend image builds.
+- 2026-08-26 [19f649d2](https://github.com/rhpds/troshka/commit/19f649d2030c1ae1a2b6ebd01fe28cf16e65e8c4) — Retrigger image build CI.
+- 2026-08-26 [0c496f98](https://github.com/rhpds/troshka/commit/0c496f98dd446a3824f34673163b4c168e0b981a) — Retrigger CI for image build.
+- 2026-08-26 [5a802fea](https://github.com/rhpds/troshka/commit/5a802fea07b0c4d9d917cac698cd2610e86e7c73) — Wire canvas machine type, disk bus, and video/input through deploy paths.
+- 2026-08-26 [28c36ef5](https://github.com/rhpds/troshka/commit/28c36ef57417407fa714f32611ecd6c44f14e740) — Fix KubeVirt gateway DNAT hijacking VM HTTPS egress.
+- 2026-08-26 [ba136833](https://github.com/rhpds/troshka/commit/ba136833c0a103274b203da763674dc299875ac6) — Fix OCP Virt showroom route 503 via route-path DNAT.
+- 2026-08-25 [72cfdcec](https://github.com/rhpds/troshka/commit/72cfdcec0ea00a94dc3e52228339efd54eac01fe) — Showroom DNS network defaults, gateway outbound 53, and KubeVirt terminal networking.
+- 2026-08-25 [f0fcd5ec](https://github.com/rhpds/troshka/commit/f0fcd5ec10bb9c8d383ca4baf5747e3c2c789cf4) — Showroom gateway access sync on canvas and deploy.
+- 2026-08-25 [a1f478ab](https://github.com/rhpds/troshka/commit/a1f478ab52c69a62b4585481f2200dd4541cbdf1) — Showroom infra networking, per-tab networks, and pattern content overrides.
+- 2026-08-25 [ffb04fe2](https://github.com/rhpds/troshka/commit/ffb04fe2f9cbc7074e956a776e4e999e07470870) — Fix kubevirt/ocpvirt showroom routes and deploy UI updates.
+- 2026-08-25 [d603eb06](https://github.com/rhpds/troshka/commit/d603eb0644e4a509d129cef6d48eae34105591a7) — Fix showroom routes UI and release route-only EIPs on redeploy.
+- 2026-08-25 [6e593b5b](https://github.com/rhpds/troshka/commit/6e593b5b76e7dd3a69d9dce161bdf81d84a89580) — Fix showroom pods, OCP Routes on kubevirt native, and external access UI.
+- 2026-08-25 [7e27d980](https://github.com/rhpds/troshka/commit/7e27d9806bf66456f953c374b140deb2566eb14c) — Mount pod volumes before showroom init containers start.
+- 2026-08-25 [c0749a2c](https://github.com/rhpds/troshka/commit/c0749a2c546b2018034ae5ec4ee1942e1e2032c2) — Use declarative showroom tabs in templates and fix metadata sync.
+- 2026-08-25 [559eb56e](https://github.com/rhpds/troshka/commit/559eb56e472073e69a0e0529353d2d094c5a13e9) — Add canvas showroom, KubeVirt container pods, and KMP namespace opt-out.
+- 2026-08-24 [2391cc3f](https://github.com/rhpds/troshka/commit/2391cc3fa6446801aef243d0c3ef736207501d81) — Fix redeploy start race, serial exec for network OSes, and multi-bridge dnsmasq.
+- 2026-08-20 [55c893de](https://github.com/rhpds/troshka/commit/55c893de7e9dca1b2f643ed19e8fc290ea3bc291) — Fix dev-services container start after Podman VM boot.
+- 2026-08-20 [ea0d60a9](https://github.com/rhpds/troshka/commit/ea0d60a90b7b097c59df3387a3b9d750aed5502b) — Auto-start Podman machine in dev-services on macOS.
+- 2026-08-19 [d0d6e0b2](https://github.com/rhpds/troshka/commit/d0d6e0b2285da0d152c7c0ac9dc80fbc7bf4885b) — Merge pull request #13 from rhpds/fix/outbound-icmp-rules-ui
+- 2026-08-19 [ad98905c](https://github.com/rhpds/troshka/commit/ad98905cdf66ffd44e442e586e7ef97e9e819470) — fix(ui): add accessible labels to outbound rule controls
+- 2026-08-19 [edfd9ae6](https://github.com/rhpds/troshka/commit/edfd9ae6c93d7aa10c6017af79964edd24ec1078) — fix(ui): defensively normalize outbound rules input
+- 2026-08-19 [2ab0271b](https://github.com/rhpds/troshka/commit/2ab0271b4d89d273d9669f0e8b42bdee87fb2d38) — fix(ui): remediate outbound rules CodeRabbit findings
+- 2026-08-19 [3555a8ef](https://github.com/rhpds/troshka/commit/3555a8ef6d4fd3b08183bde32440cfc4ccfb06c1) — fix(networking): handle ICMP outbound rules correctly
+- 2026-08-19 [1e52b053](https://github.com/rhpds/troshka/commit/1e52b0537f52491cc10f2040516e4a8143960adb) — chore: add CodeRabbit review configuration (#12)
+- 2026-08-18 [743728ef](https://github.com/rhpds/troshka/commit/743728ef0a4033f56c0fc4d8997bdc369bd47c33) — fix(deploy): reduce cognitive complexity in OCP monitor helpers
+- 2026-08-18 [7ed11d85](https://github.com/rhpds/troshka/commit/7ed11d85f4fb6086d76564a55682a95f56c70932) — fix(ocpvirt): replace EIP LB ports on reconfigure with merge patch
+- 2026-08-18 [9b861786](https://github.com/rhpds/troshka/commit/9b861786af97a71f2909963e9b755bba21f26148) — fix(reconfigure): persist transit port map for ocpvirt EIP forwards
+- 2026-08-18 [67ef5ee4](https://github.com/rhpds/troshka/commit/67ef5ee4d9ed3f92ffce3bb81aba1050068d3555) — fix(deploy): suppress bogus HTTP codes in console/OAuth wait messages.
+- 2026-08-18 [83633c12](https://github.com/rhpds/troshka/commit/83633c1215365c02c52c97b03e64659428ea5ce7) — fix(update): compare commit-pinned sandbox images against latest tag.
+- 2026-08-18 [9baa7735](https://github.com/rhpds/troshka/commit/9baa7735a9e35d208e02c2d130cda733484cf96d) — fix(providers): reduce S3 test complexity and add ExpectedBucketOwner.
+- 2026-08-18 [70c93eec](https://github.com/rhpds/troshka/commit/70c93eec5bd1fb4c57588531356d50bde9161639) — test(deploy): update bastion browser fix mocks for cookie clear step.
+- 2026-08-18 [84b9ae1b](https://github.com/rhpds/troshka/commit/84b9ae1bd35741e895286946f685e43975136565) — fix(deploy): use Selenium for bastion Firefox autologin instead of NSS.
+- 2026-08-18 [d196e20f](https://github.com/rhpds/troshka/commit/d196e20f3e2530f65ad2e2373f69664e26b18688) — fix(deploy): fix bastion Firefox profile selection for autologin.
+- 2026-08-18 [28ef8397](https://github.com/rhpds/troshka/commit/28ef839751fd0cfd41744a03332eabcf6d58bd22) — fix(deploy): defer OCP ready until bastion browser is configured.
+- 2026-08-18 [9550271c](https://github.com/rhpds/troshka/commit/9550271c5e731cab4795ff3c1226da17c21db2ef) — fix(deploy): sync recert kubeadmin password to bastion browser.
+- 2026-08-18 [dc485e57](https://github.com/rhpds/troshka/commit/dc485e571d0987a33963863211ee34347bbf421f) — fix(deploy): stop OCP monitor loop and stabilize ready status.
+- 2026-08-18 [a955f14b](https://github.com/rhpds/troshka/commit/a955f14b5fa841e6b5975fd26a1f06629b6da20d) — fix(ci): rebuild backend image when troshkad or vncd changes.
+- 2026-08-18 [a9a2d122](https://github.com/rhpds/troshka/commit/a9a2d122a0f67ce6ff6722d1f0ecf62010dd06fe) — fix(troshkad): handle null job result when saving recert kubeconfig.
+- 2026-08-18 [f6081846](https://github.com/rhpds/troshka/commit/f6081846dcfb6b860d5376732ccc0f194d9f8490) — test(patterns): set recert on metadata mock for JSON serialization.
+- 2026-08-18 [eaeed20f](https://github.com/rhpds/troshka/commit/eaeed20fa394a632715d36ab3cd23ec603a9ca10) — fix(patterns): propagate SNO OCP VM flags from pattern deploy.
+- 2026-08-18 [0eeefa9f](https://github.com/rhpds/troshka/commit/0eeefa9f1e180b3f19d89208416bf603f39c4b2f) — fix(providers): replace OCP Virt ISO picker with package repo config.
+- 2026-08-18 [c95d3b87](https://github.com/rhpds/troshka/commit/c95d3b87f6f8e62852141430af81d067d46e5887) — fix(agent): increase install script timeout to 900s for OCP Virt hosts.
+- 2026-08-18 [eec34682](https://github.com/rhpds/troshka/commit/eec346825956fda7e38157099d0f7c2f17c4b817) — fix(s4): set region on bucket init and custom-endpoint S3 clients.
+- 2026-08-18 [edfebcd9](https://github.com/rhpds/troshka/commit/edfebcd973e2c35ce0a3f55adc0f169132e97299) — fix(providers): create S4 buckets with endpoint\_url and default region.
+- 2026-08-18 [99585706](https://github.com/rhpds/troshka/commit/99585706c9ccc9d867ce251f7d9c26bd7766d6a1) — fix(frontend): show OCP Virt install ISO picker when button is clicked.
+- 2026-08-18 [9d9b92d3](https://github.com/rhpds/troshka/commit/9d9b92d33c91d327d29bf462987271aad8a6b04c) — fix(deploy): don't abort deploy-full on operator restart grep miss.
+- 2026-08-18 [eba81ac6](https://github.com/rhpds/troshka/commit/eba81ac68234040b37ad3eda7f5f48425d6660b8) — fix(sonar): clear quality gate violations for lifecycle and health poller.
+- 2026-08-18 [0c8b1600](https://github.com/rhpds/troshka/commit/0c8b1600d11d97ed2542a86e7b2005182329e11c) — fix(tests): align startup and operator updater tests with dev-mode changes.
+- 2026-08-18 [2136c7c1](https://github.com/rhpds/troshka/commit/2136c7c1b41bd7a9594472160a4a8a90bc7f0a71) — Stabilize dev backend and land Sonar/UI fixes.
+- 2026-08-18 [80b72adc](https://github.com/rhpds/troshka/commit/80b72adc47d1778790bac704a4f93681fb3c601a) — fix(operator): unblock CI operator tests and export job polling
+- 2026-08-17 [c23a9472](https://github.com/rhpds/troshka/commit/c23a94727555676cc29b5be3cf9fd1276249b6b5) — fix(canvas): clear false dirty state after deploy completes
+- 2026-08-17 [2031ea08](https://github.com/rhpds/troshka/commit/2031ea086ae2c12c5438cf323f9ed04fb10948c4) — fix(ocpvirt): write HTTP repo file via cloud-init write\_files
+- 2026-08-17 [b692797f](https://github.com/rhpds/troshka/commit/b692797fe5102977ce5d44cd68086b365974e8c6) — feat(ocpvirt): add HTTP package repo for dedicated-CI hosts
+- 2026-08-17 [8612c8de](https://github.com/rhpds/troshka/commit/8612c8de2c5c3ebee2b9779c5ed062fc69212c88) — fix(app-update): reload page after self-update completes
+- 2026-08-17 [942c9bcd](https://github.com/rhpds/troshka/commit/942c9bcd8472d6b6936bda205e5c86a38e269c91) — fix(app-update): find running pods via the Deployment selector
+- 2026-08-17 [4390b741](https://github.com/rhpds/troshka/commit/4390b74138706a7a6bdf29777567a4c558c5b62d) — chore: bump version to 0.1.2
+- 2026-08-17 [6f9d2c90](https://github.com/rhpds/troshka/commit/6f9d2c900a2ebfd38c6f5845be38542aec9e171d) — feat(app-update): show current -\> latest image digests in the banner
+- 2026-08-17 [b486bbeb](https://github.com/rhpds/troshka/commit/b486bbebdea7b4017ab2eb48c4f4a7b1f4a51280) — fix(app-update): tolerate missing app\_update config block
+- 2026-08-17 [ee6cb731](https://github.com/rhpds/troshka/commit/ee6cb731644c80e19b17343f150031ea27b8fde6) — chore: bump version to 0.1.1
+- 2026-08-17 [b7004bd3](https://github.com/rhpds/troshka/commit/b7004bd3cf6a888a88b4e830cdb7f992cd6aa3c9) — fix(app-update): hash-based dev detection + bounded apply spinner
+- 2026-08-17 [3aef5424](https://github.com/rhpds/troshka/commit/3aef5424fa7dfc6dc6a8ed735f716784228b3413) — docs: add app update notification implementation plan
+- 2026-08-17 [0e246dd3](https://github.com/rhpds/troshka/commit/0e246dd3bc60348976d17ac1d4ed2b5477759ed9) — fix(startup): run remote-I/O startup hooks off the lifespan path
+- 2026-08-17 [d8b756ab](https://github.com/rhpds/troshka/commit/d8b756abebccb7849f8f6261ca46f2f231fc87bd) — fix(dev-services): reliably clear stale/orphan backends, refuse duplicates
+- 2026-08-17 [665ab6f1](https://github.com/rhpds/troshka/commit/665ab6f1260c3ce678614e30a4674d7802f9d42b) — fix(app-update): auto-detect image-mode comparison tag per Deployment
+- 2026-08-17 [fd83164f](https://github.com/rhpds/troshka/commit/fd83164f3a30e50f0b21d6d86000d3d21881b577) — fix(app-update): surface apply failures and stop caching failure-derived mode
+- 2026-08-17 [70fbfc3c](https://github.com/rhpds/troshka/commit/70fbfc3c46cd449f6e5092fab9efbdd23b1384f5) — docs(update): document app update-notification subsystem
+- 2026-08-17 [305263a5](https://github.com/rhpds/troshka/commit/305263a5b08527943c75d0941d4a3fb8444334b6) — feat(update): admin update-available banner in layout
+- 2026-08-17 [f9b90252](https://github.com/rhpds/troshka/commit/f9b90252f9393a182ae6b750e011894375249bf1) — fix(update): scope self-update RBAC to named deployments, get/patch only
+- 2026-08-17 [827abebe](https://github.com/rhpds/troshka/commit/827abebe51b7748ea45c6730b4fc5738e68c73e8) — feat(update): RBAC + POD\_NAMESPACE for self rollout-restart
+- 2026-08-17 [a8671d6d](https://github.com/rhpds/troshka/commit/a8671d6d29fa1d27b1144c2abb76820b7a35d6ae) — feat(update): status + apply endpoints, startup wiring
+- 2026-08-17 [ef666996](https://github.com/rhpds/troshka/commit/ef6669961939b811350d9273c919cb97063c5745) — feat(update): dev-mode status + unified get\_status/apply\_update
+- 2026-08-17 [5841de1a](https://github.com/rhpds/troshka/commit/5841de1a3280216cfe723e7ff1850e5c790faedd) — fix(update): only trust manifest digest header, no config-blob fallback
+- 2026-08-17 [bbc83948](https://github.com/rhpds/troshka/commit/bbc839481b3d6edc0d6d84e9d37b00e129a4c7fa) — feat(update): image-mode digest snapshot + poller
+- 2026-08-17 [40b92f0f](https://github.com/rhpds/troshka/commit/40b92f0f973a7bc01efbf7745964659601ce31cc) — feat(update): app\_updater config + mode resolution
+- 2026-08-17 [f90d137d](https://github.com/rhpds/troshka/commit/f90d137de69deb2c0e099148852b6b70335211dc) — docs: design spec for app update notification banner
+- 2026-08-17 [983fa281](https://github.com/rhpds/troshka/commit/983fa28141bea577941a8f8335ce9691b8b84fdd) — fix(eip): light up Apply Changes on external-IP edits, show allocated IP
+- 2026-08-14 [712cf77d](https://github.com/rhpds/troshka/commit/712cf77de99bfaef2b69f29db3d28f6231f0b95e) — fix(central-sync): make synced central patterns deployable
+- 2026-08-14 [c0ea68b1](https://github.com/rhpds/troshka/commit/c0ea68b1be3cb87430e6db745d1fc53fac5e2279) — feat(ocpvirt): install host packages from central-S4 HTTP repo
+- 2026-08-14 [8d782163](https://github.com/rhpds/troshka/commit/8d7821632186c96e3086032f9b8026c4bf40f3e0) — chore: gitignore .claude/settings.json (local, not shared)
+- 2026-08-14 [a9d0250a](https://github.com/rhpds/troshka/commit/a9d0250a31789a188ec0539f5008451896aa8dc6) — feat(providers): add auto\_provision\_host flag to skip auto host on register
+- 2026-08-14 [0d238416](https://github.com/rhpds/troshka/commit/0d2384169a90eff2580a7ee133f6e6711bf39466) — fix(snapshots): resolve snapshot-sourced disks on KubeVirt deploy
+- 2026-08-14 [90bff605](https://github.com/rhpds/troshka/commit/90bff605ca65837aa8f0e1c3b4c4d3d2122bea9f) — feat(patterns): add share/unshare UI with public toggle + per-user sharing
+- 2026-08-14 [fc05939a](https://github.com/rhpds/troshka/commit/fc05939ad5090f761a0d954b89b5623fc4239947) — fix(snapshots): fail-fast on empty vm\_config; ram default 4 GB not 4096
+- 2026-08-14 [47cf18c5](https://github.com/rhpds/troshka/commit/47cf18c599a4538869919ab1cc3baea61e96027c) — fix(placement): diagnose CPU/RAM/pattern-disk failures; fix container bin-packing
+- 2026-08-14 [4e298cb4](https://github.com/rhpds/troshka/commit/4e298cb4a625358d7f25b539f733c1ff63a502d4) — fix(patterns): write PatternDisk.id into topology + full gold metadata
+- 2026-08-14 [f7ce0bd2](https://github.com/rhpds/troshka/commit/f7ce0bd2c84730e2e5ba33d372041b40b5ac5c21) — fix(patterns): carry disk source into reconfigure CR, clear stale centralSource, drop dead helper
+- 2026-08-14 [f31feb98](https://github.com/rhpds/troshka/commit/f31feb98257dc2f37139cdc44fed13b0a5bfbaca) — fix(tests): isolate pattern-table state without wiping shared test DB
+- 2026-08-14 [c3e23fd2](https://github.com/rhpds/troshka/commit/c3e23fd298f942e2efce038905e6786aba3ea1b0) — feat(patterns): one-time backfill of central PatternLocation rows
+- 2026-08-14 [ad959900](https://github.com/rhpds/troshka/commit/ad959900f340c610251a0f96032874cf935de9cd) — refactor(placement): SQLAlchemy 2.0 queries and extract pattern-storage helper
+- 2026-08-14 [f98eed3b](https://github.com/rhpds/troshka/commit/f98eed3b0c8236f4abbc3f886236e9980ea9c5ed) — feat(placement): filter to storage-ready clusters with distinct fail-fast messages
+- 2026-08-14 [f3fd6211](https://github.com/rhpds/troshka/commit/f3fd62110569aec662bc2aedc8e7896af47bce1c) — feat(operator): route pattern disks to OBC or central S4 by per-disk source
+- 2026-08-14 [c1c1a7fb](https://github.com/rhpds/troshka/commit/c1c1a7fba11132b0578fe8c80c1b96f6f067c8f2) — feat(deploy): PatternLocation-driven per-disk source selection with central pre-flight
+- 2026-08-13 [65ba7482](https://github.com/rhpds/troshka/commit/65ba7482b9add1ef2ae44ac23f850b7c57f8eb06) — feat(patterns): enqueue OBC-\>central sync on capture completion
+- 2026-08-13 [dfa76da2](https://github.com/rhpds/troshka/commit/dfa76da28f0c7a0c09c520a4a5f0172e7ec4d6bf) — refactor: hoist datetime import to module level in pattern\_sync
+- 2026-08-13 [ae6da4e3](https://github.com/rhpds/troshka/commit/ae6da4e3e7770c68a6903c9d271848a86eb02c64) — feat(patterns): add OBC-\>central sync worker with capacity guard
+- 2026-08-13 [e5904880](https://github.com/rhpds/troshka/commit/e590488043c10276262a35551f0d0f50024f4abf) — refactor: port pattern\_locations to SQLAlchemy 2.0 select() style
+- 2026-08-13 [bc9473df](https://github.com/rhpds/troshka/commit/bc9473dfd22ec550ed2acc1a4b2764d6f7d8726a) — feat(patterns): add readiness predicate and source-selection helpers
+- 2026-08-13 [9df1843c](https://github.com/rhpds/troshka/commit/9df1843c8fd9fb2a244c7868ad45d506eea9ea6e) — feat(patterns): add location\_type and nullable provider\_id to PatternLocation
+- 2026-08-13 [62c25536](https://github.com/rhpds/troshka/commit/62c25536a7926b7fc1ae3359331b272c8588b9d8) — docs: implementation plan for pattern storage availability
+- 2026-08-13 [76c1860f](https://github.com/rhpds/troshka/commit/76c1860f89ee33661444cd2b36e0ac43d7b48f59) — docs: design spec for pattern storage availability (sync/placement/deploy)
+- 2026-08-13 [456f7b30](https://github.com/rhpds/troshka/commit/456f7b307a796a8135708a827df7bcd37bc8ece4) — fix: sync KubeVirt MetalLB EIP capacity and exclude clusters from mesh
+- 2026-08-13 [f2b3fa4c](https://github.com/rhpds/troshka/commit/f2b3fa4c1994c95b6cfedbbd65b3c9af41264232) — fix: update stale tests for Python 3.13 compatibility
+- 2026-08-13 [2331cdee](https://github.com/rhpds/troshka/commit/2331cdeeaba339d5cea6e4097ea8d64bd8218f16) — fix: align CI on Python 3.13 and fix stale capture test
+- 2026-08-13 [84229a9a](https://github.com/rhpds/troshka/commit/84229a9a31af9d44c55096a5c188922033e601ba) — fix: clean per-cluster RGW storage on pattern delete
+- 2026-08-12 [6fdebc2b](https://github.com/rhpds/troshka/commit/6fdebc2bdac9f12484c4fb0dd5f838eba9c28707) — fix: restore DISK\_SIZE\_BYTES echo for size tracking in captured disks
+- 2026-08-12 [fc8ed7ed](https://github.com/rhpds/troshka/commit/fc8ed7ed06f326d78d13ee4b066103d5ec01b00a) — fix: parse rclone stats-one-line format for upload progress
+- 2026-08-12 [2a662ea3](https://github.com/rhpds/troshka/commit/2a662ea33b0457da1a4be3851c88fcc36689a898) — fix: rclone chunk size is 256M not 256MB
+- 2026-08-12 [a97359b7](https://github.com/rhpds/troshka/commit/a97359b7e1b1386778d370d5bb9614c4f025486a) — fix: set CR phase to Active (not Capturing) so operator handler fires
+- 2026-08-12 [cbd55eb0](https://github.com/rhpds/troshka/commit/cbd55eb01833746f4ffbfd43b13f4a8bd258bf2c) — fix: clear stale CR capture status before starting new capture
+- 2026-08-12 [e5fc62d9](https://github.com/rhpds/troshka/commit/e5fc62d905d91920f9aeb17307281765a79cde78) — fix: add imagePullPolicy Always to export jobs
+- 2026-08-12 [c44a0d36](https://github.com/rhpds/troshka/commit/c44a0d3678ebb1919e3289044d2cda50e3a00d24) — fix: add 20% overhead to scratch PVC for qcow2 conversion
+- 2026-08-12 [e90f6276](https://github.com/rhpds/troshka/commit/e90f6276af2e95c29de6ebcd408918eaf4ea96e2) — fix: replace bc with shell arithmetic, inline progress writes in subshells
+- 2026-08-12 [b0b6c2d3](https://github.com/rhpds/troshka/commit/b0b6c2d3902be48d726c4dd556a6f5533d7978c7) — fix: read capture progress from pod logs instead of exec
+- 2026-08-12 [59670c2f](https://github.com/rhpds/troshka/commit/59670c2f52206b15e8d6296192828e80d771d6dc) — fix: log exec errors in \_read\_job\_progress instead of silencing
+- 2026-08-12 [1206ab6c](https://github.com/rhpds/troshka/commit/1206ab6ce64b2b564c4950c9fd4ebce336e91e1b) — fix: rename operator.py to main.py to avoid shadowing Python's operator stdlib
+- 2026-08-12 [c18c2af6](https://github.com/rhpds/troshka/commit/c18c2af6f745f65d055a6f6d9cd78ed1fa15cad8) — fix: track convert progress via file size, upload via rclone log
+- 2026-08-12 [4b116fd5](https://github.com/rhpds/troshka/commit/4b116fd5c2598a846bb2f453ac3e6287d5f5ffb4) — fix: use DB check instead of Redis progress for capture cancel detection
+- 2026-08-12 [8da94621](https://github.com/rhpds/troshka/commit/8da946212cac0f4ed9834fad34baf7c7e6f001e9) — fix: remove deploy\_error references from Pattern (attribute doesn't exist)
+- 2026-08-12 [471c3ac5](https://github.com/rhpds/troshka/commit/471c3ac552d9d2abdeb034c20b0466dd44baf376) — fix: release DB transaction before capture poll to unblock cancel
+- 2026-08-12 [0a2207b0](https://github.com/rhpds/troshka/commit/0a2207b0d3ab3dc42ebaaa9bf6c626b7109ef1d9) — fix: cancel support for KubeVirt captures
+- 2026-08-12 [f54fccf1](https://github.com/rhpds/troshka/commit/f54fccf124c8a98953dc765446210a9d924502af) — feat: rclone for export uploads, fix capture progress display
+- 2026-08-12 [5a772b53](https://github.com/rhpds/troshka/commit/5a772b532673e5ce6ac1d98477da1b6622bb1bca) — fix: use correct provider type 'kubevirt', remove S4 fallback for captures
+- 2026-08-12 [2d5a8951](https://github.com/rhpds/troshka/commit/2d5a89516ba0cdbd383faa499567cda5d32a7851) — fix: add objectbucket.io RBAC for OBC management in operator
+- 2026-08-12 [99c2a93e](https://github.com/rhpds/troshka/commit/99c2a93eb078b97521f5f95a2bc8ad1050005121) — fix: load in-cluster kubeconfig in operator startup handler
+- 2026-08-12 [eb8fc716](https://github.com/rhpds/troshka/commit/eb8fc7165f5f56bc115db4bab106aedeef0efdd3) — fix: rename migration to avoid revision ID collision with a1b2c3d4e5f6
+- 2026-08-12 [e6403547](https://github.com/rhpds/troshka/commit/e640354758a71e3e34fb5c0f875508a7b9cab3bf) — feat: pattern capture v2 — design spec and implementation plan
+- 2026-08-12 [e1c66ba0](https://github.com/rhpds/troshka/commit/e1c66ba0df31bc20f03ec63b1d69ad28046e631e) — Merge pull request #10 from rhpds/worktree-pattern-capture-v2
+- 2026-08-12 [34786e8e](https://github.com/rhpds/troshka/commit/34786e8eb6f457281ad49b1436192fe1e01690b6) — fix: correct rclone download URL (no /current/ path) and fail on HTTP errors
+- 2026-08-12 [73aba5ba](https://github.com/rhpds/troshka/commit/73aba5bacebae26553b5c2b48cf178390e879be2) — Merge pull request #9 from rhpds/worktree-pattern-capture-v2
+- 2026-08-12 [fa4f6c33](https://github.com/rhpds/troshka/commit/fa4f6c3362fc240d443e7dfb2bfed0aa155f78aa) — feat: pattern capture v2 phase 1 — local RGW capture and deploy
+- 2026-08-12 [ed848e17](https://github.com/rhpds/troshka/commit/ed848e17d90d4dd280ecf7e767bcfbe3f0c740d1) — refactor: progress via scratch file + exec instead of log parsing
+- 2026-08-12 [7d96df6f](https://github.com/rhpds/troshka/commit/7d96df6f558898c164d08838e74217835e4821b4) — fix: increase job deadline to 90s/GB (was 15s/GB) — uploads at 15MiB/s need more time
+- 2026-08-12 [bbc6d48e](https://github.com/rhpds/troshka/commit/bbc6d48e6db5eb692e297d70698fa785d9d128f1) — fix: split on \\r for aws upload progress, regex for Completed X/Y parsing
+- 2026-08-12 [f6bdda27](https://github.com/rhpds/troshka/commit/f6bdda272b6e5f4eae64debd7fcb996bea5f5ba2) — fix: check Job Failed condition instead of failure count \>= 3
+- 2026-08-11 [82546a18](https://github.com/rhpds/troshka/commit/82546a18da17c4465af6c5e7a2f9ff0ce586b362) — fix: scale worker poll timeout to disk size (30s per GB, was fixed 45 min)
+- 2026-08-11 [5c3ca2be](https://github.com/rhpds/troshka/commit/5c3ca2be9585bba40545151e22dfd0474d423ce7) — feat: parse aws s3 cp upload progress (Completed X/Y) for UI display
+- 2026-08-11 [49420e49](https://github.com/rhpds/troshka/commit/49420e490056f5f1c2073d49bd6689a8d80dfb10) — fix: pipe qemu-img progress through tr to convert \\r to \\n for clean log lines
+- 2026-08-11 [c288bd2f](https://github.com/rhpds/troshka/commit/c288bd2ff322a2a5b780d874ec69765c7c4a4fdf) — fix: read full log from running pod, not tail of first pod
+- 2026-08-11 [e233d107](https://github.com/rhpds/troshka/commit/e233d1074bd12154026e5855d8dc226ccf7c2f41) — refactor: extract S3 upload config to constants
+- 2026-08-11 [d6c7b48a](https://github.com/rhpds/troshka/commit/d6c7b48a4102c51aed0ea5354cf1622cb519ad9a) — fix: CI change detection compares full push range, not just HEAD~1
+- 2026-08-11 [4700c4c7](https://github.com/rhpds/troshka/commit/4700c4c75c174118a4c7aa1c4c0e83e81f4881d4) — ci: retrigger operator build
+- 2026-08-11 [5a16aa25](https://github.com/rhpds/troshka/commit/5a16aa25ae8510cd72491175c0b1c56b80d57e88) — fix: write aws config to /tmp instead of /.aws (read-only as UID 107)
+- 2026-08-11 [f49ac2dc](https://github.com/rhpds/troshka/commit/f49ac2dc74f56d89c20053cb8548c78a8fd16fb5) — fix: log failed export pod output before cleanup deletes them
+- 2026-08-11 [06f3fe96](https://github.com/rhpds/troshka/commit/06f3fe9696293d7c1c94940520c8da6f59c859da) — fix: disable Create Project, Bulk Deploy, Export buttons for errored patterns
+- 2026-08-11 [429075d4](https://github.com/rhpds/troshka/commit/429075d48dbbe0c5ded1d6d2d706ae3b8e81376a) — infra: S4 resources 2-8 CPU, 8-32Gi RAM for concurrent pattern uploads
+- 2026-08-11 [1da1b2d9](https://github.com/rhpds/troshka/commit/1da1b2d90aeb0c01af756367396638805b8f4868) — infra: increase S4 memory to 8Gi for concurrent multipart uploads
+- 2026-08-11 [75f64937](https://github.com/rhpds/troshka/commit/75f6493708c618d192d28124aac4a4696b5e20d7) — perf: increase S3 upload chunk size to 64MB and concurrency to 20
+- 2026-08-11 [f60b27d2](https://github.com/rhpds/troshka/commit/f60b27d24f74ec2be4e3f384497a08f6b6cf35b5) — fix: parse \\r carriage returns in qemu-img progress logs
+- 2026-08-11 [8f853524](https://github.com/rhpds/troshka/commit/8f853524080843b8b20f9f7012aca3e1030712fa) — fix: delete stale export jobs before creating new ones
+- 2026-08-11 [32c1b67e](https://github.com/rhpds/troshka/commit/32c1b67eeee5a33f4d4aade4f9fa4eb0d7a67629) — fix: remove readOnly from export disk mount so fsGroup can apply
+- 2026-08-11 [e404f249](https://github.com/rhpds/troshka/commit/e404f249aa1bee7ddc3f73d233a0d62c929b8354) — fix: add fsGroup 107 alongside runAsUser for scratch PVC write access
+- 2026-08-11 [9fb91d3d](https://github.com/rhpds/troshka/commit/9fb91d3d9dde799ab4fe245694733a9f1fdaa319) — fix: export pods use troshka-export SA with runAsUser 107
+- 2026-08-11 [1aed4b9f](https://github.com/rhpds/troshka/commit/1aed4b9f9cd8119179b6bf6c8fb97bb4a5ce1052) — chore: remove unused \_setup\_export\_sa
+- 2026-08-11 [1b3d569c](https://github.com/rhpds/troshka/commit/1b3d569cca3cf5ddf05d6686b46b281584c4b5fa) — fix: use runAsUser/runAsGroup 107 instead of fsGroup for export pods
+- 2026-08-11 [845006ec](https://github.com/rhpds/troshka/commit/845006ec79913eec0049e43a8b3da34bbc725a29) — fix: clear capture-request annotation after capture completes or fails
+- 2026-08-11 [60930394](https://github.com/rhpds/troshka/commit/609303945735de7c0f8569db7b24c16fc5ea2e2e) — fix: dedicated troshka-export SA for pattern export jobs
+- 2026-08-11 [ebbd764a](https://github.com/rhpds/troshka/commit/ebbd764ae14a420612a8121185043c8e6757d852) — fix: export jobs need troshka-recert SA for fsGroup SCC access
+- 2026-08-11 [ab5862b8](https://github.com/rhpds/troshka/commit/ab5862b847726b0d4d462ae1015e3af5c1088ea1) — fix: add fsGroup 107 (qemu) to export pods, show disk list immediately
+- 2026-08-11 [d10aba06](https://github.com/rhpds/troshka/commit/d10aba069e7e9f5a12821cc6b5f9d146547b946d) — feat: PVC scratch, per-disk progress percentage, human-readable names
+- 2026-08-11 [88c747cb](https://github.com/rhpds/troshka/commit/88c747cb7bc6182424b175b910af810cfea9c09f) — fix: patch CR status directly during capture for real-time progress
+- 2026-08-11 [83e89f88](https://github.com/rhpds/troshka/commit/83e89f88f6f0ff8c34bec66a2f0d9b3667a4efa6) — fix: stop VMs only when user opts in, normalize bmcIp in deployed topology
+- 2026-08-11 [8963859b](https://github.com/rhpds/troshka/commit/8963859b790be5bd173fdadc4890cacc67d67d5b) — fix: only stop VMs during capture when user explicitly opts in
+- 2026-08-11 [8817a119](https://github.com/rhpds/troshka/commit/8817a119a7a16b64cdb597f15f84c654f274b181) — fix: use snapshot restoreSize for temp PVC to prevent provisioning failure
+- 2026-08-11 [bccdb4b6](https://github.com/rhpds/troshka/commit/bccdb4b6e07249fd04f31aa0d3242c6f86102ea5) — feat: pattern save modal closes immediately, progress shows on patterns page
+- 2026-08-11 [ca137196](https://github.com/rhpds/troshka/commit/ca137196bf0d710331e67d09adb294112172cbb5) — fix: pattern capture timeout silently reports success without uploads
+- 2026-08-10 [04a97209](https://github.com/rhpds/troshka/commit/04a972093829a002442a5829a3249105c26e388f) — fix: resolve 3 SonarQube issues in wipe disk endpoints
+- 2026-08-09 [eb2cd03e](https://github.com/rhpds/troshka/commit/eb2cd03ed0f6f634198468a65091b61b426ceecc) — fix: wait for VM pod termination before marking wipe done
+- 2026-08-09 [eb283ac3](https://github.com/rhpds/troshka/commit/eb283ac3f778e431ce73d6b3a00e5ee93dffe0cd) — security: add auth to wipe-status endpoint, use .get() for in-progress
+- 2026-08-09 [f12d17d1](https://github.com/rhpds/troshka/commit/f12d17d16998e02ca55fccc208ef8a99a7ac356f) — feat: wipe-status endpoint for async wipe progress tracking
+- 2026-08-09 [d96c0ed8](https://github.com/rhpds/troshka/commit/d96c0ed87ea471f9d4102957e8ed97d55397797e) — fix: wipe modal tracks full restart cycle when checkbox is checked
+- 2026-08-09 [ea1b72d8](https://github.com/rhpds/troshka/commit/ea1b72d8abe080d63202d1c0a0cd49600a46b268) — fix: wipe modal waits for full running→stopped cycle
+- 2026-08-09 [5076bd64](https://github.com/rhpds/troshka/commit/5076bd6434287f69c15af1509df5c01a1a739432) — feat: wipe disk modal shows progress while async wipe runs
+- 2026-08-09 [1723c0ef](https://github.com/rhpds/troshka/commit/1723c0ef53204c7f7ec3751f889039e154ed8b97) — fix: wipe disk message reflects async operation
+- 2026-08-09 [06e3b9bf](https://github.com/rhpds/troshka/commit/06e3b9bfc7639125c90807b48f43288aeb211e44) — fix: make KubeVirt disk wipe async to avoid proxy timeout
+- 2026-08-09 [056575a6](https://github.com/rhpds/troshka/commit/056575a6654629be753706def546d296e9a56fdc) — fix: remove unused was\_running variable in KubeVirt wipe
+- 2026-08-09 [1624cafd](https://github.com/rhpds/troshka/commit/1624cafd3f619680b2d96b7e37cab21b4fb65ce7) — fix: force-off VMs on KubeVirt wipe — delete VMI instead of graceful
+- 2026-08-09 [07708579](https://github.com/rhpds/troshka/commit/07708579e214d751dc9e3f53da6a294de36ca324) — fix: KubeVirt wipe restart — dd/stop/start cycle
+- 2026-08-09 [493a703b](https://github.com/rhpds/troshka/commit/493a703b733b9547d6ec4557972a46e81d3521b8) — fix: KubeVirt wipe — correct pod label selector and modal text
+- 2026-08-09 [e94d35aa](https://github.com/rhpds/troshka/commit/e94d35aaca912d2f17b7847707390605a2f7ac09) — fix: KubeVirt wipe auto-starts stopped VMs, preserves running state
+- 2026-08-09 [400f2a4f](https://github.com/rhpds/troshka/commit/400f2a4f15d4f7fd2c1fae6e7794e40193af399d) — feat: implement KubeVirt disk wipe via virt-launcher exec
+- 2026-08-09 [335cac93](https://github.com/rhpds/troshka/commit/335cac937569d3f9409bc5c8effdbcaada363a0e) — feat: add Wipe Disk button for storage nodes in canvas
+- 2026-08-09 [6d0ec59c](https://github.com/rhpds/troshka/commit/6d0ec59c809372efe31274bce63e4eeff71447c5) — refactor: clean up BMC — remove BootNext, keep disk-first + rebootPolicy
+- 2026-08-07 [c745aac2](https://github.com/rhpds/troshka/commit/c745aac21c88d92e78247f90f25576e0933d041f) — fix: BootNext pod SCC — add BMC SA to troshka-privileged-jobs
+- 2026-08-07 [a0b15a06](https://github.com/rhpds/troshka/commit/a0b15a06a6d25352d5f4d2aad56f5a973c89a142) — fix: BootNext pod needs root to read qemu-owned NVRAM file
+- 2026-08-07 [b3d4e463](https://github.com/rhpds/troshka/commit/b3d4e4637d547e155c5bb9547096f4aa6fc21e3c) — security: restrict BootNext pod security context
+- 2026-08-07 [bc6b24da](https://github.com/rhpds/troshka/commit/bc6b24da6f6fd0620c99aaf8153e297765f81b53) — fix: wait for VMI termination before BootNext pod creation
+- 2026-08-07 [fb3bad1f](https://github.com/rhpds/troshka/commit/fb3bad1f2b7f386e55c5c2ef9831dd69ff7a39ee) — fix: grant BMC service account permission to create pods
+- 2026-08-07 [d8b462a9](https://github.com/rhpds/troshka/commit/d8b462a9021779ccb5a626713fc8657dfeedff1f) — fix: add logging to BMC BootNext flow for debugging
+- 2026-08-07 [40c35149](https://github.com/rhpds/troshka/commit/40c35149ffa432ff7c441f33f7bdce78bb26f457) — fix: find NVRAM PVC by searching namespace PVCs directly
+- 2026-08-07 [578bd77e](https://github.com/rhpds/troshka/commit/578bd77e2082a9812f50f1c371968b5995c91abb) — fix: restore disk-first boot order alongside BootNext
+- 2026-08-07 [2cf24337](https://github.com/rhpds/troshka/commit/2cf243376e6d998ba792b10f6aac2e51cf0e0307) — fix: find persistent-state NVRAM PVCs for BootNext
+- 2026-08-07 [703fbd2d](https://github.com/rhpds/troshka/commit/703fbd2d70284bf6ceae1ee1c178ceafd8547cb4) — fix: BMC uses UEFI BootNext for one-time CD boot
+- 2026-08-07 [cfaad130](https://github.com/rhpds/troshka/commit/cfaad130c60e345b0daa227d87317dcaed8a25a8) — fix: BMC wipes disk boot sectors on InsertVirtualMedia
+- 2026-08-07 [6ee8f093](https://github.com/rhpds/troshka/commit/6ee8f0932500a8d0fdc27d82b68427d88ea2fb8c) — fix: BMC boot order — disk first, CDROM second for guest reboot
+- 2026-08-07 [ecb5676a](https://github.com/rhpds/troshka/commit/ecb5676a379a83984ef35ca43ff086b41009bd58) — docs: add troshka-for-rhdp-developers guide
+- 2026-08-07 [d9120d08](https://github.com/rhpds/troshka/commit/d9120d08150c94b3dcc5f4231f302c09c56f6e06) — docs: split oversized CLAUDE.md into docs/dev/ topic references
+- 2026-08-06 [3e6ff9a0](https://github.com/rhpds/troshka/commit/3e6ff9a0077993fa3e146b68c51d42c9b6a12d54) — fix: reduce cognitive complexity in \_find\_disk\_for\_controller (S3776)
+- 2026-08-06 [c4a27740](https://github.com/rhpds/troshka/commit/c4a27740be702c008b22ed8b4795f37afe49f6af) — chore: remove SonarQube pre-push hook — too slow, runs in CI instead
+- 2026-08-06 [243a6bb7](https://github.com/rhpds/troshka/commit/243a6bb7e4b4a4bbe0c4e9ffe6a28afc70f86ced) — fix: add extra time.time() mock values for Python 3.11 CI compatibility
+- 2026-08-06 [d7ec53d3](https://github.com/rhpds/troshka/commit/d7ec53d33c62b1d1d2df405ecd3c208e09e890f6) — feat: add rotation\_rate UI for virtio-scsi SSD presentation
+- 2026-08-06 [52078202](https://github.com/rhpds/troshka/commit/52078202c2d741be49bba136fceecfb8514bb98c) — chore: remove .scannerwork from git tracking
+- 2026-08-06 [74c40e33](https://github.com/rhpds/troshka/commit/74c40e3341729f35b5af698b059a201832856fc7) — fix: add 180s timeout to SonarQube pre-push hook
+- 2026-08-06 [81343793](https://github.com/rhpds/troshka/commit/81343793552188f3ee70954d9d95acdc1e9c93bb) — test: add 1785 tests — coverage 62% to 82%
+- 2026-08-06 [cbacfdc9](https://github.com/rhpds/troshka/commit/cbacfdc9f36346a50f5ce1b23b71ebc971f679a7) — fix: resolve 7 accepted SonarQube issues in troshkad
+- 2026-08-06 [ef8f6b45](https://github.com/rhpds/troshka/commit/ef8f6b4506489aef56fcef303340fd88ac1a77dd) — fix: resolve final 5 SonarQube violations — 1012 to 0
+- 2026-08-06 [f4d46aeb](https://github.com/rhpds/troshka/commit/f4d46aebda53b41219e72236f81a834ffe6fbc97) — refactor: resolve remaining 80 SonarQube violations — 79 to 5
+- 2026-08-06 [2399f6ae](https://github.com/rhpds/troshka/commit/2399f6ae6e084335666ea83cc8efe419a21107e7) — refactor: resolve 933 SonarQube violations — 1012 to 79
+- 2026-08-06 [241fda98](https://github.com/rhpds/troshka/commit/241fda98ff69e81ff7d1a421720c8c2d03dc6c85) — fix: resolve remaining 20 SonarQube violations with tests
+- 2026-08-06 [d389cf6b](https://github.com/rhpds/troshka/commit/d389cf6bc17b5fc467a94d1f4f1d51b6aae5a60a) — test: add 44 deploy\_service tests — coverage 81% to 84%
+- 2026-08-06 [a49ccfa8](https://github.com/rhpds/troshka/commit/a49ccfa892af7260cb0f4b9c1461e96a81038c68) — test: add operator\_updater coverage tests — fetch digest, poll, get info
+- 2026-08-06 [da52c26e](https://github.com/rhpds/troshka/commit/da52c26e7652f70cd488f0788448b147d1b98360) — test: add 6 more ws\_pubsub tests to cross 80% coverage threshold
+- 2026-08-06 [966372c4](https://github.com/rhpds/troshka/commit/966372c488f5ed678b554a2a8451b66159f2da55) — test: add ws\_pubsub coverage tests for final push to 80%
+- 2026-08-06 [595cc362](https://github.com/rhpds/troshka/commit/595cc3620a188937d1ce343e776cca8e9d2db88a) — test: add 128 more coverage tests + fix users.py HTTPException docs
+- 2026-08-06 [ff1a1f15](https://github.com/rhpds/troshka/commit/ff1a1f154c7d1b3a0f465862a993250c38a8f65e) — fix: resolve all remaining SonarQube violations + coverage boost
+- 2026-08-06 [60fca274](https://github.com/rhpds/troshka/commit/60fca2748886e407aaeee8c5d4b708569f503ed4) — fix: resolve final complexity violations + add 119 more coverage tests
+- 2026-08-06 [94ae22ae](https://github.com/rhpds/troshka/commit/94ae22ae6b9ed17dc302e7821f7dd48b77c2050f) — test: add 204 tests for deploy\_service, projects API, and operator coverage
+- 2026-08-05 [313767d6](https://github.com/rhpds/troshka/commit/313767d63f5e8e85e8a8090711a9d5afa4cd3212) — fix: resolve last 3 cognitive complexity violations in deploy\_service.py
+- 2026-08-05 [ab428d49](https://github.com/rhpds/troshka/commit/ab428d490289302de5ff2fe2a7ca0d5784725f7b) — fix: resolve remaining 16 SonarQube violations
+- 2026-08-05 [3d204ccf](https://github.com/rhpds/troshka/commit/3d204ccfc466b574e1a979f670f21dfc2845428f) — refactor: reduce cognitive complexity across all flagged functions
+- 2026-08-05 [3af1fba5](https://github.com/rhpds/troshka/commit/3af1fba5e4e5b054c0ec11f19a166ff456c8f30e) — fix: resolve SonarQube violations — unused vars, string constants, async task GC
+- 2026-08-05 [18725751](https://github.com/rhpds/troshka/commit/18725751c43a0b775e12e73165af98c5a6e8d9a9) — fix: update troshkad and operator tests to match current source code
+- 2026-08-05 [7ed683f4](https://github.com/rhpds/troshka/commit/7ed683f4b3f53a173a859aa86a86151516525e79) — test: add deploy\_topology tests — 100% coverage on extracted module
+- 2026-08-05 [e965d883](https://github.com/rhpds/troshka/commit/e965d8833579d64dc8976c109530e9817cdc098b) — refactor: extract deploy\_topology.py + add placement/worker tests for SonarQube coverage
+- 2026-08-05 [40edb3d8](https://github.com/rhpds/troshka/commit/40edb3d8b13b729505b3323af9d18cbcd79fbb74) — fix: deploy script finds BMC/dnsmasq pods + waits for correct CI run
+- 2026-08-05 [e32dac12](https://github.com/rhpds/troshka/commit/e32dac129a711f7d05da56ca28eed1d2c4d3956c) — fix: restart VMI on boot order change — KubeVirt can't update running VMs
+- 2026-08-04 [d1ea8429](https://github.com/rhpds/troshka/commit/d1ea8429d532223e1315b892b29e521cf196cfd3) — fix: BMC eject boot order + add SMBIOS UUID duplicate modal
+- 2026-08-04 [968b4529](https://github.com/rhpds/troshka/commit/968b45296967ace50b3ca5cedb70aa742b9d5bba) — docs: add Multi-Host Network Mesh section to CLAUDE.md
+- 2026-08-04 [e3ab27e0](https://github.com/rhpds/troshka/commit/e3ab27e00e93246f94893478ccdedad61b4a700e) — fix: clean up stale domains before multi-host VM creation — prevents virt-install conflicts
+- 2026-08-04 [b6475313](https://github.com/rhpds/troshka/commit/b64753135734d4e4b623fcb9cf1e85b7392bf20f) — fix: unflatten host\_assignments in \_deploy\_multihost — was iterating vm\_ids as host\_ids
+- 2026-08-04 [303e01ff](https://github.com/rhpds/troshka/commit/303e01ff23667a902f0579fd1cc7550a27f59348) — fix: sync host capacity before multi-host placement — stale values caused false 'no capacity'
+- 2026-08-04 [07fcfb03](https://github.com/rhpds/troshka/commit/07fcfb036b68e1dc914046c8ad259ed7605058cd) — fix: flatten host\_assignments to {vm\_id: host\_id} before storing — poller expects this format
+- 2026-08-04 [73ac35af](https://github.com/rhpds/troshka/commit/73ac35aff20bb4b5345ac74cb1166dc600d1d2de) — fix: anti-affinity auto-finds pool with 2+ hosts, errors clearly if none available
+- 2026-08-04 [d7277aab](https://github.com/rhpds/troshka/commit/d7277aab29e993d98a2caaa760be4165942fd592) — fix: anti-affinity as group name instead of boolean — consistent with affinity
+- 2026-08-04 [765ca211](https://github.com/rhpds/troshka/commit/765ca21116e11f43f2fa4a2bfb0b5289c16acca3) — feat: anti-affinity (separateHost) — forces VMs onto different hosts regardless of capacity
+- 2026-08-04 [a5fd517d](https://github.com/rhpds/troshka/commit/a5fd517de2d8b3a5551892cf93198dcb4009802e) — fix: log vncd update failures instead of silently swallowing
+- 2026-08-04 [af875cda](https://github.com/rhpds/troshka/commit/af875cda52a54ff117bbfe66011dc40033c9788e) — fix: remove session lock from /ws/ path — troshkad allows multiple console viewers
+- 2026-08-04 [67c2889b](https://github.com/rhpds/troshka/commit/67c2889b3f6fd6cd1e8b36938c0c149289989100) — feat: skip console pre-flight for troshkad hosts — only pre-flight kubevirt
+- 2026-08-04 [3557bdee](https://github.com/rhpds/troshka/commit/3557bdeee47aa1a8def11a9de84bb48486021f02) — fix: treat vncd close code 4000 as 'ok' in pre-flight check
+- 2026-08-04 [2c8ea8cf](https://github.com/rhpds/troshka/commit/2c8ea8cf5ae2dd6c6cd3691ce91a223bbf33177e) — fix: use /check/ path for pre-flight instead of query param — websockets strips query string
+- 2026-08-04 [06fea7e2](https://github.com/rhpds/troshka/commit/06fea7e2ac38010d6c5799094640c36fa2409d10) — feat: affinity group field in VM properties panel
+- 2026-08-04 [69cd80eb](https://github.com/rhpds/troshka/commit/69cd80ebebc3a81108ea376644eee5897f46c1d9) — feat: console pre-flight check without consuming token — vncd ?check=1 + session tracking
+- 2026-08-04 [dd6f5651](https://github.com/rhpds/troshka/commit/dd6f5651d807b7b7d52daf61a894abcf33af6ed3) — fix: cleanup — remove unused logger/var, fix empty string fallback, remove coverage files
+- 2026-08-04 [f39f62bf](https://github.com/rhpds/troshka/commit/f39f62bfa698d9375e5b2a38c36ee54b9fbd59f4) — feat: provider selector in deploy dropdown + fix mesh teardown query param parsing
+- 2026-08-04 [91c9f225](https://github.com/rhpds/troshka/commit/91c9f2259d7da15ca910b10df077cc0c964f9c98) — fix: fetch separate tokens for pre-flight and noVNC — preserves session-in-use detection
+- 2026-08-04 [e275ce65](https://github.com/rhpds/troshka/commit/e275ce6546c40042b4a3797614290287a5b7c5a8) — fix: skip pre-flight WebSocket check — it consumes single-use JWT token
+- 2026-08-04 [de69cf25](https://github.com/rhpds/troshka/commit/de69cf250fc9c7ff0831769bbfdcf84ba7e16045) — fix: add FDB entries after moving VXLAN to namespace — move clears host-ns FDB
+- 2026-08-04 [8ec9bc7e](https://github.com/rhpds/troshka/commit/8ec9bc7ecf4f80865be7303dd8ae2867f2b1b7ea) — fix: filter topology per host for seed ISOs and VM start — prevents cross-host errors
+- 2026-08-04 [b40df15e](https://github.com/rhpds/troshka/commit/b40df15e77fbdf6a73328d6f73b4734adb072798) — feat: multi-host VM deployment — reuse existing per-VM functions across hosts
+- 2026-08-04 [7bdbb6a3](https://github.com/rhpds/troshka/commit/7bdbb6a34f98a3bc2752ebf8e3322fd97622949b) — fix: \_deploy\_multihost must also use private\_ip for mesh endpoints
+- 2026-08-04 [b71d74ca](https://github.com/rhpds/troshka/commit/b71d74cae1ac66c25d22624e73963564c9a0a1cb) — fix: use private\_ip for mesh when hosts share a storage pool
+- 2026-08-04 [74611ba7](https://github.com/rhpds/troshka/commit/74611ba758e67344edada7ca263f5e5341a10788) — fix: use private\_ip for WireGuard endpoints — public IPs don't carry UDP on OCP Virt
+- 2026-08-04 [9034b7ea](https://github.com/rhpds/troshka/commit/9034b7eaff5237ec9cee1caddddd80ebe70012b9) — fix: frontend crash on multi-host deploy response — data.requirements undefined
+- 2026-08-04 [99992110](https://github.com/rhpds/troshka/commit/999921101bfa14666c1fe911c33c849e2ecd0050) — fix: set state=deploying for multi-host deploy path
+- 2026-08-04 [ad6d9ff4](https://github.com/rhpds/troshka/commit/ad6d9ff4a1de6e3c5bf127697ff7e363493ddbc3) — fix: multi-host deploy response — KeyError on missing host\_id
+- 2026-08-04 [eb23b71b](https://github.com/rhpds/troshka/commit/eb23b71b24c5d8de55f558f915eb2679f7762bef) — fix: clear deploy\_error at start of new deploy — stale errors persisted in UI
+- 2026-08-04 [fb7ec1ac](https://github.com/rhpds/troshka/commit/fb7ec1ac070d7786d358c86b2f4a180230abc2c7) — fix: pass provider\_id to single-host placement — was ignoring project provider
+- 2026-08-04 [1185f876](https://github.com/rhpds/troshka/commit/1185f8768d0a619552d4195760dcd58101a4df5a) — fix: cache snapshot disks before deploy — new hosts lack cached snapshots
+- 2026-08-04 [f2d3296e](https://github.com/rhpds/troshka/commit/f2d3296eede339b11a078c1972b43b96607c4734) — fix: use ram (GB) field for placement, remove dnf conditional in agent install
+- 2026-08-04 [0937b89f](https://github.com/rhpds/troshka/commit/0937b89f5638809320b9a44ec29f86359e7fa2f2) — fix: always run dnf install — conditional skipped new packages on reinstall
+- 2026-08-04 [d2ec76c9](https://github.com/rhpds/troshka/commit/d2ec76c98a17290b48d0021c619ba31d0f1b1996) — feat: affinity\_group support in template YAML import/export
+- 2026-08-04 [c73ed6d8](https://github.com/rhpds/troshka/commit/c73ed6d8bb489b494800e2f3e043bf3ff0d0098f) — feat: WireGuard UDP security group rules for all providers
+- 2026-08-04 [cf24a5c2](https://github.com/rhpds/troshka/commit/cf24a5c29dfea3f63cafe1b3066044a752acdf63) — feat: WireGuard health monitoring and host disconnect recovery
+- 2026-08-04 [0b4d8c95](https://github.com/rhpds/troshka/commit/0b4d8c95dad7ee07225723128fe9ac137f314fe2) — feat: multi-host state polling and console routing
+- 2026-08-04 [9e1017eb](https://github.com/rhpds/troshka/commit/9e1017eb7b7613e786f33424174a037dca60cfbc) — feat: multi-host project teardown
+- 2026-08-04 [cf1f56a5](https://github.com/rhpds/troshka/commit/cf1f56a50fb27f5c04896b0407222478ed6ba142) — feat: multi-host deploy orchestration with WireGuard mesh
+- 2026-08-04 [2c372152](https://github.com/rhpds/troshka/commit/2c372152b90b44b823676a5e6990e274b20e4055) — fix: use \_run\_cmd/subprocess.run instead of nonexistent \_run in mesh handlers
+- 2026-08-04 [33bf0e2c](https://github.com/rhpds/troshka/commit/33bf0e2cbfd6a17f4e40167fadb1948c83072350) — feat: troshkad mesh endpoints for WireGuard setup/teardown/status
+- 2026-08-04 [0580295f](https://github.com/rhpds/troshka/commit/0580295f1f44bfe5ed9c55d93be4b6107525d93b) — feat: multi-host bin-packing placement with affinity groups
+- 2026-08-04 [23f64cdc](https://github.com/rhpds/troshka/commit/23f64cdc95035e56519a4090808ea74ca73a1fa7) — fix: race condition in subnet allocation, add validation in mesh service
+- 2026-08-04 [59f481cf](https://github.com/rhpds/troshka/commit/59f481cf7ae365e6cd2f683ee2be446236b77c18) — feat: mesh service for WireGuard key generation and peer management
+- 2026-08-04 [f274be4b](https://github.com/rhpds/troshka/commit/f274be4b3672348a793414f5f5e212f5eaac1078) — fix: use datetime.datetime for created\_at type annotation
+- 2026-08-04 [f789ae6d](https://github.com/rhpds/troshka/commit/f789ae6df76522138a733dc72b90fa4d0602552a) — feat: add ProjectMeshPeer model and project mesh columns
+- 2026-08-03 [0300257d](https://github.com/rhpds/troshka/commit/0300257d0789feebf3dea01f86c7889e4a15e243) — feat: Force Connect kicks existing VNC session via /force/ path
+- 2026-08-03 [59ebc272](https://github.com/rhpds/troshka/commit/59ebc27200c94b8354862f1ba0c85950ffcdbe21) — fix: remove blocking wait from PowerOn — KubeVirt handles DV readiness
+- 2026-08-03 [8bf20629](https://github.com/rhpds/troshka/commit/8bf20629c590017c56824033b9ec25d15af1358f) — fix: pre-flight WebSocket check for VNC session (bypass broken k8s API proxy)
+- 2026-08-03 [c8d53ce8](https://github.com/rhpds/troshka/commit/c8d53ce8acd4d7f105c44fb497f894b863823be3) — fix: stop polling when console is in use (was overriding status and retrying)
+- 2026-08-03 [08075a18](https://github.com/rhpds/troshka/commit/08075a1894b4606eec626d392d1ac6133f8f020a) — fix: make InsertMedia async to avoid Ironic 60s timeout
+- 2026-08-03 [65c1b80e](https://github.com/rhpds/troshka/commit/65c1b80e76d7a27f7deb8cdaa571a3742631ee62) — fix: k8s API service proxy for VNC session check, named ports for multi-port Service
+- 2026-08-03 [bcbfed94](https://github.com/rhpds/troshka/commit/bcbfed9446f51a319beb6ec0cba710a2606d788c) — fix: restore proxy\_url variable dropped during refactor
+- 2026-08-03 [51d4e1b9](https://github.com/rhpds/troshka/commit/51d4e1b9783408316d5ab121d09bce71bf58ee6b) — fix: clean up stale DataVolume and CDROM before InsertMedia
+- 2026-08-03 [5875ec92](https://github.com/rhpds/troshka/commit/5875ec923a449ec078b472f37ebd5bd1434a6326) — feat: API-level VNC session gating with force-connect
+- 2026-08-03 [463ddcc7](https://github.com/rhpds/troshka/commit/463ddcc746b8c11a597efc36e988d15a3de73e3f) — fix: first-connection-wins for VNC proxy (no more supersede fighting)
+- 2026-08-03 [d20e741d](https://github.com/rhpds/troshka/commit/d20e741d8fc5829c79e3c574f8dce6126fb03777) — feat: add Redfish Manager and VirtualMedia endpoints to KubeVirt BMC
+- 2026-08-03 [84195497](https://github.com/rhpds/troshka/commit/84195497c708e5feb5fd76aa5d0c97aa559ea311) — fix: replace bash 4 associative array with indexed arrays in deploy-full.sh
+- 2026-08-03 [1ef5f560](https://github.com/rhpds/troshka/commit/1ef5f560da87026b933579f66a2b5111b0fa97e2) — fix: make BMC Redfish ServiceRoot accessible without authentication
+- 2026-08-03 [c51030c6](https://github.com/rhpds/troshka/commit/c51030c6efd2a86df0730fc6d74876e0707c67c5) — fix: detect Superseded close reason to stop VNC reconnect loop
+
+## 2026-07
+
+- 2026-07-31 [9baf5109](https://github.com/rhpds/troshka/commit/9baf5109513b7b460ed3418e345d5729a7b8a4ec) — fix: only restart stale per-project pods (digest comparison per role)
+- 2026-07-31 [656f24f2](https://github.com/rhpds/troshka/commit/656f24f2d1d3744643237fa1989beb03bb377aa4) — feat: deploy-full restarts per-project pods (vnc-proxy, dnsmasq, gateway, bmc)
+- 2026-07-31 [a2860698](https://github.com/rhpds/troshka/commit/a2860698001b7b0ec1edb690b961183f6ad18042) — fix: ArgoCD wait checks both backend and frontend digests
+- 2026-07-31 [f1f88c50](https://github.com/rhpds/troshka/commit/f1f88c50401ec40551a5ef280eea6ebab0b38a8c) — fix: clear pending reconnect timers on rate limit, set wsUrl null
+- 2026-07-31 [3afafa37](https://github.com/rhpds/troshka/commit/3afafa3753578a4260650f95a43dfdeffe51e235) — fix: use correct pod label selector for ArgoCD detection
+- 2026-07-31 [e5348eac](https://github.com/rhpds/troshka/commit/e5348eac531c7a100fe07790dd6d90a573f53cab) — fix: rate-limit console reconnects to stop flashing loop
+- 2026-07-31 [f4eafb67](https://github.com/rhpds/troshka/commit/f4eafb675b4ef1faba7a077bb5f1c93891682ab2) — fix: ArgoCD detection uses registry digest instead of before/after diff
+- 2026-07-31 [292f27d7](https://github.com/rhpds/troshka/commit/292f27d7f17dc8d8825a1e948bab5f6b90b17a0b) — fix: supersede mode for KubeVirt VNC proxy, stop reconnect on 4010
+- 2026-07-31 [ebcf21ab](https://github.com/rhpds/troshka/commit/ebcf21abc7dbea1edfedb7e8452a19008d0582bb) — fix: filter SetPixelFormat/SetEncodings from late-joining VNC clients
+- 2026-07-31 [68f65cf0](https://github.com/rhpds/troshka/commit/68f65cf079c64674e41ce0505df3816a3ab09580) — fix: shared VNC console, worker job routing, SCC cleanup, deploy-full improvements
+- 2026-07-31 [31909203](https://github.com/rhpds/troshka/commit/31909203a6041d79a1d15c5af7c511ff17d37a0d) — fix: get\_systems returns vm\_map keys for consistent Redfish identity
+- 2026-07-31 [abba3f50](https://github.com/rhpds/troshka/commit/abba3f50b885ff3f93e78dcc8171b1b3f89e08a8) — fix: use KubeVirt domain UUID for BMC identity, not SMBIOS UUID
+- 2026-07-31 [f262bb67](https://github.com/rhpds/troshka/commit/f262bb6725f762fd8db20abb5dc4dd9668fdfb70) — fix: BMC pod needs privileged + troshka-gateway SCC for ip addr
+- 2026-07-31 [3ff2d313](https://github.com/rhpds/troshka/commit/3ff2d31345282196ef246d1a9d9b35a4599860c7) — fix: extract bmcIp in topology parser, fallback to topology for IPs
+- 2026-07-31 [73e979ca](https://github.com/rhpds/troshka/commit/73e979cabed26db8ef2436491e7ce116973b8db9) — fix: BMC self-heal with credentials, remove hardcoded defaults
+- 2026-07-31 [30a2acdb](https://github.com/rhpds/troshka/commit/30a2acdb5a4467aa07e1f1769f3e3c1936e67802) — fix: auto-recover BMC deployment on reconfigure and timer
+- 2026-07-31 [0e27cef4](https://github.com/rhpds/troshka/commit/0e27cef4a1fb59d3fbddf1bf8156349c82882cac) — fix: add 'update' verb for Services in troshka-provider ClusterRole
+- 2026-07-31 [e4c33bef](https://github.com/rhpds/troshka/commit/e4c33bef0478ce9a9423453c0b8f2de5346e02e6) — fix: deploy-full.sh compares pod name instead of age for ArgoCD wait
+- 2026-07-31 [997ef350](https://github.com/rhpds/troshka/commit/997ef35051804b21e2673950497297908ba41116) — feat: add deploy-full.sh for automated CI→promote→restart cycle
+- 2026-07-31 [5f5b4f50](https://github.com/rhpds/troshka/commit/5f5b4f5041baf74395c2baccb51826c3b056a9cd) — fix: use JSON merge patch for EIP port update (RBAC lacks update verb)
+- 2026-07-31 [2fdcc1d5](https://github.com/rhpds/troshka/commit/2fdcc1d5c5ae129eced752db6203183e74862723) — fix: LB Service port update and UDP/protocol support
+- 2026-07-31 [9b9c0ea7](https://github.com/rhpds/troshka/commit/9b9c0ea707ab6119aee01f4865644620abb17afa) — fix: use 'dnat ip to' in inet nftables table (disambiguate IPv4/IPv6)
+- 2026-07-31 [43e85b3f](https://github.com/rhpds/troshka/commit/43e85b3f128ea823296c59daf1bde8a9411fd13c) — fix: clear gateway PORT\_FORWARDS env when port forwards are removed
+- 2026-07-31 [c36186d5](https://github.com/rhpds/troshka/commit/c36186d529cdf2e329c44d1573eaedae4a44b27d) — fix: use direct port mapping for kubevirt EIPs instead of transit ports
+- 2026-07-31 [a333a1bc](https://github.com/rhpds/troshka/commit/a333a1bce9dff6aab7fb836f91bb3a6461c00c57) — feat: add DNAT port forwarding to KubeVirt gateway pod
+- 2026-07-31 [f916d6cc](https://github.com/rhpds/troshka/commit/f916d6cc6f81f2bba1eaffe3748ff37dd0783f6d) — chore: add SonarQube analysis to pre-push hook
+- 2026-07-31 [30a3eab3](https://github.com/rhpds/troshka/commit/30a3eab3c52e22e56e55454256e5128613424f27) — feat: add MetalLB external IP support for KubeVirt native projects
+- 2026-07-31 [ba29723c](https://github.com/rhpds/troshka/commit/ba29723c0d361946e3ff361f1b7ade80c3a5d45f) — fix: resolve S5145 log injection vulnerabilities in provider cleanup
+- 2026-07-31 [c116d931](https://github.com/rhpds/troshka/commit/c116d9318f07cf095988066875e556221400e2b6) — test: add KubeVirt BMC driver tests and fix operator CI coverage
+- 2026-07-31 [640a0459](https://github.com/rhpds/troshka/commit/640a0459bc485d9f1bcf666b56412ff84edb5121) — fix: add extra time.time mock values for Python 3.11 CI
+- 2026-07-31 [1fe04d87](https://github.com/rhpds/troshka/commit/1fe04d8714cfb9b2d3487795b965ef24a2fd1f31) — fix: SonarQube quality gate PASSED — 80% coverage, 0 new violations
+- 2026-07-30 [33f015fa](https://github.com/rhpds/troshka/commit/33f015fa6e41899b1d2c1f457bd5d76a0d7f1d24) — fix: convert async operator tests to sync for CI compatibility
+- 2026-07-30 [e2ca6998](https://github.com/rhpds/troshka/commit/e2ca69986bb32c7a13def897741619031240729b) — fix: add extra time.time mock value for Python 3.11 compatibility
+- 2026-07-30 [1757b7b6](https://github.com/rhpds/troshka/commit/1757b7b69cb53ca22d64aaaab5a66d591696a995) — fix: clean stale deploying projects before startup resume test
+- 2026-07-30 [77030c0b](https://github.com/rhpds/troshka/commit/77030c0b42d9d0b734dd9e865b447c438de0cd0f) — test: add ~175 tests to close SonarQube coverage gap toward 80%
+- 2026-07-30 [b50d7de1](https://github.com/rhpds/troshka/commit/b50d7de1e81e1d1221a91a25bee3c6fbec445d22) — fix: SonarQube - 0 violations, 100% hotspots, 74.8% coverage, 2900 tests
+- 2026-07-30 [137c10d0](https://github.com/rhpds/troshka/commit/137c10d06165d51e7b5d3971cdd7b09fd0ab1e9a) — fix: further SonarQube violation fixes and sonarqube-check.sh hook
+- 2026-07-30 [5fbba8d0](https://github.com/rhpds/troshka/commit/5fbba8d094fefc5c714ec1204b417924957bcd19) — fix: resolve SonarQube violations and add test coverage
+- 2026-07-29 [b3523a68](https://github.com/rhpds/troshka/commit/b3523a68765ac67ade226b43f52a77ed676aaf4f) — chore: trigger backend rebuild
+- 2026-07-29 [bc6cb037](https://github.com/rhpds/troshka/commit/bc6cb0376965a857fa4de74820733edfefea011e) — chore: trigger backend rebuild
+- 2026-07-29 [fc79d19f](https://github.com/rhpds/troshka/commit/fc79d19f8d5d92b04ba2dc839a34dfec7f767fb2) — fix: pin CI runners to ubuntu-22.04 to avoid crun bug
+- 2026-07-29 [dbb94425](https://github.com/rhpds/troshka/commit/dbb94425ae46474e4322374ae8c2a4342c0c4194) — fix: clear stale health monitor set on startup
+- 2026-07-29 [6af4df12](https://github.com/rhpds/troshka/commit/6af4df12e5116eaad9f79d8e5fe220af1ccd783a) — fix: disable podman cache for backend builds too
+- 2026-07-29 [59e15058](https://github.com/rhpds/troshka/commit/59e15058b2a4f897d155e120a66e97c0f09ebd71) — chore: force backend image rebuild
+- 2026-07-29 [5abe77c9](https://github.com/rhpds/troshka/commit/5abe77c9206c4012a74272b74a14e14d64ecdd05) — chore: trigger CI rebuild (backend build failed on runner infra)
+- 2026-07-29 [8a1ad752](https://github.com/rhpds/troshka/commit/8a1ad752d3fa01656094ef1cde846eb03c1c0246) — debug: log all guard checks in maybe\_start\_ocp\_health\_monitor
+- 2026-07-29 [22a1d761](https://github.com/rhpds/troshka/commit/22a1d76143d79850286b47d9841395fb18c1a3b2) — fix: set imagePullPolicy Always for backend/frontend/worker
+- 2026-07-29 [cf398dae](https://github.com/rhpds/troshka/commit/cf398dae80e017eb6d61824a809f1f3b9dc46e1d) — debug: add INFO logging to OCP monitor scan and startup path
+- 2026-07-29 [d65a4341](https://github.com/rhpds/troshka/commit/d65a4341a625b90374165d132e06285f0f27ab67) — fix: add debug logging to OCP VM monitor entry points
+- 2026-07-29 [03216cd8](https://github.com/rhpds/troshka/commit/03216cd8e7587e5a822a96394a803c48240e2878) — fix: default jwt\_expiry\_hours to 24 when missing from config
+- 2026-07-29 [3f8ef76d](https://github.com/rhpds/troshka/commit/3f8ef76d0dd559670d498610f6b1d46beb90d086) — fix: disable podman cache for frontend builds
+- 2026-07-29 [1df3df76](https://github.com/rhpds/troshka/commit/1df3df76076c9e6591876cf747d6920abf88f3e5) — chore: force frontend image rebuild
+- 2026-07-29 [25a9819e](https://github.com/rhpds/troshka/commit/25a9819e4080fabdba45da048efec01f6dd6a889) — fix: bastion kubeconfig fallback for multi-node clusters, UI text
+- 2026-07-29 [574f5a05](https://github.com/rhpds/troshka/commit/574f5a0553969037f471f7454edd21140fb026c5) — fix: confirm dialog when moving configureBastionBrowser between VMs
+- 2026-07-29 [d8bd3ad8](https://github.com/rhpds/troshka/commit/d8bd3ad8203e8e804ac428b3bf8d86495197aa08) — fix: gate OCP monitor on ocpMonitor flag, enforce single bastion browser
+- 2026-07-29 [73b31472](https://github.com/rhpds/troshka/commit/73b3147237cda1403bbd88e4782557f5201d65e9) — docs: document OAuth proxy manual restart requirement
+- 2026-07-29 [93612158](https://github.com/rhpds/troshka/commit/9361215824676d56605ae4848f8d2d08de9fd409) — revert: remove OAuth proxy checksum annotation
+- 2026-07-29 [9b3551e5](https://github.com/rhpds/troshka/commit/9b3551e57c60bf43c593e950bd8d661449ade129) — fix: add checksum annotation to OAuth proxy for auto-rollout
+- 2026-07-29 [0470abfb](https://github.com/rhpds/troshka/commit/0470abfbdc667e5579985e6cdac9bb8eaf118342) — fix: stale job re-queue, multi-SNO OCP monitor, WebSocket 403
+- 2026-07-29 [d29c2254](https://github.com/rhpds/troshka/commit/d29c225442907cefdd8e5f98298c5f9a4244f4a4) — perf: run recert Jobs in parallel instead of sequentially
+- 2026-07-29 [f663c269](https://github.com/rhpds/troshka/commit/f663c26992d2c8082dc3b7f89dada268c05a768e) — fix: timer error message captures state before mutating it
+- 2026-07-29 [1b3a6114](https://github.com/rhpds/troshka/commit/1b3a6114784afffe2dbb387b96d61b19d8a85ead) — fix: worker pods get 2h grace period for in-flight jobs on rollout
+- 2026-07-29 [da394612](https://github.com/rhpds/troshka/commit/da394612acf2ccc81999ad2a4d086c873d3643b0) — fix: show recert progress detail instead of generic VM count
+- 2026-07-29 [823c1290](https://github.com/rhpds/troshka/commit/823c12904b7492b9ef2a86dccd28efccca3029cc) — fix: refresh deployed topology after reconfigure via REST fallback
+- 2026-07-29 [6d66e39f](https://github.com/rhpds/troshka/commit/6d66e39fcf3a49901d80d990aa8e797c1ab04db0) — fix: diff\_topologies detects any VM data change, not just CPU/RAM/boot
+- 2026-07-29 [ad1a40d4](https://github.com/rhpds/troshka/commit/ad1a40d46905d83d41e0cfa0cccdb36e52af9d8d) — feat: Apply Changes (reconfigure) works on KubeVirt projects
+- 2026-07-29 [8e9d6a32](https://github.com/rhpds/troshka/commit/8e9d6a32cf1ec68764a661fe7c84bfbef96f37ef) — test: fix 120s destroy test by mocking time.sleep and empty k8s lists
+- 2026-07-29 [6a40db51](https://github.com/rhpds/troshka/commit/6a40db517e46c5dd687486d7cf7985c8bbdccdaf) — fix: deploy progress on detail page, reconfigure on KubeVirt, recert label
+- 2026-07-29 [718def4a](https://github.com/rhpds/troshka/commit/718def4a388157f6e3177c13870c03c49d988b21) — feat: per-VM recertEnabled flag for multi-SNO deployments
+- 2026-07-29 [1c2871ea](https://github.com/rhpds/troshka/commit/1c2871ea404fabb9ea5036237fde225c461e93c3) — fix: detect dead workers in get\_job\_info so timer recovers orphaned jobs
+- 2026-07-29 [1be8983e](https://github.com/rhpds/troshka/commit/1be8983ef2aeb1ff5113408be4301e31174b433c) — fix: clear stale cancel flag before KubeVirt deploy polling loop
+- 2026-07-29 [32ee8d68](https://github.com/rhpds/troshka/commit/32ee8d6803936e9df93d25811e3babd90ce1640e) — fix: prevent double-fire on Republish and use confirmation modal
+- 2026-07-29 [7f5a9c2d](https://github.com/rhpds/troshka/commit/7f5a9c2d104668f4b6e389298649020a1e6e85c4) — fix: pass project\_id on all enqueue\_job calls so timer doesn't kill active jobs
+- 2026-07-29 [6878fb47](https://github.com/rhpds/troshka/commit/6878fb47a11fdb6e8171c828a0b27cad8b85be8a) — fix: don't mark projects as error on worker restart, let startup recovery re-queue
+- 2026-07-29 [c7f39616](https://github.com/rhpds/troshka/commit/c7f3961699235f473ff3e4ba075e9314bdbaa250) — fix: replace V1Subject/V1Role with dicts for kubernetes-client v36 compat
+- 2026-07-29 [b1ca9c16](https://github.com/rhpds/troshka/commit/b1ca9c16bff1703782be2a78920a16c4d44c9b1a) — fix: resolve pattern disk S3 paths via DB and adopt existing KubeVirt VMs on retry
+- 2026-07-28 [a5f6c725](https://github.com/rhpds/troshka/commit/a5f6c725a4e9ec1f34073ddc1a34382b689baa1e) — fix: only run recert on SNOs, not multi-node OCP clusters
+- 2026-07-28 [6c87ea93](https://github.com/rhpds/troshka/commit/6c87ea939efa3819f30c545ac7976b1d09967cc7) — fix: adopt existing KubeVirt VMs and update deploy progress on detail page
+- 2026-07-28 [880b69a6](https://github.com/rhpds/troshka/commit/880b69a6766b31327b4e0e1f32c109eeca99b204) — fix: clearer error message for worker-restart deploy failures
+- 2026-07-28 [07a7e9ee](https://github.com/rhpds/troshka/commit/07a7e9ee3a339e554bab7b0d2726bbcaeb9fa70c) — fix: show useful error when deploy job is abandoned by worker restart
+- 2026-07-28 [110c7e53](https://github.com/rhpds/troshka/commit/110c7e53f8377b418d09ddc7a336bcfca8b87880) — fix: wait for terminating namespace before creating KubeVirt deploy
+- 2026-07-28 [21170d59](https://github.com/rhpds/troshka/commit/21170d597a7cf7e1d825b09e5aba8a12c5436ad6) — fix: prevent s4-init Job from running on every ArgoCD sync
+- 2026-07-28 [0b717782](https://github.com/rhpds/troshka/commit/0b7177825c11d2b13cc707751069a5e072de654b) — fix: resume polling existing Deploying CR instead of replacing it
+- 2026-07-28 [1aca2c43](https://github.com/rhpds/troshka/commit/1aca2c438ea1ff52f67550d588b0660762bd986f) — fix: use correct bootOrder placement in KubeVirt BMC driver
+- 2026-07-28 [cd2d199a](https://github.com/rhpds/troshka/commit/cd2d199a22d2a0798653d07d13bb53c2173bed3e) — fix: read bootOrder as disk sibling, not nested inside disk/cdrom
+- 2026-07-28 [1644fad9](https://github.com/rhpds/troshka/commit/1644fad9e18daf92400360bff88cd1a97d8cec4a) — fix: write KubeVirt deploy progress to DB for frontend polling
+- 2026-07-28 [57dc0056](https://github.com/rhpds/troshka/commit/57dc00565a47965cb18407f93dad6dd73000302e) — fix: retry failed recert Jobs on operator startup
+- 2026-07-28 [ca1adb5d](https://github.com/rhpds/troshka/commit/ca1adb5dacc6ffbf4b179f7a20b604c8665a9ac1) — fix: recover projects stuck in deploying state after worker death
+- 2026-07-28 [2951b942](https://github.com/rhpds/troshka/commit/2951b9425d8ddb176a7dc3cffad332aab185cf4c) — fix: prevent ArgoCD from overwriting OAuth secrets on sync
+- 2026-07-28 [e2ce6452](https://github.com/rhpds/troshka/commit/e2ce645220d4c568fa7a6b02f639bcfe1d662623) — fix: BMC pod self-assigns IPs via NET\_ADMIN and SCC
+- 2026-07-28 [a2664749](https://github.com/rhpds/troshka/commit/a26647499469ecbd077ccaec3123cb29a108e338) — fix: repair dirty XFS journal before mounting pattern disks in recert
+- 2026-07-28 [4117b38b](https://github.com/rhpds/troshka/commit/4117b38b0812f5e53fd89f78dd7783ddc1264c25) — fix: add RBAC and static IP for KubeVirt BMC pod
+- 2026-07-28 [3a35028c](https://github.com/rhpds/troshka/commit/3a35028c71ea5198b964a09dc248b88ffbf945d5) — chore: rename troshka-sushy image to troshka-bmc
+- 2026-07-28 [7b6b4d16](https://github.com/rhpds/troshka/commit/7b6b4d1633e3e79b023e241e18c213f0c726cc26) — feat: add BootSourceOverrideEnabled Once support to KubeVirt sushy driver
+- 2026-07-28 [80fee99f](https://github.com/rhpds/troshka/commit/80fee99f5eaaa0e776c9bbb08a79e806e49a57cf) — feat: use forked sushy-tools with BootSourceOverrideEnabled Once support
+- 2026-07-27 [9f9a3f61](https://github.com/rhpds/troshka/commit/9f9a3f61d936f39457090b77833d2a27ff3ba8b0) — fix: use S3 paginators in GC to handle large buckets
+- 2026-07-27 [963d6354](https://github.com/rhpds/troshka/commit/963d63549a1bb91a752e68823e3fee039643cd52) — fix: resolve remaining SonarQube bugs and vulnerabilities
+- 2026-07-27 [4e37bc89](https://github.com/rhpds/troshka/commit/4e37bc898bae73d0fc9da54cc53188a1cbd2234d) — chore: don't block CI on SonarQube quality gate
+- 2026-07-27 [6d2cdf6f](https://github.com/rhpds/troshka/commit/6d2cdf6f39a0ab035cb8592fdde2683e2958715f) — chore: add SonarQube scanning and fix security findings
+- 2026-07-27 [e0e55e39](https://github.com/rhpds/troshka/commit/e0e55e390192209ac0e1f053ba064fbd2cd6c2b5) — chore: add SonarQube scanning via GitLab CI mirror
+- 2026-07-24 [0269ca13](https://github.com/rhpds/troshka/commit/0269ca1360cabef40b5ff2cf01a688fb83085217) — fix: pattern capture continues past failed VMs, saves successful disks to S3
+- 2026-07-24 [10e90c0a](https://github.com/rhpds/troshka/commit/10e90c0a05ebaf03866d08e3d353ab7bf86606f1) — feat: increase S4 storage default to 2Ti
+- 2026-07-24 [5623edf7](https://github.com/rhpds/troshka/commit/5623edf762c01210b9b9caf03905268d02b0e457) — fix: admin can save any project as pattern (not just own projects)
+- 2026-07-24 [f27e9f5a](https://github.com/rhpds/troshka/commit/f27e9f5a8351442d8e9d35e49a336f5c34399cad) — chore: force frontend image rebuild
+- 2026-07-24 [1432a179](https://github.com/rhpds/troshka/commit/1432a1797efa8e893b5af456cec7d3b08e426e15) — fix: S4 resources 4CPU/16Gi (OOMKilled on 76GB multipart uploads)
+- 2026-07-24 [5ebe3916](https://github.com/rhpds/troshka/commit/5ebe3916d9e7c2be622ab22787fe22b8ff952c02) — fix: bump S4 CPU to 2 cores (was CPU-throttled during uploads)
+- 2026-07-24 [a56bc4bf](https://github.com/rhpds/troshka/commit/a56bc4bffd8e0f9053c65965c28de45ad9aef6c3) — fix: bump S4 memory limit to 4Gi (OOMKilled on large multipart uploads)
+- 2026-07-24 [ebf083ab](https://github.com/rhpds/troshka/commit/ebf083ab06c99be2e7ac186279244e80861c9a41) — fix: remove leading dot from S3 provider subtitle
+- 2026-07-24 [6ebb5c90](https://github.com/rhpds/troshka/commit/6ebb5c903bdac2a1f3baa600b31e86d9d1c8f9af) — feat: show project owner in project list
+- 2026-07-24 [428105f5](https://github.com/rhpds/troshka/commit/428105f5cb390987d6bb2ebb3e38ca947e11596e) — fix: persist S4 radosgw user DB on PVC (survives pod restarts)
+- 2026-07-24 [77617e13](https://github.com/rhpds/troshka/commit/77617e13ff863a8b5ca268ca5544a11172e02f1e) — fix: only return cache DVs that the project actually references (security)
+- 2026-07-24 [61409e7a](https://github.com/rhpds/troshka/commit/61409e7a7e49d7f07e46e7bfef9e0068f93968e3) — fix: project detail page polls REST for deploy progress (WS fallback)
+- 2026-07-24 [416e55ba](https://github.com/rhpds/troshka/commit/416e55ba9a8d62f5646eabc4aefe2952349cc052) — fix: include DataVolumes in kubevirt get\_project\_status for deploy progress
+- 2026-07-24 [06361c89](https://github.com/rhpds/troshka/commit/06361c89ed22f4fb242a20e1be8db06ac7a41823) — fix: add patch verb to secrets RBAC (redeploy needs to update s3-credentials)
+- 2026-07-24 [0e68e021](https://github.com/rhpds/troshka/commit/0e68e021fd5fdf125908f2a59d2c1d4c22e3db20) — fix: clear deploy cancelled flag before redeploy to prevent self-cancellation
+- 2026-07-24 [260cd71f](https://github.com/rhpds/troshka/commit/260cd71fb8d187ae8704a417586d94bb6931d868) — fix: re-queue abandoned RQ jobs on startup, skip projects with active jobs
+- 2026-07-24 [069a16c6](https://github.com/rhpds/troshka/commit/069a16c6f4ef02e8bc40c307307d580bd084d8b7) — fix: increment in-flight counter at placement time, not deploy start
+- 2026-07-24 [c3db4597](https://github.com/rhpds/troshka/commit/c3db459783adbc2cd129defcd95daccdc851753b) — feat: scale workers to 100 for concurrent bulk deploys
+- 2026-07-24 [8b13ba84](https://github.com/rhpds/troshka/commit/8b13ba8435b0b2262fb3cf8feb20faa432623253) — build(deps): bump next from 16.2.7 to 16.2.11 in /src/frontend (#3)
+- 2026-07-24 [64aea384](https://github.com/rhpds/troshka/commit/64aea3843546b4bb92d64319bda001fba2b98d1a) — fix: gracefully stop VMs and clean up VolumeAttachments on destroy (#4)
+- 2026-07-23 [1c7a5b50](https://github.com/rhpds/troshka/commit/1c7a5b50ffe957e024f58f67cbfdf0b71fffb4d7) — fix: increase project list default limit from 50 to 200
+- 2026-07-23 [1676569e](https://github.com/rhpds/troshka/commit/1676569e17ceeff2de336e6730897e961581b3db) — fix: bulk deploy runs placement + enqueues each project separately
+- 2026-07-23 [8123ce03](https://github.com/rhpds/troshka/commit/8123ce036c4cf37aa05f5d457c3f5c810d0d9bfe) — feat: show current queue + function for busy workers instead of all queues
+- 2026-07-23 [54cc9875](https://github.com/rhpds/troshka/commit/54cc9875bc423bea8d933b62c33f87a0826a3ea3) — refactor: rename queues to project\_lifecycle, host\_lifecycle, default
+- 2026-07-23 [9adb55bb](https://github.com/rhpds/troshka/commit/9adb55bb8c4b8913c00a7d8ffe0920fa2098457a) — fix: suppress operator update button flicker during rollout
+- 2026-07-23 [a179d9aa](https://github.com/rhpds/troshka/commit/a179d9aaa95f28b273dc85ea2216caba7ad1fb69) — fix: opt out of kubemacpool for VMs (MACs unique per OVN network, not cluster-wide)
+- 2026-07-23 [583c978a](https://github.com/rhpds/troshka/commit/583c978a74e7544290a193ae773bfcba8ea97d1b) — fix: cleaner OCP monitor status messages, hide HTTP 000
+- 2026-07-23 [46b5080e](https://github.com/rhpds/troshka/commit/46b5080e913f23143910e7e40978086f5b7d1e77) — feat: dev-services.sh runs 3 workers in parallel
+- 2026-07-23 [b58cc522](https://github.com/rhpds/troshka/commit/b58cc522d6326ab66bc5fe0fadb21cd46832791f) — fix: check logins.json mtime vs boot time instead of OAuth hostname
+- 2026-07-23 [36e5194d](https://github.com/rhpds/troshka/commit/36e5194d2e38bd4216a063eb672e6b1c5a25dcb1) — fix: OCP monitor validates bastion content, not just file existence
+- 2026-07-23 [170be6d7](https://github.com/rhpds/troshka/commit/170be6d7ba0009ea753446bb3aee243523320f4b) — fix: OCP monitor verifies bastion setup (CA trust + logins.json) instead of re-running
+- 2026-07-23 [aa6620ee](https://github.com/rhpds/troshka/commit/aa6620eec9ae6331852ea1c988e3842832170537) — fix: OCP monitor updates Firefox password + verifies bastion setup
+- 2026-07-23 [d49696a4](https://github.com/rhpds/troshka/commit/d49696a4f98d0e45fedac6e940991dbeb5a7b511) — fix: OCP monitor waits for both console AND OAuth routes before ready
+- 2026-07-23 [ce441308](https://github.com/rhpds/troshka/commit/ce4413089b97f1a246a9bf7efb77133a2230e52c) — fix: operator handles DV AlreadyExists on retry (409 idempotency)
+- 2026-07-23 [c1619eac](https://github.com/rhpds/troshka/commit/c1619eac8902d66e0638ed631f3e3ee61b048898) — feat: admin job queue page
+- 2026-07-23 [83f27011](https://github.com/rhpds/troshka/commit/83f270113be9b0f4d97556c53c480be218deced4) — fix: OCP health monitor verifies console route before declaring ready
+- 2026-07-23 [ce65033f](https://github.com/rhpds/troshka/commit/ce65033f77615b8a6bb5434157b465c0e2f8cfae) — feat: extract all closures to module-level for RQ
+- 2026-07-23 [32516148](https://github.com/rhpds/troshka/commit/32516148504fc0ca412da3419ff86bca42babaa7) — fix: alert modal z-index above deploy modal (2000 → 10001)
+- 2026-07-23 [34184140](https://github.com/rhpds/troshka/commit/34184140a0f65c033dee914e253e0b3f5f22a1ed) — fix: macOS fork crash, stale lock cleanup, pub/sub reconnect
+- 2026-07-23 [091a08eb](https://github.com/rhpds/troshka/commit/091a08eb54f8e2a85d6cb85bda1bee63f400f18e) — fix: pub/sub listener reconnect loop + dedicated socket
+- 2026-07-23 [cb6271c1](https://github.com/rhpds/troshka/commit/cb6271c1b9c27a1c4fc88e3cfdd5e627c2c7d234) — fix: dual Redis connections (decoded for state, raw for RQ)
+- 2026-07-23 [f75c6321](https://github.com/rhpds/troshka/commit/f75c6321c1654e005806ae94c715e272211f0e54) — feat: queue position visibility + failed job management
+- 2026-07-23 [80982c67](https://github.com/rhpds/troshka/commit/80982c67900150d3e9b0a8a264660d866e0ddfcb) — feat: dev-services.sh Redis/worker support + CLAUDE.md job queue docs
+- 2026-07-23 [72ad2860](https://github.com/rhpds/troshka/commit/72ad286008aa407bf4821fdfb9c6f45581590fcc) — feat: in-flight deploy tracking + admin queue status endpoint
+- 2026-07-23 [ee432c5e](https://github.com/rhpds/troshka/commit/ee432c5efe66a3fa4ada01ddc258e4909d75fecb) — feat: migrate remaining background operations to job queue
+- 2026-07-23 [c1fc362e](https://github.com/rhpds/troshka/commit/c1fc362e5ed906c1852cb89f9584023703b8feb2) — feat: Redis job queue + horizontal scaling infrastructure
+- 2026-07-23 [29e60902](https://github.com/rhpds/troshka/commit/29e60902211c9e30f59e83db3b0ea89edd088837) — fix: extend deploy semaphore timeout to 30 minutes
+- 2026-07-23 [0ab8afce](https://github.com/rhpds/troshka/commit/0ab8afce7674335f270ae4847221ec9555d84f3b) — feat: semaphore to throttle concurrent deploys/destroys + longer pool timeout
+- 2026-07-23 [02e10de9](https://github.com/rhpds/troshka/commit/02e10de9c017d3b147dcc4b17accca1b91e0cb6a) — fix: show deploy errors on project cards + increase DB pool for bulk deploys
+- 2026-07-23 [e63feec9](https://github.com/rhpds/troshka/commit/e63feec9fc9b1b43200c7a9ee2f397634cf81c1b) — fix: use OCI manifest accept header to match container runtime digest
+- 2026-07-23 [51789b65](https://github.com/rhpds/troshka/commit/51789b6572a8be494ae51ca5d5149455a617241c) — fix: compare operator digest against actual deployment tag, not hardcoded production
+- 2026-07-23 [0f94f68a](https://github.com/rhpds/troshka/commit/0f94f68a64b266f7218b452f8da084ade710b5cb) — fix: use live operator digest in status endpoint, not stale DB cache
+- 2026-07-23 [6b6e0b25](https://github.com/rhpds/troshka/commit/6b6e0b25530c0c04e032f5d890a45f9704d875ce) — revert: drop buildah caching — overhead exceeds benefit, back to podman
+- 2026-07-23 [6574011c](https://github.com/rhpds/troshka/commit/6574011c98c96540cf5fcc6b6ee4a8ed16cd0563) — fix: add imagePullPolicy Always to operator deployment
+- 2026-07-23 [c4d68681](https://github.com/rhpds/troshka/commit/c4d68681e854a2cdbf74e244b28de658e7f3022c) — fix: skip digest update during rollout to prevent button flicker
+- 2026-07-23 [94c48301](https://github.com/rhpds/troshka/commit/94c483019e01da089f05fcdd4a2683590e50eb81) — feat: retry recert job up to 3 times before failing hard
+- 2026-07-23 [4f59637e](https://github.com/rhpds/troshka/commit/4f59637e400289125ea9cee6de28afcc3fb8e59c) — fix: fail hard on recert errors instead of silently continuing
+- 2026-07-23 [0c67acbf](https://github.com/rhpds/troshka/commit/0c67acbf0f4bc54653662f0a9839bcafa03c5256) — chore: upgrade GitHub Actions to Node.js 24 (checkout v5, cache v5, setup-python v6)
+- 2026-07-23 [26f125e0](https://github.com/rhpds/troshka/commit/26f125e0f56e356f5fae0fa36b80bf9dc740dd5e) — chore: remove comment to trigger cold cache build
+- 2026-07-23 [36416798](https://github.com/rhpds/troshka/commit/3641679855143d5b93aec82f3e6f0f0475a0bfd6) — fix: use buildah local layer store for caching (not docker cache-from/to)
+- 2026-07-23 [a092bb3c](https://github.com/rhpds/troshka/commit/a092bb3c4fb4086486e496f589da1868c3d8bec2) — chore: trigger CI to test buildah layer caching
+- 2026-07-23 [6c356749](https://github.com/rhpds/troshka/commit/6c356749e69ab12d1b279425eb5bef51f1b6e939) — feat: add buildah layer caching to CI image builds
+- 2026-07-23 [416005f1](https://github.com/rhpds/troshka/commit/416005f1c360c872f81c1c80e01eae6189517dcf) — fix: detect rollout in progress instead of arbitrary grace period
+- 2026-07-23 [4b4c3da5](https://github.com/rhpds/troshka/commit/4b4c3da590a97e570d667b4f88f5bbd9e283eff4) — fix: extend operator update grace period to 5 minutes
+- 2026-07-23 [15d6aaa6](https://github.com/rhpds/troshka/commit/15d6aaa66f41c47714e4c858fa3869c23101aa86) — fix: standardize operator namespace to troshka-operator everywhere
+- 2026-07-23 [3b66011f](https://github.com/rhpds/troshka/commit/3b66011f9543e37eff759c93fe846840bf9f24e4) — fix: operator default namespace troshka (not troshka-operator) + modal drag close
+- 2026-07-23 [09c1761e](https://github.com/rhpds/troshka/commit/09c1761e166a81fbcf1875b93c711de925a5c2fa) — fix: suppress Update Operator button for 90s after update (rollout grace period)
+- 2026-07-23 [5d0b223e](https://github.com/rhpds/troshka/commit/5d0b223ec9b5c728f8b570daaaa870fc1ca5fa7e) — fix: run VolumeAttachment cleanup every tick before VM start, not once
+- 2026-07-23 [e80f4b32](https://github.com/rhpds/troshka/commit/e80f4b32e65c67e34787d6d98b9d11f895f61bdb) — fix: allow blanking bulk deploy count input while typing
+- 2026-07-23 [92beed05](https://github.com/rhpds/troshka/commit/92beed05f8814e0a61c9c479b5c8350efc07c2a1) — fix: only show Update Operator button when operator is outdated
+- 2026-07-23 [fc514097](https://github.com/rhpds/troshka/commit/fc5140974d4e2b7b4a88c0a00ef4f8bd7359e683) — fix: clean up all pyright warnings in project handler
+- 2026-07-23 [c6e41778](https://github.com/rhpds/troshka/commit/c6e417780b84e6af43b1eaec41aafb64a8c1230f) — fix: pyright — separate event list call from .items access
+- 2026-07-23 [05566831](https://github.com/rhpds/troshka/commit/05566831452a15bcf3447f2d259efd9a568adde9) — feat: detect and surface VM scheduling errors (Multi-Attach, Unschedulable)
+- 2026-07-23 [b820ab48](https://github.com/rhpds/troshka/commit/b820ab48f1b08ce71d4b38e91a8c7e54ec3733ab) — fix: delete stale VolumeAttachments before starting VMs
+- 2026-07-23 [a90e8de4](https://github.com/rhpds/troshka/commit/a90e8de433c8f813e0280f4ff0f149156be0bfcc) — fix: remove operator restarts from promote script — use admin UI instead
+- 2026-07-23 [4a5c620f](https://github.com/rhpds/troshka/commit/4a5c620f4b821d78e1a04450a6a7be4a1d976311) — feat: add Update Operator button for kubevirt providers in admin UI
+- 2026-07-23 [430b4e4a](https://github.com/rhpds/troshka/commit/430b4e4ac772fa99bf70a8b39830347cb034c492) — feat: operator update service — poll digest + admin update button
+- 2026-07-23 [befe5a6d](https://github.com/rhpds/troshka/commit/befe5a6d04f778d75cf7a54706d3b9ba71e5c85b) — fix: hide OCP status badge when project is deleting
+- 2026-07-23 [1722f923](https://github.com/rhpds/troshka/commit/1722f9235e2a43f1c0b9fe88c372797d182f4bdb) — fix: rename ArgoCD examples to generic names
+- 2026-07-23 [5ecca765](https://github.com/rhpds/troshka/commit/5ecca7652efc96eb41a66939f6dacafaae04d8a4) — fix: remove ~ prefix from Image Updater tag constraint (not supported)
+- 2026-07-23 [c8e5043f](https://github.com/rhpds/troshka/commit/c8e5043fe0acd767d19cb39934f83f6e84e87c98) — fix: use inline version constraint for Image Updater digest strategy
+- 2026-07-23 [208d962e](https://github.com/rhpds/troshka/commit/208d962ecb9d03725ae5dab24f5a35b046a431ec) — fix: wait for recert pod termination before starting VMs
+- 2026-07-23 [09e24685](https://github.com/rhpds/troshka/commit/09e24685649964dc468a192234f2f72ebdbfcf03) — fix: S4 bucket creation via curl S3 PUT (radosgw-admin has no bucket create)
+- 2026-07-23 [e74ff698](https://github.com/rhpds/troshka/commit/e74ff698d816669c54e729beaed0272a45555713) — fix: S4 init uses radosgw-admin for bucket creation (no boto3 needed)
+- 2026-07-23 [e7e5d416](https://github.com/rhpds/troshka/commit/e7e5d416720f1c7ea7a94cf39d86d2d114c3486b) — fix: S4 deployment strategy Recreate for RWO PVC
+- 2026-07-23 [1c459b38](https://github.com/rhpds/troshka/commit/1c459b38e4e8a72353025a0ef4370dd548f2bb6a) — fix: Helm hooks for ArgoCD + remove insecure s4admin user
+- 2026-07-23 [f3f9a91f](https://github.com/rhpds/troshka/commit/f3f9a91f2f8c84b442eca0c8fcf292c58f3ce0f1) — fix: add top-level operator kustomization for ArgoCD (CRDs outside deploy/)
+- 2026-07-23 [fe3f66b5](https://github.com/rhpds/troshka/commit/fe3f66b598aedc9d70e6f312ea55f77e8556c187) — fix: use OpenShift GitOps ImageUpdater CR schema with applicationRefs
+- 2026-07-23 [24185706](https://github.com/rhpds/troshka/commit/241857062ae1a8cbae4f6c133424c0946306c8b9) — feat: ArgoCD Image Updater for automated production deployments
+- 2026-07-23 [9b5d8743](https://github.com/rhpds/troshka/commit/9b5d87438a4db42db8a17c2b3959f4291540aef7) — fix: update stale test assertions — delete returns 200, portal accepts 200 or 404
+- 2026-07-23 [44eb6457](https://github.com/rhpds/troshka/commit/44eb6457ff87b721bf02d436f6f8020ca1665602) — fix: remove stale get\_active\_project\_ids import from ws\_pubsub test
+- 2026-07-23 [31ecbc56](https://github.com/rhpds/troshka/commit/31ecbc561cb6bf8716faf9623ebf496e0b57d744) — fix: label created/deployed timestamps on project cards + fix last CI pyright error
+- 2026-07-23 [b5863c12](https://github.com/rhpds/troshka/commit/b5863c122709aaf3c59c8f993ea864d8599144a2) — fix: type-ignore azure.mgmt.resource import for CI pyright
+- 2026-07-23 [5f679c1c](https://github.com/rhpds/troshka/commit/5f679c1cdc6d73c1479075b4ee776ad6cfe060a4) — fix: resolve CI pyright errors — add missing deps and type ignores
+- 2026-07-23 [fefa2a3b](https://github.com/rhpds/troshka/commit/fefa2a3b0c749d7446c68255074a3057916df49e) — feat: replace all browser alert() calls with AlertModal component
+- 2026-07-23 [09dfd958](https://github.com/rhpds/troshka/commit/09dfd958636d414a4a0aa303eec8dd7ba6d5eae2) — fix: update ruff pre-commit to v0.13.0 and fix import sort
+- 2026-07-23 [5e018586](https://github.com/rhpds/troshka/commit/5e018586dc3aed17f7e269c992fd5a031a8a001c) — fix: clarify OCP status badges with "operators available" and "nodes reachable"
+- 2026-07-23 [714f86e2](https://github.com/rhpds/troshka/commit/714f86e200047143733b60b7a474e459c7f992eb) — feat: parallel operator handlers + deploy timestamp on project cards
+- 2026-07-23 [eed5bc19](https://github.com/rhpds/troshka/commit/eed5bc197c3a6f4c556ae3ff12eb859e1d189a46) — feat: add pyright and TypeScript checks to pre-commit
+- 2026-07-23 [9fa3667b](https://github.com/rhpds/troshka/commit/9fa3667bc52916a216882d8aecd7789643b019e6) — fix: cast status check to any to satisfy TypeScript union type
+- 2026-07-23 [cc3d05ee](https://github.com/rhpds/troshka/commit/cc3d05eeb3786fcf730a4d38ce700f2aa13b5c64) — fix: eliminate VM power state flicker on project load
+- 2026-07-23 [6a61f067](https://github.com/rhpds/troshka/commit/6a61f067c497e35622d7ef5fc3a8f3c197e5a8a6) — fix: prevent VM state flicker by preserving cached states
+- 2026-07-23 [2fdcc9f3](https://github.com/rhpds/troshka/commit/2fdcc9f3589941a905574ae0411b591d657e96f4) — fix: VM power state for KubeVirt + add deploy\_started\_at for OCP timer
+- 2026-07-23 [1eed9ed8](https://github.com/rhpds/troshka/commit/1eed9ed88ab43a250671c36a8778ce55be04ff54) — feat: improve deploy progress UX on projects list and bulk deploy
+- 2026-07-23 [5b07d948](https://github.com/rhpds/troshka/commit/5b07d948358493c11d9caf500134ccfbd9d38a34) — fix: resolve remaining ruff lint errors across all backend files
+- 2026-07-23 [790e54f3](https://github.com/rhpds/troshka/commit/790e54f33df76fd3e701678f873a670d4f18faab) — fix: include deploy\_progress in projects list API response
+- 2026-07-23 [1f753cf6](https://github.com/rhpds/troshka/commit/1f753cf65218bf51a0b754490870d24df710b5e7) — fix: resolve all ruff lint errors to pass CI
+- 2026-07-23 [588a3c9b](https://github.com/rhpds/troshka/commit/588a3c9b9317c8fd4b43784656dad59f88513112) — refactor: poll all active projects independently of WebSocket subscribers
+- 2026-07-23 [5dbf71d4](https://github.com/rhpds/troshka/commit/5dbf71d4b121a6048a962383c4867985e4f0c43b) — fix: start OCP health monitors without requiring project page open
+- 2026-07-22 [a5e012b2](https://github.com/rhpds/troshka/commit/a5e012b280a93af8b9667b59c054e750de1da86f) — docs: update CLAUDE.md with sushy SSL, operator Deployments, oc-exec DNS fix
+- 2026-07-22 [0ff3d9f0](https://github.com/rhpds/troshka/commit/0ff3d9f0a69e01388fa8148ccc5a18805bdbbd4d) — fix: remove double oc prefix in kubevirt exec path
+- 2026-07-22 [6937d491](https://github.com/rhpds/troshka/commit/6937d491d37e589d0d5004b819b08aeaa15f850a) — feat: bastionless OCP monitor — replace shell pipelines with simple oc commands, unshare DNS fix
+- 2026-07-22 [f5e0628b](https://github.com/rhpds/troshka/commit/f5e0628b4bf537393704ee34685fd22ff5745525) — feat: fix oc-exec DNS with unshare --mount for troshkad, exec pod for kubevirt, skip shell pipelines
+- 2026-07-22 [496427fa](https://github.com/rhpds/troshka/commit/496427fa591fb7302e18b27e35de2055c126ec21) — fix: skip oc-exec for all hosts — namespace DNS cant resolve project domains anywhere
+- 2026-07-22 [35f73bb2](https://github.com/rhpds/troshka/commit/35f73bb2fc2511afa5f4a58f79f8a943372d7669) — fix: skip oc-exec for ocpvirt hosts (namespace DNS cant resolve project domains)
+- 2026-07-22 [fc05a95e](https://github.com/rhpds/troshka/commit/fc05a95ec54e58001879f37a8602333949dbb655) — fix: check oc-exec exit code so bastion SSH fallback works on DNS failure
+- 2026-07-22 [232e88aa](https://github.com/rhpds/troshka/commit/232e88aab612a908bc83bf0c559cbad2c59374c4) — Revert "fix: prepend KUBECONFIG for oc/kubectl commands in KubeVirt exec path"
+- 2026-07-22 [152feb8d](https://github.com/rhpds/troshka/commit/152feb8d1aef4691cb178ba63a5b4c2c2e302002) — fix: prepend KUBECONFIG for oc/kubectl commands in KubeVirt exec path
+- 2026-07-22 [4ac6ea9c](https://github.com/rhpds/troshka/commit/4ac6ea9c69b3d06d4479d2739a27d0bb5bb24e0b) — feat: show deploy progress on project list, clear on completion
+- 2026-07-22 [728d0153](https://github.com/rhpds/troshka/commit/728d0153fb749705561ad1053a1222f1947ff6b5) — fix: deploy progress in colored badge with spinner on right
+- 2026-07-22 [9d0ae30a](https://github.com/rhpds/troshka/commit/9d0ae30a1084a71bac3db8f241a6aa5eda552d2c) — feat: show deploy progress detail on project list cards
+- 2026-07-22 [ac0900ce](https://github.com/rhpds/troshka/commit/ac0900cefb3df0dfd60b481864231c569b97a2d2) — fix: save OCP status detail to DB, fix \_push scope, add ocp\_monitor\_started\_at
+- 2026-07-22 [d855895d](https://github.com/rhpds/troshka/commit/d855895d096f2b4d5ea388446cb9e3af77858e61) — feat: OCP status detail + elapsed timer on project list, per-host clock tracking
+- 2026-07-22 [7ae57683](https://github.com/rhpds/troshka/commit/7ae57683b5dfa0fb74845bce2af9c62f956488df) — feat: show OCP status detail and elapsed time on project list cards
+- 2026-07-22 [18197e75](https://github.com/rhpds/troshka/commit/18197e75069053b42401a72817a46124fa5df92c) — feat: show OCP status on project list cards, fix KubeVirt host count, add ocp\_status to ProjectResponse schema
+- 2026-07-22 [a32b65ef](https://github.com/rhpds/troshka/commit/a32b65ef35fc53a03dd415d97949e7cf9f48920d) — fix: show VM count instead of host count for KubeVirt providers on hosts page
+- 2026-07-22 [1aa4fa76](https://github.com/rhpds/troshka/commit/1aa4fa76254faea61e10e5ff229424d9d0c264e2) — fix: concurrency improvements — per-host network lock, VNI allocation lock, deploy error state fix
+- 2026-07-22 [9420bd2b](https://github.com/rhpds/troshka/commit/9420bd2b2adb35e1500b208877a6ede6e263915e) — fix: eager import boto3 and cryptography to prevent thread import races
+- 2026-07-22 [9a263964](https://github.com/rhpds/troshka/commit/9a2639646e37b7579d3eb0d6764b24fe241bfa33) — fix: move passlib import to module level to prevent thread race on import
+- 2026-07-22 [133bc21f](https://github.com/rhpds/troshka/commit/133bc21f21bdb3d046dbf63e1d2c7d037c058927) — fix: make project cards proper links for right-click open in new tab
+- 2026-07-22 [3bdd4d2e](https://github.com/rhpds/troshka/commit/3bdd4d2e70cfbad787d4e7fa0b66c5bb79addefa) — fix: make redeploy destroy async so it doesnt block the HTTP request
+- 2026-07-22 [7dfd1717](https://github.com/rhpds/troshka/commit/7dfd171760c1b788d2da33cf0df569c0134159ae) — fix: prevent redeploy/undeploy from deleting project DB record
+- 2026-07-22 [eb572cbf](https://github.com/rhpds/troshka/commit/eb572cbf595839a85f7c3b8c6f0aff70c19ee60e) — operator: update handlers to use Deployments instead of Pods (Task 2)
+- 2026-07-22 [144fd526](https://github.com/rhpds/troshka/commit/144fd526cc0bbf01e6fa3323d327f2fbd62f0af1) — operator: convert Pod builders to Deployment builders
+- 2026-07-22 [431e717c](https://github.com/rhpds/troshka/commit/431e717ce2170c8ed3e3c8d91ea3c8bbfdc242d4) — fix: kill orphaned backend processes on restart, remove debug log
+- 2026-07-22 [5f4e67ed](https://github.com/rhpds/troshka/commit/5f4e67ed7a9df04e81a0fc3db4f9cdf83926d1d9) — feat: store BMC URLs in deployed\_topology for KubeVirt native, add SSL URL to troshkad path
+- 2026-07-22 [a2755347](https://github.com/rhpds/troshka/commit/a275534790f31dee94500e7668eddaaa99338907) — feat: add BMC URLs to INFO panel, add scrollbar, disable text wrap
+- 2026-07-22 [cdbed445](https://github.com/rhpds/troshka/commit/cdbed445220b0683452ce0a7fd676c5c21ce2112) — feat: add SSL port 8443 to KubeVirt BMC emulator
+- 2026-07-22 [f9a4a1b1](https://github.com/rhpds/troshka/commit/f9a4a1b1f2bbfc7db9411aa687b7ddc91bceb3a6) — feat: add SSL sushy-emulator on port 8443 alongside HTTP
+- 2026-07-22 [f4df42cb](https://github.com/rhpds/troshka/commit/f4df42cbb9b298b9813ba427e0560340ee43969e) — docs: add sushy SSL implementation plan
+- 2026-07-22 [0f916b3a](https://github.com/rhpds/troshka/commit/0f916b3afaf482864f664e9c6d733d4b3772c2ce) — docs: clarify openssl for cert generation in sushy SSL spec
+- 2026-07-22 [333d4240](https://github.com/rhpds/troshka/commit/333d42408e9614065d41e7371204ea6ef51caba8) — docs: add sushy SSL/TLS design spec
+- 2026-07-21 [c3cb7637](https://github.com/rhpds/troshka/commit/c3cb76378778957098dcb632d6d4390f9d99f1fc) — fix: hide delete button when project is in deleting state
+- 2026-07-21 [85c5cea5](https://github.com/rhpds/troshka/commit/85c5cea588446535027950c2b90a826a2bccaaab) — fix: use correct time import in namespace polling loop
+- 2026-07-21 [0159154e](https://github.com/rhpds/troshka/commit/0159154e34ae22646f19004f04aed418effe2f5d) — fix: poll until namespace is fully deleted before removing DB record
+- 2026-07-21 [9e2a0a5a](https://github.com/rhpds/troshka/commit/9e2a0a5a74b6b464ddb470a72b4aa4fc1dd0dad1) — fix: grant namespace delete permission to troshka SA for project cleanup
+- 2026-07-21 [367d5444](https://github.com/rhpds/troshka/commit/367d5444cf7314287a001a36875cb943cf021c7d) — fix: only show DataVolumes belonging to current project in deploy progress
+- 2026-07-21 [4b553c11](https://github.com/rhpds/troshka/commit/4b553c1134b77558013543c5456282568c0a8d5e) — fix: return 200 with deleting status instead of 204 on project delete
+- 2026-07-21 [8f8866aa](https://github.com/rhpds/troshka/commit/8f8866aa1463af5f32d0a49474c6187309a27ccf) — feat: project deleting state, S4 hardening, UX fixes
+- 2026-07-21 [a0d83bc8](https://github.com/rhpds/troshka/commit/a0d83bc8118a7a4c119322048898ac8fa22fc186) — fix: ensure deploy polling loop always sleeps between iterations
+- 2026-07-21 [f859c292](https://github.com/rhpds/troshka/commit/f859c29282406a5a8e6837c3c34c66bff06bfb23) — docs: update KubeVirt native guide with CDI source.s3 and dual S3 setup
+- 2026-07-21 [13cd5f41](https://github.com/rhpds/troshka/commit/13cd5f4169a42ddce971a964ba977895d6cf0115) — fix: propagate centralSource flag to CDROM/ISO disk entries
+- 2026-07-21 [14b9eff1](https://github.com/rhpds/troshka/commit/14b9eff194bb7e3388a72617023d8121314e9905) — fix: remove fuzzy library item matching — IDs now match AWS source
+- 2026-07-21 [a22469ab](https://github.com/rhpds/troshka/commit/a22469ab5bf56d88ecb8c9400942da05aa027d73) — fix: use LibraryItem.source to detect central items, not head\_object
+- 2026-07-21 [fafe4241](https://github.com/rhpds/troshka/commit/fafe42412cb2ebae775b191dfc5dda606e9510d9) — fix: resolve library items by fuzzy name match when ID not found
+- 2026-07-21 [349aba83](https://github.com/rhpds/troshka/commit/349aba83f93944aa5215167e29103a8c7297a949) — fix: define centralS3Config and accessKeyId/secretKey in TroshkaProject CRD
+- 2026-07-21 [0bd6ae45](https://github.com/rhpds/troshka/commit/0bd6ae45dc2d28a3c451a71143984490e9a8d455) — fix: add x-kubernetes-preserve-unknown-fields on spec level of TroshkaProject CRD
+- 2026-07-21 [6cb5fb67](https://github.com/rhpds/troshka/commit/6cb5fb677341c8fbdc09eef5288a0803c16224cf) — fix: add debug logging for central S3 detection
+- 2026-07-21 [ca252cca](https://github.com/rhpds/troshka/commit/ca252cca23c40fd3e03935a8c227a3c4fe95db59) — feat: use CDI source.s3 for authenticated disk downloads
+- 2026-07-21 [fb9669c7](https://github.com/rhpds/troshka/commit/fb9669c7e0eeaeb8d8b78dad9428d93b22912e1e) — fix: clean up cluster resources when deleting deploying/failed projects
+- 2026-07-21 [cbfbaba4](https://github.com/rhpds/troshka/commit/cbfbaba44cf4a08de0ad482c2a84c17a599feb26) — fix: prefer explicit s3.endpoint over S4 internal URL in Helm chart
+- 2026-07-21 [0852c3c4](https://github.com/rhpds/troshka/commit/0852c3c4a15d8cf3ac6af2f252a177920d36bf5a) — fix: pass S3 endpoint\_url to KubeVirt deploy CR
+- 2026-07-21 [0b239770](https://github.com/rhpds/troshka/commit/0b239770432a030aee6191981e2808632ac013ee) — docs: add KubeVirt native provider installation guide
+- 2026-07-21 [10567541](https://github.com/rhpds/troshka/commit/10567541e053dbf5b2084e473af3d5a4aac4d9b0) — fix: patch existing ClusterRoleBinding instead of skipping
+- 2026-07-21 [cd4f0497](https://github.com/rhpds/troshka/commit/cd4f04977b0951745828df83270e3b351a76edd3) — fix: show TB for large RAM values, add provider type colors to host cards
+- 2026-07-21 [cae58561](https://github.com/rhpds/troshka/commit/cae585619b6d48c0cc2c95aff07de0ac656daa61) — fix: include operator CRDs/manifests in backend container image
+- 2026-07-21 [657aad29](https://github.com/rhpds/troshka/commit/657aad29b6228ddf4d1423c110387a33fd67ee82) — fix: restore virtual host creation for kubevirt providers
+- 2026-07-21 [81ef11cd](https://github.com/rhpds/troshka/commit/81ef11cd167bea91ec1e25a573d6adc17b8ff8ca) — fix: kubevirt-cluster hosts delete immediately from DB
+- 2026-07-21 [8f6b563e](https://github.com/rhpds/troshka/commit/8f6b563ea46811374fb4b5973d2e17edeba0153a) — fix: kubevirt providers auto-install operator without creating a host
+- 2026-07-21 [faa6f901](https://github.com/rhpds/troshka/commit/faa6f901b92acdcff151ef1c73462fc247f95261) — fix: revert skip-auth-regex to health-only
+- 2026-07-21 [32434f02](https://github.com/rhpds/troshka/commit/32434f0212ed073d3e8bcd4d3cc55d9f90bb7ea6) — feat: add direct API Route, remove permaban from rate limiter
+- 2026-07-21 [e05b8a8c](https://github.com/rhpds/troshka/commit/e05b8a8c6bc5291bbdb793f1dc1bd278bcc06532) — fix: exempt internal cluster IPs from rate limiting
+- 2026-07-21 [a98d6223](https://github.com/rhpds/troshka/commit/a98d622303509bdd82b37d51234f4c878d4df9f9) — fix: skip OAuth proxy auth on /api/v1/ paths
+- 2026-07-21 [9bacd736](https://github.com/rhpds/troshka/commit/9bacd7368efc04fae543282958c0234dcb6a92c3) — fix: match group members by both username and email
+- 2026-07-21 [89eea550](https://github.com/rhpds/troshka/commit/89eea55085eb4254560ac65fdbe1580c6dfea3f5) — fix: OAuth proxy secret must match OAuthClient secret
+- 2026-07-21 [3d90357c](https://github.com/rhpds/troshka/commit/3d90357c18058375ccf1898c1877a4decac276d5) — fix: helm chart deployment issues found during testing
+- 2026-07-21 [9cdbbefc](https://github.com/rhpds/troshka/commit/9cdbbefc5310c2eb7a7b39422283ca4babaa295c) — fix: replace deprecated Query.get() with Session.get() across backend
+- 2026-07-21 [7f6dcee2](https://github.com/rhpds/troshka/commit/7f6dcee2c662a7c5fb828cbf6a7d752c958802e3) — fix: resolve all 488 pyright errors, enforce zero-tolerance in CI
+- 2026-07-21 [294c52f4](https://github.com/rhpds/troshka/commit/294c52f46b53f5770f5ca0950a1e12e8acd8ecf2) — feat: add OCP group-based access control and Helm chart
+- 2026-07-21 [7f608547](https://github.com/rhpds/troshka/commit/7f608547d3b421c23d1f94e2b303d319a5159065) — fix: don't flash page content before auth check completes
+- 2026-07-21 [77c0de17](https://github.com/rhpds/troshka/commit/77c0de17e5ef4ab6557184df80769a624125f5bb) — fix: hide nav and role switcher for denied/SSO users
+- 2026-07-21 [9209380b](https://github.com/rhpds/troshka/commit/9209380be0c9023fd3f94ff60c53833e3a8e37ce) — fix: don't show "Backend unreachable" banner on 403 responses
+- 2026-07-21 [1c5a0a08](https://github.com/rhpds/troshka/commit/1c5a0a08d90890d41203c4b435ed903132bd035a) — fix: add jwt\_algorithm to deploy ansible ConfigMap template
+- 2026-07-21 [ee656713](https://github.com/rhpds/troshka/commit/ee656713623b71867c8d03b81c2a8c225d870c67) — fix: enforce allowed\_users before creating SSO user records
+- 2026-07-20 [167f65b9](https://github.com/rhpds/troshka/commit/167f65b9e61733cd22957bce949a461ebc664cbb) — feat: reconnect VM TAPs to namespace bridges after host recovery
+- 2026-07-20 [4c9aebd4](https://github.com/rhpds/troshka/commit/4c9aebd4f71bccb4cfe35f04735f4e798cb700fa) — feat: auto-restore networking and BMC when host reconnects
+- 2026-07-20 [c5027ed3](https://github.com/rhpds/troshka/commit/c5027ed3cfaf971b0e727d462cb1088eed357d4d) — fix: admin users can see all projects, images, and patterns
+- 2026-07-20 [a904a71c](https://github.com/rhpds/troshka/commit/a904a71ce72d160cd9eb5beb06c1a8a7149d6297) — fix: detach install ISO from ocpvirt hosts after agent install
+- 2026-07-16 [1b49c8d7](https://github.com/rhpds/troshka/commit/1b49c8d7f6f7f1c9fd9f6d8cc24ff5fa5779eb4a) — feat: add mTLS, rate limiting, and NFS resilience to troshkad
+- 2026-07-15 [fe6397b9](https://github.com/rhpds/troshka/commit/fe6397b955e042a66882d51a86e817213fbe34af) — fix: skip direct oc exec for kubevirt, always use bastion SSH
+- 2026-07-15 [2a5412f9](https://github.com/rhpds/troshka/commit/2a5412f9fe5ffb4c6c9dbda773981c12998c0514) — fix: fall through to bastion SSH when exec pod oc returns errors
+- 2026-07-15 [c5909de2](https://github.com/rhpds/troshka/commit/c5909de2ed255359a68041a7c24d13e75b8f97d3) — fix: filter error output from oc commands in OCP health monitor
+- 2026-07-15 [8dd15145](https://github.com/rhpds/troshka/commit/8dd15145ab1d8e5fa5ee292fd657ca4e73de88b8) — fix: increase OCP health monitor deadline to 30 min and add phase logging
+- 2026-07-15 [2d3208b0](https://github.com/rhpds/troshka/commit/2d3208b00fcee2c1ab3a5ae77845813d9db57277) — fix: set alembic root logger level to INFO instead of WARNING
+- 2026-07-15 [a1e29cfc](https://github.com/rhpds/troshka/commit/a1e29cfc93023ed46b397a13fa4d2f6274bcd90b) — fix: prevent alembic fileConfig from killing app and uvicorn loggers
+- 2026-07-15 [f3be3626](https://github.com/rhpds/troshka/commit/f3be3626032515da0e3b5dba7abb07db78ca4b46) — fix: restore logging after alembic fileConfig overrides root logger
+- 2026-07-15 [a15e64c0](https://github.com/rhpds/troshka/commit/a15e64c05aaa366e81635ae5a78aea147ceb4909) — fix: add all troshka SCCs to operator deploy manifests
+- 2026-07-15 [1064f034](https://github.com/rhpds/troshka/commit/1064f034b3b02e427660f70b7b9a857e14f623db) — fix: grant operator RBAC access to troshka-gateway SCC
+- 2026-07-15 [da6e0fb7](https://github.com/rhpds/troshka/commit/da6e0fb7ca20a092e193b090707a798d65c7c628) — fix: add gateway SCC for kubevirt network SA and fix deploy poll loop
+- 2026-07-15 [7de6add6](https://github.com/rhpds/troshka/commit/7de6add6d692ab67eabdb054dd64c5f06a08a015) — feat: make bastion optional for OCP monitoring
+- 2026-07-15 [8eeb79ea](https://github.com/rhpds/troshka/commit/8eeb79eae98a680ef4dc7e1ee1c9192fda280d2b) — fix: use project dnsmasq as DNS for exec pod instead of patching kubeconfig IP
+- 2026-07-15 [ba1f3352](https://github.com/rhpds/troshka/commit/ba1f33526e081b104455ce4cbb9049909dab37e9) — fix: replace API hostname with IP in kubeconfig (exec pod uses OCP DNS, not project dnsmasq)
+- 2026-07-15 [49222334](https://github.com/rhpds/troshka/commit/49222334f7d13700705931160205067d13c0ed2b) — fix: unescape \\\\n in K8s pod log output before kubeconfig regex
+- 2026-07-15 [5b0ec8bd](https://github.com/rhpds/troshka/commit/5b0ec8bd2f22b155cdc0183ab8ecd451568f4ba8) — debug: add context dump for kubeconfig regex failure
+- 2026-07-15 [5b519c61](https://github.com/rhpds/troshka/commit/5b519c61ffe68ac0fd207d6d5c8265b5a82c51bf) — fix: use \\S+ regex for kubeconfig extraction (extra newlines between markers)
+- 2026-07-15 [f88c9b91](https://github.com/rhpds/troshka/commit/f88c9b91c8aa3e21cd28e8ce1a107bdd5aac4135) — fix: add debug logging to kubeconfig extraction and remove str() wrapping
+- 2026-07-15 [5a45f03a](https://github.com/rhpds/troshka/commit/5a45f03ad152a171cc0f57c6004cc564fd5270ec) — fix: increase tail\_lines to 100 for kubeconfig extraction (etcd shutdown logs are ~25 lines)
+- 2026-07-15 [a5e4b685](https://github.com/rhpds/troshka/commit/a5e4b685f69a1bc1835a6aa192b57ab3b17ed2b7) — fix: use tail\_lines=20 when reading recert job logs for kubeconfig
+- 2026-07-14 [11740022](https://github.com/rhpds/troshka/commit/11740022b1035a40b2cc1969fef73b03892646f4) — fix: use bind-mounted /etc/kubernetes path for kubeconfig extraction
+- 2026-07-14 [2cdafbe2](https://github.com/rhpds/troshka/commit/2cdafbe290ce2cc5eec4301d7e223d662e1894cf) — fix: log OCP monitor DB failures and preserve Firefox saved passwords
+- 2026-07-14 [e7546701](https://github.com/rhpds/troshka/commit/e75467011b6609456b6c79830c50668b57cc709c) — fix: add pods/log RBAC for operator kubeconfig extraction
+- 2026-07-14 [77f4eb2f](https://github.com/rhpds/troshka/commit/77f4eb2fa70d5cfb22ee29fc1cd8d3c063bafb7e) — feat: store OCP kubeconfig as Secret for exec pod
+- 2026-07-14 [c6dbe460](https://github.com/rhpds/troshka/commit/c6dbe46030b43e681f5a9247a25b59d850ea3287) — fix: read vcpus/ram from topology when cpus/memory not set
+- 2026-07-14 [50357fdc](https://github.com/rhpds/troshka/commit/50357fdc5a4729cb91bd9522522d9915765d960d) — feat: add VNC console exec for KubeVirt native provider
+- 2026-07-14 [b9f4b0cc](https://github.com/rhpds/troshka/commit/b9f4b0cc519b0f6aaef420f5b917351c99e0e523) — fix: relax kube-apiserver liveness probe after recert to survive boot storm
+- 2026-07-14 [f4c83bfa](https://github.com/rhpds/troshka/commit/f4c83bfa0ee06c562d00e49be3f6f5933f92158f) — fix: force-delete stale pods before recreating on redeploy
+- 2026-07-14 [9b25b402](https://github.com/rhpds/troshka/commit/9b25b402e095adf1a7e8c6e707b70d91235bf88c) — fix: use rollout restart for ingress router instead of force-delete
+- 2026-07-14 [6167a013](https://github.com/rhpds/troshka/commit/6167a0131fb5c27178d3d79990f9c7bd0c97c947) — fix: unmount bind-mounts before kpartx cleanup (prevents 'in use' error)
+- 2026-07-14 [2763e998](https://github.com/rhpds/troshka/commit/2763e9985bd3f785b874df714c0311fd8fcb36fb) — fix: mkdir bind-mount targets before mounting
+- 2026-07-14 [e5c95372](https://github.com/rhpds/troshka/commit/e5c95372ab2f183dc860d2be6e44060e26b28741) — fix: bind-mount RHCOS paths to standard locations for recert
+- 2026-07-14 [d2118313](https://github.com/rhpds/troshka/commit/d2118313d831bed3331889ab07edd5ff068611de) — fix: bake etcd v3.6.0 matching troshkad (OCP manifest uses digest, not tag)
+- 2026-07-14 [e261073a](https://github.com/rhpds/troshka/commit/e261073a779b25444ba9e2c4697595ff8eded46f) — fix: download exact etcd version at runtime from OCP disk manifest
+- 2026-07-14 [1427377c](https://github.com/rhpds/troshka/commit/1427377cbcadabb928d73053dba7e0bc11a964f6) — fix: verify etcd version matches OCP exactly, fail if mismatch — no fallbacks
+- 2026-07-14 [3e010ef8](https://github.com/rhpds/troshka/commit/3e010ef82bb992125132686ee1e1f1a64c2cd2c4) — fix: use etcd v3.6.0 (matches OCP 4.22) — v3.6.13 corrupted WAL
+- 2026-07-14 [80f30bd7](https://github.com/rhpds/troshka/commit/80f30bd71cb83dddf645deeb7615f13b3c3c6b12) — feat: non-blocking recert with VMs created stopped
+- 2026-07-14 [a69d7d8a](https://github.com/rhpds/troshka/commit/a69d7d8a1cef672efa458998b30641eba3a88a06) — fix: run recert from timer instead of blocking project\_create handler
+- 2026-07-14 [f0f506f1](https://github.com/rhpds/troshka/commit/f0f506f1953b724cdc322c44b36e4de708caea81) — debug: log VM os values for recert detection
+- 2026-07-14 [aeaf586b](https://github.com/rhpds/troshka/commit/aeaf586bdcbb34a744ec787b340204b24f324422) — fix: move recert to project handler — runs before any VMs start
+- 2026-07-14 [2940734e](https://github.com/rhpds/troshka/commit/2940734e6939dd4f9c2e1afdd3803c12fa80b949) — fix: cancel old deploy thread on redeploy to prevent stale state overwrites
+- 2026-07-14 [99af6f8a](https://github.com/rhpds/troshka/commit/99af6f8a2758c7450efa53b8a7d304e83ec57a87) — fix: treat 404 on recert Job poll as completed (Job GC'd after finish)
+- 2026-07-14 [7a949f19](https://github.com/rhpds/troshka/commit/7a949f19a3d6a1823350d8fdbb7d776726d9e8cd) — fix: wait for old recert Job deletion to complete before creating new one
+- 2026-07-14 [fe1e2c47](https://github.com/rhpds/troshka/commit/fe1e2c476682b639cec37c2437d52b7906645fca) — fix: use --standalone not --peering=standalone (broke kopf event processing)
+- 2026-07-14 [9df854ae](https://github.com/rhpds/troshka/commit/9df854ae6942c7e6c00f95ebc2dbb4f9c00e6380) — fix: thorough resource cleanup on KubeVirt redeploy
+- 2026-07-14 [1a69121b](https://github.com/rhpds/troshka/commit/1a69121bf8df96a5199b09e3afdfd3eaaaeb778d) — fix: delete old recert Job before creating new one on redeploy
+- 2026-07-14 [87b65067](https://github.com/rhpds/troshka/commit/87b65067a6f7c78000feb7f593807f183a432e61) — fix: use --peering=standalone to prevent kopf race on rollout restart
+- 2026-07-14 [7e9e1a6e](https://github.com/rhpds/troshka/commit/7e9e1a6ee4e484692297d83c9cb80fe7321610a2) — fix: show 'Preparing disks' instead of '0/2 VMs ready' during PVC clone phase
+- 2026-07-14 [bcccf377](https://github.com/rhpds/troshka/commit/bcccf377513aa2d8db10394ced33a0b6c7507753) — fix: add openssl to troshka-tools (required by recert)
+- 2026-07-14 [29369ab0](https://github.com/rhpds/troshka/commit/29369ab0262fa65738109e94703de608d42cbd10) — feat: show 'Regenerating certificates' in UI during recert phase
+- 2026-07-14 [a2e4db69](https://github.com/rhpds/troshka/commit/a2e4db6994a9869d1108ddcf32f4791f0c5c5239) — fix: use disk's own etcd binary for recert (version compatibility)
+- 2026-07-14 [c5cb450a](https://github.com/rhpds/troshka/commit/c5cb450a4a0a4feb53e390df4f0e20ebec89f283) — fix: recert binary is at /usr/local/bin not /usr/bin in source image
+- 2026-07-14 [44a7a052](https://github.com/rhpds/troshka/commit/44a7a0527a7145cd001eee8d8684030ad17d30ce) — fix: imagePullPolicy=Always for recert Job (cached stale image)
+- 2026-07-14 [a0a2fca9](https://github.com/rhpds/troshka/commit/a0a2fca906860691b6dc59de6122d03c924fb750) — chore: verify etcd+recert binaries during image build
+- 2026-07-14 [c15ff8c1](https://github.com/rhpds/troshka/commit/c15ff8c1c253bf57dcf6fdd49236d78172853508) — fix: KubeVirt VNC proxy stability and mouse tracking
+- 2026-07-14 [821b3aba](https://github.com/rhpds/troshka/commit/821b3aba9a2b3f456c38d69f77b8b0408d268fd8) — fix: use losetup+kpartx instead of qemu-nbd for recert disk access
+- 2026-07-14 [4b5364df](https://github.com/rhpds/troshka/commit/4b5364dfac9da54485caf6ca4b8070ca70d05f04) — debug: verbose mount errors in recert partition detection
+- 2026-07-14 [d41c46b5](https://github.com/rhpds/troshka/commit/d41c46b503ed757d50eec180342fcdcc67e68ed3) — fix: try mount without nouuid first (XFS-only option fails on ext4)
+- 2026-07-14 [b33adf81](https://github.com/rhpds/troshka/commit/b33adf81be9f53a1e18687cb05c5f264147df7f1) — fix: clear OCP status in frontend when project enters deploying state
+- 2026-07-14 [8915253d](https://github.com/rhpds/troshka/commit/8915253dd6bce8b9d4dbd42b5b0e267085081630) — fix: auto-detect RHCOS root partition in recert Job (not always p4)
+- 2026-07-14 [75297839](https://github.com/rhpds/troshka/commit/75297839fc5f9d029fad3dae1f6c43d6bfeb1611) — fix: specify --format=raw for qemu-nbd (CDI PVCs store raw disk images)
+- 2026-07-14 [1dd317bb](https://github.com/rhpds/troshka/commit/1dd317bbcdb65686fc826c5b33011ca0a1a41d70) — fix: use full disk ID for recert PVC lookup (was truncated, lookup returned None)
+- 2026-07-14 [8a6af593](https://github.com/rhpds/troshka/commit/8a6af59382d502c77675b41cc42c1c4b0850fe14) — fix: add os field to TroshkaVM CRD, grant SCC patch for privileged-jobs
+- 2026-07-14 [b275a58d](https://github.com/rhpds/troshka/commit/b275a58d53f290c27d1d129e90a34fcfa38146b6) — fix: grant operator SCC patch for troshka-privileged-jobs
+- 2026-07-14 [491e396d](https://github.com/rhpds/troshka/commit/491e396d029f4e2c16099b6321463ec124897df7) — feat: KubeVirt recert Job for OCP cert regeneration before VM boot
+- 2026-07-14 [04b8be06](https://github.com/rhpds/troshka/commit/04b8be0609612735642b68b8af6fb69759c3e66f) — feat: add libvirt-client and nmap-ncat to troshka-tools image
+- 2026-07-14 [c120641a](https://github.com/rhpds/troshka/commit/c120641a9c1e48a44eb0c6b2306c63a75743409e) — feat: exec pod uses troshka-tools image (oc, ssh, guestfs, awscli)
+- 2026-07-14 [2141dddc](https://github.com/rhpds/troshka/commit/2141dddc0a121e748a6602a9e0ea22030e801f4d) — chore: trigger operator image rebuild
+- 2026-07-14 [e1f6dfee](https://github.com/rhpds/troshka/commit/e1f6dfee98c2f5b3ed616b853011cc7a2a630bab) — ci: include workflow file in paths trigger
+- 2026-07-14 [59132eef](https://github.com/rhpds/troshka/commit/59132eef96b8a1ac892494544e3b72b2aa2b8918) — fix: use git diff for CI path filters (dorny/paths-filter blocked by enterprise)
+- 2026-07-14 [40217045](https://github.com/rhpds/troshka/commit/402170450c5ae4a0af3e1c812537cf75792a498d) — fix: prevent cloud-init userdata snowball, add per-job CI path filters
+- 2026-07-14 [d7706db9](https://github.com/rhpds/troshka/commit/d7706db9649097b3bae5af2bddb6d2718d777c81) — fix: clean cloud-init instance cache via bootcmd on every boot
+- 2026-07-14 [a6931e7c](https://github.com/rhpds/troshka/commit/a6931e7c45cdffdc4adeed2a80791d3169d5a55f) — fix: generate unique instance-id per KubeVirt deploy so cloud-init re-runs
+- 2026-07-14 [941936e8](https://github.com/rhpds/troshka/commit/941936e8c43a563aa02dc85d8421ad2475f4e3e2) — fix: exempt 10.0.0.0/8 from sshd PerSourcePenalty
+- 2026-07-14 [b02742ff](https://github.com/rhpds/troshka/commit/b02742ff14fbc43b595b584b469f6901f072b361) — fix: replace exec SSH key Secret on redeploy instead of skipping
+- 2026-07-14 [57c3b7dd](https://github.com/rhpds/troshka/commit/57c3b7ddf0d76bb345649bdcbd34bddd423517f7) — fix: restart ingress router on pattern deploy before console check
+- 2026-07-14 [88fa790d](https://github.com/rhpds/troshka/commit/88fa790db52b7d55807d5e61666765f547a2e336) — feat: frontend handles OCP status warning state
+- 2026-07-14 [325ef890](https://github.com/rhpds/troshka/commit/325ef89016bf3619e2f66e99c03decaeba726294) — fix: OCP health monitor reports warning when phases time out
+- 2026-07-14 [3fd28755](https://github.com/rhpds/troshka/commit/3fd28755ceeee3cf8e0a2c2cefa1f3511379ded6) — fix: bootcmd raises sshd StartLimitBurst to prevent crash loop
+- 2026-07-14 [262c59e0](https://github.com/rhpds/troshka/commit/262c59e0fc84d8696885bc723c6946bee80aaaa8) — fix: prevent sshd crash loop on pattern deploy, wipe stale authorized\_keys
+- 2026-07-13 [5e998c7a](https://github.com/rhpds/troshka/commit/5e998c7a44257b46a62cdde45dd2414e3a54be39) — fix: inject SSH keys via runcmd for pattern deploys, fix sshd crash loop
+- 2026-07-13 [3ccfaefb](https://github.com/rhpds/troshka/commit/3ccfaefbc9ff015821dc8e2ee86107fdd5dc2e31) — fix: add execSshKey to TroshkaProject CRD, set ocp\_status=monitoring for KubeVirt
+- 2026-07-13 [6e4be092](https://github.com/rhpds/troshka/commit/6e4be092ef495df4f40d273f0e292100cd5de013) — feat: KubeVirt native OCP status monitoring + DNS records in dnsmasq
+- 2026-07-12 [0d55dede](https://github.com/rhpds/troshka/commit/0d55dede143a9f175fd1c6f3adbf674e38cddb0c) — docs: update CLAUDE.md with guest-agent exec, KubeVirt exec, cloud-init unblock
+- 2026-07-12 [1bad21f1](https://github.com/rhpds/troshka/commit/1bad21f1d60bd6dc051d8365b8d4068af490d17e) — fix: use raw k8s\_stream for virsh JSON responses (preload\_content parses Python, not JSON)
+- 2026-07-12 [8d9845f4](https://github.com/rhpds/troshka/commit/8d9845f4527e3e6b508297dfc08e028ab04eb2fa) — fix: sort imports in kubevirt.py (ruff CI)
+- 2026-07-12 [fe15c617](https://github.com/rhpds/troshka/commit/fe15c617cff6fd986e092f4f5ade4aeb2b3224c4) — fix: undefine stale domains on redeploy instead of skipping (agent restart race)
+- 2026-07-12 [18c69062](https://github.com/rhpds/troshka/commit/18c6906269ca1e7d7cee51f750a59ad3e956d6d5) — feat: regenerate cloud-init on KubeVirt deploy (picks up guest-exec and other deploy-time settings)
+- 2026-07-12 [1dc01f0e](https://github.com/rhpds/troshka/commit/1dc01f0e617aa36c65febd6a75883d7ff863a99d) — fix: handle both RHEL allowlist and blocklist formats for guest-exec unblock
+- 2026-07-12 [29fb699e](https://github.com/rhpds/troshka/commit/29fb699e9376de4061c4038ffa34bff8f269c930) — fix: replace privileged SCC with narrow troshka-virt-exec SCC for virt-launcher exec
+- 2026-07-12 [0636bfa3](https://github.com/rhpds/troshka/commit/0636bfa32583dbde935bb47229e884dc46abbf23) — fix: codify privileged SCC binding for virt-launcher pod exec
+- 2026-07-12 [3d1f5053](https://github.com/rhpds/troshka/commit/3d1f5053ac4560253ffe5f8478e0eac64f6f405e) — feat: guest-exec enabled toggle + cloud-init unblock + fix pre-existing test
+- 2026-07-12 [f1624ed6](https://github.com/rhpds/troshka/commit/f1624ed65467df5720e85d0713fc0b0fff6ce8cf) — fix: use user timeout for KubeVirt SSH exec (was hardcoded 30s)
+- 2026-07-12 [608edb45](https://github.com/rhpds/troshka/commit/608edb453e0f580ddf44e86b52d7f8dd5bff7301) — feat: add exec RBAC + SSH packages to dnsmasq image
+- 2026-07-12 [3e01a1ab](https://github.com/rhpds/troshka/commit/3e01a1abd625298bd037f4f137ef22838cbb70ad) — feat: route KubeVirt VMs to provider-level exec functions
+- 2026-07-12 [1ce5b1c5](https://github.com/rhpds/troshka/commit/1ce5b1c5e651cfe926cc2f4ec91d3291072719c7) — fix: SSL verification, timeouts, and resource cleanup in KubeVirt exec
+- 2026-07-12 [8fcadccf](https://github.com/rhpds/troshka/commit/8fcadccfa8511c425d6bd89b0bf8d912b3826d25) — feat: add guest-agent, SSH, and console exec for KubeVirt native
+- 2026-07-12 [245a5fa3](https://github.com/rhpds/troshka/commit/245a5fa317b8496f6b665b8a63d44bf3599de903) — feat: add guest-agent to exec fallback order (first priority)
+- 2026-07-12 [2612266a](https://github.com/rhpds/troshka/commit/2612266acee82df7fc2b9b7bc8d081b86736d089) — feat: add guest-agent exec handler to troshkad
+- 2026-07-12 [2beff5ec](https://github.com/rhpds/troshka/commit/2beff5ecd9fc66a76937ab2e59e8095703f5366d) — docs: add guest-agent exec implementation plan
+- 2026-07-12 [2a5df5f6](https://github.com/rhpds/troshka/commit/2a5df5f6eaa581b6d02a2606415cd57bb2910197) — docs: add guest-agent exec + unified exec priority design spec
+- 2026-07-12 [8d31bc58](https://github.com/rhpds/troshka/commit/8d31bc58307a6ab67b30e6ee9ca35a111ad93e8e) — fix: wait for stale dnsmasq pod during republish (same 409 race as VMs)
+- 2026-07-12 [386b2a35](https://github.com/rhpds/troshka/commit/386b2a35915306a48f372822200a0a041f3bc7f9) — fix: use OVN layer2 without allowPersistentIPs (hangs pod creation)
+- 2026-07-12 [0ad3a5f4](https://github.com/rhpds/troshka/commit/0ad3a5f494166b9912e404b2d95586500d60c686) — test: switch back to OVN layer2 with allowPersistentIPs for re-test
+- 2026-07-12 [4b90a7b2](https://github.com/rhpds/troshka/commit/4b90a7b22a1899f3c9265011d5dd5afbcb8374ba) — fix: assign gateway IPs via env var (cnv-bridge doesn't support annotation IPs)
+- 2026-07-12 [e729df3e](https://github.com/rhpds/troshka/commit/e729df3e1ea529a35dbe74034e10d362c276cd52) — fix: shorten bridge name to 15 chars (Linux limit)
+- 2026-07-12 [bd3e7cfe](https://github.com/rhpds/troshka/commit/bd3e7cfe429fb39103ee384d90c2042a268f57df) — feat: switch from OVN layer2 to linux-bridge CNI for VM networks
+- 2026-07-12 [e17ac12a](https://github.com/rhpds/troshka/commit/e17ac12ae0f77e5660de5ed1f715c54eb227d3d3) — fix: disable rp\_filter in gateway pod — return traffic was being dropped
+- 2026-07-12 [7a003738](https://github.com/rhpds/troshka/commit/7a003738d6f901ecdd7daefbf4b80459617786a9) — fix: revert to privileged gateway with dedicated troshka-gateway SCC
+- 2026-07-12 [8415712f](https://github.com/rhpds/troshka/commit/8415712fb16ba687e40a40a764e3b0d9352579ce) — fix: use pod sysctl for ip\_forward instead of privileged container
+- 2026-07-12 [afd212ab](https://github.com/rhpds/troshka/commit/afd212abd907d7d545ae3753503b8c8eb0b6dd52) — fix: advertise dnsmasq IP (.2) as DNS server in DHCP responses
+- 2026-07-12 [0582f0ec](https://github.com/rhpds/troshka/commit/0582f0ec4c91c353bc95581d9319c5a8790c5b8a) — fix: dnsmasq uses .2 IP, gateway gets .1 — avoid IP conflict
+- 2026-07-12 [afe87fa1](https://github.com/rhpds/troshka/commit/afe87fa16dc7219bb6a3883238e47fa978f5c088) — fix: gateway pod needs privileged for ip\_forward sysctl
+- 2026-07-12 [b2cdce8e](https://github.com/rhpds/troshka/commit/b2cdce8eb300b48871e71ae31483c40ca1ec2949) — fix: auto DHCP range starts at .10 to match canvas default
+- 2026-07-12 [d64247a9](https://github.com/rhpds/troshka/commit/d64247a94fbf24dff05d36c6d7136760ae2767e7) — fix: use /proc path instead of sysctl in gateway entrypoint (ubi9-minimal)
+- 2026-07-12 [820b2a7a](https://github.com/rhpds/troshka/commit/820b2a7af19b20e365651cba4ddecc8c078379ce) — fix: skip gateway subtype in extract\_networks, fix api variable name
+- 2026-07-12 [93a3c1c0](https://github.com/rhpds/troshka/commit/93a3c1c0b82f217bb1b5066f93b3e083e540613a) — fix: extract\_networks derives gateway/DHCP/DNS from topology correctly
+- 2026-07-12 [45ba9bbd](https://github.com/rhpds/troshka/commit/45ba9bbd87cd77ba9ee2fc92ab5e8ec59fd7bef6) — fix: use gateway image for dnsmasq init container (has iproute)
+- 2026-07-12 [d271c02a](https://github.com/rhpds/troshka/commit/d271c02a09fde442b1c41acfe15b209a18fa1bc3) — security: validate IP addresses before shell interpolation
+- 2026-07-12 [3e73c735](https://github.com/rhpds/troshka/commit/3e73c73553942c92ca353fa79710ce19caebf120) — fix: assign static IP to dnsmasq pod, auto-generate gateway option
+- 2026-07-12 [4a8887e3](https://github.com/rhpds/troshka/commit/4a8887e35336d09aba8863709d93ec60d96e20de) — fix: use \_extract\_nic\_id in build\_static\_leases to parse handle format
+- 2026-07-12 [e9b1cd20](https://github.com/rhpds/troshka/commit/e9b1cd2066b464148cbead1804d987e4400e4ad6) — fix: auto-generate DHCP range from CIDR when not explicitly set
+- 2026-07-12 [16be2674](https://github.com/rhpds/troshka/commit/16be2674315c4109b5ce3693e1421c12d99d68d7) — fix: remove OVN IPAM from NADs — use pure L2 for VM networking
+- 2026-07-12 [67fa388b](https://github.com/rhpds/troshka/commit/67fa388ba4775587982e4f314b53e7d7986ae234) — fix: force-delete virt-launcher pods and wait before namespace delete
+- 2026-07-12 [fc905f74](https://github.com/rhpds/troshka/commit/fc905f7409ac62684138f68e35ff7b189a43faaa) — fix: delete VM CRs before VMIs on destroy (prevent VMI recreation)
+- 2026-07-12 [450dccba](https://github.com/rhpds/troshka/commit/450dccbaa9f295dafa857180a1b44be1cc4631be) — fix: force-delete VMIs in backend destroy\_project before namespace delete
+- 2026-07-12 [1b2fb669](https://github.com/rhpds/troshka/commit/1b2fb6695920ce45f6465c3209ad35c9f8c1f9fd) — fix: force-delete VMIs on project destroy (skip graceful shutdown)
+- 2026-07-12 [9e79ada1](https://github.com/rhpds/troshka/commit/9e79ada1584fa1a4e7f22341099c155c6809584e) — fix: add transitional states to VMNodeData status type
+- 2026-07-12 [8f7c7da3](https://github.com/rhpds/troshka/commit/8f7c7da3063af3dce15015068083e0fe20961a1c) — fix: wait for stale DataVolumes during republish
+- 2026-07-12 [b5d821b4](https://github.com/rhpds/troshka/commit/b5d821b4e63c0f796f7839a57558e07fbe58c687) — fix: handle KubeVirt VM create race during republish
+- 2026-07-12 [3c8925dc](https://github.com/rhpds/troshka/commit/3c8925dc98a6c252395571279a9b289f886cb16f) — fix: make CDROM PVC setup non-fatal, clear vmStates on deploy
+- 2026-07-12 [1dfd7668](https://github.com/rhpds/troshka/commit/1dfd76687a22a2c806c7b232cae3b2b08d579032) — fix: clear vmStates at deploy start, add Deployment RBAC to operator
+- 2026-07-12 [d4de99a5](https://github.com/rhpds/troshka/commit/d4de99a524035e43fd57ecda0e9225ef2b0a9fbd) — fix: KubeVirt VM state UX — direct VMI polling, transitional states
+- 2026-07-12 [4b64247c](https://github.com/rhpds/troshka/commit/4b64247ce348387845c92cf888d9c4fad326156e) — feat: KubeVirt native pattern capture via VolumeSnapshot + S3 export
+- 2026-07-12 [9ad686ca](https://github.com/rhpds/troshka/commit/9ad686ca431a55769f7251b87b3194961085f9b2) — fix: KubeVirt VM state polling — track live VMI state, fix stop timeout
+- 2026-07-12 [7d9ab543](https://github.com/rhpds/troshka/commit/7d9ab5437172a3c447f4b4e67e8f145bfe47bb5a) — fix: KubeVirt native networking — MAC addresses, gateway pod, VNC deploy
+- 2026-07-12 [3f4c8704](https://github.com/rhpds/troshka/commit/3f4c870417644ae125ab9b17216882c3ca425ac7) — feat: KubeVirt native VM start/stop/restart + VNC reconnect on restart
+- 2026-07-11 [30309b83](https://github.com/rhpds/troshka/commit/30309b83f77519d3782bd8ae048d6941b2ed1ecd) — docs: update KubeVirt Native Provider section with deploy+console details
+- 2026-07-11 [fdeb107a](https://github.com/rhpds/troshka/commit/fdeb107a14a64b6e0d7ad4ba16027a830527228e) — fix: read SA token directly from filesystem in VNC proxy
+- 2026-07-11 [74b45a11](https://github.com/rhpds/troshka/commit/74b45a11bb174e3dad2e53510a4e49f6aa3352e5) — fix: VNC Role needs both kubevirt.io and subresources.kubevirt.io
+- 2026-07-11 [9fce2b67](https://github.com/rhpds/troshka/commit/9fce2b6779d1181d6017f921f5a1c482c0cf5320) — fix: use get\_default\_copy() for in-cluster K8S config in VNC proxy
+- 2026-07-11 [0458e829](https://github.com/rhpds/troshka/commit/0458e82954e708f0c888bd9f0c9bf8e44290dea3) — fix: update VNC proxy for websockets 13+ API (single arg handler)
+- 2026-07-11 [85b9871e](https://github.com/rhpds/troshka/commit/85b9871ec9f61c33d26142386c1cb00dd42fdcc7) — fix: skip private\_key check for kubevirt-cluster hosts in console endpoint
+- 2026-07-11 [85120ee4](https://github.com/rhpds/troshka/commit/85120ee44e2e21d40dfa2c7174a037f06ea2b27b) — fix: use raw dicts for RBAC objects instead of typed client classes
+- 2026-07-11 [02ddbe27](https://github.com/rhpds/troshka/commit/02ddbe271abaf045bf2c335b894ee3d09d9b392e) — feat: add VNC console for kubevirt native via OCP Route
+- 2026-07-11 [212887ab](https://github.com/rhpds/troshka/commit/212887ab5bc2e9d260d6621111a9b97daa9d29aa) — fix: rename shadowed 'status' variable in disk dedup loop
+- 2026-07-11 [23150c83](https://github.com/rhpds/troshka/commit/23150c839e908637a8f7be3f45c7637e98787663) — fix: guard get\_project\_status return type at the source
+- 2026-07-11 [4a4ccc86](https://github.com/rhpds/troshka/commit/4a4ccc86576a26a260a862a9293f93c6680ef0e5) — fix: guard against non-dict status from get\_project\_status
+- 2026-07-11 [03c4c549](https://github.com/rhpds/troshka/commit/03c4c549f30f3d44c21b9c3f891d57da10158c0f) — fix: compute VM ready count from vmStates instead of operator's stale deployProgress
+- 2026-07-11 [bcec7b5e](https://github.com/rhpds/troshka/commit/bcec7b5e4a6c018302ab31af3d8203dd129ad158) — fix: sync canvas topology with deployed topology on kubevirt deploy
+- 2026-07-11 [27e9f74e](https://github.com/rhpds/troshka/commit/27e9f74ec05a15ac4cfd6fe8c5dc2f017e51fab4) — fix: strip transient S3 fields from deployed\_topology before saving
+- 2026-07-11 [a2a37429](https://github.com/rhpds/troshka/commit/a2a374290e7e27333f7cd9ef59009042c0f98e40) — fix: strip resolvedS3Path/presignedUrl from deployed topology snapshot
+- 2026-07-11 [90c660c6](https://github.com/rhpds/troshka/commit/90c660c629466327799c26c2843ffc9994681c19) — fix: exclude transient deploy fields from storage node dirty detection
+- 2026-07-11 [942f85e2](https://github.com/rhpds/troshka/commit/942f85e20054f14699d3dc8fdbba1ea39aa6553c) — fix: map kubevirt VM states by node ID instead of domain name
+- 2026-07-11 [2855ffdd](https://github.com/rhpds/troshka/commit/2855ffdd4af47748953521617b619cae5f3ba2e6) — fix: show VM startup progress after disks are done
+- 2026-07-11 [4b2f6617](https://github.com/rhpds/troshka/commit/4b2f66173e3932a400c13aa8306eb6774cae8ce3) — fix: unpack all 3 values from \_get\_k8s\_clients in get\_project\_status
+- 2026-07-11 [0139c4fa](https://github.com/rhpds/troshka/commit/0139c4fa8fb73d1307fd62113a25e3fd150dc31e) — fix: use current time for deploy deadline, not project.updated\_at
+- 2026-07-11 [477e158a](https://github.com/rhpds/troshka/commit/477e158a8069dce527311008e4e36980c8351704) — fix: create troshka-bmc service account before BMC pod
+- 2026-07-11 [f40b9346](https://github.com/rhpds/troshka/commit/f40b934613da2b6dc81250e8d4c7270bdba74c1a) — fix: add netAttachDefName to NAD config for OVN-Kubernetes
+- 2026-07-11 [77991003](https://github.com/rhpds/troshka/commit/77991003ead67d14302a7ecf2f38e76083555f4f) — fix: remove local time import that shadowed module-level \_time
+- 2026-07-11 [aad361ae](https://github.com/rhpds/troshka/commit/aad361ae3c2d3ead681ab91369e34752d911ba34) — fix: bootOrder placement and UEFI secureBoot default in KubeVirt spec
+- 2026-07-11 [914f2a99](https://github.com/rhpds/troshka/commit/914f2a994b9b1fab6cf3cc524a8cef4059a6f67d) — fix: use absolute deploy deadline instead of restart-relative timeout
+- 2026-07-11 [2966daad](https://github.com/rhpds/troshka/commit/2966daad38389873107ad93c8264139ca51d728e) — fix: match cdrom clone PVC size to golden PVC size
+- 2026-07-11 [f857d8af](https://github.com/rhpds/troshka/commit/f857d8af42e0069bef132b3305df9879c09db861) — fix: resolve cdrom PVC names to friendly ISO labels in deploy progress
+- 2026-07-11 [afe8a4ca](https://github.com/rhpds/troshka/commit/afe8a4cabd2542a005e6eaf38ee5f434c72261b8) — fix: add proper cleanup to operator delete handlers
+- 2026-07-11 [fc0e2c1b](https://github.com/rhpds/troshka/commit/fc0e2c1b393f0fa41575b23d28fdcf15c80189ee) — fix: use resolvedS3Path for library items and ISOs in topology parser
+- 2026-07-11 [b5613a26](https://github.com/rhpds/troshka/commit/b5613a2657582f1b6e39fc89c3d57e4ee8e49fe7) — fix: enable SMM for UEFI SecureBoot VMs on KubeVirt
+- 2026-07-11 [3978419a](https://github.com/rhpds/troshka/commit/3978419ad7dc9ae2ea350de3093cccf4883ef1a1) — fix: show 'writing to storage' at 99%+ since CDI provides no status during final sync
+- 2026-07-11 [2bc2631c](https://github.com/rhpds/troshka/commit/2bc2631c1c58d31fa6b9af4cae95cab105dc2bb6) — fix: replace stale CR on republish with fresh presigned URLs
+- 2026-07-11 [adbe4ff5](https://github.com/rhpds/troshka/commit/adbe4ff5fdda1757f95c69baad1d46208e4b9653) — feat: read qcow2 virtual size from S3 header for correct PVC allocation
+- 2026-07-11 [d458548d](https://github.com/rhpds/troshka/commit/d458548d5e6f9c78588226a5f5f3d88e1a120500) — fix: increase deploy timeout to 2 hours for slow S3 downloads
+- 2026-07-11 [61ef0168](https://github.com/rhpds/troshka/commit/61ef0168f13c996057eaf56826f7998b5188c908) — fix: show finalizing at 99%+, show error details for failed downloads
+- 2026-07-11 [d847c388](https://github.com/rhpds/troshka/commit/d847c388eb219711f82adcb20e03b535e6412aef) — fix: look up library item S3 key from DB for correct presigned URL path
+- 2026-07-11 [f762e9e5](https://github.com/rhpds/troshka/commit/f762e9e506109c1764724ac0d99dc1af1445acf2) — fix: add resolvedS3Path for library disks, clean up status display
+- 2026-07-11 [939b79d1](https://github.com/rhpds/troshka/commit/939b79d1197f238be4ce5ed3414c22968c85766d) — fix: add items field to DeployProgress interface
+- 2026-07-11 [8a804f3f](https://github.com/rhpds/troshka/commit/8a804f3f3ed8b8734f3c81cff5fd7e8c5ba3d52f) — feat: pre-create all golden PVCs in project handler for parallel downloads
+- 2026-07-11 [76eaf044](https://github.com/rhpds/troshka/commit/76eaf04494a3300ad85cd01ac33c675402230592) — fix: increase PVC headroom to 20% or +10GB for CDI import
+- 2026-07-11 [9afbe3c2](https://github.com/rhpds/troshka/commit/9afbe3c24ce306bf99f200c1e548f53b31fd6aaf) — fix: deduplicate disk status by label, show best status per disk
+- 2026-07-11 [6c1d9ff3](https://github.com/rhpds/troshka/commit/6c1d9ff39e462d6771d45269d946e2474301c639) — fix: handle both nested and flat deploy-progress message formats, ignore empty ones
+- 2026-07-11 [fcc72e04](https://github.com/rhpds/troshka/commit/fcc72e04f37c84d5fc27682ee198cb1bf2ffef0f) — fix: never clear deploy progress during deploy, only update
+- 2026-07-11 [b6b58d60](https://github.com/rhpds/troshka/commit/b6b58d6039f60864ac6025b07b9bc374650550cc) — fix: read deploy-progress fields from message root, not msg.progress
+- 2026-07-11 [5a65aec1](https://github.com/rhpds/troshka/commit/5a65aec1a5e397b9da3f025e203dcb050b8cc871) — feat: show waiting disks in deploy progress
+- 2026-07-11 [dfa08b32](https://github.com/rhpds/troshka/commit/dfa08b3261f0406a372f7dc288aace1c933b200d) — fix: don't clear deploy progress on project-state-batch messages
+- 2026-07-11 [8d6ff0f8](https://github.com/rhpds/troshka/commit/8d6ff0f8be4c74f126a558027499ef8e9c33c61e) — fix: skip empty progress updates entirely to eliminate flickering
+- 2026-07-11 [5a7830e7](https://github.com/rhpds/troshka/commit/5a7830e7dc3a4a37539bbb276dc87acfa5eb66a0) — fix: pass host\_id to place\_project on republish to keep same host
+- 2026-07-11 [1dbd2852](https://github.com/rhpds/troshka/commit/1dbd285226ff499bba6902b34042a5f83f636f62) — fix: add PVC headroom for CDI import, show both S3 downloads and clones in progress
+- 2026-07-11 [fa64e4ef](https://github.com/rhpds/troshka/commit/fa64e4ef1a15d6e9533438896d047cd785ffd3f1) — fix: only send deploy progress when it changes, prevent flickering
+- 2026-07-11 [575d32dd](https://github.com/rhpds/troshka/commit/575d32dd71399a0313718f26931f4f7271da5ff9) — fix: keep project phase Deploying until all VMs ready
+- 2026-07-11 [3248fc3e](https://github.com/rhpds/troshka/commit/3248fc3e5b387d75d0a3e44dec3b769bb86bdfe2) — fix: show disk downloads one per line in deploy progress
+- 2026-07-11 [1c3fd326](https://github.com/rhpds/troshka/commit/1c3fd326849d5f4e1285c933de18c14d90d93031) — feat: show all disk downloads with friendly names in deploy progress
+- 2026-07-11 [ace11981](https://github.com/rhpds/troshka/commit/ace1198156c21eba9369907b3e84940a8cb07055) — fix: cache last DV progress to prevent flickering deploy status
+- 2026-07-11 [d559231e](https://github.com/rhpds/troshka/commit/d559231e3e8446e55b072595accc5bf0ec4e62e2) — fix: republish redeploys on the same host instead of re-running placement
+- 2026-07-11 [d5c94e89](https://github.com/rhpds/troshka/commit/d5c94e890287d1e219d635dcbcb92290ad1652c7) — feat: resume existing TroshkaProject CR on deploy retry after restart
+- 2026-07-11 [c422b3a3](https://github.com/rhpds/troshka/commit/c422b3a37c28d731c119d8d457332f7738ce9c45) — feat: show DataVolume download progress in deploy status
+- 2026-07-11 [91ac495a](https://github.com/rhpds/troshka/commit/91ac495ad359363b450e3da216ac7f05741661a4) — fix: resolve original pattern disk IDs for S3 paths
+- 2026-07-11 [df106d2e](https://github.com/rhpds/troshka/commit/df106d2ed41b0039dbc651ad1a97b6e42626bfbc) — fix: SCC for network pods, presigned S3 URLs for CDI DataVolumes
+- 2026-07-11 [00dc4f1f](https://github.com/rhpds/troshka/commit/00dc4f1f7ad60fb8c5e68cdf4cf6a9e9c1376c54) — fix: resolve NIC network refs from topology edges, extract NIC ID from handle format
+- 2026-07-11 [d9923ab5](https://github.com/rhpds/troshka/commit/d9923ab547aa8bd7fa2611635e395b382c80e977) — feat: resolve disks and NIC networks from topology edges
+- 2026-07-11 [3ba07dfb](https://github.com/rhpds/troshka/commit/3ba07dfb0284ea504d9347eca24169cc45dec676) — fix: handle string bootOrder items from canvas topology
+- 2026-07-11 [3fd78853](https://github.com/rhpds/troshka/commit/3fd788537c86aa632d1f08eac75e085c127542f6) — fix: allow mixed types in bootOrder array (strings from canvas topology)
+- 2026-07-11 [d911e0e7](https://github.com/rhpds/troshka/commit/d911e0e7229699ab92055f63afa00ad323d4b56d) — fix: correct NAD plural to network-attachment-definitions
+- 2026-07-11 [f4d082e8](https://github.com/rhpds/troshka/commit/f4d082e8449720d4eb7c7264936bf7b93a34722a) — fix: remove blockOwnerDeletion from ownerReferences to avoid RBAC escalation
+- 2026-07-11 [55394d7d](https://github.com/rhpds/troshka/commit/55394d7d3717b1d98b333a2085237335f877c191) — fix: add finalizers subresource permission for ownerReference blockOwnerDeletion
+- 2026-07-11 [62f7ae2b](https://github.com/rhpds/troshka/commit/62f7ae2bf3bf38d8c31a18f83c5449985883de11) — fix: display RAM in TB when over 900 GB
+- 2026-07-11 [6e5cd7f9](https://github.com/rhpds/troshka/commit/6e5cd7f92f838bd446e5dfaea8b3460780f4fe21) — fix: display storage in TB when over 900 GB
+- 2026-07-11 [14d66d3b](https://github.com/rhpds/troshka/commit/14d66d3b77b53f0e9b1bdb9521452639eff22a57) — feat: show Ceph storage usage for kubevirt hosts in storage endpoint
+- 2026-07-11 [567349d7](https://github.com/rhpds/troshka/commit/567349d7b0ec8f441ec3764555a57de77241fd34) — fix: update storage\_size\_gb from Ceph capacity on install-operator
+- 2026-07-11 [449dd567](https://github.com/rhpds/troshka/commit/449dd567e696725e63d8afacf16a3c1a3deeba1b) — fix: parse ceph df stdout separately, hide all agent buttons for kubevirt hosts
+- 2026-07-11 [dbb17d42](https://github.com/rhpds/troshka/commit/dbb17d42650e6a4ec80960f2fb3f7a6598bf7764) — fix: health check reads operator namespace instead of default
+- 2026-07-11 [aa6f74cb](https://github.com/rhpds/troshka/commit/aa6f74cb0e3d68dc8342d91ec5deab3a37d4d491) — fix: use read\_namespace instead of list\_namespace for health check
+- 2026-07-11 [f30f6b7b](https://github.com/rhpds/troshka/commit/f30f6b7b15bf88555fa14271695d02201fd7aeef) — feat: kubevirt provider deletion cleans up operator, CRDs, namespaces, projects, hosts
+- 2026-07-11 [57bc7502](https://github.com/rhpds/troshka/commit/57bc75022ab1353d5939e09ff3e682e9dd0f806c) — feat: query ODF Ceph storage capacity, hide Remove button for kubevirt hosts
+- 2026-07-11 [3e9c34b8](https://github.com/rhpds/troshka/commit/3e9c34b876d329d14be03324b88d9e35cb6e89c1) — fix: only count schedulable worker nodes for kubevirt cluster capacity
+- 2026-07-11 [04bc747a](https://github.com/rhpds/troshka/commit/04bc747a2f4ac126d0523e5a60f2676e947a79e5) — fix: use list\_namespace for health check instead of non-existent get\_api\_versions
+- 2026-07-11 [f4e41086](https://github.com/rhpds/troshka/commit/f4e41086a741632af180b3ee357b02e58a08144d) — fix: hide irrelevant buttons for kubevirt-cluster hosts, populate capacity on install
+- 2026-07-11 [537ad53e](https://github.com/rhpds/troshka/commit/537ad53e3b3d3dd6b90858521db96814c28a65f9) — fix: show Reinstall Operator when operator already installed
+- 2026-07-11 [e9d3851d](https://github.com/rhpds/troshka/commit/e9d3851d2a24dd2ec8c409d4251a7ae92a279f70) — feat: configurable project namespace prefix for kubevirt providers
+- 2026-07-11 [faaba31d](https://github.com/rhpds/troshka/commit/faaba31dffe41f798d02d2cf47ee27e5d417dd56) — fix: add cache namespace field to kubevirt provider edit form
+- 2026-07-11 [97a62924](https://github.com/rhpds/troshka/commit/97a629247e334b8fb988319aafcc4c60dec7c856) — fix: add watch verbs for kopf peering and CRD discovery, skip existing RBAC resources
+- 2026-07-11 [079ef3fb](https://github.com/rhpds/troshka/commit/079ef3fb638beb8872e5c14691f45bf8c50c146e) — fix: skip existing ClusterRole/Binding instead of patching to avoid RBAC escalation
+- 2026-07-11 [4ad049da](https://github.com/rhpds/troshka/commit/4ad049dac16b63a9b4818adfa5980db437f7b302) — feat: kubevirt provider UX improvements and RBAC setup
+- 2026-07-11 [d18d617b](https://github.com/rhpds/troshka/commit/d18d617b628dd6519f624f9996f685c05e2e4840) — fix: enable provision button for kubevirt providers
+- 2026-07-11 [22efb7e6](https://github.com/rhpds/troshka/commit/22efb7e6f3dddbaac201da6c2038797a61143bd9) — fix: simplify host provision description wording
+- 2026-07-11 [46debd58](https://github.com/rhpds/troshka/commit/46debd58bc596b0dd5d6340f033bfc1deab7aa72) — fix: simplified host provision form for kubevirt — no instance type, zone, or pool
+- 2026-07-11 [3f3746db](https://github.com/rhpds/troshka/commit/3f3746dbf7d602df3d0535ab8661ccce457dbea9) — fix: include kubevirt in host provisioning provider dropdown
+- 2026-07-11 [9e8c50f8](https://github.com/rhpds/troshka/commit/9e8c50f85b492fb2b17be7505d6c53cd9518c9d2) — fix: sync namespace to default\_region for ocpvirt and kubevirt providers
+- 2026-07-11 [c10c3025](https://github.com/rhpds/troshka/commit/c10c30252d2668d4a9e925bdaf703e92299f7776) — fix: readable namespace status labels in test output
+- 2026-07-11 [fda42555](https://github.com/rhpds/troshka/commit/fda425551bfa21675358e4f5022378b33e7c4afa) — fix: clarify namespace test output — ok vs ok (just created) vs no access
+- 2026-07-11 [acd513ec](https://github.com/rhpds/troshka/commit/acd513ec26fe6b102ce4e5c9e06164f3ce6ae6c5) — fix: show warning to add host when operator/CRDs not installed
+- 2026-07-11 [b710e31d](https://github.com/rhpds/troshka/commit/b710e31dc8fc0fba19f5a5ce0b0e143df53e964b) — feat: configurable cache namespace, test creates namespaces and verifies permissions
+- 2026-07-11 [c135fd55](https://github.com/rhpds/troshka/commit/c135fd55e3e78340f52b8e7d34971fa304bbbd75) — feat: configurable operator namespace for kubevirt providers
+- 2026-07-11 [8a458704](https://github.com/rhpds/troshka/commit/8a458704ed69f7aad311e5e6a6065d86ed514697) — feat: show operator/CRD status in kubevirt test, remove namespace field
+- 2026-07-11 [4c8dbed0](https://github.com/rhpds/troshka/commit/4c8dbed0468e3a5c5805aed2f8300280db151ba7) — fix: add kubevirt test endpoint for provider connectivity check
+- 2026-07-11 [d030d17c](https://github.com/rhpds/troshka/commit/d030d17cfe579917999c256ef30ab5dfce788fc1) — fix: rename provider badges to KubeVirt Native and OCP Virt Nested
+- 2026-07-11 [bef36e9a](https://github.com/rhpds/troshka/commit/bef36e9a6ca6d864f8215c62afeab332ac1421a6) — fix: show KubeVirt badge and hide image discovery for kubevirt providers
+- 2026-07-11 [e767fb05](https://github.com/rhpds/troshka/commit/e767fb052503f775e8b597c807fc8b7de64208f2) — fix: use fedora base for troshka-tools image
+- 2026-07-11 [5ff71431](https://github.com/rhpds/troshka/commit/5ff7143162cedc92ee84c2c15300b6cdf17ccba9) — fix: remove unavailable tftp-server package from dnsmasq image
+- 2026-07-11 [45b76423](https://github.com/rhpds/troshka/commit/45b76423aed920a1a210c5acee94976026d9621b) — fix: remove unused pytest import from kubevirt tests
+- 2026-07-11 [ae3d8f2a](https://github.com/rhpds/troshka/commit/ae3d8f2ac3606aec93e854d80c014aad2896c794) — feat: wire kubevirt into provider API, host provisioning, VM lifecycle, console
+- 2026-07-11 [42ead914](https://github.com/rhpds/troshka/commit/42ead9146ab9694633591b2db17f4b559241722e) — feat: add kubevirt provider type to admin UI
+- 2026-07-11 [cea99aaa](https://github.com/rhpds/troshka/commit/cea99aaad66d85c6ac13c69044b15abbfef2f00e) — feat: wire kubevirt branches into deploy, destroy, state polling, health
+- 2026-07-11 [856e9c55](https://github.com/rhpds/troshka/commit/856e9c55c8378077911ec1b16beaddbcb9bced3c) — feat: add sushy Redfish emulator and VNC proxy images
+- 2026-07-11 [ecaf3e88](https://github.com/rhpds/troshka/commit/ecaf3e88b7f2157e3d6cf13f283f0730d5521278) — fix: use quay.io/redhat-gpte org for operator images
+- 2026-07-11 [bf6f3b67](https://github.com/rhpds/troshka/commit/bf6f3b67dbe038e05fd17c7ed55d93aa236cc849) — feat: auto-deploy operator to cluster on provision\_host
+- 2026-07-11 [86749c8f](https://github.com/rhpds/troshka/commit/86749c8f3df90ab107df6afdf2cc84b22a367710) — feat: complete troshka operator with all handlers and deployment
+- 2026-07-11 [8173fc6f](https://github.com/rhpds/troshka/commit/8173fc6ff90382ea920c5f4ba016e230aeb828d6) — feat: add kubevirt provider driver with K8s client setup
+- 2026-07-11 [1e3e8eae](https://github.com/rhpds/troshka/commit/1e3e8eae7dd8743177a554b1aab9e7efdcfad840) — feat: add kubevirt provider driver with K8s client setup
+- 2026-07-11 [6d9f59a4](https://github.com/rhpds/troshka/commit/6d9f59a4330874a29afd6e3866505930dc4b1490) — feat: scaffold troshka operator with CRD manifests
+- 2026-07-11 [4d2e5c43](https://github.com/rhpds/troshka/commit/4d2e5c43d7f5a47c0018732d97fb8d6125a182c4) — docs: add KubeVirt native provider implementation plan
+- 2026-07-11 [bd785394](https://github.com/rhpds/troshka/commit/bd785394aa5312ed0727b1d204322372d2301a13) — docs: add KubeVirt native provider design spec
+- 2026-07-10 [4053299d](https://github.com/rhpds/troshka/commit/4053299de968b2c8596ee90fd71c892e4ac14585) — fix: auto-save includes startOrder in change detection key
+- 2026-07-10 [278fbe6e](https://github.com/rhpds/troshka/commit/278fbe6e8bc41a606899e5622227773c6598d464) — fix: style forwards count as a green underlined link to match IPs/routes
+- 2026-07-10 [0755717a](https://github.com/rhpds/troshka/commit/0755717a884997a1dbec8347479a12f3c377cf4d) — fix: hide redundant forwards count when IPs/routes summary is shown
+- 2026-07-10 [316fac18](https://github.com/rhpds/troshka/commit/316fac18213fd5cfd15ce3f1d955b54984564399) — fix: remove ▸ expander arrow from forwards count on gateway card
+- 2026-07-10 [8e17270e](https://github.com/rhpds/troshka/commit/8e17270e0be55d028f78367ad25c91ff095dd9a0) — fix: merge internal IP:port, rename Via to External, reorder columns
+- 2026-07-10 [7f944ce3](https://github.com/rhpds/troshka/commit/7f944ce3b4bcb7f657f85f683bae6897d438c693) — fix: remove redundant Ext Port column from port forwards modal
+- 2026-07-10 [2346d778](https://github.com/rhpds/troshka/commit/2346d778104243543feb375a6febbef281c01074) — fix: Via column shows full access URL with port, copy includes port
+- 2026-07-10 [6109a537](https://github.com/rhpds/troshka/commit/6109a537ccaefafc5c0708482b2a37b42ae3ed74) — fix: merge OCP Routes into Port Forwards table, remove duplicate section
+- 2026-07-10 [41cd427c](https://github.com/rhpds/troshka/commit/41cd427c6f58c145f6288f76229fc92c55c069fa) — fix: gateway card shows compact summary, modal for full external access
+- 2026-07-10 [fccacf5a](https://github.com/rhpds/troshka/commit/fccacf5a79db64711aa57dfef6e58e7a7e0d1069) — fix: show pause icon instead of spinner when bastion is powered off
+- 2026-07-10 [70184f46](https://github.com/rhpds/troshka/commit/70184f4663813ebebc97979d21c64e1c4e742572) — fix: template export handles VM→network edges (not just network→VM)
+- 2026-07-10 [049f713a](https://github.com/rhpds/troshka/commit/049f713a83842a2ca6d0532b71294c989a71c1dc) — fix: tag display across VMs, port forward Apply, OCP Virt 6443 routes
+- 2026-07-10 [1ee0e100](https://github.com/rhpds/troshka/commit/1ee0e1003e101142f829e93cf063c4ba2b3209ca) — fix: port forward inputs use defaultValue + onBlur instead of controlled
+- 2026-07-10 [3b92a730](https://github.com/rhpds/troshka/commit/3b92a730d503e1daf5e938fbc02b48291a544ad6) — fix: skip OCP health monitor wait when bastion VM is powered off
+- 2026-07-10 [399b9854](https://github.com/rhpds/troshka/commit/399b9854d6741fbef61371dde88299858c43fa93) — fix: center gateway and network rows above VM row in auto-layout
+- 2026-07-10 [5ea5e869](https://github.com/rhpds/troshka/commit/5ea5e86976690b2382df0ec18e26be296c3cafef) — fix: allocate next available IP when duplicating a VM with static IPs
+- 2026-07-10 [70950bb8](https://github.com/rhpds/troshka/commit/70950bb80a5f9f29e4c8ebb749ffe3e6c8b027ea) — fix: remap bootDevices to cloned disk IDs when duplicating a VM
+- 2026-07-10 [aa72a6e0](https://github.com/rhpds/troshka/commit/aa72a6e04a73730153d3d9ee5ec8277365b8f070) — fix: NIC auto-add checks both top+bottom handles, remove stale BMC guard
+- 2026-07-10 [5daad1bd](https://github.com/rhpds/troshka/commit/5daad1bd11c682ab1a7628a39b1d11c2db52a275) — fix: auto-add NIC when dragging to an already-connected handle
+- 2026-07-10 [758c2124](https://github.com/rhpds/troshka/commit/758c21243051965f7a44d88243417ca452ba88ca) — fix: add NIC before edge creation to avoid duplicate key error
+- 2026-07-10 [1bf779d4](https://github.com/rhpds/troshka/commit/1bf779d4c15d1c7c5759fdd1a247026898e9d48a) — fix: NIC auto-add handle format and auto-assign IP from network CIDR
+- 2026-07-10 [f53d8f42](https://github.com/rhpds/troshka/commit/f53d8f42852adee7a94675e1725cfa9cc13a9192) — fix: auto-add NIC on network connect, unique BMC IP on VM copy
+- 2026-07-10 [974c99ac](https://github.com/rhpds/troshka/commit/974c99acb51902a0e6cdfd52f5d487d51cb933e2) — fix: Firefox auto-login retry, ownership, and self-destruct logic
+- 2026-07-10 [3bc6cfaf](https://github.com/rhpds/troshka/commit/3bc6cfaf50bd2d18efcf32c923599e14437a0f16) — fix: re-inject kubeadmin credentials into Firefox after recert
+- 2026-07-10 [810a4c6c](https://github.com/rhpds/troshka/commit/810a4c6cd67d9413b37abcc4925a3e95cc66238b) — fix: WS crash loop, boot order conflict, EIP missing arg, kubeadmin password
+- 2026-07-09 [cb0b40ba](https://github.com/rhpds/troshka/commit/cb0b40ba72560230ce8ca54ccb28c9364a903d38) — fix: backend performance, RAN disconnected DNS, pattern capture reliability
+- 2026-07-02 [d87cb690](https://github.com/rhpds/troshka/commit/d87cb69035ca0523bc9978cdbf345f1e923b0d28) — fix: button text "Create" for templates, widen port forward inputs
+- 2026-07-02 [5498942c](https://github.com/rhpds/troshka/commit/5498942c349ae74cf30c04f7e80e732478caf168) — fix: default bastion SSH port forward to 2222, update DVD ISO label
+- 2026-07-02 [758a8c97](https://github.com/rhpds/troshka/commit/758a8c970e019bbe9f00c644cea045427bf423b1) — fix: reconfigure syncs OCP Virt LB ports, block port 22 on ocpvirt
+- 2026-07-01 [41139b4e](https://github.com/rhpds/troshka/commit/41139b4e7248e5766d7e1a23f5936b29de142ee0) — fix: add TYPE\_CHECKING import for User in pattern model
+- 2026-07-01 [75da9f2e](https://github.com/rhpds/troshka/commit/75da9f2ef578fb058c7b1cdbdf0d89ac3b3bf466) — fix: replace guestfish with qemu-nbd for bastion injection, fallback library lookup by name
+- 2026-07-01 [c0606268](https://github.com/rhpds/troshka/commit/c060626809f8bba6a8e61af1e4a3e3f489c6fc16) — fix: ruff lint on recert migration
+- 2026-07-01 [4ab5ffaf](https://github.com/rhpds/troshka/commit/4ab5ffaf344bcd4cf48d678ac0800b7bac8b7d7c) — feat: recert integration for SNO pattern deploys
+- 2026-07-01 [8f4e8c1f](https://github.com/rhpds/troshka/commit/8f4e8c1f3aeec68e6ec57d78698f88c3ed030e11) — fix: count dedup removals in sync report
+
+## 2026-06
+
+- 2026-06-30 [1baaa3aa](https://github.com/rhpds/troshka/commit/1baaa3aaa77e298b152f1efd0b89d8ec6b246a2a) — fix: match library refs by libraryItemName not label
+- 2026-06-30 [52c3be01](https://github.com/rhpds/troshka/commit/52c3be01f2bc82504e8222ccc8eb77d8328153e8) — fix: remap library refs in central patterns, improve download progress UX
+- 2026-06-30 [85ba55b6](https://github.com/rhpds/troshka/commit/85ba55b6cef4a2979bc01871a8c1ad2cb93734c5) — feat: sync central patterns alongside library items, central S3 creds for pattern deploys
+- 2026-06-30 [2c53ecbb](https://github.com/rhpds/troshka/commit/2c53ecbb1856af8331fa409be9b90d92b0725cd3) — fix: dedup central library by size+format, skip pattern files, cleanup stale items
+- 2026-06-30 [e0b671be](https://github.com/rhpds/troshka/commit/e0b671be7e63b465468f25fa72c810a1d320f635) — fix: central S4 resilience — RWX PVC, Guaranteed QoS, PDB
+- 2026-06-30 [480ab196](https://github.com/rhpds/troshka/commit/480ab1968124e5918bcb1245439abe26df521a90) — ci: upgrade Backend CI to Python 3.13, fix mypy type annotation
+- 2026-06-30 [d8895552](https://github.com/rhpds/troshka/commit/d889555274b01951ac151c70a4366b6c057cc8ed) — fix: mypy type errors in pattern\_export and providers
+- 2026-06-30 [90e426e8](https://github.com/rhpds/troshka/commit/90e426e857e0301351bf5ecb771ef055296cd854) — fix: ruff lint errors (unused var, Union syntax)
+- 2026-06-30 [bf5ef03b](https://github.com/rhpds/troshka/commit/bf5ef03b417a8f7e76cb77c50a338a25e7be0bcb) — feat: s3\_readonly provider UI + auto-sync + export modal
+- 2026-06-30 [2f46ad68](https://github.com/rhpds/troshka/commit/2f46ad6867de60c6a20149589327367d7af36374) — feat: read-only central library source + pattern export/import
+- 2026-06-30 [ee76838e](https://github.com/rhpds/troshka/commit/ee76838e67dcade89bd531574d2846f846d80428) — feat: add read-only user and bucket policy setup to central S4 deploy
+- 2026-06-30 [f20ee206](https://github.com/rhpds/troshka/commit/f20ee2065127bb5c9a2604d924f5682cba9bc092) — docs: add example template import to getting started guide
+- 2026-06-30 [c9cd00dd](https://github.com/rhpds/troshka/commit/c9cd00dd787f64618a208ebe4ce764189b028b8b) — feat: replace MinIO with S4 for object storage
+- 2026-06-30 [70d69cc3](https://github.com/rhpds/troshka/commit/70d69cc3459318b1d13deeb3569527c031906a39) — fix: validate duplicate IPs per network before deploy
+- 2026-06-30 [6712f2eb](https://github.com/rhpds/troshka/commit/6712f2eb0a8140afc0cedc6b3b4d98dd00288608) — fix: tag input loses focus on every keystroke
+- 2026-06-30 [01c45f77](https://github.com/rhpds/troshka/commit/01c45f77636a79225f124caba28260a93161209c) — fix: prefix disk names with VM name to prevent duplicates
+- 2026-06-29 [8479c6f9](https://github.com/rhpds/troshka/commit/8479c6f95ad3abe5769b70c592ce8dafe8eb05be) — feat: add getting-started guide screenshots
+- 2026-06-29 [44825a31](https://github.com/rhpds/troshka/commit/44825a31709f62383ed47d0c8dcd0242b2e13524) — feat: Getting Started guide page with annotated screenshots
+- 2026-06-29 [5aa8d778](https://github.com/rhpds/troshka/commit/5aa8d778a4858105c1d97c52d9551cf0ff27103f) — feat: From Template YAML import flow and UI improvements
+- 2026-06-29 [84cb02dd](https://github.com/rhpds/troshka/commit/84cb02dded01cf75b8a0c1bdb0a64d52d38c2e1c) — feat: portable template export/import and OCP Route nodePort fix
+- 2026-06-29 [ccb376d5](https://github.com/rhpds/troshka/commit/ccb376d5581457ba01e172273561a1d0f1cf7c94) — feat: portable template export/import and OCP Route nodePort fix
+- 2026-06-29 [d4995836](https://github.com/rhpds/troshka/commit/d49958362b66299c3b1126289815319048323d18) — fix: keep EIP entries in topology on OCP Virt and always recreate Routes
+- 2026-06-29 [624c3c83](https://github.com/rhpds/troshka/commit/624c3c83795f14e2d08e56fe2dfbdc4f4584c77b) — ci: bump mypy ratchet to 124 (new cloud SDK stubs)
+- 2026-06-29 [ac9b38ea](https://github.com/rhpds/troshka/commit/ac9b38ea8bdc2299d3dbd8cce90d3a7b3f66971f) — fix: add missing deps to pyproject.toml and fix all test failures
+- 2026-06-29 [ab27a329](https://github.com/rhpds/troshka/commit/ab27a3299b536c05b4410cd52e67d2fe1ea1e82d) — ci: trigger backend CI on workflow file changes too
+- 2026-06-29 [c7a10007](https://github.com/rhpds/troshka/commit/c7a100070ccbb76904f6fb61f762c366db8f02db) — ci: ratchet mypy at 122 errors (cryptography stubs expose Optional issues)
+- 2026-06-29 [da9b501d](https://github.com/rhpds/troshka/commit/da9b501d9a9f39876ea437c7f127265677635052) — fix: add cryptography to pyproject.toml dependencies for CI
+- 2026-06-29 [acbb2ff4](https://github.com/rhpds/troshka/commit/acbb2ff4d4ee03978f3b12d1af94f257f029c1d4) — ci: restore strict mypy check now that all errors are fixed
+- 2026-06-29 [f5a9435c](https://github.com/rhpds/troshka/commit/f5a9435cfe0d9ba1d681ae25bb5434858130dc2a) — fix: resolve all 46 mypy type errors — clean type check
+- 2026-06-29 [77128a0a](https://github.com/rhpds/troshka/commit/77128a0af650dc2b33c204675835b573414edcfb) — ci: make mypy non-fatal until type issues are addressed
+- 2026-06-29 [a3de255a](https://github.com/rhpds/troshka/commit/a3de255a62251492426e0adaba7ac1d493177d0e) — fix: clean up all ruff lint errors and configure ignores
+- 2026-06-29 [caa42437](https://github.com/rhpds/troshka/commit/caa42437b467860173fa2b349a4625f3c7fe0bce) — fix: resolve ruff lint errors in test suite
+- 2026-06-29 [a3301974](https://github.com/rhpds/troshka/commit/a3301974b8a2fc203deecab793c0eb0534b60ef5) — fix: template export, WebSocket proxy, deploy cache locks, and UI improvements
+- 2026-06-26 [0bdf156e](https://github.com/rhpds/troshka/commit/0bdf156e13d8c758bebdba34a37ee91552b621ab) — perf: enable uvloop and httptools for faster async I/O
+- 2026-06-26 [0f9d2ae4](https://github.com/rhpds/troshka/commit/0f9d2ae42d14178cca780c4cd2e53203c383f8e5) — feat: make ISO PVC optional for OCP Virt hosts
+- 2026-06-26 [f9fcfb4e](https://github.com/rhpds/troshka/commit/f9fcfb4ed335ae8d7554a10d29da282690c4ac89) — fix: enable proxy-headers so FastAPI redirects use HTTPS behind oauth-proxy
+- 2026-06-26 [89d64351](https://github.com/rhpds/troshka/commit/89d64351a175933f025ac00a624c167255fb38a4) — fix: update-agent also pushes vncd after troshkad restarts
+- 2026-06-26 [5116c107](https://github.com/rhpds/troshka/commit/5116c1073294b2dd812c8f3eb10d484b78f3be7b) — fix: fall back to virsh list when libvirt event cache is empty
+- 2026-06-26 [570b3b43](https://github.com/rhpds/troshka/commit/570b3b43b51a4dd949f5bee38495644dfedafacc) — fix: WS auth accepts X-Forwarded-Email from oauth-proxy (not just JWT token)
+- 2026-06-26 [30b0f68a](https://github.com/rhpds/troshka/commit/30b0f68aab23e2a6c2e683d04a4d12c694831601) — fix: pass aws\_endpoint\_url to troshkad in deploy cache downloads
+- 2026-06-26 [303849a2](https://github.com/rhpds/troshka/commit/303849a2ef5ae283500bd6a50f8674b22a7f4b4c) — fix: handle list-format tags in PATCH endpoint (backward compat with old seed)
+- 2026-06-26 [2afb68ba](https://github.com/rhpds/troshka/commit/2afb68ba3b0b2ce068f3d0c8e84fcab7adb3bab0) — fix: convert tag list to dict format for OCP Default checkbox compatibility
+- 2026-06-26 [52686cc4](https://github.com/rhpds/troshka/commit/52686cc43b1a1e4b5cc23058b40c1f537b5c0d36) — feat: add skip\_copy flag to finalize-seed (default false preserves existing behavior)
+- 2026-06-26 [5fc9c151](https://github.com/rhpds/troshka/commit/5fc9c151a9b359c2aa76ed87d417a89de5ffb637) — fix: leftover dest\_key reference in finalize-seed response
+- 2026-06-26 [5ca71ae6](https://github.com/rhpds/troshka/commit/5ca71ae68a2a70c878332aae9a81da31bcc6bbf2) — fix: finalize-seed uses seed key directly instead of copying 10GB objects
+- 2026-06-26 [3376135d](https://github.com/rhpds/troshka/commit/3376135dddb0a9656941a816a3a41ac36915169e) — fix: show access denied message instead of broken UI for unauthorized users
+- 2026-06-26 [a6f670a8](https://github.com/rhpds/troshka/commit/a6f670a875387338d4d71d0e3c0c2c2e876902f5) — fix: show user identity in access denied message
+- 2026-06-26 [e92063f5](https://github.com/rhpds/troshka/commit/e92063f59d06617d1cf5422c991ad5b058a39eff) — fix: include troshka-vncd in backend container image
+- 2026-06-26 [b52a0132](https://github.com/rhpds/troshka/commit/b52a01324567519cd818d14936fc62c8d42cdce8) — feat: add disk\_gb param to host provisioning (was hardcoded to 500)
+- 2026-06-26 [03c00d62](https://github.com/rhpds/troshka/commit/03c00d623654fdac8564917e6ab1330911bf2c36) — feat: make host creation non-blocking — provision in background thread
+- 2026-06-26 [920be428](https://github.com/rhpds/troshka/commit/920be428af074f4a26bea50d89bbac1098e16ea9) — fix: increase proxy fetch timeout to 600s for long-running host creation
+- 2026-06-26 [3ebd2523](https://github.com/rhpds/troshka/commit/3ebd2523c7029ef018001860f331f9a5c38c9131) — fix: remove /api/v1 rewrite — API route handles proxying instead
+- 2026-06-26 [e4a28a0a](https://github.com/rhpds/troshka/commit/e4a28a0a21cd6c0fe8a9757ec2dd26a9d7cf779d) — fix: skip trailing slash redirect to prevent loop with FastAPI
+- 2026-06-26 [c1b8c547](https://github.com/rhpds/troshka/commit/c1b8c547aaf2fe0b5813294b63ed194e99eeb951) — fix: bake BACKEND\_URL at build time in Containerfile (same as Demolition)
+- 2026-06-26 [615f9c0b](https://github.com/rhpds/troshka/commit/615f9c0bfb2a0afe0598b7d52201dddb0a1cf2f6) — fix: use dynamic env lookup to prevent Next.js build-time inlining
+- 2026-06-26 [6da07fe2](https://github.com/rhpds/troshka/commit/6da07fe2e3e7c29c921f49cf6dbd59f13b7f387b) — fix: missed BACKEND\_URL reference in redirect handler
+- 2026-06-26 [03247fd7](https://github.com/rhpds/troshka/commit/03247fd7b08679d9a828dc1f122219786d62af53) — fix: read BACKEND\_URL inside function to avoid build-time evaluation
+- 2026-06-26 [8d1c5d07](https://github.com/rhpds/troshka/commit/8d1c5d077440ce63b2e896d703084f99c7780217) — feat: add runtime API proxy route for standalone/container mode
+- 2026-06-26 [afa5aa5c](https://github.com/rhpds/troshka/commit/afa5aa5cdc6362309238b4ed18c50dc88e7a8a91) — fix: central MinIO playbook namespace var and mc HOME dir
+- 2026-06-26 [cef9b6c1](https://github.com/rhpds/troshka/commit/cef9b6c11bbfeab48937978be1da51b15d76a9c5) — fix: extract \_enforce\_allowed\_users helper and simplify finalize-seed
+- 2026-06-26 [65cd8d45](https://github.com/rhpds/troshka/commit/65cd8d45f4e464909517367e8d683685bec783bd) — feat: add finalize-seed endpoint for library seeding from central MinIO
+- 2026-06-26 [47c98bf1](https://github.com/rhpds/troshka/commit/47c98bf14a5e4c9764c8274b66f74c29244d4822) — chore: move agnosticD role to agnosticd-v2 repo (not bundled in troshka)
+- 2026-06-26 [421a0e5a](https://github.com/rhpds/troshka/commit/421a0e5a8ff05aa3f8eca80ddbcaa31d45044bac) — feat: add agnosticD workload role for dedicated Troshka instances
+- 2026-06-26 [07dcb245](https://github.com/rhpds/troshka/commit/07dcb2450bd020b475808fcdd6f1ff488cab92a4) — infra: add central MinIO deployment playbook for gold images
+- 2026-06-26 [5a98de75](https://github.com/rhpds/troshka/commit/5a98de7520db4db94da36de440338428797a8810) — feat: add allowed\_users auth enforcement for dedicated instances
+- 2026-06-26 [ea3c1add](https://github.com/rhpds/troshka/commit/ea3c1adddd681a6a1a660e344891917cb5a75ea9) — feat: add upload proxy endpoint for MinIO behind cluster-internal services
+- 2026-06-26 [92d54481](https://github.com/rhpds/troshka/commit/92d54481bb1c03629cfe91b0d9b770710a93bd41) — docs: update seed images to RHEL 10.2 (bastion, guest, DVD)
+- 2026-06-26 [fede1b57](https://github.com/rhpds/troshka/commit/fede1b57be96706dd3da213096897ed8f2abd4f0) — feat: pass S3 endpoint\_url through to troshkad for MinIO support
+- 2026-06-26 [c43d396f](https://github.com/rhpds/troshka/commit/c43d396f13796d438f0634bd9ac5053d247fc69f) — docs: add implementation plan for dedicated Troshka catalog item
+- 2026-06-26 [5e0c09ea](https://github.com/rhpds/troshka/commit/5e0c09ea2739b02a1cea0d528d6b5828fef755c8) — docs: add design spec for dedicated Troshka catalog item
+- 2026-06-25 [6c7d7ec1](https://github.com/rhpds/troshka/commit/6c7d7ec192d5039a6b7a90d00e9957bcdb363e66) — fix: add root .dockerignore for container builds
+- 2026-06-25 [66501158](https://github.com/rhpds/troshka/commit/66501158942e48e9276b709279cc936f9b4c8939) — chore: update Quay registry from rhpds to redhat-gpte
+- 2026-06-25 [98021efa](https://github.com/rhpds/troshka/commit/98021efabd430a03e0a75bf7a727434602f2ee1d) — docs: add OCP deployment installation guide
+- 2026-06-25 [23f30c41](https://github.com/rhpds/troshka/commit/23f30c418f89df6d3be51f70033bba4a88241514) — fix: ImageTagMirrorSet for pull-through registry, PropertiesPanel store selector, auto\_stopped field
+- 2026-06-25 [4eb95790](https://github.com/rhpds/troshka/commit/4eb957905d9aa14642ad9645a7fc14497868c817) — ci: add GitHub Actions workflow to build and push container images
+- 2026-06-25 [d692d407](https://github.com/rhpds/troshka/commit/d692d40761093a31703a22c7a10aca3b35622e5b) — feat: add kustomize overlays for SSO, PostgreSQL, and MinIO
+- 2026-06-25 [7f6c466b](https://github.com/rhpds/troshka/commit/7f6c466b09ea27601e546e60035e48334aa9ba3c) — feat: add Ansible deploy/undeploy playbooks for OCP installation
+- 2026-06-25 [b87353d5](https://github.com/rhpds/troshka/commit/b87353d5c3fffda1d57e464a9159bb185f226015) — feat: add kustomize base manifests for OCP deployment
+- 2026-06-25 [024abf63](https://github.com/rhpds/troshka/commit/024abf63d0268dbde7c287dee455858b461b1b3e) — feat: add Containerfiles for backend and frontend OCP deployment
+- 2026-06-25 [96048906](https://github.com/rhpds/troshka/commit/960489064a58b3b572f8120b76445ffa78278ff8) — docs: OCP deployment implementation plan
+- 2026-06-25 [feea4192](https://github.com/rhpds/troshka/commit/feea4192562b41419aba865f46c96d7d4d264708) — docs: OCP deployment design spec
+- 2026-06-25 [eabf338f](https://github.com/rhpds/troshka/commit/eabf338f53eb2eb3cdc21aec483250fa072adbe8) — docs: update all documentation for recent features
+- 2026-06-25 [35a6ff19](https://github.com/rhpds/troshka/commit/35a6ff1961a7bc26b6b69aec07ccb7673690cdc0) — chore: remove stale memory file from repo
+- 2026-06-25 [5f336cec](https://github.com/rhpds/troshka/commit/5f336cecf4f7ff9096997bf03520de7ecff6c3ce) — chore: gitignore .superpowers/ brainstorming artifacts
+- 2026-06-25 [ab6c96bc](https://github.com/rhpds/troshka/commit/ab6c96bcb0f2f350f34d6ba58b1960ea04799d0e) — feat: clock backdating, chrony NTP, OCP health pre-install monitoring, specs and plans
+- 2026-06-25 [ec895ae7](https://github.com/rhpds/troshka/commit/ec895ae7926fdb942fb2859bbf5cdefab68fd1d5) — feat: add pod node support — container groups sharing a network namespace
+- 2026-06-25 [a5460e16](https://github.com/rhpds/troshka/commit/a5460e16fc1d0c1b9a815da334d0a16ad4266b6d) — feat: pull-through registry toggle on settings page
+- 2026-06-25 [42a28cec](https://github.com/rhpds/troshka/commit/42a28cec677ba6d82a6a0dc6f2ffbd3888a2d618) — feat: common\_password override on pattern deploy, fix test isolation
+- 2026-06-24 [4f4261b4](https://github.com/rhpds/troshka/commit/4f4261b4ac43def1f1afc1f59a520d1f868b575d) — feat: IBI standalone, OCP Route external access, showroom lab, pattern SSH keys
+- 2026-06-24 [81cb37c6](https://github.com/rhpds/troshka/commit/81cb37c6d9b26116117c224a66a67101bd9fd2ae) — fix: edge TLS for all Routes, remove stale EIP entries, clickable Route hostname on gateway
+- 2026-06-24 [82c189fb](https://github.com/rhpds/troshka/commit/82c189fb7d76f0bb4ac17de84f90c322d95b9082) — fix: skip EIP allocation on OCP Virt when all port forwards are routable via Routes
+- 2026-06-24 [61447f3d](https://github.com/rhpds/troshka/commit/61447f3d80f3a694e271f87ff4d934409078ed56) — fix: resolve Pyright errors in ocpvirt driver and deploy service
+- 2026-06-24 [1c16416d](https://github.com/rhpds/troshka/commit/1c16416d06e7d6601ed59109fbd1a90e0c1f5f86) — test: add unit tests for OCP Virt Route-based external access
+- 2026-06-24 [0d6d7521](https://github.com/rhpds/troshka/commit/0d6d752130d86de763149f649ab0f327746f2457) — feat: create OCP Routes for 443/80 port forwards during deploy, cleanup on destroy
+- 2026-06-24 [20acf998](https://github.com/rhpds/troshka/commit/20acf998ef74e1e5b986f29115d0e4184fcf5f1a) — feat: add Route-based external access methods to OCP Virt driver
+- 2026-06-24 [7ebd3f3d](https://github.com/rhpds/troshka/commit/7ebd3f3def3fcbcec508768ce506a6928ab1f1c2) — test: add unit tests for kubelet cert cleanup during pattern deploys
+- 2026-06-24 [a5e676d7](https://github.com/rhpds/troshka/commit/a5e676d75e464a46cb4c7a0300ab5c25c52529f6) — feat: clean kubelet certs before VM start on pattern OCP deploys
+- 2026-06-24 [3d844325](https://github.com/rhpds/troshka/commit/3d844325dfbcda4f56a6c7c7ee520ae2d7bf7c57) — feat: add /vms/modify-fs endpoint for offline guest filesystem modification
+- 2026-06-24 [96ffd64c](https://github.com/rhpds/troshka/commit/96ffd64ccccae78c108c4d3ebb69532ee0e34ada) — feat: add libguestfs-tools to agent installer for offline disk modification
+- 2026-06-24 [47d8708b](https://github.com/rhpds/troshka/commit/47d8708bfd1ef1e0fb60f6a30b6a8d542ae6f7f1) — feat: q35 machine type for UEFI VMs, vm-exec password/serial support
+- 2026-06-23 [8c6062ef](https://github.com/rhpds/troshka/commit/8c6062efb465e567912074dc6056583ea4313704) — docs: VM clock backdating design spec
+- 2026-06-23 [9251f251](https://github.com/rhpds/troshka/commit/9251f251d1ecce1709f8ca3bea48dc1ba9b72904) — feat: container nodes — podman containers as first-class canvas objects
+- 2026-06-22 [16f76101](https://github.com/rhpds/troshka/commit/16f76101951ff91ebdece8849cf9f2f424769457) — docs: container nodes design spec — podman containers as canvas peers to VMs
+- 2026-06-22 [a6b19b9b](https://github.com/rhpds/troshka/commit/a6b19b9bd61d2d731f6cba517c9902d80b70f9a4) — fix: extract uuid from topology node data for virt-install
+- 2026-06-22 [e94f0d9a](https://github.com/rhpds/troshka/commit/e94f0d9af6e008b1863dc097f89f9e3a28c88540) — remove ibi-status.md — info captured in memory
+- 2026-06-22 [6a8dd20c](https://github.com/rhpds/troshka/commit/6a8dd20c58374dc82f7502051e4b98d3f05b0466) — feat: deterministic VM UUIDs, IBI status doc, deploy script logging
+- 2026-06-22 [b157b414](https://github.com/rhpds/troshka/commit/b157b4141e990a8fac589d7ad939dc5c926192c4) — docs: IBI standalone Phase 1 implementation plan
+- 2026-06-22 [bd9ade08](https://github.com/rhpds/troshka/commit/bd9ade0831e2d804302f3ee2796584bb391afa79) — docs: IBI standalone redesign spec — seed build + deploy
+- 2026-06-22 [4497aa5d](https://github.com/rhpds/troshka/commit/4497aa5d7895a919ec88df0cd9bc2df71f56ce30) — feat: agent stability, bastion builder template, IBI fixes, UI improvements
+- 2026-06-21 [4c17ad71](https://github.com/rhpds/troshka/commit/4c17ad717d860e99798b84934d2786f24b5be8e1) — fix: add vault password file to test scripts for pull-through registry secrets
+- 2026-06-21 [6ba1c574](https://github.com/rhpds/troshka/commit/6ba1c574f03f60749ec3503dc5f69e3a2d6bffa1) — feat(ocp): inject registries.conf.d mirror config on bastion when pull-through registry enabled
+- 2026-06-21 [4f5fb633](https://github.com/rhpds/troshka/commit/4f5fb63312549e128990eced4cfee4ba19c84eed) — feat: inject imageDigestMirrorSet in install-config when pull-through registry enabled
+- 2026-06-21 [0efdbb6e](https://github.com/rhpds/troshka/commit/0efdbb6e30bb658d2134c601623a74b4ef4d361c) — feat: pass pull\_through\_registry section through template loader
+- 2026-06-20 [6322eaee](https://github.com/rhpds/troshka/commit/6322eaee78b52ea0951633b0c5dd8c4f0ae0d925) — feat: agent stability, YAML-driven templates, ocp\_mount, vm scripts
+- 2026-06-19 [26e49b9d](https://github.com/rhpds/troshka/commit/26e49b9dd8fcdc4947f17872208e5be47d896e44) — fix: stability improvements for agent connectivity and host polling
+- 2026-06-18 [56499414](https://github.com/rhpds/troshka/commit/56499414bab0fc1db5c2fa38beee8820b2f0827b) — perf: fast job polling, bump timeout to 300s, show GUID in project list, pass extra args in test script
+- 2026-06-18 [a942e1e5](https://github.com/rhpds/troshka/commit/a942e1e5822abf5830271bc015d26eece8353af1) — perf: fast initial job polling (0.1s ramp), show GUID in project list
+- 2026-06-18 [043644ba](https://github.com/rhpds/troshka/commit/043644ba9f3b3dd121cac68abb8e5516da3cabb1) — feat: add guid to ProjectUpdate and ProjectResponse schemas
+- 2026-06-18 [ce0f8abb](https://github.com/rhpds/troshka/commit/ce0f8abbe9ba2774d37191fe0f34e6c234e9d2ec) — fix: import tempfile in ssh-exec handler for key-based auth
+- 2026-06-18 [3b0f1e81](https://github.com/rhpds/troshka/commit/3b0f1e81234f3db98fb98d9d26f796d4de3a06b3) — fix: accept ssh\_pub\_key directly in from-template API for agnosticd key injection
+- 2026-06-18 [bd1801aa](https://github.com/rhpds/troshka/commit/bd1801aa1f557a0f7fe66a7f6ed6885bed3eae78) — fix: GC orphan discovery checks all projects in storage pool, not just local host
+- 2026-06-18 [5f68b991](https://github.com/rhpds/troshka/commit/5f68b991d22357811225f27dcd4ef19ec5ceb37f) — feat: replace use\_ssh with method=ssh|serial|auto in exec API
+- 2026-06-18 [921f6ecc](https://github.com/rhpds/troshka/commit/921f6ecc97c8dd5a58dbdb31f0238cd0902050b4) — feat: add vm\_ready endpoint and SSH key support in exec API
+- 2026-06-18 [5b3134ae](https://github.com/rhpds/troshka/commit/5b3134ae55af8b9c9dfc89d204ebe0c833893b0f) — feat: SSH key-based auth for exec API, key preferred over password
+- 2026-06-18 [ef1853ff](https://github.com/rhpds/troshka/commit/ef1853ff9b35fd79214c3a10098235c1a21b27ea) — fix: set cloud-user password + SSH keys for agnosticd-driven bastion
+- 2026-06-18 [75d38555](https://github.com/rhpds/troshka/commit/75d38555804abbc7553abfc62a8c94833c7c6988) — fix: inject SSH keys instead of password for agnosticd-driven bastion
+- 2026-06-18 [c7db79e7](https://github.com/rhpds/troshka/commit/c7db79e7ab169949c0ab01b22cd26ec110f9dd68) — fix: set cloud-user password even when auto\_install\_ocp is false
+- 2026-06-18 [b0d0a577](https://github.com/rhpds/troshka/commit/b0d0a5775a76296a939894b8c409c707345e3790) — feat: skip cloud-init when agnosticd-driven, clean up test script
+- 2026-06-18 [8fb4c5ae](https://github.com/rhpds/troshka/commit/8fb4c5aeb87da648daf19ea330db9bbb09c39624) — fix: read VIPs from template, common\_password overrides, no name guessing
+- 2026-06-18 [2f6eb2a8](https://github.com/rhpds/troshka/commit/2f6eb2a81318ba3ea1b474101a134eee37bf1997) — refactor: common\_password with per-target overrides, no fallback guessing
+- 2026-06-18 [0c6cb9da](https://github.com/rhpds/troshka/commit/0c6cb9daa8199dceedad031dbbfa923383604313) — fix: use YAML parser for cloud-init validation instead of regex
+- 2026-06-18 [42c7e022](https://github.com/rhpds/troshka/commit/42c7e0222dae63f9b238485d381769b8b17fb8d1) — fix: gateway connects to specified network, not arbitrary first
+- 2026-06-18 [6b0af51e](https://github.com/rhpds/troshka/commit/6b0af51ec974b80542f0c22d4e277541da0c2c76) — fix: move custom\_password from URL query to POST body
+- 2026-06-18 [5341362d](https://github.com/rhpds/troshka/commit/5341362dcbb21b4a272841f2dde38b12c4020dbe) — feat: password mode selector in export template modal
+- 2026-06-18 [78206511](https://github.com/rhpds/troshka/commit/78206511d6ab28e178019f17749db09a9cb98e03) — feat: export BMC credentials, plain-text password warning
+- 2026-06-18 [b54606ae](https://github.com/rhpds/troshka/commit/b54606ae2d979b1aa0e69be00b9b2ce3ec38563c) — feat: full-fidelity template export/import round-trip
+- 2026-06-18 [52a1878e](https://github.com/rhpds/troshka/commit/52a1878ed3b22b0903d2a5bc55e12c463f208185) — fix: position ISO node to left of VM like disks, add border to import button
+- 2026-06-18 [992f77cc](https://github.com/rhpds/troshka/commit/992f77cc1976144a754349dac7e1eb36d16ad894) — feat: include ISO storage nodes in template export/import
+- 2026-06-18 [f7f37abb](https://github.com/rhpds/troshka/commit/f7f37abbade2a83048d241ba7e5e5d22960a954f) — feat: enforce unique node names in project topology
+- 2026-06-18 [2948fdb6](https://github.com/rhpds/troshka/commit/2948fdb662a1951167aa3d34f5ef3491dee8ae2d) — fix: use loadProject after template import for reliable edge rendering
+- 2026-06-18 [274becfa](https://github.com/rhpds/troshka/commit/274becfa17beb2213c6cc9123388d20f9a9515d6) — docs: add pattern export/import design spec
+- 2026-06-18 [4122f36e](https://github.com/rhpds/troshka/commit/4122f36efbfb7b5defa9dc1a6f22872dbce421d1) — fix: NIC-to-network edge mapping in template export
+- 2026-06-18 [271deb4f](https://github.com/rhpds/troshka/commit/271deb4ffb3f0f936dbad3d986230ac9009d4044) — fix: add border to export Download YAML button, simplify modal text
+- 2026-06-18 [7dc7d7b4](https://github.com/rhpds/troshka/commit/7dc7d7b4789fa297dcd46b87f3e9fd182112d736) — fix: scope library item validation to user, update export modal text
+- 2026-06-18 [3b176bb3](https://github.com/rhpds/troshka/commit/3b176bb30b4a3f9b8afbcd2d1dda1d338b745460) — feat: support library item references in template import/export
+- 2026-06-18 [af8b986b](https://github.com/rhpds/troshka/commit/af8b986bb697635e20921952b3c7d7a59e6dc9a3) — docs: update CLAUDE.md with template import/export, agnosticd-v2 integration, NIC models
+- 2026-06-18 [da4e5936](https://github.com/rhpds/troshka/commit/da4e5936a9053ac4a99b3dba4a512369e8467f43) — fix: allow palette interaction behind import template overlay
+- 2026-06-18 [1130368a](https://github.com/rhpds/troshka/commit/1130368aada495fcbd4514346741b4c79fdfc695) — feat: add import/export template YAML in project UI
+- 2026-06-18 [c91407c2](https://github.com/rhpds/troshka/commit/c91407c2e0b26fe18f2cf983d9e8bb69ad58273f) — feat: add export-template endpoint for projects and patterns
+- 2026-06-18 [dd06a3e5](https://github.com/rhpds/troshka/commit/dd06a3e5ec3ed1b0717b237da74d816368bd5e80) — refactor: remove workload section from template loader
+- 2026-06-18 [2364dee2](https://github.com/rhpds/troshka/commit/2364dee21695f4d3bed91a2553dfbbcf1c53038a) — refactor: move bastion services to agnosticd-v2 roles
+- 2026-06-18 [b42f697f](https://github.com/rhpds/troshka/commit/b42f697f3ba20deb46e0defcd0c1d88aebdeffb2) — feat: accept inline template YAML from external sources
+- 2026-06-18 [b02bc99e](https://github.com/rhpds/troshka/commit/b02bc99e24f691e23c92251ebce4b966e967d89a) — refactor: replace ran\_bastion.py with generic bastion\_services.py
+- 2026-06-18 [082d88a0](https://github.com/rhpds/troshka/commit/082d88a06a8ed4752af0ba060e6c3797dfa63a6e) — refactor: decouple catalog items from Troshka codebase
+- 2026-06-17 [16d998b9](https://github.com/rhpds/troshka/commit/16d998b9c1c646a013974952d6b79db27d62e4af) — fix: add infra DNS record, Ptyxis Hurtado palette, OCP status step
+- 2026-06-17 [6701f943](https://github.com/rhpds/troshka/commit/6701f94392012878212dcbcb7d8a30d72aae0450) — fix: RAN template deploy fixes and infrastructure hardening
+- 2026-06-17 [299819f4](https://github.com/rhpds/troshka/commit/299819f432de95542028b9c4b81d043e279e21d4) — feat: unified auto-layout engine shared between backend and frontend
+- 2026-06-17 [b88d1a48](https://github.com/rhpds/troshka/commit/b88d1a4863722999724a0384c3719ff03cfc414c) — docs: restructure AWS install guide — UI first, API collapsible
+- 2026-06-17 [32c38e0b](https://github.com/rhpds/troshka/commit/32c38e0ba98ca2c9fe167763205dc9b734fde372) — docs: restructure GCP install guide — UI first, API collapsible
+- 2026-06-17 [3a863a9d](https://github.com/rhpds/troshka/commit/3a863a9db814a88c94b44eb9bf6aa3c956434b05) — docs: restructure OCP Virt install guide — UI first, API collapsible
+- 2026-06-17 [7db6b6f6](https://github.com/rhpds/troshka/commit/7db6b6f6a9c01cfca9c2cf7771ba3411a4e71068) — docs: restructure Azure install guide — UI first, API collapsible
+- 2026-06-17 [2b8806c1](https://github.com/rhpds/troshka/commit/2b8806c14976f320bf275b9ea07425806e143823) — feat: add 5G RAN lab template with YAML-driven topology and igb NIC model
+- 2026-06-17 [5750c414](https://github.com/rhpds/troshka/commit/5750c414eb0ab305bc13bf415a1ef10b5be5f670) — fix: show 'stopped (auto)' on projects list page
+- 2026-06-17 [2976be5e](https://github.com/rhpds/troshka/commit/2976be5ea9abed998ac492c7c23d0eb07b9052d5) — feat: add auto\_stopped flag to show 'stopped (auto)' in state badge
+- 2026-06-17 [9b700ff9](https://github.com/rhpds/troshka/commit/9b700ff9947ddf9845be880d88c8dea880e4329e) — fix: show 'Project was Auto-Shutdown' when timer expires
+- 2026-06-17 [035b9fad](https://github.com/rhpds/troshka/commit/035b9fadb51bb858946665d7a21e83bedbf61ebd) — fix: hide timer badge when expired instead of showing 'Expired'
+- 2026-06-17 [4c07f94d](https://github.com/rhpds/troshka/commit/4c07f94d5cfda954c6f54d417d9f2d060debeb29) — fix: show seconds in timer countdown badge
+- 2026-06-17 [cf8c06e6](https://github.com/rhpds/troshka/commit/cf8c06e6bb85c870e54b62620fe8e86517fea47c) — fix: restore clock icon on timer badge
+- 2026-06-17 [53297c8d](https://github.com/rhpds/troshka/commit/53297c8d12aa2b441adfd4c65baae14f3c313851) — fix: show 'Shutdown in Xm' or 'Deleting in Xm' on timer badge
+- 2026-06-17 [6caa583b](https://github.com/rhpds/troshka/commit/6caa583b1aad4e40d64bed4ea4e750fd28b44fc9) — fix: start timer immediately when set on already-active project
+- 2026-06-17 [c426cbdd](https://github.com/rhpds/troshka/commit/c426cbdd491764d460e04a849315d97aa675d53b) — fix: sync timer expiry to frontend via WebSocket project-state messages
+- 2026-06-17 [98ce5ade](https://github.com/rhpds/troshka/commit/98ce5ade1a157b2b33ab46a0b4d462297ebadba4) — docs: add 5G RAN lab template design spec
+- 2026-06-17 [9c779ca7](https://github.com/rhpds/troshka/commit/9c779ca7880850977f6b29ce305c95b8505d0b6c) — fix: clear countdown interval when timer expires to prevent memory leak
+- 2026-06-17 [c6ed9515](https://github.com/rhpds/troshka/commit/c6ed9515e2878a7bb812d04cc292a30779178ca5) — feat: add countdown badge and toast warnings for project timers
+- 2026-06-17 [e3cb1bf8](https://github.com/rhpds/troshka/commit/e3cb1bf8df512cb41a18f30f6ebebc5d8cb89bc7) — feat: add auto-stop and auto-delete timer controls to canvas palette
+- 2026-06-17 [f650be84](https://github.com/rhpds/troshka/commit/f650be8475aecae0f77f956c8cbfe9ab7b394a10) — feat: add project timer daemon and state transition hooks
+- 2026-06-17 [bbc0d6b4](https://github.com/rhpds/troshka/commit/bbc0d6b4ea2b4d4d97e884b709ccc34a1e77c79d) — feat: add extend-timer endpoint and timer-aware PATCH logic
+- 2026-06-17 [a304734e](https://github.com/rhpds/troshka/commit/a304734eeac57f26114af22c390687458866a3a0) — feat: add auto-stop and auto-delete timer columns to project model
+- 2026-06-17 [7d921df7](https://github.com/rhpds/troshka/commit/7d921df784d785900d5473160eac6a67a078d04b) — docs: add project auto-timers implementation plan
+- 2026-06-17 [b0b74dc3](https://github.com/rhpds/troshka/commit/b0b74dc32d8a2e02d4d7fc280df6475904562892) — docs: add project auto-stop and auto-delete timers design spec
+- 2026-06-17 [dc779e1e](https://github.com/rhpds/troshka/commit/dc779e1eeadd8b382e245b378ddf23f50cd3abbb) — fix: hide agent badge on stopped hosts, show 'reconnecting' during startup
+- 2026-06-17 [b0c8a0cd](https://github.com/rhpds/troshka/commit/b0c8a0cd5e954d40ca8c5921f56cd21c90510803) — fix: reset host to stopped if instance never reaches running after power-on
+- 2026-06-17 [10f23952](https://github.com/rhpds/troshka/commit/10f239529e7ba918f0a9fc0ed555b223cd491472) — fix: show active/total count in All Providers card, exclude stopped hosts from aggregates
+- 2026-06-17 [b54e185e](https://github.com/rhpds/troshka/commit/b54e185e2a6e5229444ba0925c23da7dac4f1b31) — feat: move search/filter controls above host list, rename overcommit toggle
+- 2026-06-17 [ffc3ef0b](https://github.com/rhpds/troshka/commit/ffc3ef0b5615d485c3574c9eacaa885d0cdf83bb) — fix: wait for instance to fully stop before starting on power-on
+- 2026-06-17 [4c69c5c8](https://github.com/rhpds/troshka/commit/4c69c5c8998164c7d74fb43d99f34818eeaecf2f) — feat: add overcommit toggle to host summary cards
+- 2026-06-17 [7a4c55b3](https://github.com/rhpds/troshka/commit/7a4c55b391001c6572599ab9eff15cb0ed4d6449) — fix: missing PageSection close tag in hosts page
+- 2026-06-17 [c6578874](https://github.com/rhpds/troshka/commit/c65788743e0e1a935382ae5721bd358fcb5c8d9c) — feat: group host summary cards by provider with running VM counts
+- 2026-06-17 [ac618132](https://github.com/rhpds/troshka/commit/ac618132b7840f251a5c77f8621b7b1a0557435f) — feat: show aggregate vCPU and RAM in All Regions summary card
+- 2026-06-17 [bdeef727](https://github.com/rhpds/troshka/commit/bdeef7276bce5cc55bdf4f6c5cad61c0f628bca8) — fix: use disconnected instead of install\_failed for power-on agent deploy failures
+- 2026-06-17 [6f5c1056](https://github.com/rhpds/troshka/commit/6f5c1056d85ae5aca6a9fc9dffe7cba3d8dd2a7f) — fix: also reset install\_failed hosts to disconnected on startup
+- 2026-06-17 [2df19ba3](https://github.com/rhpds/troshka/commit/2df19ba348eab6141fd7048c3055fc29aa367552) — fix: make power-off non-blocking — cloud API stop call runs in background
+- 2026-06-17 [60984509](https://github.com/rhpds/troshka/commit/6098450994b3484be3681a6916a96c6c591ef7af) — fix: reset hosts stuck in waiting\_ssh/installing on backend startup
+- 2026-06-17 [e9d9697d](https://github.com/rhpds/troshka/commit/e9d9697dd562a299b3484160818ceb6c1d931fc7) — fix: wrap all host buttons in isPowering check, fix powering on/off label
+- 2026-06-17 [c4c50714](https://github.com/rhpds/troshka/commit/c4c507146c8b4d4ec9e001f2c260d6633970a4bd) — fix: hide host action buttons during power-off, show only Remove
+- 2026-06-17 [5d7cdbec](https://github.com/rhpds/troshka/commit/5d7cdbecbb94623bde5bfffe9125a3461d7b265e) — fix: make power-on non-blocking — cloud API calls run in background thread
+- 2026-06-17 [35b009d5](https://github.com/rhpds/troshka/commit/35b009d50929faa69a657bdd42e807457988f177) — fix: make all host action buttons independent (install, update, remove, GC, wipe)
+- 2026-06-17 [983b414e](https://github.com/rhpds/troshka/commit/983b414ed883571c992ad58bff909ff1293e1e13) — fix: allow concurrent host power-on/off operations without spinner conflicts
+- 2026-06-17 [7549ba8b](https://github.com/rhpds/troshka/commit/7549ba8ba274654a0eb5e810bc9aa5c4407ca494) — fix: remove EC2 fallbacks from host power-off and storage resize
+- 2026-06-17 [2b3cbe66](https://github.com/rhpds/troshka/commit/2b3cbe664ef71b2cef67d3ec6f050515bc5df817) — fix: use provider driver for host power-on instead of EC2-specific code
+- 2026-06-17 [e1b6bdd0](https://github.com/rhpds/troshka/commit/e1b6bdd04d0587121de82736957af9cf485685ec) — fix: retry pattern buffer agent install on backend startup
+- 2026-06-17 [48e794da](https://github.com/rhpds/troshka/commit/48e794da87d0de694d7f37f7a5eee860509fba13) — fix: use virtual size for flatten progress instead of thin file size
+- 2026-06-17 [f8117f2c](https://github.com/rhpds/troshka/commit/f8117f2c50408da7436eddff6acd2331701cd771) — fix: show quiesce progress in pattern capture WebSocket updates
+- 2026-06-17 [28adf66d](https://github.com/rhpds/troshka/commit/28adf66dd8a34b44ec3d1d045df2eb1274770e50) — feat: quiesce OCP cluster before pattern capture
+- 2026-06-17 [14321fdb](https://github.com/rhpds/troshka/commit/14321fdb37b1e7bd89f23b07523d1b367ce56aa0) — fix: trigger kube-apiserver rollout unconditionally on pattern deploy
+- 2026-06-17 [35073660](https://github.com/rhpds/troshka/commit/3507366002f91ccd6c7b56ef77e1898e9eee109d) — fix: improve OCP cert recovery on cluster restart
+- 2026-06-17 [87da1e0c](https://github.com/rhpds/troshka/commit/87da1e0c86c05e20bdabe5a3360a2a8765418476) — docs: add architecture diagram to README
+- 2026-06-17 [da7fa28b](https://github.com/rhpds/troshka/commit/da7fa28b9cbd5dbc8dbfbee436f4a6192d3f853e) — chore: rename troshka-files to troshka-fs-monitor, remove stale dirs, add READMEs
+- 2026-06-17 [1b19dd34](https://github.com/rhpds/troshka/commit/1b19dd34197a19a66fd5f504abcba3e31e62e5f7) — chore: remove 42 superseded plan/spec files and stale ocp\_virt\_setup.md
+- 2026-06-17 [c2ec0664](https://github.com/rhpds/troshka/commit/c2ec0664bdc18b00c9d5fde6a8dc3f143e497d3b) — docs: add architecture guide, API guide, and per-cloud install guides
+- 2026-06-16 [4d270d87](https://github.com/rhpds/troshka/commit/4d270d87837ae1318375d4f95f1c78db4808fc07) — docs: add documentation suite design spec
+- 2026-06-16 [577e5cba](https://github.com/rhpds/troshka/commit/577e5cba250ae3f871fee8e55a12458391a28163) — docs: clarify SELinux and firewalld applicability per provider in CLAUDE.md
+- 2026-06-16 [0c0d3bdf](https://github.com/rhpds/troshka/commit/0c0d3bdf0e2be7cc9a4ef56ef8480b8df00ce6cc) — fix: add SELinux labeling and firewalld to GCP/Azure cloud-init, revert symlink→copy
+- 2026-06-16 [ffec69ba](https://github.com/rhpds/troshka/commit/ffec69ba725e2e84c5026dff4d07fc4c29bf9ac5) — feat: add GCP/Azure support to hosts page — instance types, provider display, SSH user
+- 2026-06-16 [f5ec1c54](https://github.com/rhpds/troshka/commit/f5ec1c54df7810dcda0578e025b4f576c738fc48) — fix: use privatelink FQDN for Azure Files NFS mount URL
+- 2026-06-16 [51ed0589](https://github.com/rhpds/troshka/commit/51ed0589a7f2afe510cc30c6a44a4d56db09ed4f) — chore: add azure-mgmt-privatedns dependency for Azure Files NFS provisioning
+- 2026-06-16 [10784b4f](https://github.com/rhpds/troshka/commit/10784b4fb9bff08824558ad3ca70cce373afd003) — fix: create private DNS zone and VNet link during Azure Files NFS provisioning
+- 2026-06-16 [88170f60](https://github.com/rhpds/troshka/commit/88170f60f85aeab3634c3ca58663369d91f9864d) — fix: auto-sleep initializes pb\_last\_activity\_at on first check instead of using created\_at
+- 2026-06-16 [11881516](https://github.com/rhpds/troshka/commit/11881516e1b44522bc0b8394f3130cadd41b0511) — fix: open firewalld ports in cloud-init for Azure/GCP, show Delete PB button always
+- 2026-06-16 [0dda7c57](https://github.com/rhpds/troshka/commit/0dda7c57ce2cebacd14075afc94d3636a5c4cf05) — fix: PB auto-sleep on new provision, add DELETE endpoint, split Add/Delete buttons
+- 2026-06-16 [cadbca76](https://github.com/rhpds/troshka/commit/cadbca76295940bcc34eebf70cb7bda668fd83ba) — fix: Azure resource cleanup — tag disks, retry deletes, continue on failure
+- 2026-06-16 [bc1b686a](https://github.com/rhpds/troshka/commit/bc1b686a9402e4d5025ecaf6eb7bf8b7e4c24f1d) — fix: fire-and-forget PB provision to prevent modal hanging
+- 2026-06-16 [e2be5a33](https://github.com/rhpds/troshka/commit/e2be5a33ba8d1ec5c022fc48207837dbb72a2a56) — fix: health poller backoff, pool delete cleans up PBs, replace PB always visible
+- 2026-06-16 [b8a6685f](https://github.com/rhpds/troshka/commit/b8a6685f89158ae540b63ca25d50fce20ed9aebc) — feat: add auto-sleep configuration UI and API handler for pattern buffers
+- 2026-06-16 [8180a63f](https://github.com/rhpds/troshka/commit/8180a63f79330c1f48221049b185dbcd815e8f86) — feat: add pattern buffer auto-sleep logic and health poller integration
+- 2026-06-16 [6014c85a](https://github.com/rhpds/troshka/commit/6014c85ad2061287e22782b09fdc68aaf9e15ff7) — feat: add pb\_auto\_sleep\_minutes and pb\_last\_activity\_at to StoragePool
+- 2026-06-16 [abad8b98](https://github.com/rhpds/troshka/commit/abad8b9850fe3f802895ac0c438f6625a22b4475) — fix: post-deploy fixes — Azure SDK v38 compat, GCP serviceAccount prefix, BYOS filtering, PB modal, dual IPs
+- 2026-06-16 [9304f638](https://github.com/rhpds/troshka/commit/9304f6389a7a30c8a85cf89b350734d195d0980e) — fix: handle Azure managed images in provisioner, validate rhel\_version, dismiss error banners
+- 2026-06-16 [dfafe296](https://github.com/rhpds/troshka/commit/dfafe296703587a91e57e03c9bc99db7465e3d06) — feat: add Build Host Image button to provider admin page
+- 2026-06-16 [880c3e4e](https://github.com/rhpds/troshka/commit/880c3e4e7b03a471c9bbbf2b1a0f11976fe40086) — feat: add Red Hat offline token field to settings page
+- 2026-06-16 [18febc15](https://github.com/rhpds/troshka/commit/18febc15e06077220bd5c6f2a84e4ec0d31ba54c) — feat: add build-image API endpoint, support Azure managed image IDs
+- 2026-06-16 [0be97d27](https://github.com/rhpds/troshka/commit/0be97d272438a4a42d42e4c34916aac679d205cf) — feat: add Image Builder service for custom RHEL image builds
+- 2026-06-16 [be3c67cf](https://github.com/rhpds/troshka/commit/be3c67cf858cd3aefafb73613523dcfe45a0da39) — feat: add Red Hat offline token storage with encrypted persistence
+- 2026-06-16 [786cd173](https://github.com/rhpds/troshka/commit/786cd173173119115b19b98611d30974a7528f45) — docs: update CLAUDE.md with GCP/Azure learnings, add Image Builder integration spec
+- 2026-06-16 [a0e94318](https://github.com/rhpds/troshka/commit/a0e943180df81a8fe26ced979673568f7fd9931f) — fix: add troshka-host network tag to GCP instances for firewall rules
+- 2026-06-16 [eea7fef6](https://github.com/rhpds/troshka/commit/eea7fef65051d6e26b576f97c04c98736ecb66bb) — fix: remove auto PB provisioning, provider-aware PB instance types, add Local pool mode, remove NetApp from dropdown
+- 2026-06-16 [69ecfb32](https://github.com/rhpds/troshka/commit/69ecfb3271dbfea579bbc9ff67a8d1b9ad985a40) — fix: defer pattern buffer provisioning until pool reaches available status
+- 2026-06-16 [01e712d8](https://github.com/rhpds/troshka/commit/01e712d8e82dc5f13a32740f575c50037cbe2bf1) — feat: replace Filestore with NetApp Volumes Flex for GCP managed NFS, add migration
+- 2026-06-16 [7835a629](https://github.com/rhpds/troshka/commit/7835a629ebce46d7e6447a72bac2fd4c8333281a) — refactor: rename shared-filestore to shared-netapp, filestore columns to netapp columns
+- 2026-06-16 [1f9a090f](https://github.com/rhpds/troshka/commit/1f9a090fa6ecd98b9223d58f86e744b077dba07e) — fix: pattern buffer error modal stays dismissed after close, don't re-trigger on poll
+- 2026-06-16 [17593885](https://github.com/rhpds/troshka/commit/17593885d9d7affaec3243d9882e7e66cb902c27) — fix: remove c6id.xlarge default from StoragePool model, add detailed pattern buffer provisioning log
+- 2026-06-16 [4b552c94](https://github.com/rhpds/troshka/commit/4b552c9467908b6b861b56db2daab4c377fcb39c) — fix: extract host\_type from kwargs for nested virt conditional
+- 2026-06-16 [95fa5751](https://github.com/rhpds/troshka/commit/95fa575166a964fdf78aa639df90044c2986e1d2) — fix: disable nested virt and use MIGRATE scheduling for GCP pattern buffer hosts
+- 2026-06-16 [c6a1819b](https://github.com/rhpds/troshka/commit/c6a1819b77668f6cb318a7549221481b7f4c8427) — fix: use e2-standard-2 for GCP pattern buffer (allowed by org policy, no nested virt needed)
+- 2026-06-16 [9267a57c](https://github.com/rhpds/troshka/commit/9267a57c8802c31149bc5a5a2a5db43be9ff7f70) — fix: use smaller instance types for GCP/Azure pattern buffers (n2-standard-2, Standard\_E2s\_v5)
+- 2026-06-16 [f69585f8](https://github.com/rhpds/troshka/commit/f69585f8b6b1990f454bfeab2f584b1888111327) — refactor: rename ami→image in API schemas/endpoints, use SSH/disk helpers, fix EC2 fallbacks
+- 2026-06-16 [7704da1f](https://github.com/rhpds/troshka/commit/7704da1f9f4bc96bbfc029603b147f2b7955a511) — refactor: rename ami→image across frontend providers and hosts pages
+- 2026-06-16 [0f3fd3df](https://github.com/rhpds/troshka/commit/0f3fd3df46b687521e60f10d9fea8bb82e4047dd) — refactor: rename ami→image in model/drivers/helpers, extract SSH user/disk path helpers
+- 2026-06-16 [0c9bf571](https://github.com/rhpds/troshka/commit/0c9bf5717d9e216f5da3504bb2cf88044963756e) — fix: pattern buffer supports GCP/Azure — correct instance types and NFS kwargs for Filestore/Azure Files
+- 2026-06-16 [9540b92b](https://github.com/rhpds/troshka/commit/9540b92b87ae29a07eb6a1131b9c2954b152bbbb) — security: allowlist GCP API hostnames for image URLs to prevent SSRF
+- 2026-06-16 [fbf16cfc](https://github.com/rhpds/troshka/commit/fbf16cfcf2ffa27d3f8b48a367b949120292f25d) — fix: handle full self\_link URLs in GCP boot image resolution
+- 2026-06-16 [dfed5f93](https://github.com/rhpds/troshka/commit/dfed5f93cca953b9cd951b4eee6641bbcb7cbd08) — fix: add shared-filestore and shared-azure-files to allowed pool modes
+- 2026-06-16 [b50dfeae](https://github.com/rhpds/troshka/commit/b50dfeae3d471bb7a7507a64bc53ae8a496f0be0) — fix: auto-populate zone from GCP provider and location from Azure provider in storage pool form
+- 2026-06-16 [cdcd67a8](https://github.com/rhpds/troshka/commit/cdcd67a8cf20fe8268d490381bd52ea1363d362e) — fix: sync storage pool dropdown options with modeLabels, add Filestore option
+- 2026-06-16 [077511ff](https://github.com/rhpds/troshka/commit/077511ff6118df84c9fa5f438d4be1f6b24a30db) — fix: show provider type in storage pool mode dropdown labels
+- 2026-06-16 [ca29f945](https://github.com/rhpds/troshka/commit/ca29f9456ca602b704018b70d532b169fc255042) — fix: add Filestore (GCP) to storage pool mode dropdown with validation
+- 2026-06-16 [4f534220](https://github.com/rhpds/troshka/commit/4f53422091d26a0c653c45ced11bc3006424a9f3) — fix: widen default\_ami to 500 chars for GCP image URLs, filter to LVM-only images
+- 2026-06-16 [f295f2da](https://github.com/rhpds/troshka/commit/f295f2da60807ce6c470932b6d0a4c3091e300e9) — feat: expandable Select Image for all providers, BYOS/PAYG filter (non-OCP), version filter (all), exclude RHEL 8.x from Azure
+- 2026-06-16 [9def7b88](https://github.com/rhpds/troshka/commit/9def7b88b4a0c0e991bc0ce0237c3db76192fe5d) — feat: add RHEL version filter (9/10) to image discovery for all providers
+- 2026-06-16 [f96369dd](https://github.com/rhpds/troshka/commit/f96369ddde3810fba60a65d4557e650abd7bd648) — feat: BYOS/PAYG filter + text search for image discovery, fix Azure RHEL 10 SKUs, normalize AWS type field
+- 2026-06-16 [a3836540](https://github.com/rhpds/troshka/commit/a38365404b3af7486a35e66cb3103f2b5db8a054) — perf: GCP test uses token refresh instead of heavy gRPC compute client
+- 2026-06-16 [fc772ea7](https://github.com/rhpds/troshka/commit/fc772ea71a2db5b2e9a21a988b16fd16f71912a1) — feat: add GCP and Azure test endpoint handlers
+- 2026-06-16 [0c0fbb7a](https://github.com/rhpds/troshka/commit/0c0fbb7a953873a248edb62c45e8e18c98211c03) — fix: Azure NSG and VNet use flat dict format for SDK compatibility
+- 2026-06-16 [86465c0c](https://github.com/rhpds/troshka/commit/86465c0c9deab52a858d23e39694bf70960754fa) — docs: add GCP and Azure provider setup sections to CLAUDE.md
+- 2026-06-16 [8a077231](https://github.com/rhpds/troshka/commit/8a0772312455312c3a4b080a0149e8723f4f2b34) — feat: wire Filestore and Azure Files pool creation to storage pools API
+- 2026-06-16 [558ca42e](https://github.com/rhpds/troshka/commit/558ca42e92d4d192ea5ef086f2038c4f5c178127) — security: lock down Azure Files storage account — deny public access, mandatory private endpoint
+- 2026-06-16 [2917b02d](https://github.com/rhpds/troshka/commit/2917b02df25079066866a7615ad402434e6056a2) — feat: frontend — Azure network setup, image discovery, Azure Files pool UI
+- 2026-06-16 [52659832](https://github.com/rhpds/troshka/commit/52659832d48457640e95c027e0c3124804c17c33) — feat: Azure Files NFS pool provisioning and capacity update
+- 2026-06-16 [57410875](https://github.com/rhpds/troshka/commit/57410875538c811de14afd20390d63afb5b8374c) — feat: Azure network setup and image discovery API endpoints
+- 2026-06-16 [68380315](https://github.com/rhpds/troshka/commit/683803157f2ea7843bf9ea8de6206315ccd4e023) — feat: complete Azure provider driver — all 16 ProviderDriver methods
+- 2026-06-16 [28d22bfd](https://github.com/rhpds/troshka/commit/28d22bfd4dae2a41c3b28035f776a6fa5123621e) — feat: frontend — GCP Setup Network and Discover Images buttons
+- 2026-06-16 [57a1bd7d](https://github.com/rhpds/troshka/commit/57a1bd7dca7d0b32b42cfdfc074845f2e3e4c272) — fix: move provider type detection before wait\_for\_ssh to avoid unbound variable
+- 2026-06-16 [1741b86c](https://github.com/rhpds/troshka/commit/1741b86c1da05e40c8857afc4fa9defa2fefbf4e) — feat: agent deployer — GCP and Azure SSH user and disk device paths
+- 2026-06-16 [01316497](https://github.com/rhpds/troshka/commit/0131649739230b9728ab030f22efbc9da70d292c) — feat: GCP Filestore pool provisioning and capacity update
+- 2026-06-16 [8e0a191f](https://github.com/rhpds/troshka/commit/8e0a191f53769162f6f99b81ad2db9b440645c99) — feat: complete GCP provider driver — all 16 ProviderDriver methods
+- 2026-06-16 [155806f5](https://github.com/rhpds/troshka/commit/155806f57888073bcf14189b44ae27a3d80ae39b) — feat: add GCP and Azure provider type options to admin UI
+- 2026-06-16 [32bb5ea5](https://github.com/rhpds/troshka/commit/32bb5ea54956e36de5316aa8006c0f2b020ebfa9) — feat: add Filestore and Azure Files extend functions to storage\_extend
+- 2026-06-16 [cd467c68](https://github.com/rhpds/troshka/commit/cd467c6855807219b0e40f6e57e368909f0b5f8f) — migration: add GCP and Azure columns to providers and storage\_pools
+- 2026-06-16 [2efe09fa](https://github.com/rhpds/troshka/commit/2efe09fa7f38601c4970ef917936f8761e8b2ce2) — feat: add Filestore and Azure Files columns to StoragePool model
+- 2026-06-16 [c6d9edfd](https://github.com/rhpds/troshka/commit/c6d9edfd6496c3bde210ecf416e4cfe57aaef59f) — feat: add GCP and Azure columns to Provider model
+- 2026-06-16 [77a05dea](https://github.com/rhpds/troshka/commit/77a05dea9180f54523d874b0b974f9d940e802f6) — feat: add GCP and Azure driver stubs and factory dispatch
+- 2026-06-16 [a7cb7252](https://github.com/rhpds/troshka/commit/a7cb7252c6d905ac3d7c024defe070c1318215da) — deps: add GCP and Azure SDK packages
+- 2026-06-16 [85e59d33](https://github.com/rhpds/troshka/commit/85e59d33868143ea2cf76954e0e02f6f61825b65) — docs: GCP and Azure provider implementation plan (26 tasks, 3 phases)
+- 2026-06-16 [d312a70d](https://github.com/rhpds/troshka/commit/d312a70d72a3d7c046351acbbc66da18b6d36ce8) — docs: GCP and Azure provider drivers design spec
+- 2026-06-16 [de1f22c7](https://github.com/rhpds/troshka/commit/de1f22c7667dd4af7825a799cf000ef881d67f80) — fix: OCP health monitor — pass host.id, wrap in try/finally for cleanup
+- 2026-06-16 [3bced62b](https://github.com/rhpds/troshka/commit/3bced62b0b1fd7d4695e1eb3dd5ac1765b0fce21) — fix: OCP health monitor uses own DB session instead of detached host
+- 2026-06-16 [3470ff55](https://github.com/rhpds/troshka/commit/3470ff558264b2d3cde7985e93bd8220ef23b3fc) — fix: dev-services stop accepts component arg (backend/frontend/db)
+- 2026-06-16 [b88bfdc8](https://github.com/rhpds/troshka/commit/b88bfdc8486224d5529a0c74b82669f9c6ac52ac) — feat: show warning banner when backend is unreachable
+- 2026-06-16 [ab831310](https://github.com/rhpds/troshka/commit/ab831310d3ba623e6fcb870e1d8c73875bbb2796) — revert: disable uvicorn --reload, causes port-in-use crashes on macOS
+- 2026-06-16 [cf4ccad3](https://github.com/rhpds/troshka/commit/cf4ccad334e3c224eb2dceb1972f936dbeabd17d) — feat: re-enable uvicorn --reload for backend auto-restart
+- 2026-06-16 [f445ef50](https://github.com/rhpds/troshka/commit/f445ef50f85bb752df324027d577554bf7bb161c) — fix: re-activate libvirt sockets after restart + unified service watchdog
+- 2026-06-16 [cbdcb266](https://github.com/rhpds/troshka/commit/cbdcb26638ec8378c13339e4b07579e1c750849b) — feat: resumable deploys and pattern captures across backend restarts
+- 2026-06-16 [50caef32](https://github.com/rhpds/troshka/commit/50caef328c850abe616af7926e65f4077aa8727c) — fix: add pattern/capture threads to restart blocking list
+- 2026-06-16 [2eea7214](https://github.com/rhpds/troshka/commit/2eea7214ee808eaeb24b57ad0d1edb40617f04f3) — feat: show x/y GB transferred and percentage in deploy download progress
+- 2026-06-16 [a6e0cbfe](https://github.com/rhpds/troshka/commit/a6e0cbfe0c3c09be835a2cb36adc2b2653e174c3) — feat: show NFS server source in troshka-files mount table
+- 2026-06-16 [df18243a](https://github.com/rhpds/troshka/commit/df18243a92d639c40e403ba4b31d16c61cfe5e58) — fix: dynamic mounts in troshka-files, host access UI, update-agent UUID
+- 2026-06-16 [5fd5248d](https://github.com/rhpds/troshka/commit/5fd5248dbd96b4cf2c3244f306f0001c277f27c9) — fix: SSH command uses correct user/port for OCP Virt, add script shortcut
+- 2026-06-16 [bd458980](https://github.com/rhpds/troshka/commit/bd458980c2b9d0ad326d2ce3d03ed2513b87f7d4) — feat: add provider type to project card host info
+- 2026-06-16 [84353171](https://github.com/rhpds/troshka/commit/84353171d514f08028b5acb13870fc34cbe33835) — feat: show host info on project cards for admins
+- 2026-06-16 [92c90c37](https://github.com/rhpds/troshka/commit/92c90c37bc262f3f84275abb83ea92094921c68f) — fix: pattern buffer SSH port/user for OCP Virt hosts
+- 2026-06-16 [a47f891d](https://github.com/rhpds/troshka/commit/a47f891dc903dc1500d81c089122e04a548aff7f) — fix: default pattern buffer to 4c-8g for OCP Virt pools
+- 2026-06-16 [b8f69501](https://github.com/rhpds/troshka/commit/b8f695011c68931347961fa1c9ff75bd129bb477) — feat: Ceph-NFS storage pool provisioning for OCP Virt + fix host VM/project counters
+- 2026-06-16 [1e8cd764](https://github.com/rhpds/troshka/commit/1e8cd76445fe39dcef77d515cf0f2d4b92fbb821) — feat: host info in canvas, pattern deploy host override, console DNS refresh
+- 2026-06-16 [042eb9bc](https://github.com/rhpds/troshka/commit/042eb9bc92d257523eff80958a98726bc993f20d) — feat: OCP cert expiry — pattern age warning + auto CSR approval
+- 2026-06-16 [30458676](https://github.com/rhpds/troshka/commit/30458676d23e1e2cdd018bb2adab697d10e77e02) — fix: pattern buffer UX, orphan prevention, health poller reconnect
+- 2026-06-16 [16659f13](https://github.com/rhpds/troshka/commit/16659f139eecdd2b67c1364659fdd360ee7384c5) — fix: hide FSx storage pools for OCP Virt provider in add host form
+- 2026-06-16 [e8a1c614](https://github.com/rhpds/troshka/commit/e8a1c614e3c0d51bafa263e344c215f6d396ea0b) — fix: OCP Virt console + vncd + sshpass + host pool UI
+- 2026-06-16 [be27bbbc](https://github.com/rhpds/troshka/commit/be27bbbc688c76f8964783bd0c7424b27b7c1ec7) — feat: OCP Virt EIPs — refactor eip\_service through driver, transit ports, troshkad DNAT
+- 2026-06-16 [01b9c754](https://github.com/rhpds/troshka/commit/01b9c75465eeac61043ce186ee3b363274d3ab47) — feat: implement OCPVirtDriver EIP methods (MetalLB LB Services)
+- 2026-06-16 [e63fb536](https://github.com/rhpds/troshka/commit/e63fb5366d93683d4562f2874510cb82fa3a49db) — feat: implement EC2Driver EIP methods (allocate, associate, release)
+- 2026-06-16 [983ae12a](https://github.com/rhpds/troshka/commit/983ae12a9ac6ea140825de63c3eedb685ea9024b) — feat: add EIP lifecycle methods to ProviderDriver interface
+- 2026-06-16 [f9b356cd](https://github.com/rhpds/troshka/commit/f9b356cd2ef7e49f48ffa9a7addd3003312ca6c7) — feat: add port\_map to ElasticIp and max\_eips to Provider models
+- 2026-06-16 [ab5c7533](https://github.com/rhpds/troshka/commit/ab5c7533ad22d890727456e9991a12c743402a71) — docs: add OCP Virt EIPs implementation plan (11 tasks)
+- 2026-06-16 [13ee530b](https://github.com/rhpds/troshka/commit/13ee530b47fa6bb2538e27ec6006a5f372c967d0) — docs: add OCP Virt EIPs design spec (MetalLB, transit ports, driver abstraction)
+- 2026-06-16 [481a376b](https://github.com/rhpds/troshka/commit/481a376b23b89b9e4f45de375bdfdc5fee73dc0d) — docs: add OCP Virt Phase 3 plan (EIPs, console, polish)
+- 2026-06-16 [ead673a2](https://github.com/rhpds/troshka/commit/ead673a254bbdffef8a12dc8479b178b5e55e44b) — feat: host card shows VMs, projects, SSH port; SELinux fix
+- 2026-06-15 [14d7ae65](https://github.com/rhpds/troshka/commit/14d7ae65c7614acab55c03782f9012b4666e9c0b) — fix: troshka-files shows all storage paths, agent deployer fixes
+- 2026-06-15 [1e48a09e](https://github.com/rhpds/troshka/commit/1e48a09e6f589cecc237d731f48e0cb2fc91b2c1) — feat: OCP Virt provisioning working end-to-end
+- 2026-06-15 [951ca8ed](https://github.com/rhpds/troshka/commit/951ca8ed369185261fbdbff7178a54c72faf0202) — feat: OCP Virt host provisioning fixes
+- 2026-06-15 [37efda06](https://github.com/rhpds/troshka/commit/37efda0621d2a791d3861a7388c19b84cbdfbfd8) — feat: discover DataSources for OCP Virt, image selection, UI fixes
+- 2026-06-15 [0e3fcca2](https://github.com/rhpds/troshka/commit/0e3fcca238db6561912de4fafa38ef69abe3c9db) — feat: OCP Virt provider test endpoint, RBAC manifest, setup docs
+- 2026-06-15 [3f64bbcc](https://github.com/rhpds/troshka/commit/3f64bbcc364acd6a46d21172a6a1dde373571ae9) — feat: add OCP Virt provider support
+- 2026-06-15 [91d216e6](https://github.com/rhpds/troshka/commit/91d216e6fdcdc5861dccad9cb510f1d73300994e) — docs: add OCP Virt provider implementation plan
+- 2026-06-15 [2e402a5b](https://github.com/rhpds/troshka/commit/2e402a5b5475c6b926f35671b5f2e5f339ec1854) — docs: add OCP Virt provider design spec
+- 2026-06-15 [5a84aff2](https://github.com/rhpds/troshka/commit/5a84aff2098bd4ddbd4a5270243d51d0c055af3c) — fix: update starlette 1.3.1 + cryptography 49.0.0 (security)
+- 2026-06-15 [ad7c0163](https://github.com/rhpds/troshka/commit/ad7c01632b3c8ad80e86be91c51bcd48af97d161) — feat: NBD port reaper, clean button, parallel progress fixes
+- 2026-06-15 [dd7411b5](https://github.com/rhpds/troshka/commit/dd7411b59fc6ef8872c2bf4f5f16f2290d47715f) — fix: override postcss to 8.5.15 to resolve XSS vulnerability
+- 2026-06-15 [cc1b3992](https://github.com/rhpds/troshka/commit/cc1b399247c978d8dd730b4377b4596d9aac06fc) — feat: parallel NBD capture with live progress, port cleanup, rate display
+- 2026-06-15 [e4421b9a](https://github.com/rhpds/troshka/commit/e4421b9a0bd65194a8df173231e19959866a551c) — feat: first successful NBD capture via pattern buffer
+- 2026-06-15 [b593e3bd](https://github.com/rhpds/troshka/commit/b593e3bda43c17f29d33e2c4f383c1ceaf8ab2f6) — fix: pattern buffer busy guard, slim agent install, wake timing
+- 2026-06-15 [55319603](https://github.com/rhpds/troshka/commit/5531960386156134074f05276f6ffe61c16fd293) — feat: pattern buffer sleep/wake, slim agent install, troshkad timeout
+- 2026-06-15 [07850dab](https://github.com/rhpds/troshka/commit/07850dabd2cdd7aea6cb0943d07695ece42119c7) — feat: slim cloud-init for pattern buffer — only python3, qemu-img, nvme-cli
+- 2026-06-15 [aae0bc0f](https://github.com/rhpds/troshka/commit/aae0bc0fdc827860749b4adf3cc4c11dca350a15) — fix: pattern buffer UX — move to pool page, fix cloud-init, SSH wait
+- 2026-06-15 [ba0df9b2](https://github.com/rhpds/troshka/commit/ba0df9b2b06d78c22b72c528ac6bd2c35b9a2c7a) — fix: pattern buffer provisioning — EC2 provider lookup, NVMe mount, status UI
+- 2026-06-15 [a8ee45dd](https://github.com/rhpds/troshka/commit/a8ee45ddc7b9d9621aaa2054d652b4df6cf1e8f4) — fix: use string-form foreign\_keys on Host.storage\_pool relationship
+- 2026-06-15 [4a8a6166](https://github.com/rhpds/troshka/commit/4a8a61665737f3c0dd8ce66b6505029262617458) — fix: make test\_get\_pattern and test\_update\_pattern self-contained
+- 2026-06-15 [68f11d23](https://github.com/rhpds/troshka/commit/68f11d23d040aa4160f8ee5d2e65bdb0062834f4) — fix: update pattern tests for current behavior
+- 2026-06-15 [93a43688](https://github.com/rhpds/troshka/commit/93a43688773c9058cce5f3c70c167b3972f3e19c) — fix: resolve ambiguous FK between hosts and storage\_pools
+- 2026-06-15 [3845ebea](https://github.com/rhpds/troshka/commit/3845ebeaf8f3ca6415640ee1167a4dbb282e30a1) — feat: pattern buffer — dedicated storage worker per pool
+- 2026-06-15 [74c73843](https://github.com/rhpds/troshka/commit/74c738430229a4a041ddb2ae33228a1a76e49883) — feat: split CPU/RAM bars, pattern resource stats, clearer error messages
+- 2026-06-15 [ac2e704d](https://github.com/rhpds/troshka/commit/ac2e704d39195928dd550278f2bf6753d25c7a59) — fix: pattern capture progress hang — cache monitoring + WS fallback
+- 2026-06-15 [0a251cac](https://github.com/rhpds/troshka/commit/0a251cac49a455035cf516c4e8f0d6f1f573c1a9) — feat: VM file transfer API + exec improvements for Ansible connection plugin
+- 2026-06-15 [3983689a](https://github.com/rhpds/troshka/commit/3983689af49ba1ad75dafd7186838c8b82d170ac) — docs: pattern buffer design spec — dedicated storage worker per pool
+- 2026-06-15 [89f149f5](https://github.com/rhpds/troshka/commit/89f149f5cb43dcdbe6466e64f50c4e1182130585) — feat: EBS/FSx resize UI, auto-extend inline controls, storage warnings
+- 2026-06-15 [b8cb3dad](https://github.com/rhpds/troshka/commit/b8cb3dad3429dd69d00e90ec26c7dfd9009342e0) — fix: SNO DNS, OCP install error handling, tags, GC metadata cleanup
+- 2026-06-14 [ca3d7b04](https://github.com/rhpds/troshka/commit/ca3d7b04d1047c9c4dfb7a62b2a3fae6fb655d22) — fix: clear RFB status on hide so unhidden VMs reconnect
+- 2026-06-14 [db5b4533](https://github.com/rhpds/troshka/commit/db5b45336d847ffbd8bf95b3aa3db9afbfbabbeb) — feat: add MegaConsole — multi-VM console grid view
+- 2026-06-14 [0c0731d2](https://github.com/rhpds/troshka/commit/0c0731d2ab34b8ff2f3741a5fbe350e85883429c) — fix: remove all hardcoded ens3/ens4 NIC names from agent-config
+- 2026-06-14 [bc121325](https://github.com/rhpds/troshka/commit/bc121325b6d8054f493615feb5aea1ec932f70ce) — fix: use hostname -I instead of ens4 for bastion IP in install script
+- 2026-06-14 [c7f0773b](https://github.com/rhpds/troshka/commit/c7f0773b710e726862a5e5a31c65b5cf265047b0) — fix: add BMC bridge intra-bridge accept rule to nftables
+- 2026-06-14 [e77ad0f6](https://github.com/rhpds/troshka/commit/e77ad0f6f7fe33f82655769984afadbe06766748) — fix: hide View Install Log during early boot, improve no-log message
+- 2026-06-14 [ac8ad551](https://github.com/rhpds/troshka/commit/ac8ad551caf42ced224389ea1a8d1ef3d2a08c31) — fix: SNO install-config uses platform: none (not baremetal)
+- 2026-06-14 [f52abb44](https://github.com/rhpds/troshka/commit/f52abb44d5189228c51faa1cc9e5099b0c12a74a) — fix: auto-layout disk stacking overlap with increased spacing
+- 2026-06-14 [6646b03e](https://github.com/rhpds/troshka/commit/6646b03eb59a8083da59584ef04b1bbece598dcd) — fix: use MAC matching for bastion cloud-init network config
+- 2026-06-14 [19f032ee](https://github.com/rhpds/troshka/commit/19f032eefd9f72da95847fbcaff0405a12ea4c11) — fix: gateway mode NAT-only when external access not selected
+- 2026-06-14 [54a7b626](https://github.com/rhpds/troshka/commit/54a7b62698baee9c6601f186b1d551b008292dd2) — feat: support icmp as outbound port entry, add to OCP template
+- 2026-06-14 [32403e2f](https://github.com/rhpds/troshka/commit/32403e2f1bbb7aba3a091fe21f118f05273fc4be) — fix: GC now scans shared storage cache paths for orphans
+- 2026-06-14 [03b8060a](https://github.com/rhpds/troshka/commit/03b8060a73d5cfac5bf20c59daaf91d40d89b797) — fix: scope OCP default tag sweep to same library (IDOR fix)
+- 2026-06-14 [8bffb1aa](https://github.com/rhpds/troshka/commit/8bffb1aae670ef3d5d2bc33eb159f5c82094a3f2) — feat: library item defaults for OCP templates + edit modal
+- 2026-06-14 [5e4bcbc4](https://github.com/rhpds/troshka/commit/5e4bcbc41c6786227e4fa6e729bb26d1ad891787) — fix: disk check, library retry, source\_url tracking
+- 2026-06-14 [43cb062a](https://github.com/rhpds/troshka/commit/43cb062afcfe8afd648204b9c39b50757d048dac) — fix: S3 GC was deleting active library items (critical bug)
+- 2026-06-14 [d8428bdd](https://github.com/rhpds/troshka/commit/d8428bdd7e1de9e2b49c60c5e9214e45895556ee) — fix: YAML template topology matching old Python output
+- 2026-06-14 [debc115a](https://github.com/rhpds/troshka/commit/debc115a158084d621e7e06361ae377be893a58c) — refactor: from-template endpoint now fully YAML-driven
+- 2026-06-14 [3d860f39](https://github.com/rhpds/troshka/commit/3d860f39f52655168b0b11ef82ef0422a983707d) — refactor: YAML-driven topology generation with full node types
+- 2026-06-14 [217835d3](https://github.com/rhpds/troshka/commit/217835d37f269c518dfac6e875132bef46d53608) — fix: kill stale dnsmasq by conf file match before restart
+- 2026-06-14 [39e5aa39](https://github.com/rhpds/troshka/commit/39e5aa39a30826acef50089440f96cc6da64640b) — fix: power button UX improvements
+- 2026-06-14 [740f9171](https://github.com/rhpds/troshka/commit/740f91712cf9721973462458bf394d74772efb74) — fix: stable VM status display — REST poll instead of WS
+- 2026-06-14 [2d0aa047](https://github.com/rhpds/troshka/commit/2d0aa047100063d1066c71e247458766bb4ca306) — fix: prevent empty WS snapshot from clearing VM states
+- 2026-06-14 [6c06b142](https://github.com/rhpds/troshka/commit/6c06b14226a20a17404c2594782be4eaf41f709d) — fix: reconfigure optimizations, WS topology sync, VM state stability
+- 2026-06-14 [9558ffbc](https://github.com/rhpds/troshka/commit/9558ffbccb8e4f65776d7a6e4ec7a86902177d75) — fix: reconfigure and UI improvements
+- 2026-06-14 [225af911](https://github.com/rhpds/troshka/commit/225af91199465c94d98386815598e405c9484cab) — feat: enforce gateway outbound port restrictions
+- 2026-06-14 [f0945eb8](https://github.com/rhpds/troshka/commit/f0945eb881c0231727fd6f0b3c3068103a0b178c) — chore: add logo images, clean up roadmap
+- 2026-06-14 [084604c6](https://github.com/rhpds/troshka/commit/084604c67ddeeefaa39f8b55f7ffec6099327ec6) — chore: add pre-commit hooks and code formatting
+- 2026-06-14 [84de89bb](https://github.com/rhpds/troshka/commit/84de89bbb3c292057bf2ddf07a0d22eebea5db0b) — docs: expand README with security, cost, and elasticity sections
+- 2026-06-14 [61b35408](https://github.com/rhpds/troshka/commit/61b35408bd5c62eae68f9dbe08bbd59197169e7c) — docs: expand Why Troshka with cost, density, and admin access benefits
+- 2026-06-14 [dddc6060](https://github.com/rhpds/troshka/commit/dddc6060cc216c391d41ddea9f0eeead1f641d0c) — docs: add Why Troshka section to README
+- 2026-06-14 [744a5b1c](https://github.com/rhpds/troshka/commit/744a5b1c587523e2885a0fe94ba9760cb1bf1969) — feat: UI polish and test script improvements
+- 2026-06-14 [f614f174](https://github.com/rhpds/troshka/commit/f614f174ab1ef7b67e0153dc7dcadaa37ccbf849) — fix: set ANSIBLE\_COLLECTIONS\_PATH env var to override ansible.cfg
+- 2026-06-14 [0dbe7a67](https://github.com/rhpds/troshka/commit/0dbe7a67b7dd70b1ff5e05886e39823c1dad279e) — fix: install collection to ~/.ansible/collections
+- 2026-06-14 [4ad33adc](https://github.com/rhpds/troshka/commit/4ad33adc332014c41c1065cbd6226a1f13c31fd1) — fix: resolve remaining pyright errors in projects.py
+- 2026-06-14 [bb4eb4ea](https://github.com/rhpds/troshka/commit/bb4eb4ea50a7f18a46f885a3b1b0409cafdcb725) — fix: resolve pyright errors in projects.py
+- 2026-06-14 [9290c115](https://github.com/rhpds/troshka/commit/9290c1153245d3ae7a9e6f67b9cc246b2d127bd0) — feat: add --guid support for lifecycle commands
+- 2026-06-14 [33317de0](https://github.com/rhpds/troshka/commit/33317de08fbf2dbce5d53b6e98040362be7d5c13) — refactor: simplify test script — require --project-id and --pattern-name
+- 2026-06-14 [c7bfb960](https://github.com/rhpds/troshka/commit/c7bfb9602bcdd7e72df859afcb0600a458168351) — fix: bash compatibility and --project-id flag for test script
+- 2026-06-14 [0884ca7a](https://github.com/rhpds/troshka/commit/0884ca7abe8a0f4a810cf2f7df0e7a2370aaf3ec) — feat: add --destroy/--stop/--start/--status to test script
+- 2026-06-14 [a4f5fdc6](https://github.com/rhpds/troshka/commit/a4f5fdc6e4c79ab1ac30f79ac5d00070a7f98b32) — fix: update test script for openshift-cluster-troshka config and temp file handling
+- 2026-06-14 [5296097c](https://github.com/rhpds/troshka/commit/5296097ceeda9834b9b444c6ab1925734c53dd19) — feat: add agnosticd flow test script
+- 2026-06-14 [13788c02](https://github.com/rhpds/troshka/commit/13788c02cabd96787217db5d24142c037969d95a) — feat: add agnosticd cloud provider API support
+- 2026-06-14 [6c20440a](https://github.com/rhpds/troshka/commit/6c20440aca6c3e1d17ac7d9dfe18480d41393db5) — docs: add agnosticd troshka cloud provider design spec
+- 2026-06-14 [6e6483ec](https://github.com/rhpds/troshka/commit/6e6483ec7e16f998cb228b2edd8e92a9b58d8e6b) — fix: only delete hosted zone if no other providers share it
+- 2026-06-14 [5ad5fdad](https://github.com/rhpds/troshka/commit/5ad5fdad0a1e7f7133bef34cc42c93b3ac7c8a70) — docs: update CLAUDE.md for provider-based console DNS setup
+- 2026-06-14 [a4bcabf4](https://github.com/rhpds/troshka/commit/a4bcabf4d3e06bcd54b5a50cd2d9f4be8a6cfc75) — fix: remove redundant Console badge from provider header
+- 2026-06-14 [42c7b929](https://github.com/rhpds/troshka/commit/42c7b9295755dcbe97ecab9ea9559f10740ba9dc) — fix: rename Remove button to Remove Console DNS Domain
+- 2026-06-14 [be73d194](https://github.com/rhpds/troshka/commit/be73d194860de9776b7006381739ec65319ca999) — fix: rename collapsible label to Console DNS Domain
+- 2026-06-14 [db1e4311](https://github.com/rhpds/troshka/commit/db1e4311059d8e81b3d155884e8ea5195a43d9fd) — fix: make console DNS section collapsible, rename Remove button
+- 2026-06-14 [ee2e2441](https://github.com/rhpds/troshka/commit/ee2e2441fb850f41a36ec6b60e166ea64a6ce22a) — feat: automate console DNS setup from admin UI
+- 2026-06-14 [43b53038](https://github.com/rhpds/troshka/commit/43b5303852aa954bed79d3d202e3f1121bf805b0) — docs: add console setup automation implementation plan
+- 2026-06-14 [49575af2](https://github.com/rhpds/troshka/commit/49575af268b1e5f93ce13928f1134a681ef541d2) — docs: add console setup automation design spec
+- 2026-06-14 [69ae16e6](https://github.com/rhpds/troshka/commit/69ae16e6c45225f6807554ca11b459aea09fe8d1) — feat: direct VNC console proxy via troshka-vncd
+- 2026-06-14 [8b274342](https://github.com/rhpds/troshka/commit/8b27434237a561e7f1391edc8ca36ad8c8cb1c9a) — feat: add console config section for Route53 DNS
+- 2026-06-14 [57ac312b](https://github.com/rhpds/troshka/commit/57ac312bc9deec89a0910cc31e6ee1ef38bdd7e8) — feat: add console\_domain column to hosts table
+- 2026-06-14 [97e524a6](https://github.com/rhpds/troshka/commit/97e524a6684c381f3a9f9ab154cfc676c655113f) — docs: add direct console proxy implementation plan (15 tasks)
+- 2026-06-14 [a554a707](https://github.com/rhpds/troshka/commit/a554a707eddfb2ceb3371a1521704cd775bb825c) — docs: add direct console proxy implementation spec
+- 2026-06-14 [ae19b2ef](https://github.com/rhpds/troshka/commit/ae19b2ef1c8f8cf14c598bcb26c9af8fdf8ae8dc) — fix: GC report shows only actions taken, "Nothing to do" when clean
+- 2026-06-14 [e7d22982](https://github.com/rhpds/troshka/commit/e7d229822cb12cbd98e969e9dddce8c46fb6bbd8) — feat: add update-agent.sh and reinstall-agent.sh scripts
+- 2026-06-14 [8faeb557](https://github.com/rhpds/troshka/commit/8faeb5572eb1f92360be55df9e830b17880b5a2a) — fix: GC network repair only runs when bridges are actually missing
+- 2026-06-14 [365792e3](https://github.com/rhpds/troshka/commit/365792e38c9b75cf51846edb5522f989c85c7a96) — fix: GC improvements — immediate temp cleanup, S3 scope, pool GC keys, dry-run accuracy
+- 2026-06-14 [95d79f67](https://github.com/rhpds/troshka/commit/95d79f67ee8a0b6f6a95f933e53f8ba3bb4a93e9) — feat: pattern capture cancel, parallel cache+upload, GC cache cleanup, patterns page refresh
+- 2026-06-14 [c0df0b40](https://github.com/rhpds/troshka/commit/c0df0b40e0832aa26181c5fb1816f52ad8e97d47) — feat: add percentage to pattern capture flatten progress
+- 2026-06-14 [d5fa5104](https://github.com/rhpds/troshka/commit/d5fa51041db20f40d4be54216737567613a7561f) — revert: remove streaming capture — qcow2 requires random access, can't pipe to stdout
+- 2026-06-14 [9c095909](https://github.com/rhpds/troshka/commit/9c09590990329b66399e48e4fa8a3c0192f836ef) — fix: sanitize FSx error messages, log details server-side only
+- 2026-06-14 [d6288143](https://github.com/rhpds/troshka/commit/d628814301e179cfa6675a01b7858cbe542a0a04) — fix: warn about FSx 6-hour cooldown in extend confirmation dialog
+- 2026-06-14 [e132e5ce](https://github.com/rhpds/troshka/commit/e132e5ceba7a217e9ae086d02b0c1f6c58436509) — fix: catch FSx 6-hour cooldown error, return clear message instead of 500
+- 2026-06-14 [f5112661](https://github.com/rhpds/troshka/commit/f51126610979db90ac500d33e528fd501097f032) — fix: use target size from API response for extend spinner, poll before loadData
+- 2026-06-14 [780bbf66](https://github.com/rhpds/troshka/commit/780bbf661280324784e6f94d5366a0d65ea2f2e9) — fix: warn user that extend takes a few minutes to reflect
+- 2026-06-14 [a5d364c7](https://github.com/rhpds/troshka/commit/a5d364c74b9f3469a9026a9f359d96c999300c96) — feat: Extend Now button spins until host reports new capacity
+- 2026-06-14 [c05b41b1](https://github.com/rhpds/troshka/commit/c05b41b157e0e7833a681d57afc3b1f3a10db1d1) — fix: poll storage usage for 60s after extend to show capacity catching up
+- 2026-06-14 [04a938e0](https://github.com/rhpds/troshka/commit/04a938e0836296829a4d33afb05353bd39561a7f) — refactor: move auto-extend settings into pool Edit mode, show config in read-only view
+- 2026-06-14 [c496a906](https://github.com/rhpds/troshka/commit/c496a906992cfffec95793bfd92106f5794ea8fe) — feat: show current FSx usage on storage pools page
+- 2026-06-14 [3f9e5d8d](https://github.com/rhpds/troshka/commit/3f9e5d8d71ff09cc36d6b0803f06b900f59d2cc1) — fix: handle new partitions format in /hosts/storage endpoint and frontend
+- 2026-06-14 [95e47fdf](https://github.com/rhpds/troshka/commit/95e47fdfe9f7807e452151875cada74d3c791f5c) — feat: streaming pattern capture — pipe compress+upload, eliminate temp file
+- 2026-06-14 [4292a646](https://github.com/rhpds/troshka/commit/4292a646533b31d82d010d4adb245f82c92326d3) — feat: auto-extend settings and manual extend buttons in admin UI
+- 2026-06-14 [4fe96fe1](https://github.com/rhpds/troshka/commit/4fe96fe1369e3707de3b3c6039582d1cd1813fff) — feat: libvirt block threshold events with re-arming in troshkad
+- 2026-06-14 [ce8f18be](https://github.com/rhpds/troshka/commit/ce8f18beca444d376dfb8e7e6ad4c5f8a43f4ca5) — fix: add path containment check to GC stale temp cleanup
+- 2026-06-14 [b0ddbd5f](https://github.com/rhpds/troshka/commit/b0ddbd5fd024e3eb9bf3c09addf6816ac4060949) — feat: manual extend endpoints and auto-extend config for pools and hosts
+- 2026-06-14 [974d2301](https://github.com/rhpds/troshka/commit/974d2301621f7fc15745c8523d18a45a994d36f9) — feat: wire auto-extend into health poller for EBS and FSx
+- 2026-06-14 [835f731f](https://github.com/rhpds/troshka/commit/835f731f81b4715418790b42e302c9b9fee94c59) — feat: storage extend service for FSx pools and EBS hosts
+- 2026-06-14 [a6844ed8](https://github.com/rhpds/troshka/commit/a6844ed859eab9ef92d3bbc2ef11d35ca1cae796) — feat: add auto-extend config columns to storage\_pools and hosts
+- 2026-06-14 [c23772a6](https://github.com/rhpds/troshka/commit/c23772a69f5febebcdd8310969c50fa8b98f5c8a) — feat: redirect S3 temp files to data partition, clean stale temps in GC
+- 2026-06-14 [1e4cc714](https://github.com/rhpds/troshka/commit/1e4cc7141b86e3a0ba41a43489fc47d4082ffa58) — feat: show storage warning badges on hosts admin page
+- 2026-06-14 [942168aa](https://github.com/rhpds/troshka/commit/942168aa42b160e4b468e2f7bdf9c8203efc1660) — feat: evaluate partition thresholds in health poller, store warnings on host
+- 2026-06-14 [f52ce296](https://github.com/rhpds/troshka/commit/f52ce296f977adcdfc276c22e27e899373f1c2a3) — feat: add storage\_warnings JSONB column to hosts
+- 2026-06-14 [63b39f88](https://github.com/rhpds/troshka/commit/63b39f88c8a9c69f4f81adf06ee988103cd7b976) — feat: report all mounted partitions in troshkad health endpoint
+- 2026-06-14 [f84c49fe](https://github.com/rhpds/troshka/commit/f84c49fe7a16b67ce4c8598739773d44b9ee4da6) — fix: pool key includes fingerprint, reduce maxsize to 4, clean unused import
+- 2026-06-14 [c6ef4de6](https://github.com/rhpds/troshka/commit/c6ef4de6ef62f456e64c144588e1833d2f50acc7) — feat: replace http.client with urllib3 connection pooling in troshkad client
+- 2026-06-14 [bfa022f2](https://github.com/rhpds/troshka/commit/bfa022f2fda5c7f58f71e465d295ddb9b0c834d7) — docs: add VDSM-inspired improvements implementation plan
+- 2026-06-14 [31178eb8](https://github.com/rhpds/troshka/commit/31178eb8305a2e67c3bbdf5ccdfee109ae4e3d8c) — docs: add VDSM-inspired improvements design spec
+- 2026-06-13 [ee01da36](https://github.com/rhpds/troshka/commit/ee01da36c13e00a73b51a603a2d87455d163023b) — feat: libvirt lifecycle events, batch VM state polling, deploy resilience
+- 2026-06-13 [61d19383](https://github.com/rhpds/troshka/commit/61d193838e5dc08de930831bd57594e098ddac8e) — fix: hard-link ISOs (read-only, fast), copy qcow2 only (prevents corruption), log copy progress
+- 2026-06-13 [b8c51894](https://github.com/rhpds/troshka/commit/b8c518944c8244fdcb8f6fe706e72e5d546e5790) — fix: replace hard links with copies, disk creation progress, GC dedup
+- 2026-06-13 [f8d57eeb](https://github.com/rhpds/troshka/commit/f8d57eebaa3c10804b5114dcb0d63994e5369fcf) — fix: copy backing images per-project to prevent NFS lock conflicts
+- 2026-06-13 [72079383](https://github.com/rhpds/troshka/commit/720793836e91e8c131062f1e2fca09931aa9b06f) — fix: guard cloud-init runcmd for pattern deploys, remove quiesce, fix disk locks
+- 2026-06-13 [bd5a9ddc](https://github.com/rhpds/troshka/commit/bd5a9ddce6546571b4068674f9715bd72f8ce0bf) — fix: install monitoring, MOTD, autologin path, and OCP status phases
+- 2026-06-13 [8d3ea882](https://github.com/rhpds/troshka/commit/8d3ea8822e6ae141865dcae8ae7823e1f1435646) — fix: OCP health monitor and install script improvements
+- 2026-06-13 [d8bd42df](https://github.com/rhpds/troshka/commit/d8bd42df2a96dbb210969d1311b74cafc86f8a87) — fix: stale cache verification, CA trust in health monitor, VM state logging
+- 2026-06-13 [ae2cf9c2](https://github.com/rhpds/troshka/commit/ae2cf9c2c7efc17daab79299eca2f66ab7e1645e) — fix: OCP health monitor improvements and Firefox password injection
+- 2026-06-13 [0fd7f199](https://github.com/rhpds/troshka/commit/0fd7f199625c9838e6a9819d4830951bf03f6552) — feat: OCP cluster health monitor, deploy progress modal, sidebar improvements
+- 2026-06-13 [c50bdd21](https://github.com/rhpds/troshka/commit/c50bdd21b31f181256a7b664e7ae9f5ae38b8b12) — feat: pattern capture overhaul — live snapshots, local NVMe cache, S3 gateway, progress UI
+- 2026-06-12 [2ee6492f](https://github.com/rhpds/troshka/commit/2ee6492fc874c208d4561dcd1e14ec3a39a07fb2) — fix: preserve MACs in pattern remap — CoreOS/ignition network config is tied to MACs
+- 2026-06-12 [52702288](https://github.com/rhpds/troshka/commit/52702288a704fb683f89b00358f719ec73c52501) — fix: deploy\_project\_async allocates VNIs if missing (pattern auto-deploy was creating VMs without network)
+- 2026-06-12 [5a9791e4](https://github.com/rhpds/troshka/commit/5a9791e4215700893fc756eb143df64276d496c7) — fix: don't call loadProject on deploy→active transition (prevents VM status flicker)
+- 2026-06-12 [e1a7dec1](https://github.com/rhpds/troshka/commit/e1a7dec1398dd0a761549e958c6b637fde441053) — fix: add autoDeploy/autoStart state to patterns deploy modal
+- 2026-06-12 [5176e246](https://github.com/rhpds/troshka/commit/5176e246e7b556f25ffa818aed9d9956dea70636) — fix: pattern capture creates SharedCacheEntry records (prevents re-download on deploy)
+- 2026-06-12 [dc25b707](https://github.com/rhpds/troshka/commit/dc25b70766a05a35604025924e1110448fd34320) — fix: sanitize AWS credentials from deploy progress, patterns modal deploy options
+- 2026-06-12 [08e73f40](https://github.com/rhpds/troshka/commit/08e73f409a5e4123961ff95804b6dae00aeeadbc) — fix: deploy\_project\_async auto-places host if host\_id is null (pattern auto-deploy)
+- 2026-06-12 [49f68fe3](https://github.com/rhpds/troshka/commit/49f68fe3c8b90c06b6dc04e145a58168fe8bda55) — feat: external access toggle — no EIP/port forwards when off, gateway stays for outbound NAT
+- 2026-06-12 [d22f5bce](https://github.com/rhpds/troshka/commit/d22f5bce159b4d9025bef62e86a85cef45dd2fa0) — fix: external access toggle OCP-only, keeps gateway in topology, just skips EIP
+- 2026-06-12 [f563dca2](https://github.com/rhpds/troshka/commit/f563dca27b5a0ef72394d32956d8e6d501de36b5) — feat: external access toggle on template form (off by default, removes gateway/EIP)
+- 2026-06-12 [d14261fb](https://github.com/rhpds/troshka/commit/d14261fbfba624ea88a99c856c6f570a6ab9071a) — feat: capture progress shown in save pattern modal (VM count + detail from troshkad)
+- 2026-06-12 [776559c6](https://github.com/rhpds/troshka/commit/776559c6f422914e66968c311fbce22a674681ef) — feat: pattern capture progress — flatten size monitor + S3 upload streaming progress
+- 2026-06-12 [3a54fb26](https://github.com/rhpds/troshka/commit/3a54fb26fc8a245da23664b1557356321e9035d6) — fix: single workspace (disable dynamic workspaces), remove gnome-tour
+- 2026-06-12 [5fb56412](https://github.com/rhpds/troshka/commit/5fb5641234044bcd08c5af8b7831c1639cbbd575) — fix: also remove gnome-tour (separate from gnome-initial-setup)
+- 2026-06-12 [169ca299](https://github.com/rhpds/troshka/commit/169ca2999f558708e90e205850fa78f7c0440cba) — feat: virtual keyboard adds PgUp/PgDn, Home/End, Ins, arrow keys
+- 2026-06-12 [01e7e08f](https://github.com/rhpds/troshka/commit/01e7e08f3fae90f4b4f416d9f7989e16f3b41887) — fix: sed auto-login uses two separate commands (\\n not portable in sed append)
+- 2026-06-12 [82410f43](https://github.com/rhpds/troshka/commit/82410f43260bb5de333c632c06ff9c0d334432c2) — fix: desktop setup as separate script file (fixes nested quote breakage in nohup sh -c)
+- 2026-06-12 [8e5193b9](https://github.com/rhpds/troshka/commit/8e5193b9de420a9b994d931767977821e69f28db) — chore: ignore .vni\_hwm file
+- 2026-06-12 [68c2f082](https://github.com/rhpds/troshka/commit/68c2f0828ee21886ada6dab71cd3dbcdbe9a1e51) — docs: direct console proxy design spec
+- 2026-06-12 [67860943](https://github.com/rhpds/troshka/commit/6786094378e53b898aafcce154f11ead3d605823) — feat: GUI packages via cloud-init, serial console in I/O properties
+- 2026-06-12 [1c2d13f7](https://github.com/rhpds/troshka/commit/1c2d13f7da70784ace396d19e38f005dea24cea6) — fix: parse ciUserData top-level keys (mounts/yum\_repos) before runcmd merge
+- 2026-06-12 [5454f006](https://github.com/rhpds/troshka/commit/5454f006f99fb42414126bcd1f3dd6ee4d1a4d04) — security: validate package names against allowlist pattern
+- 2026-06-12 [14b6c029](https://github.com/rhpds/troshka/commit/14b6c0292f12b7d96dea15848ea09253ba0ccb89) — fix: use mounts: /dev/sr0 for DVD (first sata cdrom, seed is sr1)
+- 2026-06-12 [8aa5c27a](https://github.com/rhpds/troshka/commit/8aa5c27aacfc5561ef3ff2b2002ec0324ad512bb) — fix: DVD mount via bootcmd + yum\_repos (native cloud-init, runs before packages)
+- 2026-06-12 [09d7fb11](https://github.com/rhpds/troshka/commit/09d7fb118d913e6bb951e4c9f4c2a8ab08a54d36) — feat: unified ciPackages, guest-agent channel, bridge cleanup in teardown
+- 2026-06-12 [a6614fcc](https://github.com/rhpds/troshka/commit/a6614fccbccc6b802cf1fc80b622c985b4830e4d) — fix: disable resizeSession (VNC can't resize guest), add qemu-guest-agent
+- 2026-06-12 [cc51de86](https://github.com/rhpds/troshka/commit/cc51de86939162055203d418343c3143784e523e) — fix: network teardown deletes bridges (safe with non-recycled VNIs), GC skips deploying hosts
+- 2026-06-12 [e7f8aec9](https://github.com/rhpds/troshka/commit/e7f8aec967398718c5ac2ada016febe683d64cd3) — fix: GC skips host with active deploy/reconfigure to prevent bridge race
+- 2026-06-12 [920e05af](https://github.com/rhpds/troshka/commit/920e05afb321115aeef605ff43f1f96256c2deb6) — fix: firefox.cfg written via base64 decode (no YAML block scalar issues)
+- 2026-06-12 [c7871bc5](https://github.com/rhpds/troshka/commit/c7871bc50e62b8e49eba7b5ab25bd70a0ec2edb5) — fix: treat job 404 as completed (agent restart/GC race), don't fail deploy
+- 2026-06-12 [6267a2ca](https://github.com/rhpds/troshka/commit/6267a2ca84e58ae23cbee6f977bec93ca29e78ee) — fix: firefox.cfg heredoc broke YAML, cloud-init lint now fails deploy
+- 2026-06-12 [e77c3471](https://github.com/rhpds/troshka/commit/e77c3471cb99e2744f232dda2b9a315ba350c2a6) — fix: remove 'default' user (caused passwd -l), GC spinner on Clean button
+- 2026-06-12 [5b432f5d](https://github.com/rhpds/troshka/commit/5b432f5d674288c793df0b6faab50daf0e1c2675) — fix: cloud-init password — chpasswd + forced SSH PasswordAuthentication yes
+- 2026-06-12 [efb299d1](https://github.com/rhpds/troshka/commit/efb299d1eef56d00924600950eced0136d2b7df2) — feat: persist VNI high-water mark to file, never reuse retired VNIs
+- 2026-06-12 [8e0f64bf](https://github.com/rhpds/troshka/commit/8e0f64bf20d9767c7a9a7dc82b1e3fcc8bb13056) — fix: VNI allocation always increments (no recycling), prevents destroy race collisions
+- 2026-06-12 [dd54737b](https://github.com/rhpds/troshka/commit/dd54737b9e5063643b37f469a2d020a5a6f72742) — fix: GC report copy to clipboard, fixed orphan cleaned count (include namespaces/BMC)
+- 2026-06-12 [48dc6706](https://github.com/rhpds/troshka/commit/48dc6706b13d6dbf3eb0056e8977181be8de6f75) — fix: cloud-init password in users block, duplicate key detection
+- 2026-06-12 [da680b8f](https://github.com/rhpds/troshka/commit/da680b8fd28751423b63d1b020e75a3a18724d54) — fix: pattern cache key uses source\_disk\_id to match capture cache path
+- 2026-06-12 [11c1d1b1](https://github.com/rhpds/troshka/commit/11c1d1b1dda9135e62834e512e616ab802ed4913) — feat: export KUBECONFIG in cloud-user bashrc
+- 2026-06-12 [96baf398](https://github.com/rhpds/troshka/commit/96baf398c2fc322b9eabbdbefa8170fd2e8c97c5) — feat: auto-deploy and auto-start checkboxes for pattern deploy
+- 2026-06-12 [e5391ad4](https://github.com/rhpds/troshka/commit/e5391ad4cb3ba678158efdead9ef864623c78a09) — fix: serialize VM definitions to avoid virt-install storage pool race condition
+- 2026-06-12 [e57b4e02](https://github.com/rhpds/troshka/commit/e57b4e02fb772164ee95208175c94c478132f53e) — feat: byte-level download progress during deploy, shown as count + active transfer detail
+- 2026-06-12 [7e3655e0](https://github.com/rhpds/troshka/commit/7e3655e0b7baeaeae392b6e1cebe2fda3494d46d) — feat: parallel VM deployment — disk creation, VM definition, and start
+- 2026-06-12 [517986a9](https://github.com/rhpds/troshka/commit/517986a9d5d9a99d15fba63618c8abd970af9b7a) — feat: parallel pattern capture, restart-after option, quiesce fixes
+- 2026-06-12 [ab787289](https://github.com/rhpds/troshka/commit/ab787289772909cd321d127929b8c95da0f35df3) — fix: eject agent ISO via Redfish after OCP install and in quiesce script
+- 2026-06-12 [ae76fc89](https://github.com/rhpds/troshka/commit/ae76fc895a120f89741d6342662e668f5df5b0b3) — fix: pattern capture uses aws s3 cp for large disks, compressed qcow2
+- 2026-06-12 [e004544f](https://github.com/rhpds/troshka/commit/e004544f3b57dd44572078c2ca2779e8ef697960) — feat: I/O section in properties, virtio defaults, UI polish
+- 2026-06-12 [d3effdaf](https://github.com/rhpds/troshka/commit/d3effdaf5055a09c2f78504c1339f2329a1d546a) — feat: virtio video/input defaults, configurable per VM
+- 2026-06-12 [6ef6e4bb](https://github.com/rhpds/troshka/commit/6ef6e4bb7a3737eaae4f8bc21c0127c5b39476ae) — feat: bastion desktop polish - dark mode, auto-login, dock, Firefox config
+- 2026-06-12 [3196f04e](https://github.com/rhpds/troshka/commit/3196f04ed2ba00232e49365321ca818099362cad) — feat: OCP bastion desktop polish and Firefox auto-config
+- 2026-06-12 [620a0a7d](https://github.com/rhpds/troshka/commit/620a0a7d624e6473986dbfec91b66e46fc68030c) — fix: OCP 4.22 agent installer working end-to-end
+- 2026-06-12 [51ad5c35](https://github.com/rhpds/troshka/commit/51ad5c354ae51868f614b2c6f68061cf4edc4612) — fix: destroy race, retry logic, OCP install-config, console improvements
+- 2026-06-12 [fc582dd8](https://github.com/rhpds/troshka/commit/fc582dd86ff90a4ad48446ecbd30d572845be3a0) — security: token-authenticated VNC console proxy
+- 2026-06-12 [8acefea8](https://github.com/rhpds/troshka/commit/8acefea83f2f51bfb6669c569b7fed61699db994) — feat: OCP template UX, dirty tracking, disk cleanup, auto-arrange
+- 2026-06-11 [3e4e62e9](https://github.com/rhpds/troshka/commit/3e4e62e9a87d5d7e8a6281389d28eda96fd5c6c3) — fix: use projectName instead of undefined project variable for loading check
+- 2026-06-11 [21c2e379](https://github.com/rhpds/troshka/commit/21c2e379364cab2062156c08f78ea97d9b011341) — fix: blank project shows empty canvas instead of infinite loading spinner
+- 2026-06-11 [9a37c049](https://github.com/rhpds/troshka/commit/9a37c049b8fcb8841c3cc3d4340b5179d8411f4e) — fix: stop/force-stop must not destroy VMs or tear down infrastructure
+- 2026-06-11 [16b3038f](https://github.com/rhpds/troshka/commit/16b3038fc33c214a443e56cd6ca6c00901ef0832) — fix: pattern capture uses disk paths directly, not virsh domblklist
+- 2026-06-11 [ecb7bf00](https://github.com/rhpds/troshka/commit/ecb7bf0033b4c7e8fe116fd38f25ad2e05b44dd9) — feat: deploy time estimate on template selector cards
+- 2026-06-11 [483beeb6](https://github.com/rhpds/troshka/commit/483beeb6b6c857fe8c517c1e84529d3028bb4dd7) — feat: rightsize OCP templates based on install results
+- 2026-06-11 [8e0b7148](https://github.com/rhpds/troshka/commit/8e0b71486a689509daf09c3d2d8d8ffa178d9a43) — docs: OCP 4.20 agent-based install results — timing, resources, rightsizing
+- 2026-06-11 [38a1131e](https://github.com/rhpds/troshka/commit/38a1131eb4a82479149cb2603d2414c651a036ad) — fix: OCP version dropdown only shows supported versions (4.18+)
+- 2026-06-11 [7881d647](https://github.com/rhpds/troshka/commit/7881d6476d7e14d1a829d22c8a7e22ad2b05d6e9) — feat: OCP version dropdown + NTP sources in agent-config
+- 2026-06-11 [905b02b5](https://github.com/rhpds/troshka/commit/905b02b5980669e21f9ee549c03338052266a47b) — feat: /ocp/versions endpoint — fetches stable OCP versions from OpenShift Update Service API
+- 2026-06-11 [ba2fbc84](https://github.com/rhpds/troshka/commit/ba2fbc840752ec4d18c427424c1afefe2531ade3) — fix: auto-add cdrom to boot order for VMs with cdrom controller
+- 2026-06-11 [c9da3106](https://github.com/rhpds/troshka/commit/c9da3106c1c948a7809ea613d34142d5212f2a04) — revert: remove cdrom boot order change — boot order is topology-driven, not hardcoded
+- 2026-06-11 [abb9ad1c](https://github.com/rhpds/troshka/commit/abb9ad1c4cc937291e550028fd3b118bd155684c) — fix: cdrom boot order only added when VM has cdrom device
+- 2026-06-11 [cfb5b828](https://github.com/rhpds/troshka/commit/cfb5b82878f7bd6b1c0d58ee8e253f22752fd023) — fix: boot order hd before cdrom — prevents re-booting agent ISO after disk install
+- 2026-06-11 [0f8407b9](https://github.com/rhpds/troshka/commit/0f8407b9dbca7af731955dbda2a7cfa300575516) — fix: eject ISO only, no forced reboot — agent handles its own reboots
+- 2026-06-11 [a9498d16](https://github.com/rhpds/troshka/commit/a9498d1672ff54dbc8ff0ef06839163ef008b6d1) — fix: eject agent ISO after disk write, remove IPI template
+- 2026-06-11 [0c0d1b33](https://github.com/rhpds/troshka/commit/0c0d1b3329453a0604c3228b93d5e359fbe439b9) — feat: all OCP templates now agent-based, remove IPI
+- 2026-06-11 [bfef69ef](https://github.com/rhpds/troshka/commit/bfef69efb1971a12f25096fb0be1c1b40e16338e) — fix: SUSHY\_EMULATOR\_STORAGE\_POOL not VMEDIA\_STORAGE\_POOL (wrong config name)
+- 2026-06-11 [8102567e](https://github.com/rhpds/troshka/commit/8102567eb8382c52bb3198dac4719fd5eb46650e) — fix: only deploy/reconfig/start/stop threads block backend restart
+- 2026-06-11 [a92172c5](https://github.com/rhpds/troshka/commit/a92172c58569e969fd806d97bfd82051620cebb1) — fix: dev-services idle check uses named threads from /debug/threads
+- 2026-06-11 [d38943ff](https://github.com/rhpds/troshka/commit/d38943ff41b46ea0f6b4941fb4ad0d81fe20853d) — feat: named threads + /debug/threads admin endpoint
+- 2026-06-11 [0d2d7df3](https://github.com/rhpds/troshka/commit/0d2d7df317daa2bbda9927c793ccbdb02de24d1f) — feat: per-project libvirt storage pool for sushy virtual media
+- 2026-06-11 [072f7047](https://github.com/rhpds/troshka/commit/072f70477f8348dd5a0473817250d1f67213309f) — feat: agent-based OCP installer progress + fixes
+- 2026-06-11 [62206d68](https://github.com/rhpds/troshka/commit/62206d686d8d2c2306f6c2edecc1eab3e9761040) — feat: agent-based OCP installer template (no nested virt needed)
+- 2026-06-11 [403507cb](https://github.com/rhpds/troshka/commit/403507cb40db7a5da5f778b521971bdcf6db783b) — fix: dnsmasq watchdog conf name, drain timeout, SSH exec, KSM disable
+- 2026-06-11 [cda4d227](https://github.com/rhpds/troshka/commit/cda4d227e6bac71bb8282962b5f075b10784cae6) — fix: serial exec reliability, reconfigure disk paths, cloud-init DVD eject
+- 2026-06-11 [78fc70e1](https://github.com/rhpds/troshka/commit/78fc70e111ad81e2c9c7fd4a3152170609aba214) — fix: serial exec rewrite with fdpexpect, OCP bastion bridge + virtproxyd
+- 2026-06-11 [9992f715](https://github.com/rhpds/troshka/commit/9992f71517164319d300879a94399e0319a6c50d) — fix: GC orphan detection, dnsmasq resilience, OCP IPI template extraction
+- 2026-06-11 [8fd0314d](https://github.com/rhpds/troshka/commit/8fd0314dc99560ad035c4ff98761b44f1535a058) — feat: GC detects stale dummy bridges not referenced by any VM
+- 2026-06-11 [dd1c07b0](https://github.com/rhpds/troshka/commit/dd1c07b0dc6c11433def6d87fb73c28f43c061f5) — fix: never delete dummy bridges, auto-create missing ones before VM start
+- 2026-06-11 [5b56440e](https://github.com/rhpds/troshka/commit/5b56440e9baf54b9fbec1962e689d78909d5fa8e) — fix: isolate dummy bridge (no forwarding), safe teardown checks other VMs before deleting
+- 2026-06-11 [af4099b5](https://github.com/rhpds/troshka/commit/af4099b5acef344d49aef79510201a5d3c47e1b8) — fix: always logout serial session in finally block to prevent open sessions
+- 2026-06-11 [db384f4f](https://github.com/rhpds/troshka/commit/db384f4f9296d1e4918a1fa06c8d1b04c55f3d6f) — feat: serial console exec API endpoint with clean output parsing
+- 2026-06-11 [96785282](https://github.com/rhpds/troshka/commit/96785282fd9d8a49b66841df8ee63713c22167ee) — feat: serial console exec endpoint (vm/serial-exec) for remote command execution on VMs
+- 2026-06-11 [0c58cf35](https://github.com/rhpds/troshka/commit/0c58cf35e78b497d71b3d377eaabe4d7462f56b5) — feat: auto-run OCP installer, install-config.yaml generation, deploy error handling
+- 2026-06-11 [778b9d56](https://github.com/rhpds/troshka/commit/778b9d56460ed28531428e71cc4fe92087bf0ee9) — feat: OCP pull secret storage (encrypted), bastion bootstrap script with tmux, template form improvements
+- 2026-06-11 [8cd11db3](https://github.com/rhpds/troshka/commit/8cd11db3627f51247394b7b36622374823b36c4f) — fix: LB extIpId for explicit EIP binding, single troshkad restart on install, EIP selector in LB properties
+- 2026-06-11 [b2b8f617](https://github.com/rhpds/troshka/commit/b2b8f6179b047e55c6254f25f5cc14cc015cff9e) — fix: horizontal scroll on DNS records row in properties panel
+- 2026-06-11 [625145a3](https://github.com/rhpds/troshka/commit/625145a33d029cb47744e064372bb94449bae4c2) — feat: add record type (A, CNAME, TXT, SRV) to DNS records in properties panel
+- 2026-06-11 [34a6b9ce](https://github.com/rhpds/troshka/commit/34a6b9ceb18481a2f4c2bfe4aaa276bedc72c8b0) — feat: DNS records visible/editable in network properties panel, add bind-utils to bastion
+- 2026-06-11 [76f4b8d5](https://github.com/rhpds/troshka/commit/76f4b8d5b8e4580aa21001c12473e38edc85bb86) — feat: internal DNS, EIP ordering fix, nft cleanup, LB IP, external toggle, auto-deploy, cluster DNS form
+- 2026-06-11 [6b689536](https://github.com/rhpds/troshka/commit/6b68953601442072b12e6e81c5c61440c87a0a60) — fix: HAProxy \_log→job output, static cluster IPs on template VMs for LB backends, scoped seed regen to single VM on redeploy
+- 2026-06-11 [55cdbbb5](https://github.com/rhpds/troshka/commit/55cdbbb5adcfe73ed2fa8640fdea1b25bdacda81) — fix: add 5ms delay between keystrokes in console paste to prevent truncation
+- 2026-06-11 [d8650f13](https://github.com/rhpds/troshka/commit/d8650f13a779cc0654efed825fd4220f9cec845d) — feat: BMC password uses cloud-user password, configurable bastion BMC IP with info popup
+- 2026-06-11 [d03552d5](https://github.com/rhpds/troshka/commit/d03552d546f01206c499f009d3eb4be85e72f3e1) — fix: per-bridge qemu hook, static BMC IP via cloud-init, BMC teardown on destroy, no-dhcp-interface for BMC
+- 2026-06-11 [8c3c0bdc](https://github.com/rhpds/troshka/commit/8c3c0bdc175b4c6502d1f98239a9dc092b793a4d) — fix: revert no-dhcp-interface (may prevent dnsmasq from starting)
+- 2026-06-11 [75311240](https://github.com/rhpds/troshka/commit/75311240e76533f8b56d65163d4879908b3f4911) — fix: revert to bind-dynamic, add no-dhcp-interface for BMC bridge and veth
+- 2026-06-11 [198cf39c](https://github.com/rhpds/troshka/commit/198cf39ce89d5a1493c53dc1343cf30679c36d15) — feat: collapsible palette and properties panels with toggle arrows
+- 2026-06-10 [209c6694](https://github.com/rhpds/troshka/commit/209c6694d24ea25972728e73e8e7bfc3c2ffd020) — fix: use bind-interfaces for dnsmasq to prevent DHCP leaking across bridges
+- 2026-06-10 [1ca5ca86](https://github.com/rhpds/troshka/commit/1ca5ca866e3aaa88f9f6c34ddaa412b670987575) — fix: hide console button in draft and deploying states
+- 2026-06-10 [6b0367ec](https://github.com/rhpds/troshka/commit/6b0367ec371c6130157ffb19f7c5f8727166f4ec) — fix: Enter key on password field submits template form
+- 2026-06-10 [feb5822d](https://github.com/rhpds/troshka/commit/feb5822d181787991794b7fef3c2f7da2ee2ce01) — fix: auto-start VM after redeploy based on powerOnAtDeploy, not just was\_running
+- 2026-06-10 [a475b675](https://github.com/rhpds/troshka/commit/a475b675ddcd265df4b650a877a34d140f5dda6f) — fix: pass storage pool to redeploy so shared paths resolve correctly
+- 2026-06-10 [0e9eb70d](https://github.com/rhpds/troshka/commit/0e9eb70d5b7ed006cedf5c9ec16f2e84acf16017) — fix: add RHEL DVD to fstab so it persists across reboots
+- 2026-06-10 [b2c782bb](https://github.com/rhpds/troshka/commit/b2c782bb31e22edcc884c4c502b160f2db488eda) — fix: use /dev/cdrom for RHEL DVD mount in cloud-init
+- 2026-06-10 [2d4d6217](https://github.com/rhpds/troshka/commit/2d4d6217c9904fd13a17a4284cea6cbcdbaacbfb) — feat: validate BMC IPs at deploy time and show warning on canvas
+- 2026-06-10 [8eee22fe](https://github.com/rhpds/troshka/commit/8eee22fe57496dcfd75157519bb4e40c420c847f) — fix: set bmcIp on template VMs and BMC credentials so bridge gets created during deploy
+- 2026-06-10 [d3201496](https://github.com/rhpds/troshka/commit/d3201496cda5f523c5d2683743cb89e1de87050d) — debug: log which VM properties changed during reconfigure
+- 2026-06-10 [8505d71a](https://github.com/rhpds/troshka/commit/8505d71a1283f9ece13606f6715a0f7ce4d28646) — fix: bastion uses BIOS firmware (RHEL KVM Guest Image is not UEFI)
+- 2026-06-10 [a99e5b72](https://github.com/rhpds/troshka/commit/a99e5b72fffbcbd7b833c75cbe676a357f941f97) — fix: silence expected nftables flush errors on fresh namespaces
+- 2026-06-10 [7d644ac7](https://github.com/rhpds/troshka/commit/7d644ac751a193570e3cf970686d44e0b30125b7) — docs: add AssignPrivateIpAddresses to IAM policy requirements
+- 2026-06-10 [315db6e0](https://github.com/rhpds/troshka/commit/315db6e0356c49a829cc78d92bfa50b7b68a3c17) — fix: update empty library message to reference RHEL KVM Guest Image
+- 2026-06-10 [85fe655d](https://github.com/rhpds/troshka/commit/85fe655df4f205e9fe09865e2700eec47d6f5cbc) — fix: require bastion image selection, show error if no qcow2 images in library
+- 2026-06-10 [7b166da9](https://github.com/rhpds/troshka/commit/7b166da99f9d41c129c2a7a071fdb99703591a7d) — fix: scope SSH key query to requesting user
+- 2026-06-10 [b40fcdb3](https://github.com/rhpds/troshka/commit/b40fcdb310bd8a271e56bde013a9b1c8703acd98) — fix: use correct cloud-init field names, make bastion password mandatory
+- 2026-06-10 [52bc6685](https://github.com/rhpds/troshka/commit/52bc6685ce3c4f903b792b86d86f3ea04fb0133c) — feat: template bastion with RHEL DVD ISO, yum repo setup, git+ansible install
+- 2026-06-10 [1ed63ddb](https://github.com/rhpds/troshka/commit/1ed63ddbf2e3dba6c85004680f5f96617abf7a2e) — feat: template picker with bastion image, SSH key, and optional password
+- 2026-06-10 [f46b3752](https://github.com/rhpds/troshka/commit/f46b3752ef71c50403741dcb2cb5f62f2cdf7f04) — fix: position BMC directly above bastion VM
+- 2026-06-10 [4fa73146](https://github.com/rhpds/troshka/commit/4fa731465288ee58511718bc2f5664f57439c8a5) — fix: guard cidrToRange against undefined cidr (LB/gateway nodes have no CIDR)
+- 2026-06-10 [0a68110d](https://github.com/rhpds/troshka/commit/0a68110d5adb6613c3bcd24349a3415b8837253c) — fix: move LB to bottom row, connect via top handle to VM bottom NIC handles
+- 2026-06-10 [ce42e6ee](https://github.com/rhpds/troshka/commit/ce42e6ee849ad6ddbd7f64ebc6a3bfb0843ac172) — fix: place disks to the left of each VM, widen spacing
+- 2026-06-10 [d47a552a](https://github.com/rhpds/troshka/commit/d47a552ab40d6077ae6e9657cb9a438e8b39771d) — fix: position gateway above cluster network, not off to the right
+- 2026-06-10 [7206977b](https://github.com/rhpds/troshka/commit/7206977be46398681526194d5e9c81fbe144154c) — feat: add bastion VM with dual NIC (cluster+BMC) to OCP templates
+- 2026-06-10 [9c2bba08](https://github.com/rhpds/troshka/commit/9c2bba086b535c7c9254e6a21d827c16b33ca844) — fix: improve template layout spacing to prevent node/edge overlap
+- 2026-06-10 [3c227f02](https://github.com/rhpds/troshka/commit/3c227f0282fa13fee5e2d57b26549cf9bfc35e24) — fix: double-prefix handle IDs to match VM component rendering (nic-nic-\*, dp-dp-\*)
+- 2026-06-10 [af5b3214](https://github.com/rhpds/troshka/commit/af5b3214971a4b37ebd87edab1a2d8d27dc685db) — fix: use correct handle IDs in template edges (bare 'top'/'bottom', not prefixed)
+- 2026-06-10 [43767c2c](https://github.com/rhpds/troshka/commit/43767c2cd51b702a1ebf8e1f0079931cd69b9455) — feat: templates include disks, gateway, external IP, boot devices, and proper edges
+- 2026-06-10 [b3e4defb](https://github.com/rhpds/troshka/commit/b3e4defb7a64f2b76aebc6e7a86f2f82bf9bc592) — ui: use official OpenShift logomark for OCP template cards
+- 2026-06-10 [82451634](https://github.com/rhpds/troshka/commit/8245163464c03f7f0d32268d387c9debe7dc18c5) — ui: use OpenShift logo for OCP template cards
+- 2026-06-10 [9f4c614a](https://github.com/rhpds/troshka/commit/9f4c614a6d6c2a486e9d7226ce8b015781208401) — fix: re-query StoragePool in background thread to avoid DetachedInstanceError
+- 2026-06-10 [944f5fee](https://github.com/rhpds/troshka/commit/944f5fee0b639b0304983771bfd5ddc0e3eb60a4) — feat: add topology template picker to New Project dialog
+- 2026-06-10 [75ac6bea](https://github.com/rhpds/troshka/commit/75ac6bea1b4e9a8d40adce84eae2c2f3aa545ae9) — fix: replace LB emoji with SVG icon and add palette background
+- 2026-06-10 [1fb899cd](https://github.com/rhpds/troshka/commit/1fb899cd4b1be6a6ac3f8c406f5982fd1ad719f9) — feat: add OCP topology templates (SNO, compact, standard)
+- 2026-06-10 [a67ec89d](https://github.com/rhpds/troshka/commit/a67ec89dd0c0ade81c18d623db4d6341e1160230) — feat: add DNS Providers admin page
+- 2026-06-10 [4041acd2](https://github.com/rhpds/troshka/commit/4041acd2e055e562eb1d82d394e1b5227c151fe5) — feat: add GUID, domain, DNS provider to pattern deploy dialogs
+- 2026-06-10 [8ca16c0d](https://github.com/rhpds/troshka/commit/8ca16c0d57ef65a6462a076c5bfa81daf596f1fa) — feat: add Load Balancer network node to canvas
+- 2026-06-10 [9411a972](https://github.com/rhpds/troshka/commit/9411a972a9326e783d27ab817d083a4ab2c96529) — feat: extend deploy-from-pattern with GUID, domain, DNS provider
+- 2026-06-10 [d63c0a9f](https://github.com/rhpds/troshka/commit/d63c0a9f230634e3861ad3dfd55c75f423a77d78) — feat: add DNS service with NSUPDATE and Route53 support
+- 2026-06-10 [72774633](https://github.com/rhpds/troshka/commit/72774633331470b0a0b200462ec02bda3e4b43f1) — feat: add DNS Provider CRUD API
+- 2026-06-10 [0e2e0c8d](https://github.com/rhpds/troshka/commit/0e2e0c8d3c8e47da604acac843e38a0450368774) — feat: add DnsProvider model and project guid/domain fields
+- 2026-06-10 [62f81d48](https://github.com/rhpds/troshka/commit/62f81d48eda8db6e6d7d6ad9f9e17a2f54c179e9) — feat: add haproxy to host cloud-init package list
+- 2026-06-10 [35361b42](https://github.com/rhpds/troshka/commit/35361b42c9a52c8783a79b05ccfdd7dd7f636b13) — feat: integrate LB setup into deploy flow with EIP port forwarding
+- 2026-06-10 [b8ed89b4](https://github.com/rhpds/troshka/commit/b8ed89b46668c037c80f196fe94876e5c09eafe8) — feat: add HAProxy setup/teardown handlers to troshkad
+- 2026-06-10 [f455aa5e](https://github.com/rhpds/troshka/commit/f455aa5e20bb396784e88cf7dd21a3592cee1918) — feat: extract LB config from topology in vxlan.py
+- 2026-06-10 [2c920f9a](https://github.com/rhpds/troshka/commit/2c920f9a46d230fba5bc6d646648e793559c03c6) — feat: add HAProxy config generation service
+- 2026-06-10 [78d8a824](https://github.com/rhpds/troshka/commit/78d8a8240949c45ff57a3945c07a52a2b40c2967) — docs: add OCP on Troshka implementation plan
+- 2026-06-10 [215c1f8f](https://github.com/rhpds/troshka/commit/215c1f8f2bc47ec7d714de4ccf707a0454b82a1d) — docs: add OpenShift on Troshka design spec
+- 2026-06-10 [5d66bd85](https://github.com/rhpds/troshka/commit/5d66bd85de2c5b6d8815135c99b58f2c7c8b990d) — docs: update CLAUDE.md with PKI, private IP migration, cold migration, placement
+- 2026-06-10 [72ebc021](https://github.com/rhpds/troshka/commit/72ebc021f4a038a1b5e842899a4279eca5f40204) — feat: cold migration for stopped VMs (virsh migrate without --live)
+- 2026-06-10 [c3f39990](https://github.com/rhpds/troshka/commit/c3f39990bbab26c642586c1d3fa8acbd610f425f) — ui: optimistic state updates on Deploy and Republish buttons
+- 2026-06-10 [b400b3bf](https://github.com/rhpds/troshka/commit/b400b3bf85265867f25f76dddfb6a8b32066a591) — fix: add migration data ports 49152-49215 back to SG rules (needed alongside TLS control port)
+- 2026-06-10 [01946bf3](https://github.com/rhpds/troshka/commit/01946bf32a40c73b7403bd9f52c12c9cb3d49687) — fix: put seed ISOs in shared VM dir so they're accessible during migration
+- 2026-06-10 [be5b97b9](https://github.com/rhpds/troshka/commit/be5b97b94fae61ef4d60cdc9c6e1054d9b0fc67a) — fix: sign host TLS certs with both public and private IPs as SANs
+- 2026-06-10 [3b7876a0](https://github.com/rhpds/troshka/commit/3b7876a0516c4b990f7b0c8fb537755845a56c05) — ui: set project state to migrating immediately after API call
+- 2026-06-10 [b04c07b3](https://github.com/rhpds/troshka/commit/b04c07b3b21f995a06efdb3a0d0721d52392c48e) — feat: store private IP on hosts, use it for migration (VPC-internal traffic)
+- 2026-06-10 [69d5c78a](https://github.com/rhpds/troshka/commit/69d5c78a00dfa37843564b4509eb7ee57b4e3b65) — fix: reject migration to same host
+- 2026-06-10 [c6a28a1b](https://github.com/rhpds/troshka/commit/c6a28a1b526db331cc2da97ed8788d257fa2a203) — fix: abort migration on VM transfer failure instead of continuing to completion
+- 2026-06-10 [9f23c897](https://github.com/rhpds/troshka/commit/9f23c897e2e7681bee5eecd38c77b9292d420af9) — fix: manual install-agent endpoint passes pool info for NFS/TLS/storage\_mode
+- 2026-06-10 [ffd675f6](https://github.com/rhpds/troshka/commit/ffd675f67730f709b2b3c34b247509beb8d27cf0) — ui: hide Update Agent button when agent is current, show only when outdated
+- 2026-06-10 [962fd1b2](https://github.com/rhpds/troshka/commit/962fd1b22839fcbc13209ea32c6cd2e41de8f428) — feat: highlight Update Agent button when host version is outdated
+- 2026-06-10 [d77eec85](https://github.com/rhpds/troshka/commit/d77eec858c71b480ee713cdb7cd0043878dabe32) — ui: match Evacuate button size to other host action buttons
+- 2026-06-10 [3203b84b](https://github.com/rhpds/troshka/commit/3203b84b880ada460d30945b0739e63c5cc4d198) — fix: manual agent reinstall passes pool info for NFS mount and TLS certs
+- 2026-06-10 [ea2737ef](https://github.com/rhpds/troshka/commit/ea2737ef5216e238e999e86d04a4038931655515) — feat: auto-renew pool CA when within 90 days of expiry
+- 2026-06-10 [131c0b86](https://github.com/rhpds/troshka/commit/131c0b86dc9f9680caaf84fd6915e08dd3a5d981) — feat: auto-renewal of libvirt TLS certs via health poller (hourly check)
+- 2026-06-10 [38351484](https://github.com/rhpds/troshka/commit/383514845cd890165f6ab7b194b69ea178ac671e) — feat: pool-level PKI for libvirt TLS — CA generation, host cert signing, proper mutual TLS
+- 2026-06-10 [da46ab36](https://github.com/rhpds/troshka/commit/da46ab3657dc30ea53615d621e1c5b1a7da90691) — feat: libvirt TLS for live migration, auto-sync SG rules on startup
+- 2026-06-10 [afef8a09](https://github.com/rhpds/troshka/commit/afef8a0926e5075465112204cf5ced003c2a8dc6) — ui: larger top-left checkboxes on images and patterns pages
+- 2026-06-10 [13e29f8d](https://github.com/rhpds/troshka/commit/13e29f8d36aa1d87630e19d509bed5511378a77f) — fix: migration uses start\_job/wait\_for\_job, larger top-left checkboxes on projects/hosts
+- 2026-06-10 [43cce625](https://github.com/rhpds/troshka/commit/43cce6255ffeb85d6873c23074bb7ee90aef14c1) — feat: admin-only migrate with capacity check, source/destination instance IDs in modal
+- 2026-06-10 [dc77c0ab](https://github.com/rhpds/troshka/commit/dc77c0abeadd135002b25ebe1d3a44de441ad58d) — feat: pool-aware placement with auto-select, admin pool override on deploy
+- 2026-06-10 [04a7adb8](https://github.com/rhpds/troshka/commit/04a7adb8450d41e8bd54f3df8652ae64059fe5e3) — fix: placement syncs capacity and picks least-loaded host, supports pool filtering
+- 2026-06-10 [e6b6e078](https://github.com/rhpds/troshka/commit/e6b6e0782c218bbc38dff01d64d5c3ffbd3abb3d) — fix: use /fsx root path for FSx mount (not /fsx/troshka subdirectory)
+- 2026-06-10 [490f86d1](https://github.com/rhpds/troshka/commit/490f86d1013f3e0b2180a0077a4b76b584fd2b09) — feat: wire migration service to actual deploy network/BMC setup functions
+- 2026-06-10 [48ae9737](https://github.com/rhpds/troshka/commit/48ae9737dfb1f0ad80d0e954220aa6f0d2e1c112) — feat: wire pool-aware paths through deploy and undeploy, pass disk\_cache to troshkad
+- 2026-06-10 [acbdc538](https://github.com/rhpds/troshka/commit/acbdc5383519be0cf3a6037a7d4eb88780654e14) — feat: NFS mount in cloud-init and agent install, storage\_mode in troshkad config
+- 2026-06-10 [45e5a40c](https://github.com/rhpds/troshka/commit/45e5a40ccd9f09b16d5212c7893d6db07a5d55e2) — fix: add 10% minimum growth check to storage pool PATCH API
+- 2026-06-10 [977269ad](https://github.com/rhpds/troshka/commit/977269ad463310989ba1a6071ead01f85700859f) — fix: FSx storage requires 10% minimum growth, no shrink, proper validation
+- 2026-06-10 [4b2a66f4](https://github.com/rhpds/troshka/commit/4b2a66f4edc8d510d3e3c5958b3266b020ba320f) — fix: allow FSx storage shrink, enforce 64 GB minimum
+- 2026-06-10 [7b1e0f6e](https://github.com/rhpds/troshka/commit/7b1e0f6e45e844b03cdfb45bf3a596ce7b1cae2f) — ui: fast polling during FSx creation, input validation on edit form
+- 2026-06-10 [be366b2f](https://github.com/rhpds/troshka/commit/be366b2ff7c50258d179d18e573f7fcd8119eb7b) — fix: resume FSx poller on restart, add storage growth to edit UI
+- 2026-06-10 [2ed6f076](https://github.com/rhpds/troshka/commit/2ed6f076752e6d6ce2d1bbd311a3ac19fdf77810) — docs: add shared storage, FSx permissions, and managed IAM policy to CLAUDE.md
+- 2026-06-10 [96f18c76](https://github.com/rhpds/troshka/commit/96f18c7655658c7b35cc8aa578797d2e081d3734) — fix: handle FSx provisioning failure, set pool status to error
+- 2026-06-10 [0a1bd341](https://github.com/rhpds/troshka/commit/0a1bd341b48cc597ca4d28cfc187e5729916dc0d) — fix: map provider credential keys to boto3 aws\_access\_key\_id format
+- 2026-06-10 [0f94f35f](https://github.com/rhpds/troshka/commit/0f94f35ff300a8463f8ae37eec554d7e556eadcb) — fix: add trailing slash to storage-pools fetch URLs (prevents 307 redirect on POST)
+- 2026-06-10 [869e8566](https://github.com/rhpds/troshka/commit/869e8566c60e69faa1eb90589276e6e86456075d) — ui: remove AZ/provider/SG requirements from BYO NFS pools
+- 2026-06-10 [e8b7aa61](https://github.com/rhpds/troshka/commit/e8b7aa61dafb585649352386d4a14a2085b07d89) — ui: AZ dropdown populated from provider, replaces freeform text input
+- 2026-06-10 [d459ffaf](https://github.com/rhpds/troshka/commit/d459ffaf224ac1dfd60fbfd99e5e6c48e44dd064) — ui: mode-first form, hide provider for BYO NFS, skip NFS SG rule for BYO
+- 2026-06-10 [0f7e9552](https://github.com/rhpds/troshka/commit/0f7e955238d12e7e7c4fcf766d3299b708bafded) — ui: storage pool edit mode, remove local EBS option, filter S3 providers
+- 2026-06-10 [a6eb1352](https://github.com/rhpds/troshka/commit/a6eb13520bc38a62df929006e6263f3a2c148a9e) — feat: pool-level garbage collection for shared storage
+- 2026-06-10 [9c593111](https://github.com/rhpds/troshka/commit/9c5931119721f56251aeeb23b92fe8330a68088c) — feat: shared cache download coordination in deploy service
+- 2026-06-10 [f4245449](https://github.com/rhpds/troshka/commit/f42454493b6422b333d853b6c187ffdec762859f) — feat: project migration UI with host selector modal
+- 2026-06-10 [bb5323cb](https://github.com/rhpds/troshka/commit/bb5323cbdc406f6ebfcf47d7cc7d2959d0d8a170) — feat: storage pools admin page with create/delete UI
+- 2026-06-10 [f04883cf](https://github.com/rhpds/troshka/commit/f04883cf84ff395d9a301166067910bbaa7d1417) — feat: migration service with validation, orchestration, and API endpoints
+- 2026-06-10 [bfc3842d](https://github.com/rhpds/troshka/commit/bfc3842db155af31aca0b605bc3b6f367d7407c1) — feat: troshkad vm/migrate endpoint for live migration
+- 2026-06-10 [f6e56ed2](https://github.com/rhpds/troshka/commit/f6e56ed2bb79081ce655bde366c896a476135de3) — feat: troshkad path resolver for shared/local storage modes
+- 2026-06-10 [68f19d01](https://github.com/rhpds/troshka/commit/68f19d01ef0af07364fd1da959cb2cd1b4c0521f) — feat: pool-aware host provisioning with AZ pinning
+- 2026-06-10 [ac42bb1f](https://github.com/rhpds/troshka/commit/ac42bb1f2d1cebe41410566125a12cfbf2c450bc) — feat: add storage pool API router with CRUD and AZ probing
+- 2026-06-10 [fef1c01b](https://github.com/rhpds/troshka/commit/fef1c01b840055bffbf92bdd71e15772d1162bfa) — feat: add storage pool service with FSx lifecycle and AZ probing
+- 2026-06-10 [5efd0ba7](https://github.com/rhpds/troshka/commit/5efd0ba77f03923386b9cc50dbf74f108ee68f54) — migration: add storage\_pools and shared\_cache\_entries tables
+- 2026-06-10 [9009f39f](https://github.com/rhpds/troshka/commit/9009f39f6e63fd207101607ae07ddb8b4d0cda7b) — feat: add StoragePool and SharedCacheEntry models
+- 2026-06-10 [7ef9c449](https://github.com/rhpds/troshka/commit/7ef9c449d47fee8da3e9969ce4b845f48af433dd) — docs: add shared storage and live migration implementation plan
+- 2026-06-10 [047f1fdf](https://github.com/rhpds/troshka/commit/047f1fdf7957645b66564cd9e611856f149462f8) — docs: add shared storage and live migration design spec
+- 2026-06-10 [967c40ad](https://github.com/rhpds/troshka/commit/967c40adbde5bfa0e0b4ce330e74d0920dc8cd26) — feat: add consistent search across Projects, Images, and Patterns
+- 2026-06-10 [5482ed0e](https://github.com/rhpds/troshka/commit/5482ed0ed30d2742d29f8eeac577fc92adb79e2b) — fix: remove isClickable/isSelectable from project cards
+- 2026-06-10 [99d6c40e](https://github.com/rhpds/troshka/commit/99d6c40e76827ac7d85d7f2ff0814e4ea6952c41) — ui: make patterns full-width rows to match other pages
+- 2026-06-10 [2d9589ac](https://github.com/rhpds/troshka/commit/2d9589ac33c291e7077051c48149c5ad855d2767) — refactor: consistent two-row card layout across all pages
+- 2026-06-10 [d1f6d422](https://github.com/rhpds/troshka/commit/d1f6d422e9e6e2b195543669cb5d36ee996a93c3) — ui: change ✕ to Delete button on pattern and project cards
+- 2026-06-10 [134aa1af](https://github.com/rhpds/troshka/commit/134aa1afb895d70c4f32ea3657b29344c95e47a9) — feat: add bulk select to Images and Patterns, add polling to Providers
+- 2026-06-10 [35155524](https://github.com/rhpds/troshka/commit/351555248e9bc1c51ec9ab4fa5b433801088686f) — fix: poll project states after bulk actions and on interval
+- 2026-06-10 [25a0af13](https://github.com/rhpds/troshka/commit/25a0af13e9ab2d7ba57159466ab9428857f4de63) — fix: retry start\_job on connection refused and timeouts
+- 2026-06-10 [19232027](https://github.com/rhpds/troshka/commit/19232027e2584a7f8b72a184b77ca3a29025debb) — fix: force-destroy VMs that don't respond to graceful shutdown
+- 2026-06-10 [0420e3d2](https://github.com/rhpds/troshka/commit/0420e3d232ddd42fbfc6c459dd3b51d34a2d79db) — feat: add multi-select checkboxes with bulk actions to projects page
+- 2026-06-10 [e605d927](https://github.com/rhpds/troshka/commit/e605d927aefdefc1c1526c4245dfe77e73aa54b1) — fix: reset stuck projects to error on backend startup
+- 2026-06-10 [21e0876f](https://github.com/rhpds/troshka/commit/21e0876f629d4ab5723d487c611b967611a1d694) — fix: retry on troshkad job queue full instead of failing
+- 2026-06-10 [c703c028](https://github.com/rhpds/troshka/commit/c703c0282e511f6948e7bd7d3a58711f560afb0d) — fix: read EBS device name from NVMe vendor-specific bytes (binary)
+- 2026-06-10 [33e3e11f](https://github.com/rhpds/troshka/commit/33e3e11fda101673d239d1cc0b62bbd6576b9f8e) — fix: install nvme-cli via packages (not runcmd) so it's available for device detection
+- 2026-06-10 [d4d0c700](https://github.com/rhpds/troshka/commit/d4d0c700ec698a1fb1dcd13f7b41f5dfe55f6069) — fix: escape sed backreference in cloud-init qemu hook
+- 2026-06-10 [718a51bd](https://github.com/rhpds/troshka/commit/718a51bd93c49c1bda15f40b7c9c83a30d9aa138) — fix: use nvme id-ctrl to detect EBS volumes instead of hardcoded device names
+- 2026-06-10 [77026796](https://github.com/rhpds/troshka/commit/77026796aabec7b6ba8bb70402ee70c6f5326385) — feat: add multi-select checkboxes with smart bulk actions
+- 2026-06-10 [9ddd0364](https://github.com/rhpds/troshka/commit/9ddd0364a93eb5c5d42dec38bb8d9c0c89c0cd88) — refactor: split host card into two rows — info and buttons
+- 2026-06-10 [a3e008b4](https://github.com/rhpds/troshka/commit/a3e008b4734487d03e50926748883474307c27df) — feat: show placeholder card immediately when provisioning a host
+- 2026-06-10 [2e79accc](https://github.com/rhpds/troshka/commit/2e79acccf293e6333d29a0426b7699a5065117fb) — fix: allow parallel host provisioning
+- 2026-06-10 [59bcac67](https://github.com/rhpds/troshka/commit/59bcac677f9ce3b8be6389a4a2342bb5846aabe3) — fix: keep Add Host form open for parallel provisioning
+- 2026-06-10 [ef103a57](https://github.com/rhpds/troshka/commit/ef103a5759b20813253acda268ef317b1bbb07ba) — feat: warn about project data loss when removing a host
+- 2026-06-10 [2ee63012](https://github.com/rhpds/troshka/commit/2ee6301232338cc0f5b0224f7db21f8dcbe89569) — fix: allow removing stopped hosts with stopped projects
+- 2026-06-10 [550e3282](https://github.com/rhpds/troshka/commit/550e3282a48588baf991ed7702e1c9b47088dcf9) — fix: sync host capacity on every list request
+- 2026-06-10 [ed6723c1](https://github.com/rhpds/troshka/commit/ed6723c1d94c88d46552ba86d6cb56f3ba219030) — fix: don't disable Remove button based on stale used\_vcpus
+- 2026-06-10 [14751438](https://github.com/rhpds/troshka/commit/1475143832bf2d2055babe1bb7c07d31492201f0) — fix: sync host capacity on poweroff and before remove
+- 2026-06-10 [d8b93d84](https://github.com/rhpds/troshka/commit/d8b93d847ad54f1410597521b7313c3cfacff7bd) — feat: add swap volume, memory overcommit, and KSM tuning for hosts
+- 2026-06-10 [41fc6bfa](https://github.com/rhpds/troshka/commit/41fc6bfab6b2ee5914e30134ddbe1d61d92e65a4) — feat: allow changing AWS instance type on stopped hosts
+- 2026-06-09 [0766830a](https://github.com/rhpds/troshka/commit/0766830aeef6eb4f2eee47d2a9c1b7b66a222043) — docs: add Stop/Start/Reboot instance permissions to IAM docs
+- 2026-06-09 [9e9814f6](https://github.com/rhpds/troshka/commit/9e9814f6602f8943c747a7bbf39e72a6cc1993b0) — fix: make BMC teardown/setup non-fatal in stop and start flows
+- 2026-06-09 [6f027957](https://github.com/rhpds/troshka/commit/6f027957f5e0aa7d7615dc0b98aa4fb397d14a9e) — fix: make BMC teardown/setup non-fatal during reconfigure
+- 2026-06-09 [59a3060d](https://github.com/rhpds/troshka/commit/59a3060dd2aae61e2fa9860a6532576e127e075d) — fix: create BMC bridge during reconfigure — needed before VM restart
+- 2026-06-09 [a29dc16b](https://github.com/rhpds/troshka/commit/a29dc16b88e0222cf6184db973f32237db8c2d9e) — fix: cache library images during reconfigure — new ISOs/disks need downloading before VM restart
+- 2026-06-09 [9a47ef65](https://github.com/rhpds/troshka/commit/9a47ef65a714197603fb504de088921cb8761ed2) — fix: hard 5s timeout on troshkad shutdown to prevent hanging on stuck jobs
+- 2026-06-09 [1129adc7](https://github.com/rhpds/troshka/commit/1129adc7ddb30ad4d11de84b4ba987281364ce29) — fix: use passlib for sha512\_crypt — broken stdlib implementation produced invalid hashes
+- 2026-06-09 [dc60708e](https://github.com/rhpds/troshka/commit/dc60708ef1f49dea1d4a43fea787d6db1e7fbf80) — fix: rename live boot label to BMC Live Boot Order
+- 2026-06-09 [512a0ebb](https://github.com/rhpds/troshka/commit/512a0ebbadd45da9bdab06f7a0efe6290eaa7ea5) — fix: revert boot order sync — show live boot as informational, don't overwrite topology
+- 2026-06-09 [84da4a21](https://github.com/rhpds/troshka/commit/84da4a216a7433c60497e7f394408ea47495a7f2) — feat: sync live boot order from libvirt directly into topology bootDevices
+- 2026-06-09 [670d1586](https://github.com/rhpds/troshka/commit/670d1586f9eeb9dcdad709ec99c142006a09b25a) — feat: show live boot order from BMC in properties panel with purple indicator
+- 2026-06-09 [cc5493de](https://github.com/rhpds/troshka/commit/cc5493de5a9b110aeb79f8edc401de3119de6dd9) — feat: restore BMC services on troshkad startup from existing configs
+- 2026-06-09 [999b610b](https://github.com/rhpds/troshka/commit/999b610b6813af822fc1de69f69064963c6ae534) — feat: sync live boot order from libvirt via WS — shows 'Boot (live)' on canvas when changed externally
+- 2026-06-09 [249e5536](https://github.com/rhpds/troshka/commit/249e55365c788eb2dee65d8ed2ac6c99ea40c20f) — fix: use libvirt UUID for sushy ALLOWED\_INSTANCES so only the target VM is exposed
+- 2026-06-09 [12356ced](https://github.com/rhpds/troshka/commit/12356cedf078d3899aef8e3e9bc66f1ecca84105) — fix: remove ALLOWED\_INSTANCES from sushy config — uses UUIDs not names, each instance has own IP
+- 2026-06-09 [8630c74e](https://github.com/rhpds/troshka/commit/8630c74e77b8c7ed719af7a614948ad7a9ec38be) — fix: update BMC network warning text to guide user to add NIC first
+- 2026-06-09 [f1c6d607](https://github.com/rhpds/troshka/commit/f1c6d60751ffd7db40c72792b4e8e1743e54b0b8) — fix: simplify BMC connection — user adds NIC manually, reject if handle already connected
+- 2026-06-09 [edd68290](https://github.com/rhpds/troshka/commit/edd68290cce0a8187129f4889d45a982362bcdd0) — feat: swap BMC edge to bmc0 handle after render using DOM polling
+- 2026-06-09 [cf7d89c8](https://github.com/rhpds/troshka/commit/cf7d89c8b74c9b31ff9dfc60f7de545a0a42067e) — fix: kill running job subprocesses on SIGTERM to prevent shutdown hang
+- 2026-06-09 [59543d01](https://github.com/rhpds/troshka/commit/59543d01355b28788b2ccd4e98f827924700ac9f) — fix: clean up bmc NICs in deleteEdge path too
+- 2026-06-09 [afe8e379](https://github.com/rhpds/troshka/commit/afe8e379124f8022a701f7f41e7e509fed2880a1) — feat: auto-remove bmc NIC when disconnecting VM from BMC network
+- 2026-06-09 [b1abf84d](https://github.com/rhpds/troshka/commit/b1abf84d8ca6639cbb4726260875cbd57b69430a) — fix: use bmc0 NIC MAC from topology for BMC bridge interface
+- 2026-06-09 [1a259b2c](https://github.com/rhpds/troshka/commit/1a259b2cab31a4e297739586a2efbda5b880232d) — feat: auto-add bmc0 NIC for visibility when connecting VM to BMC network (no edge manipulation)
+- 2026-06-09 [199a0b63](https://github.com/rhpds/troshka/commit/199a0b6323bc72c08a9803b9bbcc5196d5e8b965) — fix: remove NIC auto-add on BMC connect — backend handles unique MAC generation
+- 2026-06-09 [cabd9552](https://github.com/rhpds/troshka/commit/cabd95525beb74b8e21be10e2ebb9ab61ae92663) — fix: connect BMC edge to original handle first, then swap to bmc0 handle after render
+- 2026-06-09 [4e4e7ca2](https://github.com/rhpds/troshka/commit/4e4e7ca2a54895c9acc9ee5d5d9e9143efdd69a7) — feat: auto-add bmc0 NIC and rewrite edge handle when connecting VM to BMC network
+- 2026-06-09 [471e5e1f](https://github.com/rhpds/troshka/commit/471e5e1ff932ce098d9e2a1e4e3b64679c716a64) — fix: remove buggy auto-add NIC on BMC connect, use normal NIC connection flow with purple edge
+- 2026-06-09 [232e3272](https://github.com/rhpds/troshka/commit/232e32724964cfba873ec9c098293f50d5ea2301) — fix: defer BMC edge creation until NIC handles are rendered
+- 2026-06-09 [55f30bbd](https://github.com/rhpds/troshka/commit/55f30bbd41d008e770bfe58b8450f884d58ee970) — fix: show reconfigure errors in banner instead of blocking alert()
+- 2026-06-09 [76b957e2](https://github.com/rhpds/troshka/commit/76b957e25aa192968a0c7da86d360bdf429536d2) — fix: generate bcrypt htpasswd for sushy-tools (SHA format not supported)
+- 2026-06-09 [5bfd79c0](https://github.com/rhpds/troshka/commit/5bfd79c0204d0219ff5952228170588bf992b678) — fix: clean stale vbmcd config on setup, generate unique BMC MAC if duplicate detected
+- 2026-06-09 [a594db60](https://github.com/rhpds/troshka/commit/a594db60c1a105c519e54cbdb0b4f30aff6a8cbc) — fix: use 5s connection timeout for VM state checks to prevent WS blocking on unresponsive hosts
+- 2026-06-09 [06390ae8](https://github.com/rhpds/troshka/commit/06390ae8631c736036cbe9a2bb7a3121b8664445) — feat: auto-add BMC NIC (52:54:01 prefix) to VM when connecting to BMC network
+- 2026-06-09 [9d2606c1](https://github.com/rhpds/troshka/commit/9d2606c15b66de3641984aa588bf21c981574121) — fix: use 52:54:01 OUI for BMC NICs to avoid MAC collisions with regular 52:54:00 NICs
+- 2026-06-09 [4368e998](https://github.com/rhpds/troshka/commit/4368e998029773db7e28fd2aadb474927e7bca6c) — feat: draft-state nodes at 55% opacity, use CSS text-security to suppress password managers
+- 2026-06-09 [521e92fe](https://github.com/rhpds/troshka/commit/521e92feea6d6a1b43e3fc76281471843e05a7b7) — fix: allow br-bmc-\* bridge names in troshkad validation regex
+- 2026-06-09 [7d3e8e30](https://github.com/rhpds/troshka/commit/7d3e8e300061b4770f500085d7407dcb2bc5459b) — feat: troshkad self-computes version from file hash instead of relying on stamp
+- 2026-06-09 [3981f1aa](https://github.com/rhpds/troshka/commit/3981f1aa1af496b85186acd847ac7bcc1ce441e5) — fix: create BMC bridge before VM creation so libvirt can validate bridge name
+- 2026-06-09 [64f36b58](https://github.com/rhpds/troshka/commit/64f36b58c26773bd822df2b7c80e68a43f5c0d5b) — feat: save metadata.json to S3 for patterns/snapshots, scan imports orphans without metadata
+- 2026-06-09 [ff296cb1](https://github.com/rhpds/troshka/commit/ff296cb1f018c8d6474becf98e5cdf709c0e3a15) — fix: move Scan S3 button to providers page next to S3 provider
+- 2026-06-09 [07fdb1b4](https://github.com/rhpds/troshka/commit/07fdb1b462157aba4fb415d59ab265f752bfa567) — feat: add Scan S3 button to rebuild library from existing S3 objects
+- 2026-06-09 [b77f404d](https://github.com/rhpds/troshka/commit/b77f404d9f32393b560611faa7632df25c016077) — docs: add AWS IAM permissions, VPC setup, and dev database conventions to CLAUDE.md
+- 2026-06-09 [5637bee1](https://github.com/rhpds/troshka/commit/5637bee13f1eccaa837c06295190c064d60b7814) — feat: create subnets in all AZs, retry provisioning across AZs on Unsupported error
+- 2026-06-09 [036409de](https://github.com/rhpds/troshka/commit/036409de4578427fea44f6bf2512a29d66b039e5) — feat: auto-create troshka VPC when none exists during Setup VPC
+- 2026-06-09 [ca145a4f](https://github.com/rhpds/troshka/commit/ca145a4fda0ec61270fad5deee17a8f7384558fa) — fix: only list troshka-managed VPCs, not all VPCs in the AWS account
+- 2026-06-09 [4222b5df](https://github.com/rhpds/troshka/commit/4222b5df1ade487912a7b6e2d909ba1898aba8bd) — fix: fail if VPC/subnet not configured instead of silently falling back to default VPC
+- 2026-06-09 [b186b80a](https://github.com/rhpds/troshka/commit/b186b80a8839f6e3d0ad15e350dd9102c789e57e) — fix: persist postgres data with named volume to survive container recreation
+- 2026-06-09 [5c140cae](https://github.com/rhpds/troshka/commit/5c140cae3d90ef28d823d1268d72b30ba637b8b3) — fix: close DB session before troshkad calls in WS snapshot, add restart policy to postgres
+- 2026-06-09 [bbf6fc70](https://github.com/rhpds/troshka/commit/bbf6fc70803491cf93f7dbe1573e60c6cfe2b970) — fix: kill vbmcd directly in teardown instead of graceful vbmc stop/delete that can timeout
+- 2026-06-09 [06b8453e](https://github.com/rhpds/troshka/commit/06b8453e2ed22103992741524f56e04a4c4527e4) — fix: add BMC provisioner validation to reconfigure endpoint
+- 2026-06-09 [47d39afd](https://github.com/rhpds/troshka/commit/47d39afd2e7154215f20c89bdf5e4d4ed2aa72ba) — fix: prevent WS snapshot from blocking on troshkad timeout — degrade gracefully to unknown state
+- 2026-06-09 [803d328a](https://github.com/rhpds/troshka/commit/803d328a10e57a7514ae11503d0aae8c1a983cf4) — fix: increase WS reconnect backoff max to 30s to reduce log flood on errors
+- 2026-06-09 [8b1aac9f](https://github.com/rhpds/troshka/commit/8b1aac9f0116b2f926b5bd7c0616b39f4fbb2a0a) — fix: add webob and pbr to sushy-tools runtime deps in BMC venv
+- 2026-06-09 [0ffa19d2](https://github.com/rhpds/troshka/commit/0ffa19d2e8d4fec06926dce3b1678aaef159d880) — fix: add bcrypt to BMC venv deps (required by sushy-tools auth)
+- 2026-06-09 [0e8c320a](https://github.com/rhpds/troshka/commit/0e8c320a2bbb8820d2993fa6c42bc1b138c313fd) — fix: let vbmcd manage its own PID file, remove --foreground to allow proper daemonization
+- 2026-06-09 [32d637b1](https://github.com/rhpds/troshka/commit/32d637b1ed42beb018adb2b4235b187d8f704296) — fix: remove stale vbmcd PID file before restarting to prevent 'still running' error
+- 2026-06-09 [54571c4f](https://github.com/rhpds/troshka/commit/54571c4f03770ef98ee261429c77ebb185e4ed3d) — fix: force-recreate BMC venv to ensure --system-site-packages on reinstall
+- 2026-06-09 [360bc779](https://github.com/rhpds/troshka/commit/360bc779dd0ac9c55d7006962b12446de2616e63) — fix: skip libvirt-python pip install when system python3-libvirt RPM is available
+- 2026-06-09 [ec1badc4](https://github.com/rhpds/troshka/commit/ec1badc4ea4dbcd577f31c4a6de51f52158b06b7) — fix: use --system-site-packages for BMC venv to access system libvirt RPM
+- 2026-06-09 [f7c86031](https://github.com/rhpds/troshka/commit/f7c860315f5813f5283467aaf3dfa2a0bc802e7c) — fix: resolve BMC bridge for provisioner VM NIC during deploy and reconfigure
+- 2026-06-09 [ec9d2883](https://github.com/rhpds/troshka/commit/ec9d2883a77363a811197ed5aa88337ca9bd2783) — fix: use reactive subscription for BMC provisioner warning so it updates when edges change
+- 2026-06-09 [55d73e86](https://github.com/rhpds/troshka/commit/55d73e86970d69df02a242e77e60bab6de2b4dcd) — fix: use server icon for BMC network, show BMC badge instead of DHCP/DNS
+- 2026-06-09 [cfc50b7c](https://github.com/rhpds/troshka/commit/cfc50b7cd301fb15b3b27d7f30ecb2cc8d6f4e11) — fix: add BMC setup to reconfigure flow, skip VNI allocation for BMC networks
+- 2026-06-09 [16840b58](https://github.com/rhpds/troshka/commit/16840b58ef0a86d86e627003650bbf2d6ce8dfc9) — fix: use consistent props-section-title class for BMC section header
+- 2026-06-09 [eba3d98d](https://github.com/rhpds/troshka/commit/eba3d98d94fbd59b843ee64e7f21fed01e805a2a) — fix: allow BMC toggle in active state, default BMC section collapsed
+- 2026-06-09 [d76c829c](https://github.com/rhpds/troshka/commit/d76c829cc68c93dcacf3abdbbd90e8ef1aef32ab) — fix: default deployed VMs to running status in loadProject — prevents red dot flash on page refresh
+- 2026-06-09 [6142d27d](https://github.com/rhpds/troshka/commit/6142d27d1286743e81e03facc7d64a3cba69c10e) — fix: re-apply WS VM states after loadProject on reconfigure complete — prevents stale stopped status
+- 2026-06-09 [40b283ee](https://github.com/rhpds/troshka/commit/40b283ee866dee01c5b0a0f652171ffa396f9d32) — cleanup: remove duplicate \_setup\_pxe\_via\_troshkad import in redeploy — already at module level
+- 2026-06-09 [af0a6012](https://github.com/rhpds/troshka/commit/af0a60125357a68521f06f333ce7f0ea4e4f7743) — fix: run PXE setup during reconfigure — ensures HTTP server is live after Apply Changes
+- 2026-06-09 [c0c047a3](https://github.com/rhpds/troshka/commit/c0c047a3d0c32437b056a7fa1ca92f1cd4b0dd00) — fix: run PXE setup on project start — ensures HTTP install source is running after agent restart
+- 2026-06-09 [1b8526f1](https://github.com/rhpds/troshka/commit/1b8526f1ad15427a8c0b2e87ac75f414ad8b162c) — fix: detect actual bootloader in TFTP root when writing dnsmasq config — prevents pxelinux.0 overwrite on retry
+- 2026-06-09 [f2c159ba](https://github.com/rhpds/troshka/commit/f2c159baeb5f49e6d534270e00c73f2e7f4489dd) — fix: make network full-setup idempotent — reuse existing namespace, veth, bridges, and nftables on redeploy
+- 2026-06-09 [fe40210f](https://github.com/rhpds/troshka/commit/fe40210f3a170ede05182349b9cc586d65cef39d) — fix: tolerate existing VXLAN netns and bridge on redeploy — reuse instead of failing
+- 2026-06-09 [04bba6a8](https://github.com/rhpds/troshka/commit/04bba6a8da08f7adc57f7a70e62ac9eee4db4cb0) — fix: tolerate existing VXLAN interface on redeploy — reuse instead of failing
+- 2026-06-09 [cb07066f](https://github.com/rhpds/troshka/commit/cb07066f3b9e1d9354083686611ae98fdcc9d8da) — fix: normalize all non-running VM states to "stopped" in WS poller — prevents gray dot on force-stop
+- 2026-06-09 [c493ee28](https://github.com/rhpds/troshka/commit/c493ee288d9b875a1f3d1ece6e2e528bacb0bfdd) — feat: add BMC docs, topology remapping note, and integration tests
+- 2026-06-09 [cacdff23](https://github.com/rhpds/troshka/commit/cacdff23b96f2e8ebc898b66f06f3e7f27f42d9a) — feat: expose deployed topology BMC data to properties panel
+- 2026-06-09 [52d0c48d](https://github.com/rhpds/troshka/commit/52d0c48d1907d1af19566f9291474d1a518344d5) — feat: add BMC network visual distinction and provisioner warning on canvas
+- 2026-06-09 [56f9d80e](https://github.com/rhpds/troshka/commit/56f9d80eec82192a10acac600de69e23835dba63) — fix: use crypto.getRandomValues instead of Math.random for BMC password
+- 2026-06-09 [1d17e4b0](https://github.com/rhpds/troshka/commit/1d17e4b0f1cfcecf444e23b4ed4dc6b87ca7e25b) — feat: add BMC toggle, addresses, and network properties to properties panel
+- 2026-06-09 [ac2c1ebc](https://github.com/rhpds/troshka/commit/ac2c1ebc44e583c265a41782f8858555f59228be) — feat: add BMC network auto-create/remove, IP allocation, and connection validation
+- 2026-06-09 [c76b534d](https://github.com/rhpds/troshka/commit/c76b534d593ba627ed366413a215f8572639cc4c) — feat: add BMC orphan detection and cleanup to garbage collector
+- 2026-06-09 [c0f5c8cb](https://github.com/rhpds/troshka/commit/c0f5c8cbeec441314b038ca73be422ee7b6c330f) — feat: add BMC deploy validation and expose BMC data in project API
+- 2026-06-09 [b7f24f46](https://github.com/rhpds/troshka/commit/b7f24f46009634a6e168aa0604caf1e8a33bd451) — feat: integrate BMC setup/teardown into deploy/stop/start flows
+- 2026-06-09 [fec1a49c](https://github.com/rhpds/troshka/commit/fec1a49c1eb8ca332ae0a6434f1a81e9d4faefac) — feat: add bmc/setup, bmc/teardown, bmc/status handlers to troshkad
+- 2026-06-09 [f47c1d2a](https://github.com/rhpds/troshka/commit/f47c1d2a42512c322c76a4d32dc8f852e593aaed) — feat: install sushy-tools and virtualbmc in agent venv for BMC support
+- 2026-06-09 [21cdf54a](https://github.com/rhpds/troshka/commit/21cdf54a33752b352e2e22d7b6bcd4867eb6713b) — fix: patch grub.cfg with inst.repo for PXE install source — Anaconda needs it to find packages
+- 2026-06-09 [4e5ba91a](https://github.com/rhpds/troshka/commit/4e5ba91af38b91b17ba222b8a96fc86eabcc8c7b) — fix: preserve ISO directory structure in PXE TFTP root — GRUB expects subdirs
+- 2026-06-09 [59036e6c](https://github.com/rhpds/troshka/commit/59036e6c104df9c9ca69d63e65072c81339b6d0a) — feat: PXE network boot with UEFI firmware support
+- 2026-06-09 [c64d64fb](https://github.com/rhpds/troshka/commit/c64d64fbdd10efe80c0269cd5681a1a0f9d47c7f) — docs: add virtual BMC design spec and implementation plan
+- 2026-06-08 [22e2793c](https://github.com/rhpds/troshka/commit/22e2793c063228ef1dc907eff111cad6e6bdad7f) — fix: release EIPs before deleting project record — prevents orphaned private IPs on ENI
+- 2026-06-08 [e84f4fb9](https://github.com/rhpds/troshka/commit/e84f4fb9449e9d9797d51c784fa5609671f53e66) — fix: preserve VM status when loadProject reloads topology — prevents WS state being overwritten
+- 2026-06-08 [e59d4e1b](https://github.com/rhpds/troshka/commit/e59d4e1be19ce6e8603d33e07682a3b9d51cb3e2) — fix: replace passlib sha512\_crypt with stdlib implementation — fixes Python 3.13 ImportError
+- 2026-06-08 [eb256335](https://github.com/rhpds/troshka/commit/eb2563351c7f45a32d1017c852ea64fbf99950e0) — fix: serialize nftables operations with \_network\_lock to prevent concurrent rule contention
+- 2026-06-08 [47dee78a](https://github.com/rhpds/troshka/commit/47dee78af703bf3530b66c2ec8e325f59bbb57de) — feat: redirect canvas to project list when project is deleted from another tab
+- 2026-06-08 [95360670](https://github.com/rhpds/troshka/commit/9536067044891a9187be96b03fc4aacf245d81c1) — fix: push VM states after deploy completes so canvas shows running immediately
+- 2026-06-08 [da83c3a9](https://github.com/rhpds/troshka/commit/da83c3a9eaa67fbe753d14a1f6ca2b95c454f31b) — docs: add git absolute path rule to CLAUDE.md to prevent doubled path errors
+- 2026-06-08 [f91c9648](https://github.com/rhpds/troshka/commit/f91c9648c8e9084dec291617a8c5fee0a5d98023) — feat: implement auto-deploy for bulk pattern deploy — places all then deploys in parallel
+- 2026-06-08 [fadbb7ac](https://github.com/rhpds/troshka/commit/fadbb7acdf5d2720f4091cbe297433fab650f914) — fix: re-fetch projects list when tab becomes visible
+- 2026-06-08 [0d5abfc1](https://github.com/rhpds/troshka/commit/0d5abfc1a89dab96f6fa0469d39d76947b9fd31e) — fix: merge vm-state updates instead of replacing — prevents other VMs going gray
+- 2026-06-08 [b3fb5551](https://github.com/rhpds/troshka/commit/b3fb555107ab3593f7aed61128ebb84b65b880f4) — fix: push 'starting' state immediately so console shows spinner from canvas actions
+- 2026-06-08 [c2bcbfc4](https://github.com/rhpds/troshka/commit/c2bcbfc444e7ea97c6a4cfdfa84e50cd8f7639a1) — feat: replace console page polling with WebSocket hook
+- 2026-06-08 [a747ee8a](https://github.com/rhpds/troshka/commit/a747ee8abfdc8df60c0bb27e687a384cc45c3672) — feat: replace canvas page polling with WebSocket hook
+- 2026-06-08 [78d1faec](https://github.com/rhpds/troshka/commit/78d1faec9a895639149ed3a0cd7f2e3a76a4457c) — feat: add useVmStateSocket hook for real-time state updates
+- 2026-06-08 [c7a58d96](https://github.com/rhpds/troshka/commit/c7a58d96e7fb3301ac01b934289bc3a1088716c2) — feat: add WebSocket notify hooks to all state-changing actions
+- 2026-06-08 [e7fe043c](https://github.com/rhpds/troshka/commit/e7fe043c9367f23916a916eda6bd6c493043f701) — feat: add background state poller for WebSocket subscribers
+- 2026-06-08 [bdc84ce7](https://github.com/rhpds/troshka/commit/bdc84ce7f9293fcf4244b63b045ad68f1b89550b) — feat: add WebSocket endpoint for per-project state updates
+- 2026-06-08 [56561e06](https://github.com/rhpds/troshka/commit/56561e06d6980f39f45fcb2101df0d0058780b99) — feat: add WebSocket pub/sub module for real-time project state
+- 2026-06-08 [f5fbff58](https://github.com/rhpds/troshka/commit/f5fbff58cb292f036bf20069c368d0a0eaca22c2) — docs: add WebSocket VM state sync implementation plan
+- 2026-06-08 [709be4d9](https://github.com/rhpds/troshka/commit/709be4d918875ebc50a71e5a1364947c2ad1b0d0) — docs: add WebSocket VM state sync design spec
+- 2026-06-08 [7519a67d](https://github.com/rhpds/troshka/commit/7519a67d1da493504567e77b7777dd754cfd599e) — feat: add power controls to console, fix forcestop deleting VMs
+- 2026-06-08 [301b5f9b](https://github.com/rhpds/troshka/commit/301b5f9b74633cfc077db1b754ea6f16c14f0454) — docs: add console and pattern save state conventions to CLAUDE.md
+- 2026-06-08 [cb14acc2](https://github.com/rhpds/troshka/commit/cb14acc2e5eac3589aee1b05c45ca19e171fcfa6) — feat: add console enhancements — virtual keyboard, key macros, focus indicator, pattern save state
+- 2026-06-08 [2895a339](https://github.com/rhpds/troshka/commit/2895a33911657a50e982874b7b5a3fae5ba0f3e9) — fix: hide Save as Pattern button on draft projects — only show when deployed
+- 2026-06-08 [b592148a](https://github.com/rhpds/troshka/commit/b592148a69a03346ca404824bba44f4d8e61f264) — fix: block saving pattern from draft/deploying project — must be active or stopped
+- 2026-06-08 [6fcbfdec](https://github.com/rhpds/troshka/commit/6fcbfdec0c9e9ef980f5413a7965a22acc98d62a) — docs: add troshkad conventions to CLAUDE.md
+- 2026-06-08 [cb0798cb](https://github.com/rhpds/troshka/commit/cb0798cbc8fc646cc7e28da883484eb1513aaa63) — refactor: remove hook from networks/full-setup — single source in agent install script only
+- 2026-06-08 [51695c11](https://github.com/rhpds/troshka/commit/51695c11b3dc04943f435254be9101084b73c77f) — fix: update qemu hook in networks/full-setup to not call virsh (was overwriting the fixed hook on every deploy)
+- 2026-06-08 [cb54d525](https://github.com/rhpds/troshka/commit/cb54d5254e5be10e5393fc9abc206f6de628150d) — fix: use hard links instead of symlinks for shared ISOs — avoids qemu permission denied
+- 2026-06-08 [b7a76ac5](https://github.com/rhpds/troshka/commit/b7a76ac5188db0754a1984dc16b73bc3c6530290) — fix: symlink shared ISOs into VM dir so virsh undefine --remove-all-storage doesn't delete cached images
+- 2026-06-08 [0a630043](https://github.com/rhpds/troshka/commit/0a6300433a021bcd27fa550fb080120bc65f5b17) — fix: escape backslashes in qemu hook sed/grep patterns (Python string ate them)
+- 2026-06-08 [2378a5eb](https://github.com/rhpds/troshka/commit/2378a5eb0b3b5998645cb9d976fe3f2c12a346b5) — fix: wipe host preserves image/pattern cache — only cleans VMs, networks, nftables
+- 2026-06-08 [edaa75b8](https://github.com/rhpds/troshka/commit/edaa75b8aebb0b659f6ea93c850b82e61087c9eb) — fix: restart virtqemud after updating qemu hook so changes take effect
+- 2026-06-08 [5d4910d2](https://github.com/rhpds/troshka/commit/5d4910d26909eef70ad183a5894ead94f9bad17c) — fix: add spinner to Reinstall Agent button
+- 2026-06-08 [5fa96976](https://github.com/rhpds/troshka/commit/5fa96976f6d796b96d1f10d5ed622b1a77f78b04) — fix: install/reinstall agent — spinner until connected, no false error message
+- 2026-06-08 [7cd3dcef](https://github.com/rhpds/troshka/commit/7cd3dcef1108247c2475fa3c82a1053d120e9405) — fix: qemu hook deadlock — parse TAP names from XML stdin instead of calling virsh
+- 2026-06-08 [74a81d74](https://github.com/rhpds/troshka/commit/74a81d7400b19d9bfc92326b9dbc428944695c66) — fix: use content hash only for troshkad version, remove git dependency
+- 2026-06-08 [04330311](https://github.com/rhpds/troshka/commit/043303116426daa39204b71013069256db21a515) — fix: fall back to content hash for troshkad version when git unavailable (OCP)
+- 2026-06-08 [47798ddd](https://github.com/rhpds/troshka/commit/47798ddd0ff2a5f7b9a6c81ad6b16cb5d62b365e) — feat: auto-version troshkad from git hash — stamped at push time
+- 2026-06-08 [25d2370c](https://github.com/rhpds/troshka/commit/25d2370c8054c7c0e1012fa1a85dfae3f48f020d) — fix: version bump, update-agent waits for restart cycle, frontend polls until agent recovers
+- 2026-06-08 [b88fe538](https://github.com/rhpds/troshka/commit/b88fe5385a6b95f7ca0620205eb7d0a9699632b7) — fix: add file locking to images/cache to prevent concurrent downloads of same file
+- 2026-06-08 [eb205782](https://github.com/rhpds/troshka/commit/eb2057825950cb43a0b7cb01fccb523df3f48cf0) — feat: show project name in browser tab title
+- 2026-06-08 [f8066470](https://github.com/rhpds/troshka/commit/f80664703cc1ef0604bd69b496310541ac58e8da) — feat: add spinner to Wipe Host button
+- 2026-06-08 [9f7cb632](https://github.com/rhpds/troshka/commit/9f7cb6321641dd1ac20ba3206905a1ade18b3690) — feat: Update Agent spinner polls until new version confirmed on host
+- 2026-06-08 [bcb57218](https://github.com/rhpds/troshka/commit/bcb57218adf204c51a5d1820c34b783e5db0f7a9) — feat: add spinner to Update Agent button while request is in flight
+- 2026-06-08 [5c82a08b](https://github.com/rhpds/troshka/commit/5c82a08bb19dd8bbb8a4b365807a22dd7db7a8b5) — fix: wipe host now resets nftables, fix nft-reset chain parser
+- 2026-06-08 [51b2241d](https://github.com/rhpds/troshka/commit/51b2241d513e7f5ff023bb0d905a82c5b18e08f6) — feat(troshkad): add /host/diag endpoint and host/nft-reset command for troubleshooting
+- 2026-06-08 [651a07a4](https://github.com/rhpds/troshka/commit/651a07a4b68521f65afa8b2a53556201ad902437) — feat: add timestamps to backend log format
+- 2026-06-08 [6755dc5d](https://github.com/rhpds/troshka/commit/6755dc5daee6cc20f05447569657df7d7d6a4fe2) — feat: Update Agent — shift+click for force mode, single confirm dialog
+- 2026-06-08 [787ff079](https://github.com/rhpds/troshka/commit/787ff0791ace0f812068d37aa53b9db67af130b8) — fix: simplify Update Agent to one confirm + one result dialog
+- 2026-06-08 [adda57ed](https://github.com/rhpds/troshka/commit/adda57edbbe8bf7bf8028abe8900aee2486743e5) — fix: VXLAN VNI cleanup — explicitly delete vxlan interfaces before namespace deletion
+- 2026-06-08 [aff6c6ff](https://github.com/rhpds/troshka/commit/aff6c6ff33ec3c508fd13dc6c8f74ada4df98174) — fix: wipe host confirmation — use clear warning instead of impossible 'type YES'
+- 2026-06-08 [3e5c7c0c](https://github.com/rhpds/troshka/commit/3e5c7c0c9a17f1da16b38d2e0950cb04a147919d) — feat: add Wipe Host endpoint — destroys all projects and cleans host resources
+- 2026-06-08 [6d272c52](https://github.com/rhpds/troshka/commit/6d272c52789ff79cefcca94117a070bc56ea8363) — fix: skip unreachable hosts in storage endpoint instead of showing 100% of 0 GB
+- 2026-06-08 [e3a394da](https://github.com/rhpds/troshka/commit/e3a394daa3efc91379c4d7f0464a958e6a039682) — fix: duplicate seed ISO in virt-install — remove seed\_iso param, support device=cdrom in disks list
+- 2026-06-08 [32cc50d2](https://github.com/rhpds/troshka/commit/32cc50d2733e5e11820235456c2843704750983c) — fix: credential parsing — use KEY=VALUE format instead of colon-separated
+- 2026-06-08 [47878fb3](https://github.com/rhpds/troshka/commit/47878fb3ec48372fffc8d9dd97ae4eee46d6d04f) — feat: add Reinstall Agent button for connected hosts
+- 2026-06-08 [c1e4591c](https://github.com/rhpds/troshka/commit/c1e4591cf313cc13702e4fff6d04022c4c00acb3) — fix: troshkad install bugs — missing file, config double braces, idempotent SG
+- 2026-06-08 [aeac6713](https://github.com/rhpds/troshka/commit/aeac67139aaa1043f32c547ea670104005ea575c) — chore: remove unused libvirt\_mgr functions
+- 2026-06-08 [4745203c](https://github.com/rhpds/troshka/commit/4745203c5315d7d09be9020c6d58e4700bc43bbe) — refactor: migrate projects.py from libvirt\_mgr SSH to troshkad
+- 2026-06-08 [47d44aa2](https://github.com/rhpds/troshka/commit/47d44aa23c6e2d82448f98addd76ec62ebcb2f12) — feat: add VM management helpers to troshkad\_client
+- 2026-06-08 [19b911b5](https://github.com/rhpds/troshka/commit/19b911b544226e2d9dae10ab7a9c7723f106c383) — feat(troshkad): add VM state, config, reconfigure, undefine, vnc-port endpoints
+- 2026-06-08 [b381b20f](https://github.com/rhpds/troshka/commit/b381b20f9125e4fbed61defde662828e28e96c5b) — feat: add troshkad admin UI — version display, health time, update button
+- 2026-06-08 [31ce4d91](https://github.com/rhpds/troshka/commit/31ce4d91f33db5cb5709e49ad58010232fcd2074) — feat: add metadata service deployment via troshkad
+- 2026-06-08 [95672ad5](https://github.com/rhpds/troshka/commit/95672ad5562e1c877a829a2cc7437592821a86e6) — feat: add drain/503 retry handling to troshkad\_client.start\_job
+- 2026-06-08 [37c0cd00](https://github.com/rhpds/troshka/commit/37c0cd00579d9d21831ead9c7f887b52619f62cc) — feat: scope troshkad SG rule to backend public IP with auto-update
+- 2026-06-08 [ae5760d6](https://github.com/rhpds/troshka/commit/ae5760d6cb3b751192d884c308ac6108997108bb) — fix: use lifespan context manager instead of deprecated on\_event
+- 2026-06-08 [9678a08c](https://github.com/rhpds/troshka/commit/9678a08ce013840b8ddcf7429d266ed5aa3c533d) — feat: add periodic health check polling for troshkad hosts
+- 2026-06-08 [b6a6e780](https://github.com/rhpds/troshka/commit/b6a6e780c99f5d567cc43a2f8556ffdfa67163f8) — chore: remove dead SSH code after troshkad migration
+- 2026-06-08 [541a2b4d](https://github.com/rhpds/troshka/commit/541a2b4dd9430133188dab2553f6e53f2a9ae82d) — refactor: migrate eips.py and gc\_service.py from SSH to troshkad
+- 2026-06-08 [67d743e1](https://github.com/rhpds/troshka/commit/67d743e1e834a8502501f0356bb1135ea87361f5) — refactor: migrate projects.py from SSH to troshkad
+- 2026-06-08 [6185d013](https://github.com/rhpds/troshka/commit/6185d013942dd00e8ed6e69f018deeabdd25589d) — refactor: migrate deploy\_service.py from SSH to troshkad
+- 2026-06-08 [a5c8ecd8](https://github.com/rhpds/troshka/commit/a5c8ecd8ba9ab3cd392ef875156b55fa97c470d2) — feat(troshkad): add networks/full-setup, full-teardown, and seeds/create-batch
+- 2026-06-08 [e45968f9](https://github.com/rhpds/troshka/commit/e45968f9f695474a95875e56c85cd80482a3cb94) — refactor: migrate library.py import flow from 13 SSH calls to single troshkad job
+- 2026-06-08 [d98da5be](https://github.com/rhpds/troshka/commit/d98da5bebd912cf0fe652e960bae3ef8979d8e24) — refactor: migrate pattern\_service.py capture from SSH to troshkad
+- 2026-06-08 [da1a5ac4](https://github.com/rhpds/troshka/commit/da1a5ac4228c087881c7fc6b18cb4f498f612320) — refactor: migrate snapshot\_service.py capture from SSH to troshkad
+- 2026-06-08 [1c186cf6](https://github.com/rhpds/troshka/commit/1c186cf6beac603421d8883bf8305fb563b22628) — refactor: migrate gc\_service.py from SSH to troshkad
+- 2026-06-08 [2074cbc1](https://github.com/rhpds/troshka/commit/2074cbc130c86c3d279d702b0d1d11d8d32f9e17) — refactor: migrate hosts.py disk usage and resize from SSH to troshkad
+- 2026-06-08 [bb1a0c1e](https://github.com/rhpds/troshka/commit/bb1a0c1e1b882e2085b0f09aadb4af0a92e4dfc1) — refactor: remove \_detect\_primary\_iface SSH call, hardcode eth0
+- 2026-06-08 [59c57150](https://github.com/rhpds/troshka/commit/59c57150285c68cb14035da56ee6ceb53c680809) — feat: add check\_disk\_usage convenience function to troshkad\_client
+- 2026-06-08 [7dab00ef](https://github.com/rhpds/troshka/commit/7dab00ef768f0fb3d9e97fc8a573f201cd8784c9) — feat(troshkad): add gc/discover, gc/clean, library/import, snapshots/capture, patterns/capture endpoints
+- 2026-06-08 [f3f421c7](https://github.com/rhpds/troshka/commit/f3f421c7c256bfdeeabc9b0850755afceb074ee0) — feat(troshkad): add disk-usage, resize-storage, files/remove endpoints
+- 2026-06-08 [cc74868b](https://github.com/rhpds/troshka/commit/cc74868b50c228b81aadc527c925763f7c8bc56f) — docs: add SSH-to-troshkad migration implementation plan
+- 2026-06-08 [8a0454b2](https://github.com/rhpds/troshka/commit/8a0454b22b68376772952d497a8e278276a23fd5) — docs: add SSH-to-troshkad migration design spec
+- 2026-06-08 [deea0f44](https://github.com/rhpds/troshka/commit/deea0f44def7752fd560f8c5bf29f8174d46299a) — chore: gitignore \*.py.new test artifacts
+- 2026-06-08 [7089c91e](https://github.com/rhpds/troshka/commit/7089c91eb9bdbd29582ae8870feb4cb588317809) — fix: remove test artifact troshkad.py.new
+- 2026-06-08 [885d8bb6](https://github.com/rhpds/troshka/commit/885d8bb64fca469dec2643c53ca9a2adb77328b8) — fix(troshkad): harden input validation and fix drain process tracking
+- 2026-06-08 [19688468](https://github.com/rhpds/troshka/commit/196884684b9531779095f3efd535fba0c7496ead) — fix: use http.client for cert fingerprint verification, fix creds variable shadowing
+- 2026-06-08 [5d4e9a52](https://github.com/rhpds/troshka/commit/5d4e9a5216eac620685260ce571febdce81f8d1e) — feat: integrate troshkad into agent install flow
+- 2026-06-08 [80fe8424](https://github.com/rhpds/troshka/commit/80fe8424a1760a89892c05cf92e2370d970e1ae3) — feat: add troshkad\_client module (replaces run\_ssh\_script)
+- 2026-06-08 [affe5d20](https://github.com/rhpds/troshka/commit/affe5d201d258b8822d569a4ad9d4be51e8201d4) — feat: add agent\_token, agent\_cert\_fingerprint, agent\_version to Host model
+- 2026-06-08 [0452ef23](https://github.com/rhpds/troshka/commit/0452ef23e02a794df8847b79a5c86df03b254e09) — feat(troshkad): add all operation endpoint handlers
+- 2026-06-08 [34be33bf](https://github.com/rhpds/troshka/commit/34be33bf8ce2b7484b97409ca42571c99f97bcc9) — feat(troshkad): add self-update with graceful drain and force mode
+- 2026-06-08 [d7b2409b](https://github.com/rhpds/troshka/commit/d7b2409b84e59da9c6129a328a93e848e32d2a4d) — feat(troshkad): add job dispatch framework with concurrency limits
+- 2026-06-08 [82e7c70a](https://github.com/rhpds/troshka/commit/82e7c70a6d67ae15f5e14919c282d34d27272c75) — feat(troshkad): add daemon skeleton with TLS, auth, routing, health endpoint
+- 2026-06-08 [d6870ba6](https://github.com/rhpds/troshka/commit/d6870ba605d883007b50de1008d0d6b22f007d5d) — docs: add troshkad implementation plan
+- 2026-06-08 [96fa22a7](https://github.com/rhpds/troshka/commit/96fa22a79abfb7f32bd9db5888197ec80eb6135a) — docs: add troshkad design spec
+- 2026-06-08 [fc0355ca](https://github.com/rhpds/troshka/commit/fc0355ca4dea66d751e7b4199b029f91cc236fe8) — fix: add ServerAliveInterval to SSH — prevents zombie bash sessions on timeout
+- 2026-06-08 [4d09491e](https://github.com/rhpds/troshka/commit/4d09491ec004fb920732b17dfbe5f9339255ca88) — fix: revert Republish from deploying state
+- 2026-06-08 [18e0fdcd](https://github.com/rhpds/troshka/commit/18e0fdcd6ebdc44de90c1b2b3b6a8ee59ecc49ae) — fix: allow Republish from deploying state (stuck deploys)
+- 2026-06-08 [576a418d](https://github.com/rhpds/troshka/commit/576a418de890668772518e9e407795d9a16e34d2) — feat: add Republish button to project cards
+- 2026-06-08 [0d39a68c](https://github.com/rhpds/troshka/commit/0d39a68cee01129dcd90979fcbce6c64744fb289) — fix: add sshauth=privkey to libvirt SSH URI to skip agent keys
+- 2026-06-08 [8635972a](https://github.com/rhpds/troshka/commit/8635972acbd89f377aa4c124c644479703af8fcb) — fix: add confirmation dialog to Deploy button
+- 2026-06-08 [8379a761](https://github.com/rhpds/troshka/commit/8379a7618605563ede2cfe743c31faaf952290e2) — feat: add Deploy button to project cards for draft projects
+- 2026-06-08 [c79c9c3b](https://github.com/rhpds/troshka/commit/c79c9c3bc2f5a607cd0f922f48f367270a82f245) — fix: treat PENDING as DONE when file size matches expected — prevents stuck polling on cached files
+- 2026-06-08 [3ae4a683](https://github.com/rhpds/troshka/commit/3ae4a68384d7cc1fc33d3e42d6fc15f3fa510d09) — fix: disable close on backdrop click for pattern deploy modal
+- 2026-06-08 [fd671bdc](https://github.com/rhpds/troshka/commit/fd671bdcea08b55fcfffc7162107e1a1534b97a0) — fix: filter S3 providers from host provisioning dropdown
+- 2026-06-07 [07b36093](https://github.com/rhpds/troshka/commit/07b3609348e631ae40de0fa4936d1d53057c63bd) — fix: save max\_eips when creating host, guard null netNode in properties panel
+- 2026-06-07 [b21390e5](https://github.com/rhpds/troshka/commit/b21390e5ed4e182853c7a69e48ca228bf129a388) — fix: guard against null netNode in NIC IP conflict check
+- 2026-06-07 [7654f0d4](https://github.com/rhpds/troshka/commit/7654f0d4057e57057182f1c683beac61f2ef0de4) — fix: add IdentitiesOnly=yes to console proxy SSH tunnel
+- 2026-06-07 [e595c85c](https://github.com/rhpds/troshka/commit/e595c85cfc5e005037fc842b917c5e4775dc3a84) — fix: add IdentitiesOnly=yes to all SSH commands (agent deployer + wait\_for\_ssh)
+- 2026-06-07 [75918906](https://github.com/rhpds/troshka/commit/7591890660d19e91a5bc7f36731ebcfd4416a7ba) — fix: add IdentitiesOnly=yes to SSH to prevent agent key exhaustion
+- 2026-06-07 [4d589f53](https://github.com/rhpds/troshka/commit/4d589f53eb2c840eac3eb97164211045f8180d78) — fix: escape awk braces in cloud-init template for Python .format()
+- 2026-06-07 [24dba313](https://github.com/rhpds/troshka/commit/24dba31366a84009d18040d475f0fa6634ab34a3) — feat: deploy qemu hook as part of setup script — always kept current
+- 2026-06-07 [a1de3d0b](https://github.com/rhpds/troshka/commit/a1de3d0bea31ea3a4b66a0312f936abe0a76ef32) — fix: shlex.quote for cache check commands, allow start from error state
+- 2026-06-07 [177b8ccf](https://github.com/rhpds/troshka/commit/177b8ccfe7615507f022093cf5c12a481578655a) — fix: pre-check cached files before polling, per-EIP transit IPs, fix qemu hook awk pattern
+- 2026-06-07 [7fe1c283](https://github.com/rhpds/troshka/commit/7fe1c28306cef07fa6d5601600933a1d1a343387) — fix: per-EIP transit IPs — each port forward gets unique transit IP for correct namespace DNAT routing
+- 2026-06-07 [974153e6](https://github.com/rhpds/troshka/commit/974153e6a8c2b1a913765a3a291d83477d89caa3) — fix: qemu hook awk pattern for virsh domiflist output, delete stale VXLAN before recreating
+- 2026-06-07 [5d8ca677](https://github.com/rhpds/troshka/commit/5d8ca67773823c6243724ff23790e4d71b73d639) — fix: shorten veth names to 15-char limit, create dummy bridge for libvirt validation
+- 2026-06-07 [1a47424a](https://github.com/rhpds/troshka/commit/1a47424a333c9cc2e0bdb42d816fbaabc785748e) — feat: add transit info to network config, clean up VM start paths for namespaces
+- 2026-06-07 [89aee4cd](https://github.com/rhpds/troshka/commit/89aee4cd395c0336cd26f589b695670c697fcea6) — feat: simplify teardown — namespace deletion replaces per-resource cleanup
+- 2026-06-07 [8c984ad9](https://github.com/rhpds/troshka/commit/8c984ad98332c032dfdcc352bfbcca7e2b4d22ff) — feat: rewrite generate\_setup\_script for network namespace isolation
+- 2026-06-07 [ad722dab](https://github.com/rhpds/troshka/commit/ad722dab34c853749d0693cedecd7799c696828d) — feat: deploy libvirt qemu hook script for namespace tap device migration
+- 2026-06-07 [2e271d64](https://github.com/rhpds/troshka/commit/2e271d641f8dd6806b8adf4f0b0eca111537ab15) — feat: add transit subnet helper for namespace veth pairs
+- 2026-06-07 [d56d7132](https://github.com/rhpds/troshka/commit/d56d71321b54a5c96611e232b412402d52793830) — docs: network namespace implementation plan
+- 2026-06-07 [33005d23](https://github.com/rhpds/troshka/commit/33005d23bc9a04002a6738d6520e122cd4ef3605) — docs: network namespace isolation design spec
+- 2026-06-07 [c2487a18](https://github.com/rhpds/troshka/commit/c2487a1866874f433057dde045eafb8fa47f5ee9) — docs: network namespace isolation design notes for same-CIDR project support
+- 2026-06-07 [2173a68e](https://github.com/rhpds/troshka/commit/2173a68e91b69dbbf860099e035a0df6ae885e67) — fix: update project state in-place instead of page reload, bind-dynamic for dnsmasq
+- 2026-06-07 [e57802fd](https://github.com/rhpds/troshka/commit/e57802fd61a01d33d1c14b06f3f167af16615cfd) — fix: use bind-dynamic for per-bridge dnsmasq — allows same gateway IP on multiple bridges
+- 2026-06-07 [390e8e19](https://github.com/rhpds/troshka/commit/390e8e1909fa178f4d654fe21e7f2a170627a7f8) — fix: keep bridge routes in main table for DNAT reachability, policy routing handles outbound isolation
+- 2026-06-07 [6f7534e7](https://github.com/rhpds/troshka/commit/6f7534e742e2900677a2c9b3f69f4536e8f28ad2) — feat: policy-based routing per bridge — isolate same-CIDR projects on shared hosts
+- 2026-06-07 [49c1b2d4](https://github.com/rhpds/troshka/commit/49c1b2d47a492fbfe9f4ed1fd42903abc25d5b1e) — fix: show labels on all port forward cards, gateway node layout, copy EIP button alignment
+- 2026-06-07 [7afb6a2f](https://github.com/rhpds/troshka/commit/7afb6a2fed5f10c19f0e56204b126fa4e96ff303) — fix: show labels on all port forward cards, clean up gateway node EIP display, indent forward destinations
+- 2026-06-07 [775a997c](https://github.com/rhpds/troshka/commit/775a997c76cd52e6932b29133b6cc50e4fc86e97) — feat: copy EIP button — inline with select, hover effect, 'Copied' feedback
+- 2026-06-07 [979b4e62](https://github.com/rhpds/troshka/commit/979b4e6289a33d7f003451512f23419dbabea88d) — feat: add copy button next to EIP in port forward rules
+- 2026-06-07 [402ee058](https://github.com/rhpds/troshka/commit/402ee058d482074634e68211cdbce594a4afcfa4) — fix: boot device display — skip stale node IDs, fall back to first connected disk
+- 2026-06-07 [474062f3](https://github.com/rhpds/troshka/commit/474062f3382905ece88da2b5d27fb46fa7531be9) — fix: snapshot tests — use personal library type, unique project names to prevent 409 conflicts
+- 2026-06-07 [0705b528](https://github.com/rhpds/troshka/commit/0705b5289a67be4c091f3317fbdafa014b66a786) — fix: 5 cleanup fixes — pattern source label, cache dedup, VM starting state, boot device display, hide configured VPC button
+- 2026-06-07 [dd1e24f1](https://github.com/rhpds/troshka/commit/dd1e24f1fe22353cc0fe450279031c766abca722) — fix: async project delete — redirect immediately, destroy infra in background
+- 2026-06-07 [3a49cca9](https://github.com/rhpds/troshka/commit/3a49cca9a0e56e5d47bb24b20364255aabf356ef) — fix: pass patternId/patternDiskId through \_find\_vm\_disks so pattern-backed disks use cache as backing file
+- 2026-06-07 [e66fa696](https://github.com/rhpds/troshka/commit/e66fa696580113bd51c2d055f652ff9f7ec99f31) — fix: poll actual VM state after start instead of optimistically setting to running
+- 2026-06-07 [0ade99c5](https://github.com/rhpds/troshka/commit/0ade99c5f4a691848a0f6be9952f1dcf177c7ea3) — fix: make all per-VM start async — cache images in background thread to prevent HTTP timeout
+- 2026-06-07 [1fcd010e](https://github.com/rhpds/troshka/commit/1fcd010e1b90584982bab341e12f3ef69aabb2eb) — fix: file lock on cache downloads to prevent concurrent writes to same image
+- 2026-06-07 [918d9ca5](https://github.com/rhpds/troshka/commit/918d9ca5c7553d98fba88bbc2d1ec5bb11aa583b) — fix: per-VM start on stopped project triggers full async project start with image re-caching
+- 2026-06-07 [eb59c4e1](https://github.com/rhpds/troshka/commit/eb59c4e1e279ec10f8c2bdba68ed80102a0cbce9) — fix: don't use virsh --remove-all-storage — it deletes shared library images and ISOs
+- 2026-06-07 [d8d8eb2c](https://github.com/rhpds/troshka/commit/d8d8eb2c105899138ebf928fd6365ddfd381313b) — fix: re-cache library images (ISOs, base disks) on project start before booting VMs
+- 2026-06-07 [36a16ea1](https://github.com/rhpds/troshka/commit/36a16ea1310d78e6ff378b3abd1ecb5607dd0b67) — fix: update pattern topology to point storage nodes to captured pattern disks instead of original library images
+- 2026-06-07 [9c7d81a8](https://github.com/rhpds/troshka/commit/9c7d81a8e94bd0f9cb2f15385e2b7dd41e4b800c) — fix: faster VM shutdown polling, cleaner stop/start confirm messages
+- 2026-06-07 [b45a806c](https://github.com/rhpds/troshka/commit/b45a806cb384b6dcb8fa43311f7555826ce48f6c) — fix: EIPs before networking in all start paths, add confirm/spinner to project cards, per-bridge dnsmasq listen-address, validate gateway IP
+- 2026-06-07 [c9db62e3](https://github.com/rhpds/troshka/commit/c9db62e3d4b45eb203ef6179f08512c8d7b40cd2) — feat: add stop/start buttons to project cards, sort projects alphabetically
+- 2026-06-07 [795d3da8](https://github.com/rhpds/troshka/commit/795d3da890fc439419c3490033f5fa02bd50c0ce) — feat: per-bridge dnsmasq instances — isolate DHCP between projects sharing same CIDR
+- 2026-06-07 [8cca50da](https://github.com/rhpds/troshka/commit/8cca50da81e1abf699228258c6b5a467eb377e9e) — fix: re-associate EIPs and recreate bridges when starting individual VM on stopped project
+- 2026-06-07 [6455855e](https://github.com/rhpds/troshka/commit/6455855e9f3d894668439c3dde8487aef31d4537) — fix: add spinner to Save Pattern button during capture
+- 2026-06-07 [2aa0d8e2](https://github.com/rhpds/troshka/commit/2aa0d8e211b66bb9b2af729820a5ef8463b25bd6) — fix: strip EIP addresses and remap IDs when creating patterns from projects
+- 2026-06-07 [939a192d](https://github.com/rhpds/troshka/commit/939a192d96a619d8535fcc7b4c2413b5cb08170f) — fix: run EIP sync before network setup so DNAT rules have private IPs
+- 2026-06-07 [346d4d14](https://github.com/rhpds/troshka/commit/346d4d14ee253c718594339784331383cc4e9a69) — feat: per-project nftables chains for multi-project isolation
+- 2026-06-07 [17066e9c](https://github.com/rhpds/troshka/commit/17066e9c5924fae4777581085aa139213969f360) — feat: collapsible NIC IPs on VM nodes, collapsible port forwards on gateway nodes, move auto-start to body
+- 2026-06-07 [a0d0edaf](https://github.com/rhpds/troshka/commit/a0d0edafd20ba953e402cf3abba11e671bc79365) — fix: EIP integration — resolve provider from host, persist topology via raw SQL, reload after reconfigure
+- 2026-06-07 [287f15b1](https://github.com/rhpds/troshka/commit/287f15b16590eae9c639b71dc174451757772069) — fix: resolve pre-existing TypeScript strict mode errors for production builds
+- 2026-06-07 [654ca22a](https://github.com/rhpds/troshka/commit/654ca22a592eebc4c5077e72e174ffcbf7b65607) — feat: add EIP capacity display on hosts and Clean button on providers
+- 2026-06-07 [71cdde9b](https://github.com/rhpds/troshka/commit/71cdde9b96a2aa7baf2b36d6ba28280005f1ee43) — feat: update ExternalIpsPanel with read-only IPs and status indicators
+- 2026-06-07 [8f993d26](https://github.com/rhpds/troshka/commit/8f993d26fb7cf01d68eed7bd5224bc91cb7f0bb0) — feat: add provider-level garbage collector for EIPs and SG rules
+- 2026-06-07 [617942e5](https://github.com/rhpds/troshka/commit/617942e5e3ada0605bbe1462a04cb6e8a99c81b5) — feat: add EIP release API and provider GC endpoint
+- 2026-06-07 [f6ebe05c](https://github.com/rhpds/troshka/commit/f6ebe05ca3964a6fcac7e772b40123bc1adf2c6d) — feat: integrate EIP allocation into deploy/stop/start/destroy lifecycle
+- 2026-06-07 [b1cd02ba](https://github.com/rhpds/troshka/commit/b1cd02ba19bc367f14d87dce49d16e0ba93cb943) — feat: add EIP capacity check to placement and host provisioning
+- 2026-06-07 [cd58ac09](https://github.com/rhpds/troshka/commit/cd58ac095dd2110d3beddfff61a0572b48a313a5) — feat: add security group rule reconciliation for port forwards
+- 2026-06-07 [f312b1b3](https://github.com/rhpds/troshka/commit/f312b1b32fd65afb78c76e469c7de7c8a5cdf526) — feat: add EIP service with allocate, associate, disassociate, release
+- 2026-06-07 [f04b3654](https://github.com/rhpds/troshka/commit/f04b36546cc4a20b5bad7bab9eada47afe32f35f) — feat: add ElasticIp model and host max\_eips column
+- 2026-06-07 [dd1117be](https://github.com/rhpds/troshka/commit/dd1117be3b94287f74115be810806a8678fc7d07) — docs: add EIP implementation plan
+- 2026-06-07 [12ab981f](https://github.com/rhpds/troshka/commit/12ab981fe1283090e4a7539d524999a3d25ee206) — docs: add EIP allocation and inbound connections design spec
+- 2026-06-07 [9421b8d3](https://github.com/rhpds/troshka/commit/9421b8d3fd2f859c135523858b9b46d0a112bf23) — docs: add CLAUDE.md with development guide, conventions, and key patterns
+- 2026-06-07 [9067ce71](https://github.com/rhpds/troshka/commit/9067ce714b785f4a882d54c27e150e9a77082bc7) — docs: update README with static IP reservations, GC improvements, cloud-init fixes
+- 2026-06-07 [faafe32a](https://github.com/rhpds/troshka/commit/faafe32adba6780381254001b1fd5d9a2fc97241) — fix: sanitize dhcp-host hostname — replace spaces/underscores with dashes for dnsmasq
+- 2026-06-07 [3acf508c](https://github.com/rhpds/troshka/commit/3acf508c0220a6288a08f51136d4aec7b13da4a0) — feat: validate custom user-data YAML — backend skips invalid data, frontend shows red border warning
+- 2026-06-07 [564ef02f](https://github.com/rhpds/troshka/commit/564ef02f75fb06acacf24f9cd01ae902d053e885) — fix: change deploy progress label from 'downloading' to 'downloading images'
+- 2026-06-07 [b9bd59ea](https://github.com/rhpds/troshka/commit/b9bd59ea3ddf803af8797bce842ee560c278dbdf) — fix: VNI allocation scans all projects for used VNIs, prevents duplicate VNIs within and across projects
+- 2026-06-07 [8454b4c0](https://github.com/rhpds/troshka/commit/8454b4c0c69461aa1190ef04fe07c3357bf4b60a) — fix: use new cloud-init chpasswd users format for RHEL 10+ compatibility
+- 2026-06-07 [6f468fd0](https://github.com/rhpds/troshka/commit/6f468fd06b1c5070029e63120c5b88f52a105a17) — fix: clear host\_id before capacity sync in redeploy, abort if host unreachable
+- 2026-06-07 [7b470ed2](https://github.com/rhpds/troshka/commit/7b470ed223f368b934bb0f463075e2aec3a7b840) — fix: use unique instance-id per deploy so cloud-init re-runs on redeploy/reconfigure
+- 2026-06-07 [00c125a2](https://github.com/rhpds/troshka/commit/00c125a27693952d1963c0bf5ba737f68618fbb8) — fix: strip exception details from placement error message returned to client
+- 2026-06-07 [db85200a](https://github.com/rhpds/troshka/commit/db85200a330f15b3b145a771202c555a5c182f8c) — fix: sync capacity after destroy in redeploy, show detailed error on placement failure
+- 2026-06-07 [4f122283](https://github.com/rhpds/troshka/commit/4f1222835bfce3595b4e3d7f7ea5ecd33037b487) — fix: use pointer-events:none to lock entire properties panel during operations
+- 2026-06-07 [c28d60b2](https://github.com/rhpds/troshka/commit/c28d60b20b1d69d0dd2192f09ed1e56e6e25884d) — fix: save topology before deploy to ensure all canvas changes are included
+- 2026-06-07 [aa0f5b8f](https://github.com/rhpds/troshka/commit/aa0f5b8f23bb27ff89503ad8142ba806b971eccd) — feat: lock properties panel during deploying/reconfiguring/starting/stopping
+- 2026-06-07 [22a2d1bc](https://github.com/rhpds/troshka/commit/22a2d1bc37c682015719028c7c1b5c5a7de043a3) — feat: lock canvas during deploying, reconfiguring, starting, stopping
+- 2026-06-07 [02b92b32](https://github.com/rhpds/troshka/commit/02b92b326e30a490c844e9105eece86c37c79958) — feat: pass static NIC IPs to dnsmasq as dhcp-host entries for MAC-to-IP reservation
+- 2026-06-07 [a55703d6](https://github.com/rhpds/troshka/commit/a55703d6d9c2221e0a590154e72da6a005716829) — revert: remove approximate DHCP IP prediction, keep simple 'DHCP (auto)' placeholder
+- 2026-06-07 [5d8a0bcd](https://github.com/rhpds/troshka/commit/5d8a0bcdc1cd45da9e87acbd0a6eb7c22fd3435f) — feat: show predicted DHCP IP in placeholder based on range start and VM count
+- 2026-06-07 [a954b04b](https://github.com/rhpds/troshka/commit/a954b04b784808a81a5ee05f33a519107e333038) — fix: use correct field names for gateway (dhcpGateway), DNS (dnsServerIp), DHCP range (dhcpRangeStart/End) with defaults
+- 2026-06-07 [6b5be690](https://github.com/rhpds/troshka/commit/6b5be690c27494b6f4d6392df38393e0b1ff7a48) — feat: validate static IP against full DHCP range, gateway IP, and DNS server IP
+- 2026-06-07 [2b604c15](https://github.com/rhpds/troshka/commit/2b604c157886317c42ee555df8c4d7c889143406) — feat: real-time IP duplicate check against other VMs, gateway, and DHCP range
+- 2026-06-07 [ca8a75e3](https://github.com/rhpds/troshka/commit/ca8a75e371282e46a1b28a0e79b4f8fea638d488) — feat: add IP address field per NIC with CIDR validation, shows when connected to a network
+- 2026-06-07 [038c60b4](https://github.com/rhpds/troshka/commit/038c60b4a82f5bd591fd93bcbef781ce41b3941e) — feat: snapshot stores network connections, import auto-connects to matching networks by name
+- 2026-06-07 [0835fe85](https://github.com/rhpds/troshka/commit/0835fe854057a0e6b2e7805fe2536296261ea1aa) — feat: snapshot captures disk and network info, import creates disk nodes with unique names and edges
+- 2026-06-07 [b11bfd94](https://github.com/rhpds/troshka/commit/b11bfd94f1d7b0e378690571a18556470f7b905d) — fix: rename palette labels — Snapshots, Virtual machine snapshot
+- 2026-06-07 [1a2b9337](https://github.com/rhpds/troshka/commit/1a2b9337a0820185d34588965718128a449ee4ca) — feat: move VM Snapshots under Compute, External IPs under Networking
+- 2026-06-07 [99c643e4](https://github.com/rhpds/troshka/commit/99c643e40df43e14089ac0478d9e3e828e58dadd) — feat: replace auto-listed snapshots with clickable VM Snapshots item that expands a draggable list
+- 2026-06-07 [808b10e6](https://github.com/rhpds/troshka/commit/808b10e608fd7a4a544ef20bcebbf1b513594966) — fix: filter palette snapshots to ready state, fix position fields in snapshot drop
+- 2026-06-07 [781ce60e](https://github.com/rhpds/troshka/commit/781ce60eae439734a513161cb352e68e08c322b2) — config: set image cache stale threshold to 5 hours
+- 2026-06-07 [dd69d9c2](https://github.com/rhpds/troshka/commit/dd69d9c274e71aaf3245de326dfd7094b01f5a7f) — feat: per-type cache eviction — patterns 24h, snapshots 1h, images 1h, all configurable
+- 2026-06-07 [e5c1c1db](https://github.com/rhpds/troshka/commit/e5c1c1dbdef0dc92d7aee5d262cf4a875b51ba43) — feat: evict stale cache based on atime, configurable via gc.cache\_stale\_hours (default 1h)
+- 2026-06-07 [6272f312](https://github.com/rhpds/troshka/commit/6272f312ce7e31bd09f3cf0a8d9ca224f6544007) — feat: GC cleans orphaned pattern/snapshot cache directories on host
+- 2026-06-07 [5f2591e2](https://github.com/rhpds/troshka/commit/5f2591e287ef14d75f3441be1169efaee5991f22) — feat: cache flattened disk images on host after S3 upload for fast reuse
+- 2026-06-07 [973adaf3](https://github.com/rhpds/troshka/commit/973adaf3643485eb391e03648546aed48449f83c) — feat: check free disk space before flattening qcow2 for snapshot/pattern capture
+- 2026-06-07 [5faf611b](https://github.com/rhpds/troshka/commit/5faf611bd396badcaf793ad3f1724559b5d7a9d1) — feat: wait for disk capture (flatten+upload) to complete before restarting VMs
+- 2026-06-07 [bd9c8742](https://github.com/rhpds/troshka/commit/bd9c87424fc0b4c3e459b5f610709647e99e6a06) — feat: flatten qcow2 disks before S3 upload in both snapshot and pattern capture
+- 2026-06-07 [9b1b5af3](https://github.com/rhpds/troshka/commit/9b1b5af35aaee43dc4c3eb518782284cd213a55f) — feat: implement VM snapshot disk capture to S3 via SSH upload
+- 2026-06-07 [a765301a](https://github.com/rhpds/troshka/commit/a765301a495510558f63ba78334210c9257ff804) — fix: use type='personal' for snapshot library to match \_ensure\_user\_library, fix duplicate check
+- 2026-06-07 [8c9a9fcc](https://github.com/rhpds/troshka/commit/8c9a9fcc538deac7f633536919164bebbba4252c) — fix: check for duplicate names before shutting down VMs in snapshot and pattern modals
+- 2026-06-07 [c357870c](https://github.com/rhpds/troshka/commit/c357870c14f1d5060942fd458f21eda3bc894c9b) — fix: prevent duplicate snapshot names in user library
+- 2026-06-07 [1a32a201](https://github.com/rhpds/troshka/commit/1a32a20191e57375516ab37212e60ca4e369c44f) — fix: check for both 'shut off' and 'shut\_off' VM state in snapshot modal
+- 2026-06-07 [50be2f4c](https://github.com/rhpds/troshka/commit/50be2f4cdc9e8e72e12e5e2fd1b9dc14c64d5334) — feat: GC repairs missing VXLAN bridges for active projects after orphan cleanup
+- 2026-06-07 [6344308e](https://github.com/rhpds/troshka/commit/6344308ee8258a42a6bade6cd13d6cf032831dfe) — fix: correct force-stop endpoint URL, add project-level force-stop endpoint
+- 2026-06-07 [436052f7](https://github.com/rhpds/troshka/commit/436052f79808ff2d979a55868f358b2819348939) — fix: disable inputs and checkbox while saving in snapshot and pattern modals
+- 2026-06-07 [bdf4c976](https://github.com/rhpds/troshka/commit/bdf4c97662b30f91462bfa6a35851f8f6a495d00) — fix: try graceful shutdown first (30s), then force power off for snapshot and pattern capture
+- 2026-06-07 [a1f392dc](https://github.com/rhpds/troshka/commit/a1f392dc8695d4541327cab33790e5572e55d9b6) — feat: add shutdown/restart checkbox to VM snapshot modal
+- 2026-06-07 [7739cd46](https://github.com/rhpds/troshka/commit/7739cd46ac833eb8ed4e339122d77abc305b2a4b) — chore: remove unused Next.js default assets, update README with patterns/GC/roadmap
+- 2026-06-07 [9dbee18e](https://github.com/rhpds/troshka/commit/9dbee18e844ab3586308b9c5225bcbb28ac4ad61) — feat: add host garbage collector — capacity sync, orphan cleanup, admin Clean button
+- 2026-06-07 [7ac59b12](https://github.com/rhpds/troshka/commit/7ac59b12b873b77c490fa1e8131864775b28f2b0) — fix: remap startOrder, externalIps, and hiddenNodeIds when deploying from pattern
+- 2026-06-07 [3420f3e6](https://github.com/rhpds/troshka/commit/3420f3e67cca5cedd46fc7d1485e9deba5cbed72) — fix: remap bootDevices node IDs when deploying from pattern
+- 2026-06-07 [9a526e64](https://github.com/rhpds/troshka/commit/9a526e64bc3de5e36e26a49cb73fd03fce2b983b) — fix: make boot device labels read-only, reorder only via arrows
+- 2026-06-07 [4a3b3859](https://github.com/rhpds/troshka/commit/4a3b38592b4eee72da8d7b7387d52260073a9497) — feat: use RJ45 SVG icon for Network (PXE) in boot device list, replace select with clickable div
+- 2026-06-07 [f634191d](https://github.com/rhpds/troshka/commit/f634191d03332e3792cef353d0cb10b2411c4edd) — fix: show 'Network (PXE)' on VM boot device, enlarge storage node icon to prevent squishing
+- 2026-06-07 [77ece5bb](https://github.com/rhpds/troshka/commit/77ece5bba90b731165c8711ee265a95553eb43f9) — feat: use RJ45 SVG icon for network boot device on VM node
+- 2026-06-07 [917c25c4](https://github.com/rhpds/troshka/commit/917c25c428ab7f9d297db610afaaef13d5045097) — fix: allow removing all boot devices from boot order
+- 2026-06-07 [0e6c620b](https://github.com/rhpds/troshka/commit/0e6c620b862c70ecb93023ea327d4b053daf7ff8) — fix: show 'None' for boot device when no boot devices configured
+- 2026-06-07 [a21008bd](https://github.com/rhpds/troshka/commit/a21008bd8e96ca1812c058d500246f0318015449) — feat: show boot device on VM node, fix warning text to 'No installable disk device'
+- 2026-06-07 [08ca5df7](https://github.com/rhpds/troshka/commit/08ca5df78b262ed2bdddf291ae99cc66a23bed92) — fix: show delete button in all states except deploying/reconfiguring
+- 2026-06-07 [e3be101f](https://github.com/rhpds/troshka/commit/e3be101f8806e374c7a1b2989061f40dad2ae253) — feat: add delete project button on canvas page for draft and stopped projects
+- 2026-06-07 [36278b25](https://github.com/rhpds/troshka/commit/36278b25f241ead6c6d762a871d22c6f89aa4383) — feat: prevent duplicate names for projects/patterns/library items, add inline project rename
+- 2026-06-07 [3a1725aa](https://github.com/rhpds/troshka/commit/3a1725aa08d3947421970480582c427789468325) — fix: default pattern name to projectName-pattern
+- 2026-06-07 [3d29a2a7](https://github.com/rhpds/troshka/commit/3d29a2a7c5cda13b06602f387c561d3d753cf7f8) — fix: auto-increment network CIDR by filtering empty CIDRs from routers/gateways
+- 2026-06-07 [84b73bf4](https://github.com/rhpds/troshka/commit/84b73bf4e4e8221bc25f6165406896fc132d1062) — feat: add project name modal when creating project from pattern
+- 2026-06-07 [0bda4f2f](https://github.com/rhpds/troshka/commit/0bda4f2fc0b2d61484acb6ee8dd8d1029284c780) — fix: send JSON body on pattern deploy and use data.id for redirect
+- 2026-06-07 [8ec5a372](https://github.com/rhpds/troshka/commit/8ec5a372225ccf951ae52c0ea5efaa882b0f96ca) — feat: add read-only properties panel to pattern preview — click any node to see details
+- 2026-06-07 [26a1341b](https://github.com/rhpds/troshka/commit/26a1341bb929f06c74a32c35fb87cbcc3f5e8f65) — feat: smart edge routing in preview — handles storage (horizontal) and network (vertical) connections
+- 2026-06-07 [3606d079](https://github.com/rhpds/troshka/commit/3606d079adf491131166b4eb5b8066af8f34ad37) — fix: apply viewport transform to edge overlay SVG for correct positioning
+- 2026-06-07 [443e0ba3](https://github.com/rhpds/troshka/commit/443e0ba340148d8200e99dbf0ac72fc0374ed013) — fix: render preview edges as custom SVG using useInternalNode for accurate positions
+- 2026-06-07 [977544ca](https://github.com/rhpds/troshka/commit/977544cace8a5d8bf2f45177cba819f614dd7d9a) — fix: use canvasStore for preview to leverage same edge/handle system as main canvas
+- 2026-06-07 [bfc2c86b](https://github.com/rhpds/troshka/commit/bfc2c86bd1a1c5be6189fa393ed6f716bc75574d) — fix: render preview edges as manual SVG paths, bypassing React Flow handle system
+- 2026-06-07 [518da278](https://github.com/rhpds/troshka/commit/518da278488d397ab6b23db0f531e75a3ac380af) — fix: use useReactFlow().setEdges + updateNodeInternals for preview edges
+- 2026-06-07 [a11618dd](https://github.com/rhpds/troshka/commit/a11618dd43920237e2690c90b37e2d5e331bed24) — fix: use controlled state with onNodesChange/onEdgesChange for preview canvas edge rendering
+- 2026-06-07 [8a47e144](https://github.com/rhpds/troshka/commit/8a47e144062be5515b09be3ffbae0fc9aa098a16) — fix: restore edge handles and increase delay to 1s for handle registration
+- 2026-06-07 [e399dc43](https://github.com/rhpds/troshka/commit/e399dc43a792b786d983f4e40399f97cfe7b9110) — fix: strip handle IDs from preview edges to avoid React Flow handle validation issue
+- 2026-06-07 [af40f96a](https://github.com/rhpds/troshka/commit/af40f96a9a521492a784c6bf8acf302547226ef7) — fix: force updateNodeInternals before setting edges in pattern preview
+- 2026-06-07 [1702f560](https://github.com/rhpds/troshka/commit/1702f56018dc57a51a14216ed20b4817ca60660a) — fix: use onInit + delayed setEdges to ensure handles register before edge creation
+- 2026-06-07 [1fdaa3c2](https://github.com/rhpds/troshka/commit/1fdaa3c2396a558d9ff8e26d1ca8dd2fdae13f9a) — fix: delay edge rendering in pattern preview to allow handle registration
+- 2026-06-07 [afa29d0f](https://github.com/rhpds/troshka/commit/afa29d0f7321a4f7b4ce730a13e4dc5a27d5b143) — fix: disable cancel and backdrop close while pattern save is in progress
+- 2026-06-07 [898a902a](https://github.com/rhpds/troshka/commit/898a902a9384c4e547bbbdee96ebbcf0a114ef62) — feat: add delete button to pattern cards
+- 2026-06-07 [e9c2591f](https://github.com/rhpds/troshka/commit/e9c2591f95a05da866c33339ed40e8277d7b4472) — fix: remap edge handles (NIC/disk controller IDs) when deploying from pattern
+- 2026-06-07 [b7c2e848](https://github.com/rhpds/troshka/commit/b7c2e848f71630e829c4f87da69c86dc61b05aff) — feat: searchable pattern dropdown in new project modal, project name on top
+- 2026-06-07 [d2df1a2c](https://github.com/rhpds/troshka/commit/d2df1a2c46815c284ae508001f4054c0851c9f56) — feat: add read-only canvas preview modal for patterns
+- 2026-06-07 [59516fa1](https://github.com/rhpds/troshka/commit/59516fa1582b931751cd7a1cb45cbc8e6bb57a8d) — feat: replace project prompt with new project modal (blank or from pattern), fix patterns page formatSize
+- 2026-06-07 [61bfcc22](https://github.com/rhpds/troshka/commit/61bfcc22f71d99e895fcaf5c2dc52a5a6158cc1f) — feat: add stop/restart VMs checkbox to Save Pattern modal, remove visibility selector
+- 2026-06-07 [55a4c5d8](https://github.com/rhpds/troshka/commit/55a4c5d87caab0fbe6b85a7dd4925191e1cd3223) — fix: clear host IP address when instance is stopped
+- 2026-06-07 [d4d32033](https://github.com/rhpds/troshka/commit/d4d32033310292d6760ceae3ab6054ad43ebbbd6) — fix: use UUID type for FK columns in migration to match PostgreSQL schema
+- 2026-06-07 [4e80269c](https://github.com/rhpds/troshka/commit/4e80269c550615586df9842fd77d855e65badd3c) — fix: update tests for dev-mode auth and correct port
+- 2026-06-07 [75b6d4a7](https://github.com/rhpds/troshka/commit/75b6d4a73c3bafc2d0ce94d4792dc72e296f990b) — fix: use ?? undefined for FileUpload value to satisfy TypeScript
+- 2026-06-07 [4367f5c5](https://github.com/rhpds/troshka/commit/4367f5c5864fa85999c34e06c6c9c84019e476ff) — feat: add BulkDeployModal for creating multiple projects from a pattern
+- 2026-06-07 [c43bef7d](https://github.com/rhpds/troshka/commit/c43bef7d89091cec66c5cdbdb08b2da24bc65b0f) — feat: add VM snapshot context menu, snapshot modal, and drag-import from palette
+- 2026-06-07 [be9288c0](https://github.com/rhpds/troshka/commit/be9288c0d59f7b53338fa4bb79785d1728a805ba) — feat: add Save as Pattern modal and wire into canvas toolbar and project page
+- 2026-06-07 [94cc5641](https://github.com/rhpds/troshka/commit/94cc56417b6aab2b22c8db14127da17fadc85d07) — feat: redesign library navigation with Images and Patterns sub-pages
+- 2026-06-07 [a7cd7705](https://github.com/rhpds/troshka/commit/a7cd7705f6bb8642852064dccde61eb05a1c39ab) — fix: add ownership check on snapshot import to prevent cross-user access
+- 2026-06-07 [578c9935](https://github.com/rhpds/troshka/commit/578c99353cdf805b2d0e78906efe65ab1c127fa3) — feat: implement pattern capture and CoW overlay support
+- 2026-06-07 [1091e4e3](https://github.com/rhpds/troshka/commit/1091e4e38c60ac606acf44d8d80a7aeebc270932) — feat: add VM snapshot endpoint and import-vm functionality
+- 2026-06-07 [dcc9ec4a](https://github.com/rhpds/troshka/commit/dcc9ec4a4944f27d821ec871148c4f1cd8b1d6d6) — fix: add access control to pattern progress endpoint
+- 2026-06-07 [5e62bbd1](https://github.com/rhpds/troshka/commit/5e62bbd19d8d22bd0e138deb7f3b8a0ddd276bb0) — test: add comprehensive tests for Pattern API endpoints
+- 2026-06-07 [22e5b60a](https://github.com/rhpds/troshka/commit/22e5b60a43cdc2ba1852b62e973f2342a4fffd8c) — feat: add Pattern API with CRUD, sharing, deploy, and bulk-deploy endpoints
+- 2026-06-07 [6254aa8a](https://github.com/rhpds/troshka/commit/6254aa8a208cc74907ea406ebccccaa4c50da58a) — feat: add Pattern pydantic schemas
+- 2026-06-07 [c52cb9a7](https://github.com/rhpds/troshka/commit/c52cb9a71779dfae4ed7712b64b6753f5376e02e) — migration: add patterns and snapshots tables
+- 2026-06-07 [26d58485](https://github.com/rhpds/troshka/commit/26d584857cc4f723a32684a2bd51eefad60ee60e) — feat: add vm\_config to LibraryItem, add LibraryItemDisk model
+- 2026-06-07 [dae8a1ad](https://github.com/rhpds/troshka/commit/dae8a1ad2e75f4bfe67284c306a05c01c9300a73) — feat: add Pattern, PatternDisk, PatternShare models
+- 2026-06-07 [433e0501](https://github.com/rhpds/troshka/commit/433e0501e0d5e937fcc482fa434a64da6467fffb) — docs: add patterns and snapshots implementation plan
+- 2026-06-07 [1d9c2efe](https://github.com/rhpds/troshka/commit/1d9c2efec953bc910364ab0fb0b4645706c9ec25) — docs: add patterns and VM snapshots design spec
+- 2026-06-06 [2ab36bc2](https://github.com/rhpds/troshka/commit/2ab36bc27ed29539e0ee52026279864edee51843) — feat: disk size shows real-time validation against deployed min with proper spacing
+- 2026-06-06 [0989a629](https://github.com/rhpds/troshka/commit/0989a62908b14eb0e27424b79b2161275e013d56) — fix: only show downloading progress when files are actually downloading
+- 2026-06-06 [1384419b](https://github.com/rhpds/troshka/commit/1384419b47a0bbdec7bab61061325c6581b258f1) — fix: show 'checking images' instead of 'downloading' when verifying cache
+- 2026-06-06 [6c6d1ead](https://github.com/rhpds/troshka/commit/6c6d1eaddfb6a440d1f8aacfa5b623afc935266b) — fix: only download/create disks when disk config actually changed
+- 2026-06-06 [511d4704](https://github.com/rhpds/troshka/commit/511d4704740e493031edef5e0a0b1b21482a8b99) — feat: resize qcow2 disks on size increase during reconfigure
+- 2026-06-06 [edb92492](https://github.com/rhpds/troshka/commit/edb924926c25c177d5d30cc7ba390fac192d7e08) — fix: clear libraryItemId when switching disk to blank, normalize comparison
+- 2026-06-06 [f2ac49fe](https://github.com/rhpds/troshka/commit/f2ac49fe5bb2411ccc6f105b803c499ddcaa2cdf) — fix: recalculate host capacity from assigned projects instead of incrementing
+- 2026-06-06 [6a7c6ef1](https://github.com/rhpds/troshka/commit/6a7c6ef1aa239d07203cb4aec8cbd6172d54b276) — fix: restore host\_id=None on republish, capacity was accumulating
+- 2026-06-06 [7cd40012](https://github.com/rhpds/troshka/commit/7cd40012e5edfde34fe0b13a8977df521f93ea4a) — fix: keep host\_id on republish, clear deployedVmIds on republish
+- 2026-06-06 [ea32f071](https://github.com/rhpds/troshka/commit/ea32f0717650555d1ca54aca2d79fd104c85251f) — fix: delete old disk before recreating when backing image changes
+- 2026-06-06 [7c9643c2](https://github.com/rhpds/troshka/commit/7c9643c220ae39d57e8af1f2fd3fe83324b0a420) — fix: preserve cdrom bus type from existing VM config
+- 2026-06-06 [ff8e0da9](https://github.com/rhpds/troshka/commit/ff8e0da9fe259f682bdb6f7e76411e3df630c161) — fix: use sata bus for cdrom devices, save topology before diff check
+- 2026-06-06 [1ad53480](https://github.com/rhpds/troshka/commit/1ad53480728a41e49d1a85d6863181f136c36ebc) — fix: add missing logger import to projects.py
+- 2026-06-06 [0658402d](https://github.com/rhpds/troshka/commit/0658402d7b1efc91ec546ed52ca943359cd75dd9) — feat: ISO/disk change warnings modal with restart choice
+- 2026-06-06 [8d566c12](https://github.com/rhpds/troshka/commit/8d566c121328b9b0836962506d10b6262677532c) — feat: async reconfigure, ISO/disk swap with warnings, logging
+- 2026-06-06 [f9a84238](https://github.com/rhpds/troshka/commit/f9a84238675cf87275201d072d76b49f58ab7d15) — refactor: use UUIDs for all file paths and domain names
+- 2026-06-06 [8f46079f](https://github.com/rhpds/troshka/commit/8f46079f5eb20284db3c8e178de70edeba15eb4e) — fix: destroy uses deployed\_topology, allow empty vni\_map in reconfigure
+- 2026-06-06 [3e513812](https://github.com/rhpds/troshka/commit/3e51381234725b3dc87ff5e2ebc39e32c78e8515) — fix: default VM OS to rhel10, remove dead Windows template code
+- 2026-06-06 [4afc6c48](https://github.com/rhpds/troshka/commit/4afc6c48eda375575600bbfbfb22d7a274255dda) — feat: toggleable auto-start checkbox on VM canvas node
+- 2026-06-06 [a72e5266](https://github.com/rhpds/troshka/commit/a72e52663269c353619ee2fdb42e0f07a161d443) — feat: auto-start checkbox per VM in start order
+- 2026-06-06 [2f095b61](https://github.com/rhpds/troshka/commit/2f095b61c9d7bfe56e3eac6fcaf2e8e2808da753) — feat: add undo/redo to canvas (Ctrl+Z / Ctrl+Shift+Z)
+- 2026-06-06 [45b0e073](https://github.com/rhpds/troshka/commit/45b0e07318d7215f47c919a75f74a8228c107b85) — fix: also include project ID in VMNode console window name
+- 2026-06-06 [86c6164c](https://github.com/rhpds/troshka/commit/86c6164cf6d839883bf628c339bc07d4f05632f6) — fix: include project ID in console window name to avoid conflicts
+- 2026-06-06 [635a3915](https://github.com/rhpds/troshka/commit/635a39151ca054053d322a73ce6f88f75a6da56a) — feat: show deploy progress (downloading %, networking, creating VMs)
+- 2026-06-06 [c626c8f4](https://github.com/rhpds/troshka/commit/c626c8f437e19861f08042c77a269115d6e168a5) — fix: make manual agent install async (background thread)
+- 2026-06-06 [2302f2c8](https://github.com/rhpds/troshka/commit/2302f2c8ad8dfc573342dd7b1cef1374f3764614) — fix: disable uvicorn --reload to prevent killing background threads
+- 2026-06-06 [52b23f0f](https://github.com/rhpds/troshka/commit/52b23f0fef04897e6c382aecbfd37590a1b2bf4f) — fix: remove libvirt-devel from agent install (not available on RHEL 10)
+- 2026-06-06 [ce13241a](https://github.com/rhpds/troshka/commit/ce13241a1e623af195abd98c4100d44f4b50d67f) — fix: install nmap-ncat for libvirt qemu+ssh transport
+- 2026-06-06 [7a0203b4](https://github.com/rhpds/troshka/commit/7a0203b4c50fd5b704bc5a26bfe4c2383f322e98) — fix: fetch storage with host data to avoid fallback flash
+- 2026-06-06 [6c54e335](https://github.com/rhpds/troshka/commit/6c54e335859289b1bd719313a4939fec269e7302) — fix: use stat -f instead of df+awk for disk space check
+- 2026-06-06 [a2f6ad68](https://github.com/rhpds/troshka/commit/a2f6ad683bd4814cc0e0114da9b78007ccb7a461) — feat: live storage usage on admin hosts page
+- 2026-06-06 [0eb81440](https://github.com/rhpds/troshka/commit/0eb814408de3cbb026c12932f0d8b6a63093072a) — feat: show storage size on admin hosts page
+- 2026-06-06 [e35e5cd8](https://github.com/rhpds/troshka/commit/e35e5cd8ce1657438b189ed76d7101706460593a) — feat: dedicated EBS storage volume for hosts
+- 2026-06-06 [6d0dfdb5](https://github.com/rhpds/troshka/commit/6d0dfdb5b14be15bd8928830d109f6622d313dbd) — fix: use python3 for host downloads, add stale detection
+- 2026-06-06 [0966d5ea](https://github.com/rhpds/troshka/commit/0966d5ea9eb4038fcbd0852fa0bf6d5d2fac5435) — fix: prevent stuck redeploy state and add cancel button
+- 2026-06-06 [b80e3c3f](https://github.com/rhpds/troshka/commit/b80e3c3f21cd6316437cdfd0af0d70be8439ba40) — feat: real-time download % during deploy/redeploy
+- 2026-06-06 [5059bea2](https://github.com/rhpds/troshka/commit/5059bea232314f0eb300293baa2d7f810f582c34) — feat: async per-VM redeploy with progress tracking
+- 2026-06-06 [44937d79](https://github.com/rhpds/troshka/commit/44937d79dff3d8c3fe782cf80bab340d826d190e) — feat: real-time VM status from libvirt
+- 2026-06-06 [8c62ff88](https://github.com/rhpds/troshka/commit/8c62ff887f50dfe47942b5d77f8d28fc7b2e6235) — feat: show library image name on disk nodes, block deploy if not ready
+- 2026-06-06 [a1337c10](https://github.com/rhpds/troshka/commit/a1337c1043b27d858050da9bbacd070327fe3102) — feat: realtime download/upload progress for URL imports
+- 2026-06-06 [d23215dc](https://github.com/rhpds/troshka/commit/d23215dc69968494220d6f64e9c268fc50e7369a) — feat: host-based URL import with multipart S3 upload
+- 2026-06-06 [29b0852d](https://github.com/rhpds/troshka/commit/29b0852da270d209da7c428be3af4f913d56d19e) — feat: URL import downloads via host, zero data through app
+- 2026-06-06 [032a5f4d](https://github.com/rhpds/troshka/commit/032a5f4daeeddacfc6216c76d25f405f023072f7) — feat: CPU/RAM overcommit for host capacity planning
+- 2026-06-06 [75703982](https://github.com/rhpds/troshka/commit/75703982a7df16c9a53b87c716075f62dea6589d) — fix: backpressure on URL import to cap memory at ~600 MB
+- 2026-06-06 [2b876e3a](https://github.com/rhpds/troshka/commit/2b876e3adf4e88c3d2ecc75c0a94d28bd84b69a5) — feat: parallel S3 upload, download/upload status, agent install fixes
+- 2026-06-06 [e0021726](https://github.com/rhpds/troshka/commit/e0021726ad3fd9b3b51a836ba7607c9cb3915658) — fix: host poweroff with stopped projects, larger upload chunks
+- 2026-06-05 [322d2e32](https://github.com/rhpds/troshka/commit/322d2e328b2e4d34495df5b4939920d722b57162) — feat: UI polish, cloud-user support, cancel imports
+- 2026-06-05 [4d8cf398](https://github.com/rhpds/troshka/commit/4d8cf398e67dbca9667092b72bc9db9a39ee7ba2) — fix: prevent topology wipe on page navigation (verified with Playwright)
+- 2026-06-05 [342b79a8](https://github.com/rhpds/troshka/commit/342b79a89297a7364388d3f6fde7594fc33fc56c) — fix: never auto-save empty topology, cancel import, cloud-user support
+- 2026-06-05 [7bb3d99d](https://github.com/rhpds/troshka/commit/7bb3d99db0e23461121469976fbff47be8b768c3) — fix: cloud-init password hash format with both chpasswd and users block
+- 2026-06-05 [0ebedf12](https://github.com/rhpds/troshka/commit/0ebedf1257207fdc9e969a6bb83dcdc464972ea8) — fix: use passlib for SHA-512 password hashing (Python 3.13 compatible)
+- 2026-06-05 [3a54c799](https://github.com/rhpds/troshka/commit/3a54c799260305d508e005c7a7dc462b1c3171e6) — security: hash root password in cloud-init seed ISO, eject after boot
+- 2026-06-05 [6ccdd03e](https://github.com/rhpds/troshka/commit/6ccdd03ed4f5d44c225f2cd9215e6688e0276ef4) — feat: cloud-init via NoCloud seed ISO
+- 2026-06-05 [a3f6649e](https://github.com/rhpds/troshka/commit/a3f6649e3499c0c68fea21e0fc598e14e926b895) — fix: redeploy spinner and status update from context menu
+- 2026-06-05 [9527c7dd](https://github.com/rhpds/troshka/commit/9527c7ddcf80bedb6048b165f294e0c724588e1c) — feat: cloud-init, SSH keys, per-VM redeploy, UI improvements
+- 2026-06-05 [b9ce9f9f](https://github.com/rhpds/troshka/commit/b9ce9f9f9ae504858b662cc27d753a9c772963a2) — fix: Apply Changes creates COW overlay for library-sourced disks
+- 2026-06-05 [99d36243](https://github.com/rhpds/troshka/commit/99d362435f81ca19e5779aedb7798a27658b5a39) — fix: Apply Changes prepares library downloads for new VMs
+- 2026-06-05 [5f2a5e11](https://github.com/rhpds/troshka/commit/5f2a5e11b3bd75b541cd6e9bccfdb6fc4bdad6af) — fix: only show running status for deployed VMs, not all canvas VMs
+- 2026-06-05 [c2e04552](https://github.com/rhpds/troshka/commit/c2e04552797f9c58c9a9dad7cfe0ef96fed37964) — feat: library improvements and fixes
+- 2026-06-05 [e3be5cdf](https://github.com/rhpds/troshka/commit/e3be5cdfe0a7b1c64104d598f57340c5b41b5bae) — feat: import library items from URL (server-side download to S3)
+- 2026-06-05 [87dd8c6d](https://github.com/rhpds/troshka/commit/87dd8c6d8d949ac214766c3cc79cf3f284f522d2) — fix: console paste handles tab, enter, carriage return
+- 2026-06-05 [38817304](https://github.com/rhpds/troshka/commit/38817304c5021cbbff9f732ae2da7262d4eac42c) — feat: console paste with proper shift key handling
+- 2026-06-05 [b16e5e93](https://github.com/rhpds/troshka/commit/b16e5e9343ac92b536a719609acb85900e1d3901) — fix: console single-click focus, NIC MAC matching for config comparison
+- 2026-06-05 [9b5ace8b](https://github.com/rhpds/troshka/commit/9b5ace8b94b5383af5ec5ab779f12747d4f4aa7d) — fix: prevent unnecessary VM restart on Apply Changes
+- 2026-06-05 [a7b0c936](https://github.com/rhpds/troshka/commit/a7b0c936636f044eef373adfffa1f4b3760ea535) — fix: boot order auto-detect in Apply Changes path
+- 2026-06-05 [994278b2](https://github.com/rhpds/troshka/commit/994278b2d040a8b963ceaa61ed0aeb7241367f7d) — fix: DHCP auto-config, dnsmasq restart, ISO boot order, admin toast
+- 2026-06-05 [278679bb](https://github.com/rhpds/troshka/commit/278679bbf66d6aaf7c69753136c6217be5b3c48a) — fix: ISO boot order, topology wipe guard, S3 multipart upload
+- 2026-06-05 [48225556](https://github.com/rhpds/troshka/commit/48225556f6066db8ba49dffb694f02dd37e1c1b8) — fix: prevent topology wipe on page reload + S3 multipart upload
+- 2026-06-05 [40166d24](https://github.com/rhpds/troshka/commit/40166d24dec2973a8692975ca7e3fe010a01b7d4) — fix: library upload UI improvements
+- 2026-06-05 [86ea0420](https://github.com/rhpds/troshka/commit/86ea0420707bb2aaf68be0eca7b611576fdbd6d2) — feat: S3 provider with create bucket, smart test, library sharing
+- 2026-06-05 [a6ac0be7](https://github.com/rhpds/troshka/commit/a6ac0be7f031ee36d04ca0c8857a9409a882dc63) — feat: S3 as provider type, library sharing, DB-driven S3 config
+- 2026-06-05 [0baf45c9](https://github.com/rhpds/troshka/commit/0baf45c96da65268aa1196aaecdc9626e00e03e5) — feat: library system with S3 storage, upload, and canvas integration
+- 2026-06-05 [ab8f3e7a](https://github.com/rhpds/troshka/commit/ab8f3e7a29665d1a250d3ac11d962d70e7e6394d) — feat: separate ISO palette item, remove ISO from disk format dropdown
+- 2026-06-05 [5164655d](https://github.com/rhpds/troshka/commit/5164655dc2fff91e2a2c22a8722610b0fe0a9342) — feat: full incremental apply changes with disk/NIC/VNC support
+- 2026-06-05 [a89860d8](https://github.com/rhpds/troshka/commit/a89860d8c4707d5dffc3bb1f8780fa2151cd197c) — fix: prevent auto-save from wiping topology with empty canvas
+- 2026-06-05 [9db9c0d2](https://github.com/rhpds/troshka/commit/9db9c0d2d0ccbf743cc2697334b0ac6de7a66e6c) — feat: native libvirt API for VM control and reconfigure
+- 2026-06-05 [236a74c2](https://github.com/rhpds/troshka/commit/236a74c2a5a729dbf1440ad246e371c54c677f6c) — feat: incremental deploy, reconfigure, host power management
+- 2026-06-04 [7b06c540](https://github.com/rhpds/troshka/commit/7b06c540dfdd8aa74a7b3129f143b29c5dbdb25f) — feat: VM console, per-VM controls, host power management
+- 2026-06-04 [5eab225a](https://github.com/rhpds/troshka/commit/5eab225a2ffc463770172abc97e7f5da167f6327) — feat: deploy flow, per-VM controls, and OS type updates
+- 2026-06-04 [9e49e2bf](https://github.com/rhpds/troshka/commit/9e49e2bf195ee3adc50d6bcbc0fdc41f58c2a873) — feat: host lifecycle, agent deploy, provider VPC/AMI management
+- 2026-06-04 [f0f98978](https://github.com/rhpds/troshka/commit/f0f98978f4c312addd06db6caa1482e2cc2c98f2) — feat: per-host SSH key pairs and PostgreSQL-ready provisioner
+- 2026-06-04 [01421e29](https://github.com/rhpds/troshka/commit/01421e29c33114415194aa29a5217556c609195c) — fix: discover AMI returns latest version by version number, not creation date
+- 2026-06-04 [64f17dd2](https://github.com/rhpds/troshka/commit/64f17dd2d088e1452cc381148120915912119be6) — feat: discover AMI shows both RHEL 9 and RHEL 10 options
+- 2026-06-04 [14235b55](https://github.com/rhpds/troshka/commit/14235b55e0f686df355e32aa493114c338a65766) — feat: discover AMI with choice between Access2 (Gold) and Hourly (Marketplace)
+- 2026-06-04 [724526b2](https://github.com/rhpds/troshka/commit/724526b2e6613164039562432fbdfa356a2b858e) — feat: auto-discover RHEL AMI per provider region
+- 2026-06-04 [eb4f6c89](https://github.com/rhpds/troshka/commit/eb4f6c897fed2a2f6b4eafa2c59be43686cb7616) — feat: add estimated cost/hr to instance type dropdown
+- 2026-06-04 [8a4d5a99](https://github.com/rhpds/troshka/commit/8a4d5a997908f7094a0e0230f418003489ad5ac8) — feat: edit existing providers with inline form
+- 2026-06-04 [c0af9f87](https://github.com/rhpds/troshka/commit/c0af9f87d56a58fd1550ca76d1f3f7ad7446be8c) — feat: provider-based credential management and admin UIs
+- 2026-06-04 [fb7c2888](https://github.com/rhpds/troshka/commit/fb7c2888a587deadc749338271cc2d047131ef4a) — feat: host pool management UI with regional pools
+- 2026-06-04 [6b85ab84](https://github.com/rhpds/troshka/commit/6b85ab84734aa044f03311eeab15530887228cb0) — fix: sanitize error messages in placement service
+- 2026-06-04 [258ce2d9](https://github.com/rhpds/troshka/commit/258ce2d9bb1d878a2b46f0d2391fe897130cfbd0) — feat: auto-provision hosts when no capacity available on deploy
+- 2026-06-04 [5bba6862](https://github.com/rhpds/troshka/commit/5bba6862ec4e42f4b1ef11e65031d04f4a24595a) — feat: host provisioning, VXLAN mesh networking, and deploy pipeline
+- 2026-06-04 [ad8db459](https://github.com/rhpds/troshka/commit/ad8db459a5ee3a345e08921e97b0ee732f27288b) — docs: add project README
+- 2026-06-04 [b80e87e8](https://github.com/rhpds/troshka/commit/b80e87e86e59818a212bd88b9dd78e1af7b40174) — feat: full canvas editor with backend API sync
+- 2026-06-04 [618db793](https://github.com/rhpds/troshka/commit/618db793726fa738fb09ab22bd25d6cbd20a01f9) — feat: add core ORM models for all entities
+- 2026-06-04 [84b07ca4](https://github.com/rhpds/troshka/commit/84b07ca47e4a5877f9e8911a64db302ecec50864) — feat: add SQLAlchemy database setup with test infrastructure
+- 2026-06-04 [32d9df6a](https://github.com/rhpds/troshka/commit/32d9df6a7faa995fe45092ff39c71ee94e99500e) — feat: add Dynaconf configuration with YAML config files
+- 2026-06-04 [03a13154](https://github.com/rhpds/troshka/commit/03a1315456df1c56d58413a14ad57ae465cbc2a8) — feat: initial project scaffold with monorepo structure
+
+

@@ -3,3 +3,8 @@
 Dout = "Dout"
 # "Cach" is used as a substring match for cache progress messages
 Cach = "Cach"
+
+[type.git-history]
+# Preserve verbatim historical subjects and Git hashes in the generated archive.
+extend-glob = ["changelog-history.md"]
+check-file = false
