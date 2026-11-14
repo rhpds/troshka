@@ -24,7 +24,15 @@ def pending(db, domain):
         target = row.dispatch_metadata.get("native_deploy", {})
         if target.get("domain_id") != domain.id or not target.get("sources"):
             continue
-        deploy.validate(db, db.get(Project, row.project_id), row, physical=False)
+        project = db.get(Project, row.project_id)
+        # The API commits admission before placement. Validate that original
+        # draft against its input digest until placement has actually committed.
+        unplaced = (
+            target.get("phase") == "reserved"
+            and not row.dispatch_metadata.get("claim")
+            and project.state == "draft"
+        )
+        deploy.validate(db, project, row, placed=not unplaced, physical=False)
         selected.append((row.operation_id, deepcopy(target)))
     if len(selected) > 100:
         raise ValueError("pending managed image verification limit")

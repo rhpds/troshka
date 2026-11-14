@@ -301,6 +301,57 @@ def test_pending_source_verification_keeps_active_validation(
             assert pending(db, domain) == [(operation_id, metadata["native_deploy"])]
 
 
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "draft",
+        "placed",
+        "draft-topology",
+        "draft-owner",
+        "placed-topology",
+        "placed-host",
+        "claimed-draft",
+        "create-intent-draft",
+    ],
+)
+def test_collector_validates_reserved_source_at_its_placement_stage(image_case, stage):
+    from app.services import native_managed_collector as collector
+    from app.services import placement, quota_operations
+
+    q = image_case
+    with q.sessions() as db:
+        project = db.get(Project, q.new_id)
+        operation_id = quota_operations.prepare(
+            db, project, "deploy", host_id=q.host_id
+        )
+        db.commit()
+        if stage.startswith("placed"):
+            placement.place_project(
+                db, project, host_id=q.host_id, quota_operation_id=operation_id
+            )
+            db.commit()
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        if stage.endswith("topology"):
+            project.topology = {**project.topology, "changed": True}
+        elif stage == "draft-owner":
+            metadata = deepcopy(row.dispatch_metadata)
+            metadata["native_deploy"]["owner_id"] = str(uuid4())
+            row.dispatch_metadata = metadata
+        elif stage == "placed-host":
+            project.host_id = None
+        elif stage == "claimed-draft":
+            row.dispatch_metadata = {**row.dispatch_metadata, "claim": "claimed"}
+        elif stage == "create-intent-draft":
+            deploy.update(row, phase="create-intent")
+        db.commit()
+    if stage in {"draft", "placed"}:
+        work = collector.snapshot(q.sessions, q.pins, q.target_id)
+        assert [v[0] for v in work["images"]] == [operation_id]
+    else:
+        with pytest.raises(AccountingUnavailable):
+            collector.snapshot(q.sessions, q.pins, q.target_id)
+
+
 def test_creation_and_verification_adapter_interfaces_are_separate():
     from app.services.native_cache_provider import (
         CacheCreationAdapter,
@@ -495,8 +546,9 @@ def test_concurrent_cache_preparation_is_same_original_operation(image_case):
         assert db.query(NativeCacheBirth).count() == 1
 
 
+@pytest.mark.parametrize("collector_overlap", [False, True])
 def test_normal_owner_route_selects_pinned_host_and_hands_real_worker_frozen_plan(
-    image_case, monkeypatch
+    image_case, monkeypatch, collector_overlap
 ):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -507,15 +559,52 @@ def test_normal_owner_route_selects_pinned_host_and_hands_real_worker_frozen_pla
     from app.core.database import get_db
     from app.models.host import Host
     from app.services import deploy_service
+    from app.services import native_managed_collector as collector
+    from tests.test_native_managed_deploy import report_for
 
     q = image_case
     app = FastAPI()
     app.include_router(projects.router)
     queued = []
+    captured = {}
+    original_place = projects.place_project
+
+    def place_with_collector_snapshot(*args, **kwargs):
+        # API reservation has committed; placement has not started yet.
+        try:
+            captured["work"] = collector.snapshot(q.sessions, q.pins, q.target_id)
+        except AccountingUnavailable as error:
+            captured["error"] = error
+        return original_place(*args, **kwargs)
+
+    def original_snapshot(*args):
+        if "error" in captured:
+            raise captured["error"]
+        return captured["work"]
+
+    def enqueue(function, *args, **kwargs):
+        if collector_overlap:
+            # Complete that exact snapshot's cycle after placement commits,
+            # before the queued worker can claim its operation.
+            with monkeypatch.context() as patch:
+                patch.setattr(collector, "snapshot", original_snapshot)
+                collector.cycle(
+                    q.sessions,
+                    q.pins,
+                    q.target_id,
+                    q.report.collector_id,
+                    {q.provider_id: q.reader},
+                    q.backend,
+                    lambda manifest, previous, started: report_for(q, manifest),
+                )
+        queued.append((function, args, kwargs))
+
+    if collector_overlap:
+        monkeypatch.setattr(projects, "place_project", place_with_collector_snapshot)
     monkeypatch.setattr(
         redis,
         "enqueue_job",
-        lambda function, *args, **kwargs: queued.append((function, args, kwargs)),
+        enqueue,
     )
     # This unrelated nested-host disk probe is a provider transport seam only.
     monkeypatch.setattr(
