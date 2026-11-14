@@ -38,6 +38,19 @@ def _token(value, *, empty=False):
     return value
 
 
+def _snapshot_id_args(operation, snapshot, snapshot_id):
+    if snapshot_id is None:
+        return []
+    if (
+        operation != "children"
+        or snapshot is not None
+        or not isinstance(snapshot_id, str)
+        or not re.fullmatch(r"[0-9]{1,20}", snapshot_id)
+    ):
+        raise ValueError("unsupported snapshot ID")
+    return ["--snap-id", snapshot_id]
+
+
 def command_argv(
     operation,
     *,
@@ -45,6 +58,7 @@ def command_argv(
     namespace="",
     image=None,
     snapshot=None,
+    snapshot_id=None,
     object_uuid=None,
     journal_key=None,
 ):
@@ -107,6 +121,7 @@ def command_argv(
         if operation != "children":
             raise ValueError("snapshot only supported for children")
         argv += ["--snap", _token(snapshot)]
+    argv += _snapshot_id_args(operation, snapshot, snapshot_id)
     return [*argv, "--format", "json"]
 
 
@@ -566,8 +581,8 @@ class RbdReader:
     def image_snapshots(self, key):
         return self._image("snapshots", key)
 
-    def image_children(self, key, snapshot):
-        return self._image("children", key, snapshot=snapshot)
+    def image_children(self, key, snapshot_id):
+        return self._image("children", key, snapshot_id=snapshot_id)
 
     def trash_inventory(self, key):
         p = self._pool(key)

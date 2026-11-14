@@ -61,6 +61,89 @@ class Rbd:
         return inventory()
 
 
+def test_csi_trash_snapshot_preserves_parent_and_child_accounting():
+    class CsiClone(Rbd):
+        def image_info(self, image):
+            result = super().image_info(image)
+            if image == key("child-1"):
+                result.value["parent"] = {
+                    "pool": "pool",
+                    "id": "source",
+                    "snapshot": "retired-snapshot",
+                }
+            return result
+
+        def image_snapshots(self, image):
+            rows = []
+            if image == key("source"):
+                rows = [
+                    {
+                        "id": 112939,
+                        "name": "retired-snapshot",
+                        "namespace": {
+                            "type": "trash",
+                            "original_namespace_type": "user",
+                            "original_name": "csi-temp",
+                        },
+                    }
+                ]
+            return ReadResult(status="complete", value=rows, collected_at=NOW)
+
+        def image_children(self, image, snapshot):
+            # The trashed snapshot must be selected by its immutable ID.
+            assert image == key("source") and snapshot == "112939"
+            return ReadResult(
+                status="complete",
+                collected_at=NOW,
+                value=[{"pool": "pool", "id": "child-1"}],
+            )
+
+    result = collect_report(
+        inventory(), CsiClone(), limits=CollectionLimits(), clock=lambda: NOW
+    )
+    images = {image.key.image_id: image for image in result.images}
+    assert images["child-1"].measurement_status == "complete"
+    assert images["child-1"].parent.snapshot_id == "112939"
+    assert images["source"].measurement_status == "complete"
+    assert images["source"].children == [key("child-1")]
+
+
+def test_children_command_uses_validated_snapshot_id():
+    from app.services.kubevirt_storage_transport import command_argv
+
+    argv = command_argv("children", pool="pool", image="source", snapshot_id="112939")
+    assert argv[-4:] == ["--snap-id", "112939", "--format", "json"]
+    for invalid in ("-1", "1;echo", "", True):
+        with pytest.raises(ValueError):
+            command_argv("children", pool="pool", image="source", snapshot_id=invalid)
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        None,
+        {"type": "group"},
+        {"type": "trash"},
+        {"type": "trash", "original_namespace_type": "group", "original_name": "old"},
+        {"type": "trash", "original_namespace_type": "user", "original_name": ""},
+    ],
+)
+def test_unknown_snapshot_namespace_never_produces_complete_measurement(namespace):
+    class UnknownSnapshot(Rbd):
+        def image_snapshots(self, image):
+            return ReadResult(
+                status="complete",
+                collected_at=NOW,
+                value=[{"id": 1, "name": "unknown", "namespace": namespace}],
+            )
+
+    result = collect_report(
+        inventory(), UnknownSnapshot(), limits=CollectionLimits(), clock=lambda: NOW
+    )
+    assert all(image.measurement_status == "unsupported" for image in result.images)
+    assert all(project.allocated_bytes is None for project in result.projects)
+
+
 def test_zero_complete_report_requires_recheck_and_validated_capability():
     result = collect_report(
         inventory(), Rbd(), limits=CollectionLimits(), clock=lambda: NOW

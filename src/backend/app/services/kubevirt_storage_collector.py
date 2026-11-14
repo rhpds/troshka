@@ -76,7 +76,7 @@ def _snapshot_rows(raw, key):
         ):
             raise ValueError("invalid snapshot identity")
         namespace = row.get("namespace")
-        if not isinstance(namespace, dict) or namespace.get("type") != "user":
+        if not _supported_snapshot_namespace(namespace):
             raise _ReadFailure("unsupported")
         snapshots.append(SnapshotKey(image_key=key, snapshot_id=str(row["id"])))
         names.append(row["name"])
@@ -85,10 +85,24 @@ def _snapshot_rows(raw, key):
     return snapshots, names
 
 
-def _children(reader, key, names, pools, timestamps, object_limit):
+def _supported_snapshot_namespace(namespace):
+    if not isinstance(namespace, dict):
+        return False
+    if namespace.get("type") == "user":
+        return True
+    # CSI can retire a snapshot while live clones still depend on its blocks.
+    return (
+        namespace.get("type") == "trash"
+        and namespace.get("original_namespace_type") == "user"
+        and isinstance(namespace.get("original_name"), str)
+        and bool(namespace["original_name"])
+    )
+
+
+def _children(reader, key, snapshots, pools, timestamps, object_limit):
     children = []
-    for name in names:
-        result = _call(reader.image_children, key, name)
+    for snapshot in snapshots:
+        result = _call(reader.image_children, key, snapshot.snapshot_id)
         if not isinstance(result.value, list):
             raise ValueError("invalid child inventory")
         children.extend(_image_key(v, key, pools) for v in result.value)
@@ -109,12 +123,17 @@ def _observe(reader, key, pools, capability_ok, version, clock, limits):
             raise _ReadFailure("identity_changed")
         parent = _parent(before.value, key, pools, reader)
         snap_before = _call(reader.image_snapshots, key)
-        snapshots, names = _snapshot_rows(snap_before.value, key)
+        snapshots, _ = _snapshot_rows(snap_before.value, key)
         if len(snapshots) > limits.max_objects:
             raise _ReadFailure("scan_limit")
         timestamps.append(snap_before.collected_at)
         children = _children(
-            reader, key, names, pools, timestamps, limits.max_objects - len(snapshots)
+            reader,
+            key,
+            snapshots,
+            pools,
+            timestamps,
+            limits.max_objects - len(snapshots),
         )
         if not capability_ok:
             raise _ReadFailure("unsupported")
@@ -133,7 +152,12 @@ def _observe(reader, key, pools, capability_ok, version, clock, limits):
             raise _ReadFailure("identity_changed")
         # Recheck children to invalidate consumers added during du.
         final_children = _children(
-            reader, key, names, pools, timestamps, limits.max_objects - len(snapshots)
+            reader,
+            key,
+            snapshots,
+            pools,
+            timestamps,
+            limits.max_objects - len(snapshots),
         )
         if set(final_children) != set(children):
             raise _ReadFailure("identity_changed")
@@ -346,11 +370,11 @@ def _graph_metadata(reader, image, pools, limits):
         raise ValueError("invalid image metadata")
     parent = _parent(info.value, image.key, pools, reader)
     result = _call(reader.image_snapshots, image.key)
-    snapshots, names = _snapshot_rows(result.value, image.key)
+    snapshots, _ = _snapshot_rows(result.value, image.key)
     if len(snapshots) > limits.max_objects:
         raise _ReadFailure("scan_limit")
     children = _children(
-        reader, image.key, names, pools, [], limits.max_objects - len(snapshots)
+        reader, image.key, snapshots, pools, [], limits.max_objects - len(snapshots)
     )
     return info.value.get("id"), parent, set(snapshots), set(children)
 
