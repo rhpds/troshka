@@ -508,12 +508,8 @@ def namespace_matches(ns, target, operation_id, project_id):
     )
 
 
-def publish(api, target, operation_id, request):
-    context = {"root": target["root"], "generation": operation_id}
-    root = power._live_root(api, context, operation_id)
-    current = power.helpers().intent(root)
-    if current == request:
-        return
+def publication_predecessor(request):
+    """Exact marker allowed before the durable deployment request is published."""
     expected = deepcopy(request)
     expected["phase"] = (
         "pending" if request["phase"] == "initializing" else "initializing"
@@ -529,7 +525,16 @@ def publish(api, target, operation_id, request):
             "clusterKey",
         ):
             expected.pop(key, None)
-    if current != expected:
+    return expected
+
+
+def publish(api, target, operation_id, request):
+    context = {"root": target["root"], "generation": operation_id}
+    root = power._live_root(api, context, operation_id)
+    current = power.helpers().intent(root)
+    if current == request:
+        return
+    if current != publication_predecessor(request):
         raise AccountingUnavailable(
             "Native deployment phase changed before CAS release"
         )

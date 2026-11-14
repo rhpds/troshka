@@ -642,7 +642,7 @@ def test_normal_owner_route_selects_pinned_host_and_hands_real_worker_frozen_pla
     assert not q.apis[q.new_id].rows("VirtualMachine", None)
 
 
-def prepare_verified_image_operation(q, monkeypatch):
+def prepare_verified_image_operation(q, monkeypatch, *, publish_initialization=True):
     """Real journals, publication, enrollment, worker and renderer; synthetic I/O."""
     from app.models.kubevirt_cache_birth import NativeCacheBirth
     from app.schemas.kubevirt_storage import CacheBinding, ImageObservation
@@ -759,11 +759,86 @@ def prepare_verified_image_operation(q, monkeypatch):
         return value
 
     monkeypatch.setattr(api, "request", created)
+    if not publish_initialization:
+        return operation, target, binding
     deploy.reconcile(
         q.new_id
     )  # Publish initializing marker; missing children stay off.
     deploy.helpers().reconcile(api, api.rows("TroshkaProject", None)[0])
     return operation, target, binding
+
+
+@pytest.mark.parametrize("change", [None, "marker", "uid", "spec"])
+def test_collector_waits_for_exact_initialization_publication(
+    image_case, monkeypatch, change
+):
+    import json
+
+    from app.models.native_clone_lineage import NativeCloneLineage
+    from app.services import native_managed_collector as collector
+    from app.services.quota_admission import usage
+    from tests.test_native_managed_deploy import report_for
+
+    q = image_case
+    operation, target, _ = prepare_verified_image_operation(
+        q, monkeypatch, publish_initialization=False
+    )
+    q.reader.api = object()
+    api = q.apis[q.new_id]
+    root = api.rows("TroshkaProject", None)[0]
+    assert deploy.power.helpers().intent(root)["phase"] == "pending"
+    assert target["phase"] == "initialization-intent"
+    live = api.values["TroshkaProject", root["metadata"]["name"]]
+    if change == "marker":
+        marker = deploy.power.helpers().intent(root)
+        marker["payloadDigest"] = "0" * 64
+        live["metadata"]["annotations"][deploy.power.helpers().ANNOTATION] = json.dumps(
+            marker
+        )
+    elif change == "uid":
+        live["metadata"]["uid"] = "replacement"
+    elif change == "spec":
+        live["spec"]["action"] = "changed"
+    advance_clock()
+    report = collector.cycle(
+        q.sessions,
+        q.pins,
+        q.target_id,
+        q.report.collector_id,
+        {q.provider_id: q.reader},
+        q.backend,
+        lambda manifest, previous, started: report_for(q, manifest),
+    )
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation).one()
+        assert usage(db, "project", q.new_id)[1].storage_bytes > 0
+        for identity in target["clone_lineages"].values():
+            lineage = db.get(NativeCloneLineage, identity)
+            assert not lineage.creation and not lineage.proof
+        assert (
+            row.dispatch_metadata.get("native_image_diagnostic")
+            != "clone_verification_pending"
+        )
+    if change:
+        assert report.collection_errors
+        assert (
+            deploy.power.helpers().intent(api.rows("TroshkaProject", None)[0])["phase"]
+            == "pending"
+        )
+    else:
+        assert not report.collection_errors
+        deploy.reconcile(q.new_id)
+        assert (
+            deploy.power.helpers().intent(api.rows("TroshkaProject", None)[0])
+            == target["initialization_request"]
+        )
+        deploy.helpers().reconcile(api, api.rows("TroshkaProject", None)[0])
+        from app.services.native_managed_verification import transfer_creation
+
+        assert transfer_creation(q.sessions, operation, target, q.reader) is True
+        with q.sessions() as db:
+            for identity in target["clone_lineages"].values():
+                assert db.get(NativeCloneLineage, identity).creation["dv_uid"]
 
 
 def publish_synthetic_clone(q, operation, target, source, monkeypatch):

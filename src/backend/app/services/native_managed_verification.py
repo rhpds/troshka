@@ -145,14 +145,12 @@ def transfer_creation(sessions, operation_id, target, reader):
         api, {"root": target["root"], "generation": operation_id}, operation_id
     )
     wanted = helpers().intent(root)
-    if wanted != target.get("initialization_request"):
+    request = target["initialization_request"]
+    unpublished = request[
+        "phase"
+    ] == "initializing" and wanted == deploy.publication_predecessor(request)
+    if wanted != request and not unpublished:
         raise ValueError("clone initialization request changed")
-    creates = root.get("status", {}).get("managedDeployment", {}).get("creates", {})
-    planned = {
-        v["metadata"]["name"]: v
-        for v in deploy.helpers().render(root, wanted["storageClass"])
-        if v["kind"] == "DataVolume"
-    }
     if root["spec"] != target["payload"]["spec"]:
         raise ValueError("original clone root plan changed")
     with sessions.begin() as db:
@@ -161,6 +159,14 @@ def transfer_creation(sessions, operation_id, target, reader):
             "native_deploy"
         ) != target or row.dispatch_metadata.get("cancelled"):
             raise ValueError("clone creation operation changed")
+        if unpublished:
+            return False
+        creates = root.get("status", {}).get("managedDeployment", {}).get("creates", {})
+        planned = {
+            v["metadata"]["name"]: v
+            for v in deploy.helpers().render(root, wanted["storageClass"])
+            if v["kind"] == "DataVolume"
+        }
         for claim, lineage in target.get("clone_lineages", {}).items():
             original = creates.get("DataVolume:" + claim, {})
             if original.get("uid"):
@@ -176,6 +182,7 @@ def transfer_creation(sessions, operation_id, target, reader):
                         operation_id=operation_id,
                     ),
                 )
+    return True
 
 
 def verify_clones(sessions, selected, readers, backend, profile):
@@ -192,7 +199,8 @@ def verify_clones(sessions, selected, readers, backend, profile):
         for operation_id, target in selected:
             if target["phase"] != "initialization-intent":
                 continue
-            transfer_creation(sessions, operation_id, target, reader)
+            if not transfer_creation(sessions, operation_id, target, reader):
+                continue
             for identity in target.get("clone_lineages", {}).values():
                 try:
                     verify_clone(sessions, identity, adapter)
