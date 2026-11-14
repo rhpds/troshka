@@ -1,0 +1,131 @@
+# Enroll existing native projects without stopping VMs
+
+Online custody enrollment records administrator-approved ownership of existing
+native infrastructure. It uses provider reads and database writes only. It does
+not stop or restart workloads, enable quotas, change project owners, reconstruct
+historical costs, or create deployment reservations.
+
+Use this for stable active or stopped native projects that have retained deployed
+topology but no existing quota ledger or allocations. Projects already managed
+by the ledger use ordinary reconciliation. Keep quota enforcement disabled.
+
+Cleanup-only compatibility validates legacy console access roles, service
+accounts, S3 credential Secrets, BMC services, cluster grouping, Ceph appliances,
+and VM-owned persistent-state PVCs against their expected Troshka configuration.
+The receipt pins stable object identities and configuration; it excludes Secret
+values. This does not relax ordinary quota admission requirements.
+
+For existing CDI COW clones, verification also records present-day ancestry
+custody. It checks the current CSI journal and bound head image, the private
+intermediate's immutable identity and exclusive child relationship, and the
+independently bound shared cache source and snapshot links. This evidence is
+separate from historical managed-deploy clone receipts. Missing, changed, or
+unaccounted relationships block enrollment or cleanup; names alone do not grant
+storage ownership.
+
+Recognized legacy ops and workload-runner pods remain running during enrollment.
+On a later Delete/Undeploy, cleanup must prevent new launches, stop the exact
+pinned writers and confirm their absence before treating the VM as safely off.
+Neither custody nor a successful deletion request is proof that storage is gone.
+
+Verification reads the ancestry twice, then rechecks namespace object identities
+and storage bindings before issuing the receipt. Unknown source children or snapshots fail verification; include
+all affected project roots in the reviewed domain rather than claiming foreign
+edges. Shared source images remain outside project cleanup ownership.
+
+The later collector charges both private head and intermediate bytes and requires
+confirmed absence of both image IDs from active storage and trash, plus removal
+of their obsolete source snapshot, before settlement. Existing CSI cleanup owns
+that progression; enrollment introduces no backend deletion or shared trash purge.
+
+Dev live acceptance passed on 2026-11-14. Enrollment preserved the VMI identity,
+creation time, guest boot ID and disk checksum without stopping the VM. Subsequent
+ordinary Stop/Start through Troshka preserved the disk checksum. Troshka Undeploy
+finished with both private image IDs absent from active storage and trash, the
+shared source intact, and the project owner and canvas preserved. Unrelated
+projects, images, patterns and library records retained their inventory hashes.
+
+All four existing production namespaces also pass the read-only compatibility
+profile. This is not production enrollment: production still requires fresh
+domain-specific ancestry verification and enrollment after the tested release
+is packaged. Dev currently uses temporary source overlays; production was not
+modified during this acceptance run.
+
+## Preparation
+
+Apply the `ab841d2e6109` migration through the reviewed deployment process. Set
+`TROSHKA_NATIVE_REPORT_DATABASE_URL` securely for the intended database. Use the
+target UUID, protected backend configuration, static kubeconfig and independently
+verified pins described in [native storage reporting](native-storage-reporting.md).
+The kubeconfig must identify the same cluster as the database-configured provider.
+Online verification currently accepts one provider/backend domain per invocation.
+
+Prepare a request for the existing projects:
+
+```sh
+umask 077
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> prepare-online \
+  --project-id <project-uuid> --output online-request.json
+```
+
+Repeat `--project-id` when the domain contains multiple projects. The domain pins
+must cover the requested roots and comply with existing pool ownership rules;
+do not replace an existing domain with a partial inventory.
+
+Create a private `custody-attestation.json` file containing the actual reviewing
+administrator and reason:
+
+```json
+{
+  "administrator": "<administrator identity>",
+  "reason": "Reviewed existing Troshka project namespace and retained disks",
+  "namespace_custody": true
+}
+```
+
+This grants custody of the project namespace for eventual owner-requested
+cleanup. Review the namespace contents before attesting. The local CLI is a
+privileged database-administrator interface, not a user-facing ingestion API.
+
+## Verify and enroll
+
+```sh
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> verify-online \
+  --request online-request.json --pins enrollment-pins.json \
+  --backend-config backend-identities.json \
+  --kubeconfig /absolute/path/to/protected-kubeconfig \
+  --attestation custody-attestation.json --output online-verified.json
+
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> enroll-online --enrollment online-verified.json
+```
+
+Apply within 60 seconds of verification completion. Final identity checks and
+the receipt timestamp follow the bounded ancestry scan. If evidence expires, verify again;
+identity or topology changes require fresh preparation. A conflicting existing
+custody receipt requires explicit reconciliation rather than silent replacement.
+
+Capture VM instance UIDs and creation times before and after enrollment, and
+verify application availability and unchanged project ownership. A successful
+database enrollment alone is not evidence of uninterrupted guest operation.
+
+## Later cleanup
+
+Ordinary quota-disabled Start/Stop retains its existing behavior. Delete and
+Undeploy revalidate custody and disk identities, obtain a real managed shutdown
+proof, and settle only the project's private disk and trash identities. The
+cleanup-only ledger anchor is created at cleanup time and explicitly marks
+compute accounting unavailable. It must never be interpreted as measured zero
+usage or permission to enable quotas.
+
+While cleanup-only custody makes complete quota usage unavailable, the usage API
+returns HTTP 503 with reason `accounting_unavailable`, after authorization. It
+does not expose partial custody values as zero usage. Collection may temporarily
+report unavailable while deletion changes the storage graph; settlement requires
+a subsequent accepted report with the exact private image absence evidence.
+
+Enrollment is not a reason to delete or recreate projects, PVCs, images, or
+patterns. If validation fails, keep the workloads running and resolve the exact
+identity or ownership conflict before promoting production.

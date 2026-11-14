@@ -3831,7 +3831,7 @@ def _maybe_heal_stuck_ops_pod(host, project_id: str) -> dict:
     from app.services.ocp.ops_pod_heal import heal_stuck_ops_pod
 
     core_v1, namespace, pod_name = ctx
-    return heal_stuck_ops_pod(core_v1, namespace, pod_name)
+    return heal_stuck_ops_pod(core_v1, namespace, pod_name, project_id=project_id)
 
 
 def _fail_ops_pod_install_stuck(

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -11,7 +11,7 @@ from app.core.database import get_db
 from app.models.managed_group import ManagedGroup, ManagedGroupManager
 from app.models.user import User
 from app.schemas.kubevirt_storage import NativeStorageUsage
-from app.schemas.quota import Limits, Scope, Usage
+from app.schemas.quota import AccountingUnavailable, Limits, Scope, Usage
 from app.services.kubevirt_storage_usage import read_native_usage
 from app.services.quota_policy import authorize_policy, get_limits, set_limits
 from app.services.quota_usage import read_usage
@@ -62,7 +62,17 @@ def read_policy(scope: Scope, scope_id: str, user: CurrentUser, db: DbSession):
 
 @router.get("/{scope}/{scope_id}/usage", response_model=Usage)
 def scope_usage(scope: Scope, scope_id: str, user: CurrentUser, db: DbSession):
-    result = read_usage(db, user, scope, scope_id, datetime.now(UTC))
+    try:
+        result = read_usage(db, user, scope, scope_id, datetime.now(UTC))
+    except AccountingUnavailable as exc:
+        db.rollback()
+        raise HTTPException(
+            503,
+            {
+                "reason": "accounting_unavailable",
+                "message": "Verified quota usage is unavailable.",
+            },
+        ) from exc
     db.commit()
     return result
 

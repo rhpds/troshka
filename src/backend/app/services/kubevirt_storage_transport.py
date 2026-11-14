@@ -584,6 +584,21 @@ class RbdReader:
     def image_children(self, key, snapshot_id):
         return self._image("children", key, snapshot_id=snapshot_id)
 
+    def verify_clone_intermediate(self, binding, intermediate, pv):
+        """Read-only CSI journal plus immutable-edge custody, never a name adoption.
+
+        The journal binds the current PV request to its head image. Ceph-CSI's
+        temporary clone and both snapshot links must independently match that
+        journal identity; the caller additionally verifies exclusive graph edges.
+        """
+        from app.services.native_ancestry_custody import verify_csi_intermediate
+
+        try:
+            verify_csi_intermediate(self, binding, intermediate, pv)
+            return ReadResult(status="complete", collected_at=utcnow(), value=True)
+        except Exception:
+            return ReadResult(status="identity_changed", collected_at=utcnow())
+
     def trash_inventory(self, key):
         p = self._pool(key)
         return self._read("trash", pool=p.name, namespace=p.rbd_namespace)

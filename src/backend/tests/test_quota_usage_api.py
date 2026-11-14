@@ -87,6 +87,54 @@ def usage(scope, identity):
     return f"/api/v1/quotas/{scope}/{identity}/usage"
 
 
+@pytest.mark.parametrize("scope", ["project", "user", "organization"])
+def test_cleanup_custody_usage_is_explicitly_unavailable(
+    quota_case, monkeypatch, scope
+):
+    q = quota_case
+    monkeypatch.setattr(quota_accounting, "quotas_enabled", lambda: False)
+    with TestSession() as db:
+        db.add(
+            QuotaReservation(
+                operation_id=f"cleanup-custody-{q.pid}",
+                project_id=q.pid,
+                owner_id=q.owner.id,
+                organization_id=q.org,
+                requested={},
+                observed={"storage_bytes": 4096},
+                dispatch_metadata={"cleanup_only": True},
+            )
+        )
+        db.commit()
+    _as_user(q.owner)
+    identity = {"project": q.pid, "user": q.owner.id, "organization": q.org}[scope]
+    response = client.get(usage(scope, identity))
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {
+            "reason": "accounting_unavailable",
+            "message": "Verified quota usage is unavailable.",
+        }
+    }
+    assert "used" not in response.json() and "reserved" not in response.json()
+    with TestSession() as db:
+        row = (
+            db.query(QuotaReservation)
+            .filter_by(operation_id=f"cleanup-custody-{q.pid}")
+            .one()
+        )
+        assert row.observed == {
+            "cpu": 0,
+            "ram_bytes": 0,
+            "storage_bytes": 4096,
+            "projects": 0,
+        }
+        assert row.state != "released"
+    assert quota_accounting.quotas_enabled() is False
+    _as_user(q.reporter)
+    assert client.get(usage(scope, identity)).status_code == 403
+
+
 def test_usage_exact_aggregates_decimal_period_and_no_project_details(
     quota_case, monkeypatch
 ):

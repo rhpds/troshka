@@ -241,7 +241,15 @@ def bind_host(db, project, host, operation_id):
 
 
 def measurement_row(rows):
-    roots = [row for row in rows if row.dispatch_metadata.get("kind") == "deploy"]
+    roots = [
+        row
+        for row in rows
+        if row.dispatch_metadata.get("kind") == "deploy"
+        or (
+            row.dispatch_metadata.get("kind") == "custody"
+            and row.dispatch_metadata.get("cleanup_only") is True
+        )
+    ]
     if len(roots) != 1 or any(
         row.dispatch_metadata.get("generation_id")
         != roots[0].dispatch_metadata.get("generation_id")

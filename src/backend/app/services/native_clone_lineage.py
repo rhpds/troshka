@@ -295,4 +295,9 @@ def resolve_lineages(db, references, manifest):
         seen.add(reference.lineage_id)
         if root_key(proof.binding.root) not in retired:
             proofs.append(proof)
+    from app.services.native_ancestry_custody import resolve
+
+    proofs.extend(resolve(db, manifest, retired))
+    if len({p.binding.image_key for p in proofs}) != len(proofs):
+        raise ValueError("Duplicate historical and current ancestry authority")
     return proofs

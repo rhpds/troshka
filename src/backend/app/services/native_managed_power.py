@@ -61,6 +61,8 @@ def retained_context(db, project, rows):
         "generation": operations._generation(row),
         "identity": identity,
     }
+    if row.dispatch_metadata.get("cleanup_only"):
+        context["cleanup_custody"] = row.dispatch_metadata["cleanup_custody"]
     first = row.dispatch_metadata.get("native_deploy")
     if first and row.state == "confirmed":
         context["first_deployment"] = {
@@ -139,8 +141,14 @@ def stop_and_observe(api, context, request_id, *, clock=None):
         "requestId": request_id,
         "allocationGeneration": context["generation"],
     }
+    if "cleanup_custody" in context:
+        wanted["cleanupCustody"] = context["cleanup_custody"]
     current = module.intent(root)
     if current != wanted:
+        if "cleanup_custody" in context:
+            from app.services.native_online_enrollment import validate_namespace
+
+            validate_namespace(api, context)
         module.require(
             current is None
             or current.get("mode") == "running"

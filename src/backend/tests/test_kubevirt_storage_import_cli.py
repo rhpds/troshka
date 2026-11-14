@@ -115,6 +115,118 @@ from tests.test_kubevirt_storage_reports import native_case as native_case_fixtu
 native_case = native_case_fixture
 
 
+def test_online_cli_requires_explicit_attestation(cli):
+    with pytest.raises(SystemExit) as error:
+        cli._parser().parse_args(
+            [
+                "--target-id",
+                str(uuid4()),
+                "verify-online",
+                "--request",
+                "request.json",
+                "--pins",
+                "pins.json",
+                "--backend-config",
+                "backend.json",
+                "--output",
+                "receipt.json",
+            ]
+        )
+    assert error.value.code == 2
+
+
+def test_online_reader_rejects_wrong_cluster_and_closes_transport(cli, monkeypatch):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+
+    closed = []
+    reader = SimpleNamespace(
+        api=SimpleNamespace(close=lambda: closed.append(True)),
+        cluster_identity=lambda: "unrelated-cluster",
+    )
+    monkeypatch.setattr(cli, "KubernetesReader", lambda *args, **kwargs: reader)
+    provider = SimpleNamespace(cluster_identity=lambda: "configured-cluster")
+    with pytest.raises(ValueError, match="configured provider cluster"):
+        with ExitStack() as cleanup:
+            cli._online_readers(
+                SimpleNamespace(kubeconfig="protected-kubeconfig"),
+                {"provider": provider},
+                {"backend": object()},
+                SimpleNamespace(collector_ids=["collector"], cache_roots=[]),
+                SimpleNamespace(max_objects=100),
+                123,
+                cleanup,
+            )
+    assert closed == [True]
+
+
+def test_online_cli_private_prepare_and_explicit_target_apply(
+    cli, native_case, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from app import services
+
+    q = native_case
+    monkeypatch.setenv(
+        "TROSHKA_NATIVE_REPORT_DATABASE_URL", str(q.sessions.kw["bind"].url)
+    )
+    project_id = str(q.report.project_roots[0].project_id)
+    prepared = {
+        "request": q.request.model_dump(mode="json"),
+        "topologies": {project_id: {"nodes": []}},
+    }
+    calls = []
+
+    def prepare(db, ids):
+        calls.append(("prepare", ids))
+        return prepared
+
+    def apply(db, receipt, *, expected_target_id):
+        calls.append(("apply", receipt, expected_target_id))
+        return ["custody-receipt"]
+
+    monkeypatch.setattr(
+        services,
+        "native_online_enrollment",
+        SimpleNamespace(prepare=prepare, apply=apply),
+        raising=False,
+    )
+    output = tmp_path / "prepared.json"
+    assert (
+        cli.main(
+            [
+                "--target-id",
+                q.target_id,
+                "prepare-online",
+                "--project-id",
+                project_id,
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(output.read_text()) == prepared
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert calls == [("prepare", [project_id])]
+    # A different database target fails before touching the custody service.
+    assert (
+        cli.main(
+            ["--target-id", str(uuid4()), "enroll-online", "--enrollment", str(output)]
+        )
+        == 1
+    )
+    assert len(calls) == 1
+    assert (
+        cli.main(
+            ["--target-id", q.target_id, "enroll-online", "--enrollment", str(output)]
+        )
+        == 0
+    )
+    assert calls[-1] == ("apply", prepared, q.target_id)
+
+
 def test_collector_report_cannot_bootstrap_cli_enrollment(
     cli, native_case, monkeypatch, tmp_path
 ):

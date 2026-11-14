@@ -127,15 +127,16 @@ def test_cleanup_deletes_only_sealed_originals_and_retains_replacements(extra):
 
 
 @pytest.mark.parametrize("change", ["ordinary", "original", "child_uid", "parent_uid", "foreign", "marker"])
-def test_cleanup_child_authority_requires_original_parent_intent_and_child(change):
+@pytest.mark.parametrize("kind", ["TroshkaVM", "TroshkaCeph"])
+def test_cleanup_child_authority_requires_original_parent_intent_and_child(change, kind):
     parent = resource("TroshkaProject", "project")
-    child = resource("TroshkaVM", "vm", parent)
+    child = resource(kind, "vm", parent)
     payload = {
         "version": "native-cleanup-v1", "namespace_mode": "managed",
         "intent_id": "cleanup-1", "generation": "allocation-1",
         "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1},
         "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"},
-        "objects": [{"kind": "TroshkaVM", "name": "vm", "namespace": "ns", "uid": child["metadata"]["uid"]}],
+        "objects": [{"kind": kind, "name": "vm", "namespace": "ns", "uid": child["metadata"]["uid"]}],
     }
     payload["inventory_digest"] = power.digest(payload["objects"])
     parent["metadata"]["annotations"] = {
@@ -511,16 +512,21 @@ def test_partial_failure_keeps_snapshot_for_readback_retry(lifecycle, monkeypatc
         "vm_update",
         "network_create",
         "network_update",
+        "ceph_create",
+        "ceph_update",
+        "ceph_poll",
     ],
 )
 def test_all_handler_boundaries_gate_delayed_events(lifecycle, monkeypatch, entry):
-    from handlers import network, project, vm
+    from handlers import ceph, network, project, vm
 
     module = (
         project
         if entry.startswith("project")
         else vm
         if entry.startswith("vm")
+        else ceph
+        if entry.startswith("ceph")
         else network
     )
     import kopf
@@ -534,6 +540,9 @@ def test_all_handler_boundaries_gate_delayed_events(lifecycle, monkeypatch, entr
     handlers = [c.args[0] for d in decorators for c in d.call_args_list if c.args]
     handler = next(h for h in handlers if getattr(h, "__name__", None) == entry)
     body = (
+        resource("TroshkaCeph", "ceph", root(lifecycle))
+        if module == ceph
+        else
         root(lifecycle)
         if module == project
         else lifecycle.get(

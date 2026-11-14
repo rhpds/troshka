@@ -130,6 +130,21 @@ def usage(db: Session, scope: str, scope_id: str) -> tuple[Resources, Resources]
     # Session. Preserve this transaction's writes before replacing cached values.
     db.flush()
     column = columns[scope]
+    custody = (
+        db.query(QuotaReservation)
+        .filter(
+            getattr(QuotaReservation, column) == scope_id,
+            QuotaReservation.state != "released",
+        )
+        .all()
+    )
+    if any(
+        row.dispatch_metadata.get("cleanup_only") and any(row.observed.values())
+        for row in custody
+    ):
+        raise AccountingUnavailable(
+            "Legacy custody cleanup is not verified quota accounting"
+        )
     allocated = (
         db.query(QuotaAllocation)
         .filter(

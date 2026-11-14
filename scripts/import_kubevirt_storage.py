@@ -16,11 +16,6 @@ from uuid import UUID
 _root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_root / "src" / "backend" if (_root / "src" / "backend").is_dir() else _root))
 
-from collect_kubevirt_storage import atomic_report
-from pydantic import TypeAdapter
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
 from app.models.kubevirt_storage import NativeEnrollmentRequest, NativeReportingTarget
 from app.models.provider import Provider
 from app.schemas.kubevirt_storage import (
@@ -41,6 +36,7 @@ from app.services.kubevirt_storage_enrollment import (
     verify_native_enrollment,
 )
 from app.services.kubevirt_storage_inventory import (
+    KubernetesReader,
     read_static_kubeconfig,
 )
 from app.services.kubevirt_storage_reports import import_report
@@ -53,10 +49,16 @@ from app.services.native_collection_config import (
 )
 from app.services.native_collection_config import _managed_inputs as _managed_inputs
 from app.services.native_provider_reader import ProviderReader
+from collect_kubevirt_storage import atomic_report
+from pydantic import RootModel, TypeAdapter
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 
 def _verify(db, args):
-    request = EnrollmentRequest.model_validate(read_operator_file(args.request))
+    document = read_operator_file(args.request)
+    online = args.command == "verify-online"
+    request = EnrollmentRequest.model_validate(document["request"] if online else document)
     prepared = db.get(NativeEnrollmentRequest, str(request.request_id))
     if prepared is None or prepared.digest != digest(request) or str(request.target_id) != args.target_id:
         raise ValueError("independent prepared request required")
@@ -94,11 +96,40 @@ def _verify(db, args):
             )
             for config in backends
         }
-        manifest = verify_native_enrollment(request, readers, backend_readers, pins=pins)
+        if online:
+            readers = _online_readers(args, readers, backend_readers, pins, limits, deadline, cleanup)
+        manifest = _verified_document(args, document, request, readers, backend_readers, pins)
         if time.monotonic() >= deadline:
             raise TimeoutError("verification limit")
-        atomic_report(args.output, manifest)
-        return manifest.digest
+        atomic_report(args.output, RootModel(manifest) if online else manifest)
+        return digest(manifest) if online else manifest.digest
+
+
+def _online_readers(args, providers, backends, pins, limits, deadline, cleanup):
+    if len(providers) != 1 or len(backends) != 1:
+        raise ValueError("online verification requires one provider/backend domain per invocation")
+    provider_id, provider = next(iter(providers.items()))
+    kube = KubernetesReader(
+        args.kubeconfig, next(iter(backends.values())),
+        collector_id=pins.collector_ids[0],
+        cache_roots=[r.model_dump(mode="json") for r in pins.cache_roots],
+        scan_deadline=deadline, max_objects=limits.max_objects,
+    )
+    cleanup.callback(kube.api.close)
+    if kube.cluster_identity() != provider.cluster_identity():
+        raise ValueError("online reader differs from configured provider cluster")
+    return {provider_id: kube}
+
+
+def _verified_document(args, document, request, readers, backend_readers, pins):
+    if args.command == "verify-online":
+        from app.services.native_online_enrollment import verify
+
+        return verify(
+            document, readers, backend_readers, pins=pins,
+            attestation=read_operator_file(args.attestation),
+        )
+    return verify_native_enrollment(request, readers, backend_readers, pins=pins)
 
 
 def _parser():
@@ -117,6 +148,11 @@ def _parser():
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--project-id", action="append", required=True)
     prepare.add_argument("--output", required=True)
+    online_prepare = commands.add_parser(
+        "prepare-online", help="Prepare existing-project custody enrollment without stopping workloads"
+    )
+    online_prepare.add_argument("--project-id", action="append", required=True)
+    online_prepare.add_argument("--output", required=True)
     empty = commands.add_parser("prepare-empty-domain", help="Explicit trusted-admin fresh zero-root bootstrap")
     for name in ("pins", "pins-output", "output"):
         empty.add_argument("--" + name, required=True)
@@ -125,8 +161,19 @@ def _parser():
     verify.add_argument("--command-timeout-seconds", type=int, default=15)
     for name in ("request", "pins", "backend-config", "output"):
         verify.add_argument("--" + name, required=True)
+    online_verify = commands.add_parser(
+        "verify-online", help="Read-only verification of existing project custody and identity"
+    )
+    online_verify.add_argument("--verification-timeout-seconds", type=int, default=600)
+    online_verify.add_argument("--command-timeout-seconds", type=int, default=15)
+    for name in ("request", "pins", "backend-config", "kubeconfig", "attestation", "output"):
+        online_verify.add_argument("--" + name, required=True)
     enroll = commands.add_parser("enroll")
     enroll.add_argument("--enrollment", required=True)
+    online_enroll = commands.add_parser(
+        "enroll-online", help="Apply verified custody receipt; no provider writes or quota enablement"
+    )
+    online_enroll.add_argument("--enrollment", required=True)
     ingest = commands.add_parser("import")
     for name in ("report", "enrollment-id", "enrollment-digest"):
         ingest.add_argument("--" + name, required=True)
@@ -160,7 +207,9 @@ def _dispatch(db, args):
         atomic_report(args.pins_output, pins)
         atomic_report(args.output, request)
         return str(request.request_id)
-    if args.command == "verify":
+    if args.command in {"prepare-online", "enroll-online"}:
+        return _online_dispatch(db, args)
+    if args.command in {"verify", "verify-online"}:
         return _verify(db, args)
     if args.command == "reconcile-managed":
         return _managed_cycle(db, args)
@@ -174,6 +223,18 @@ def _dispatch(db, args):
         enrollment_id=args.enrollment_id,
         expected_enrollment_digest=args.enrollment_digest,
         now=datetime.now(UTC),
+    )
+
+
+def _online_dispatch(db, args):
+    from app.services import native_online_enrollment
+
+    if args.command == "prepare-online":
+        prepared = native_online_enrollment.prepare(db, args.project_id)
+        atomic_report(args.output, RootModel(prepared))
+        return prepared["request"]["request_id"]
+    return native_online_enrollment.apply(
+        db, read_operator_file(args.enrollment), expected_target_id=args.target_id
     )
 
 

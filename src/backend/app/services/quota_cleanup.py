@@ -1,7 +1,7 @@
 """Confirmed absence is the only whole-environment resource release boundary."""
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.models.quota import QuotaReservation
 from app.schemas.kubevirt_storage import NativeCleanupIntent
@@ -96,13 +96,17 @@ def _native_lock(db, project_id):
     ).populate_existing().one(), operations.current_generation(rows)
 
 
-def _namespace_authority(rows):
+def _namespace_authority(rows, db=None, project=None):
     originals = [row for row in rows if row.operation_id == operations._generation(row)]
     if len(originals) != 1:
         raise accounting.AccountingUnavailable(
             "Original native namespace ownership is unavailable; verified ownership enrollment is required before cleanup"
         )
     row = originals[0]
+    if row.dispatch_metadata.get("native_custody_id"):
+        from app.services.native_online_enrollment import namespace_authority
+
+        return namespace_authority(db, project, row)
     target = row.dispatch_metadata.get("native_deploy", {})
     identity = row.dispatch_metadata.get("native_storage_identity", {})
     if target.get("base_grants_mode") != "managed" or target.get(
@@ -138,7 +142,13 @@ def prepare_native(db, project, mode):
         if previous.mode != mode:
             operations.unavailable("Original cleanup mode is already pending")
         return previous
-    namespace_mode = _namespace_authority(rows)
+    from app.services.native_online_enrollment import (
+        cleanup_anchor,
+        validate_cleanup_bindings,
+    )
+
+    rows = cleanup_anchor(db, project, rows)
+    namespace_mode = _namespace_authority(rows, db, project)
     if any(r.state != "confirmed" for r in rows):
         from app.services.native_pending_cleanup import prepare
 
@@ -193,12 +203,13 @@ def prepare_native(db, project, mode):
         raise accounting.AccountingUnavailable(
             "Native cleanup requires a complete supported original storage graph"
         )
+    validate_cleanup_bindings(db, project, rows, bindings.values())
     action_id = request_native_stop(db, project, for_cleanup=True)
     if not action_id:
         raise accounting.AccountingUnavailable(
             "Native cleanup stop identity unavailable"
         )
-    if all(not r.observed.get("cpu") and not r.observed.get("ram_bytes") for r in rows):
+    if _already_off(rows):
         from app.models.quota import QuotaAction
 
         request_id, _ = power.expected_stop(db, project, rows)
@@ -212,8 +223,8 @@ def prepare_native(db, project, mode):
         mode=mode,
         namespace_mode=namespace_mode,
         phase="stopping",
-        owner_id=row.owner_id,
-        organization_id=row.organization_id,
+        owner_id=UUID(str(row.owner_id)),
+        organization_id=UUID(str(row.organization_id)) if row.organization_id else None,
         host_id=identity["host_id"],
         provider_id=identity["provider_id"],
         domain_id=domain.id,
@@ -231,6 +242,16 @@ def prepare_native(db, project, mode):
         "Cleanup pending: waiting for complete managed shutdown and storage settlement"
     )
     return value
+
+
+def _already_off(rows):
+    # An online legacy anchor has unknown compute, not a stop observation.
+    return all(
+        not r.dispatch_metadata.get("cleanup_only")
+        and not r.observed.get("cpu")
+        and not r.observed.get("ram_bytes")
+        for r in rows
+    )
 
 
 def request_native(db, project, mode):
@@ -556,6 +577,9 @@ def reconcile_native(project_id, intent_id):
                 db.expunge(provider)
                 db.commit()
                 if intent.phase == "stopping":
+                    from app.services.native_online_enrollment import preflight_cleanup
+
+                    preflight_cleanup(provider, rows, intent)
                     if intent.pending_initialization is not None:
                         from app.services.native_pending_cleanup import stop
 
@@ -677,14 +701,20 @@ def _checked_cleanup_rows(api, intent):
 
     module = helpers()
     rows = _namespace_rows(api, intent.root.namespace)
+    original_root = next(v for v in intent.objects if v.kind == "TroshkaProject")
+    root = _cleanup_root(api, intent, original_root)
     expected = {(v.kind, v.name): v for v in intent.objects if v.namespace}
     by_uid = {v["metadata"]["uid"]: v for values in rows.values() for v in values}
+    if root is not None:
+        by_uid[root["metadata"]["uid"]] = root
     for kind, values in rows.items():
         for value in values:
             meta = value["metadata"]
             original = expected.get((kind, meta["name"]))
             module.require(
-                original is not None and original.uid == meta["uid"],
+                original is not None
+                and original.uid == meta["uid"]
+                and meta.get("namespace") == intent.root.namespace,
                 "cleanup_original_inventory_changed",
             )
             if original is None:
@@ -693,8 +723,9 @@ def _checked_cleanup_rows(api, intent):
                 )
             if original.namespace_bootstrap:
                 module.require(
-                    module.cleanup_bootstrap(value, by_uid)
-                    == original.namespace_bootstrap,
+                    module.cleanup_bootstrap_matches(
+                        value, original.namespace_bootstrap, by_uid
+                    ),
                     "cleanup_namespace_bootstrap_changed",
                 )
     return rows
@@ -798,7 +829,11 @@ def submit_native_teardown(api, work):
     )
     _fresh_cleanup_inventory(api, work, intent)
     _ensure_cleanup_marker(api, root, marker)
-    children = [v for v in intent.objects if v.kind in {"TroshkaVM", "TroshkaNetwork"}]
+    children = [
+        v
+        for v in intent.objects
+        if v.kind in {"TroshkaVM", "TroshkaNetwork", "TroshkaCeph"}
+    ]
     for child in children:
         _ensure_cleanup_marker(api, _cleanup_child(api, child, original), marker)
     # Marker writes may fail ambiguously. Independently observe all originals,

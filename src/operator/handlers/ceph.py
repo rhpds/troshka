@@ -3,10 +3,6 @@
 import logging
 
 import kopf
-from kubernetes import client
-from kubernetes.client.exceptions import ApiException
-
-from handlers.network import _modify_scc_users
 from helpers.ceph_appliance import (
     APPLIANCE_SCC_NAME,
     APPLIANCE_SCC_SAS,
@@ -34,12 +30,17 @@ from helpers.ceph_appliance import (
     service_account_ref,
 )
 from helpers.k8s import CRD_GROUP, CRD_VERSION
+from helpers.managed_power import producer as managed_producer
 from helpers.rook_ceph import (
     discover_ceph_image,
     normalize_ceph_counts,
     normalize_restore_spec,
     validate_lab_ip,
 )
+from kubernetes import client
+from kubernetes.client.exceptions import ApiException
+
+from handlers.network import _modify_scc_users
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,7 @@ def _reconcile_ceph(body, patch, namespace: str) -> None:
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkancephs")
+@managed_producer()
 async def ceph_create(body, patch, namespace, name, **_):
     logger.info("Creating TroshkaCeph %s in %s", name, namespace)
     patch.status["phase"] = "Pending"
@@ -231,12 +233,14 @@ async def ceph_create(body, patch, namespace, name, **_):
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkancephs", field="spec")
+@managed_producer()
 async def ceph_update(body, patch, namespace, name, **_):
     logger.info("Updating TroshkaCeph %s in %s", name, namespace)
     _reconcile_ceph(body, patch, namespace)
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkancephs", interval=30.0, idle=15.0)
+@managed_producer()
 async def ceph_poll(body, patch, namespace, name, status, **_):
     current = (status or {}).get("phase", "")
     if current in ("Ready", "Failed"):
@@ -246,6 +250,10 @@ async def ceph_poll(body, patch, namespace, name, status, **_):
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkancephs")
 async def ceph_delete(namespace, name, body=None, **_):
+    from helpers.managed_power import PowerClient, cleanup_child
+
+    if body and cleanup_child(PowerClient(), body["metadata"], namespace):
+        return
     logger.info("Deleting TroshkaCeph %s in %s", name, namespace)
     apps_api = client.AppsV1Api()
     custom_api = client.CustomObjectsApi()

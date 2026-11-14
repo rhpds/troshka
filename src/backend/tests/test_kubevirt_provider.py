@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.services.providers import get_provider_driver
 
 
@@ -435,8 +437,84 @@ def _ops_pod_manifests():
     )
 
 
+@pytest.mark.parametrize("healer", [False, True])
+def test_ops_launch_holds_cleanup_lock_until_provider_writes_finish(
+    monkeypatch, healer
+):
+    from threading import Event, Lock, Thread
+
+    from app.core import database
+    from app.services import quota_cleanup
+    from app.services.ocp import ops_pod_heal
+    from app.services.providers import kubevirt
+
+    lock = Lock()
+    entered, release, claimed = Event(), Event(), Event()
+    pending = []
+    writes = []
+
+    class Session:
+        held = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            if self.held:
+                lock.release()
+
+    def native_lock(db, project_id):
+        lock.acquire()
+        db.held = True
+        return object(), []
+
+    def guard(db, project):
+        if pending:
+            raise RuntimeError("cleanup pending")
+
+    def create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        assert not claimed.is_set()
+        writes.append("created")
+        return "ns"
+
+    def cleanup_claim():
+        with lock:
+            pending.append(True)
+            claimed.set()
+
+    monkeypatch.setattr(database, "SessionLocal", Session)
+    monkeypatch.setattr(quota_cleanup, "_native_lock", native_lock)
+    monkeypatch.setattr(quota_cleanup, "guard_pending", guard)
+    monkeypatch.setattr(kubevirt, "_create_ops_pod_locked", create)
+    monkeypatch.setattr(ops_pod_heal, "_heal_stuck_ops_pod_locked", create)
+    monkeypatch.setattr(kubevirt.quota_operations, "deny_unsupported", lambda _: None)
+
+    def invoke():
+        if healer:
+            return ops_pod_heal.heal_stuck_ops_pod(
+                None, "ns", "pod", project_id="project"
+            )
+        return kubevirt.create_ops_pod(None, "project", {}, {})
+
+    launch = Thread(target=invoke)
+    launch.start()
+    assert entered.wait(5)
+    cleanup = Thread(target=cleanup_claim)
+    cleanup.start()
+    assert not claimed.is_set()
+    release.set()
+    launch.join(5)
+    cleanup.join(5)
+    assert not launch.is_alive() and not cleanup.is_alive() and claimed.is_set()
+    with pytest.raises(RuntimeError, match="cleanup pending"):
+        invoke()
+    assert writes == ["created"]
+
+
 def test_create_ops_pod_creates_secret_then_pod():
-    from app.services.providers.kubevirt import create_ops_pod
+    from app.services.providers.kubevirt import _create_ops_pod_locked as create_ops_pod
 
     provider = _make_provider()
     pod, secret = _ops_pod_manifests()
@@ -461,7 +539,7 @@ def test_create_ops_pod_creates_secret_then_pod():
 
 
 def test_create_ops_pod_replaces_existing_pod():
-    from app.services.providers.kubevirt import create_ops_pod
+    from app.services.providers.kubevirt import _create_ops_pod_locked as create_ops_pod
 
     provider = _make_provider()
     pod, secret = _ops_pod_manifests()
@@ -497,7 +575,7 @@ def test_create_ops_pod_replaces_existing_pod():
 def test_create_ops_pod_retries_recreate_through_terminating_window():
     # After delete, the old pod is still Terminating so the recreate hits
     # AlreadyExists once more; _apply_ops_pod must retry (not raise) and succeed.
-    from app.services.providers.kubevirt import create_ops_pod
+    from app.services.providers.kubevirt import _create_ops_pod_locked as create_ops_pod
 
     provider = _make_provider()
     pod, secret = _ops_pod_manifests()
@@ -533,7 +611,7 @@ def test_create_ops_pod_skips_when_namespace_terminating():
 
     That must not surface as a hard failure — soft-skip and return.
     """
-    from app.services.providers.kubevirt import create_ops_pod
+    from app.services.providers.kubevirt import _create_ops_pod_locked as create_ops_pod
 
     provider = _make_provider()
     pod, secret = _ops_pod_manifests()

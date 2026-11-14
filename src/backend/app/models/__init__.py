@@ -37,6 +37,7 @@ from app.models.metering import (
     ProjectInvoice,
 )
 from app.models.native_clone_lineage import NativeCloneLineage
+from app.models.native_custody import NativeCustodyReceipt, NativeCustodyRequest
 from app.models.network import Network, SecurityRule
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.pattern_location import PatternLocation
@@ -62,6 +63,8 @@ from app.models.workload_run import WorkloadRun
 __all__ = [
     "NativeCacheBirth",
     "NativeCloneLineage",
+    "NativeCustodyRequest",
+    "NativeCustodyReceipt",
     "NativeReportingTarget",
     "NativeEnrollmentRequest",
     "NativeEnrollment",

@@ -13,14 +13,16 @@ from app.services.ocp.ops_pod_heal import (
     ANN_STUCK_NODES,
     _build_ops_pod_recreate_body,
     _format_stuck_node_counts,
+    _heal_stuck_ops_pod_locked,
     _is_ops_pod_stuck_creating,
     _node_hostname_not_in_affinity,
     _ops_pod_ovn_ip_mismatched,
     _parse_node_ovn_subnets,
     _parse_stuck_node_counts,
-    heal_stuck_ops_pod,
     plan_ops_pod_heal,
 )
+
+heal_stuck_ops_pod = _heal_stuck_ops_pod_locked
 
 
 def _create_body(core):

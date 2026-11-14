@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
 
 import yaml
 
@@ -1152,6 +1153,24 @@ def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:
     If the namespace is already terminating (project delete in flight), the create
     is skipped without raising — callers must not treat that as a hard failure.
     """
+    # Serialize the entire launch with native cleanup claim. A precheck alone
+    # allows a delayed create to resurrect a writer after off proof.
+    with ops_writer_guard(project_id):
+        return _create_ops_pod_locked(provider, project_id, pod, secret)
+
+
+@contextmanager
+def ops_writer_guard(project_id):
+    from app.core.database import SessionLocal
+    from app.services.quota_cleanup import _native_lock, guard_pending
+
+    with SessionLocal() as db:
+        project, _ = _native_lock(db, project_id)
+        guard_pending(db, project)
+        yield
+
+
+def _create_ops_pod_locked(provider, project_id, pod, secret):
     _, core_api, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
     if not _apply_ops_pod_secret(core_api, namespace, secret):

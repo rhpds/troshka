@@ -319,8 +319,11 @@ def _persist_bindings(db, report, domain_id, clone_lineages=(), cache_receipts=(
     caches = [b for b in report.cache_bindings if b.image_key not in private]
     if cache_receipts:
         # Namespace discovery may see CSI temporary PVCs before clone proof.
-        # Only exact sealed source identities can become durable platform cache.
+        # Only exact sealed or independently verified custody source identities
+        # can become durable platform cache. Mixed legacy/managed domains retain
+        # their explicit current source authority without inventing birth history.
         authorized = _receipt_cache_identities(db, cache_receipts)
+        authorized.update(digest(_binding_identity(p.source)) for p in clone_lineages)
         caches = [b for b in caches if digest(_binding_identity(b)) in authorized]
     for binding in report.volume_bindings + report.retained_bindings + caches:
         key = binding_key(binding)

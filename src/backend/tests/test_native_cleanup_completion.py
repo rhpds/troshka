@@ -28,6 +28,136 @@ deploy_case = deploy_case_fixture
 native_ledger = native_ledger_fixture
 
 
+@pytest.mark.parametrize(
+    "change", [None, "uid", "spec", "namespace", "foreign", "root"]
+)
+def test_namespace_readiness_uses_sealed_custody_after_source_parents_disappear(change):
+    from app.schemas.kubevirt_storage import NativeCleanupIntent
+    from app.services import quota_cleanup
+    from app.services.native_managed_power import helpers
+
+    power = helpers()
+    from helpers.native_custody import identity
+
+    def obj(kind, name, spec=None):
+        return {
+            "apiVersion": "v1",
+            "kind": kind,
+            "metadata": {
+                "name": name,
+                "namespace": "ns",
+                "uid": name + "-uid",
+                "resourceVersion": "1",
+                "generation": 1,
+            },
+            "spec": spec or {},
+        }
+
+    root = obj("TroshkaProject", "project")
+    config = obj("ConfigMap", "dnsmasq-config")
+    config["data"] = {"dnsmasq.conf": "validated-source"}
+    secret = obj("Secret", "credentials")
+    secret["data"] = {"key": "secret-never-recorded"}
+    role = obj("Role", "vnc-access")
+    remaining = [config, secret, role]
+    objects = [
+        {
+            "kind": v["kind"],
+            "name": v["metadata"]["name"],
+            "namespace": "ns",
+            "uid": v["metadata"]["uid"],
+            "resource_version": "1",
+            **(
+                {"namespace_bootstrap": {"custody": identity(v)}}
+                if v is not root
+                else {}
+            ),
+        }
+        for v in [root, *remaining]
+    ]
+    uid = "00000000-0000-0000-0000-000000000001"
+    intent = NativeCleanupIntent.model_validate(
+        {
+            **{
+                k: uid
+                for k in [
+                    "intent_id",
+                    "owner_id",
+                    "host_id",
+                    "provider_id",
+                    "domain_id",
+                    "enrollment_id",
+                    "initial_report_id",
+                ]
+            },
+            "organization_id": None,
+            "operation_id": "op",
+            "operation_ids": ["op"],
+            "generation": "allocation",
+            "mode": "delete",
+            "namespace_mode": "managed",
+            "phase": "teardown",
+            "root": {
+                "project_id": uid,
+                "cluster_key": "kube-system-uid",
+                "namespace": "ns",
+                "namespace_uid": "ns-uid",
+                "project_cr_uid": "project-uid",
+                "deployment_generation": 1,
+            },
+            "owned_images": [],
+            "bindings": [],
+            "objects": objects,
+            "inventory_digest": power.digest(objects),
+            "stop_action_id": "stop",
+            "stop_proof": {"request_id": "stop", "generation": "allocation"},
+            "prepared_at": "2026-11-14T00:00:00Z",
+        }
+    )
+
+    class API:
+        def __init__(self):
+            self.values = {
+                (v["kind"], v["metadata"]["name"]): deepcopy(v)
+                for v in [
+                    obj("Namespace", "kube-system"),
+                    obj("Namespace", "ns"),
+                    *remaining,
+                ]
+            }
+
+        def get(self, kind, namespace, name):
+            return deepcopy(self.values[kind, name])
+
+        def find(self, kind, namespace, name):
+            return deepcopy(self.values.get((kind, name)))
+
+        def rows(self, kind, namespace):
+            return [deepcopy(v) for (k, _), v in self.values.items() if k == kind]
+
+    api = API()
+    if change == "uid":
+        api.values["Secret", "credentials"]["metadata"]["uid"] = "replacement"
+    elif change == "spec":
+        api.values["ConfigMap", "dnsmasq-config"]["data"] = {
+            "dnsmasq.conf": "foreign-config"
+        }
+    elif change == "namespace":
+        api.values["Role", "vnc-access"]["metadata"]["namespace"] = "foreign"
+    elif change == "foreign":
+        api.values["Secret", "foreign"] = obj("Secret", "foreign")
+    elif change == "root":
+        root["metadata"]["uid"] = "replacement"
+        api.values["TroshkaProject", "project"] = root
+    work = {"intent": intent.model_dump(mode="json")}
+    if change:
+        with pytest.raises(power.ManagedPowerError):
+            quota_cleanup.namespace_teardown_ready(api, work)
+    else:
+        assert quota_cleanup.namespace_teardown_ready(api, work) is True
+        assert "secret-never-recorded" not in json.dumps(work)
+
+
 def test_cleanup_preparation_ignores_settled_binding_history(cleanup_case, monkeypatch):
     from app.models.kubevirt_storage import NativeRetainedBinding
     from app.models.project import Project

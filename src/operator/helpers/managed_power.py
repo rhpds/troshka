@@ -88,6 +88,7 @@ def intent(root):
     if raw is None:
         return None
     try:
+        require(len(raw) <= 512 * 1024, "managed_intent_limit")
         value = json.loads(raw)
         require(
             value["version"] == 1 and value["mode"] in {"stopped", "running", "deploy"}
@@ -98,6 +99,10 @@ def intent(root):
                 for k in ("requestId", "allocationGeneration")
             )
         )
+        if "cleanupCustody" in value:
+            from helpers.native_custody import validate_intent
+
+            validate_intent(root, value)
         return value
     except (KeyError, TypeError, ValueError) as error:
         raise ManagedPowerError("managed_intent_invalid") from error
@@ -157,10 +162,20 @@ def validate_pending_cleanup_marker(root, value, stopped):
 
 def cleanup_bootstrap(value, by_uid=None):
     """Exact built-in OpenShift defaults and existing Troshka base grants only."""
+    from helpers.native_custody import support
+
+    attested = support(value, by_uid or {})
+    if attested is not None:
+        return attested
     meta = value.get("metadata", {})
     name, namespace = meta.get("name"), meta.get("namespace")
     if value.get("kind") == "Secret":
-        return cleanup_pull_secret(value, by_uid or {})
+        grant = cleanup_pull_secret(value, by_uid or {})
+        from helpers.native_custody import evidence, identity
+        roots = [v for v in (by_uid or {}).values() if v.get("kind") == "TroshkaProject"]
+        if grant is not None and len(roots) == 1 and evidence(roots[0]) is not None:
+            return {"custody": identity(value)}
+        return grant
     if meta.get("ownerReferences"):
         return None
     if value.get("kind") == "ConfigMap":
@@ -208,7 +223,7 @@ def cleanup_odh_configmap(value):
 def cleanup_pull_account(sa, by_uid):
     if sa.get("kind") != "ServiceAccount" or sa.get("apiVersion") != "v1":
         return False
-    if cleanup_bootstrap(sa) is not None:
+    if cleanup_bootstrap(sa, by_uid) is not None:
         return True
     roots = [v for v in by_uid.values() if v.get("kind") == "TroshkaProject"
              and v.get("metadata", {}).get("namespace") == sa.get("metadata", {}).get("namespace")]
@@ -222,6 +237,8 @@ def cleanup_pull_account(sa, by_uid):
 
 
 def cleanup_pull_secret(value, by_uid):
+    from helpers.native_custody import evidence, matches
+
     meta = value["metadata"]
     refs = meta.get("ownerReferences", [])
     if len(refs) != 1:
@@ -241,6 +258,9 @@ def cleanup_pull_secret(value, by_uid):
         and annotations.get("openshift.io/internal-registry-auth-token.service-account") == name
         and annotations.get("openshift.io/internal-registry-auth-token.binding") == "bound"
     )
+    roots = [v for v in by_uid.values() if v.get("kind") == "TroshkaProject"]
+    if len(roots) == 1 and evidence(roots[0]) is not None:
+        valid = valid and matches(value, roots[0])
     return {"kind": "Secret", "service_account_uid": sa_meta["uid"], "service_account": name, "type": value["type"]} if valid else None
 
 
@@ -290,7 +310,7 @@ def cleanup_delete(api, root):
         if cleanup_stage(obj) != first or obj["metadata"].get("deletionTimestamp"):
             continue
         meta = obj["metadata"]
-        if obj["kind"] in {"TroshkaVM", "TroshkaNetwork"}:
+        if obj["kind"] in {"TroshkaVM", "TroshkaNetwork", "TroshkaCeph"}:
             annotations = {**meta.get("annotations", {}), CLEANUP_ANNOTATION: json.dumps(value, sort_keys=True)}
             obj = api.patch(obj, [{"op": "add", "path": "/metadata/annotations", "value": annotations}])
             meta = obj["metadata"]
@@ -313,13 +333,25 @@ def cleanup_original(obj, original, by_uid):
     require(original.get("uid") == obj["metadata"]["uid"], "cleanup_original_inventory_changed")
     bootstrap = original.get("namespace_bootstrap")
     if bootstrap:
-        require(cleanup_bootstrap(obj, by_uid) == bootstrap, "cleanup_namespace_bootstrap_changed")
-    return bool(bootstrap)
+        require(cleanup_bootstrap_matches(obj, bootstrap, by_uid), "cleanup_namespace_bootstrap_changed")
+    return bool(bootstrap) and not ("custody" in bootstrap and obj["kind"] in {"Service", "Route"})
+
+
+def cleanup_bootstrap_matches(obj, sealed, by_uid):
+    """After sealing, exact custody survives deliberate dependency deletion.
+
+    Only cleanup callers with an original UID/inventory authorization use this;
+    initial admission still requires cleanup_bootstrap's full source validation.
+    """
+    if set(sealed) == {"custody"}:
+        from helpers.native_custody import identity
+        return identity(obj) == sealed["custody"]
+    return cleanup_bootstrap(obj, by_uid) == sealed
 
 
 def cleanup_stage(obj):
     kind = obj["kind"]
-    if kind in {"TroshkaVM", "VirtualMachine", "Deployment", "ReplicaSet", "DataVolume"}:
+    if kind in {"TroshkaVM", "TroshkaCeph", "VirtualMachine", "Deployment", "ReplicaSet", "DataVolume"}:
         return 0
     if kind in {"TroshkaNetwork", "NetworkAttachmentDefinition", "Route"}:
         return 1
@@ -544,6 +576,11 @@ def inventory(api, root, *, deployment_support=True):
     require(len(all_rows) <= 1000, "managed_inventory_limit")
     by_uid = {value["metadata"]["uid"]: value for value in all_rows}
     require(len(by_uid) == len(all_rows), "managed_identity_duplicate")
+    from helpers.native_custody import evidence
+    if evidence(root) is not None:
+        for secret in api.rows("Secret", namespace):
+            require(secret["metadata"]["uid"] not in by_uid, "managed_identity_duplicate")
+            by_uid[secret["metadata"]["uid"]] = secret
     for value in all_rows[1:]:
         verify_chain(value, root, by_uid)
     if deployment_support and root.get("status", {}).get("managedDeployment", {}).get(
@@ -556,8 +593,22 @@ def inventory(api, root, *, deployment_support=True):
 
 
 def verify_chain(value, root, by_uid):
+    from helpers.native_custody import evidence, matches, stable
+
+    if evidence(root) is not None and stable(value):
+        require(matches(value, root), "custody_object_changed")
     seen = set()
     while value["metadata"]["uid"] != root["metadata"]["uid"]:
+        from helpers.native_custody import (
+            bmc_shape,
+            matches,
+            support_shape,
+            writer_secret,
+            writer_shape,
+        )
+
+        if matches(value, root) and (support_shape(value, root) or bmc_shape(value, root, by_uid) or writer_shape(value, root, by_uid) or writer_secret(value, root, by_uid)):
+            return
         uid = value["metadata"]["uid"]
         require(uid not in seen, "managed_owner_cycle")
         seen.add(uid)
@@ -579,8 +630,15 @@ def verify_chain(value, root, by_uid):
 
 
 def profile(root, rows, by_uid, api):
+    from helpers.native_custody import evidence, verify_ceph
+
+    custody = evidence(root) is not None
     status = root.get("status", {})
-    require(status.get("phase") == "Running", "managed_project_not_settled")
+    require(
+        status.get("phase") == "Running"
+        or (custody and status.get("phase") == "CaptureComplete" and status.get("captureProgress") == "Done"),
+        "managed_project_not_settled",
+    )
     require(
         not any(status.get(k) for k in ("recertConfig", "capture", "filePull")),
         "managed_active_work_unsupported",
@@ -592,16 +650,8 @@ def profile(root, rows, by_uid, api):
     )
     topology = root["spec"].get("topology", {})
     require(not topology.get("projectCephCapture"), "managed_ceph_unsupported")
-    for node in topology.get("nodes", []):
-        require(
-            node.get("type")
-            in {"vmNode", "containerNode", "networkNode", "storageNode"}
-        )
-        data = node.get("data", {})
-        require(
-            not any(data.get(k) for k in ("bmcEnabled", "recertEnabled", "isShowroom"))
-        )
-    for kind in ("TroshkaCeph", "StatefulSet", "DaemonSet", "Job", "CronJob"):
+    validate_profile_nodes(topology, custody)
+    for kind in (("StatefulSet", "DaemonSet", "CronJob") if custody else ("TroshkaCeph", "StatefulSet", "DaemonSet", "Job", "CronJob")):
         require(not rows[kind], "managed_controller_unsupported")
     for vm in rows["TroshkaVM"]:
         require(
@@ -610,13 +660,27 @@ def profile(root, rows, by_uid, api):
             "managed_child_not_settled",
         )
         require(
-            not vm["spec"].get("bmcEnabled") and not vm["spec"].get("recertEnabled")
+            (custody or not vm["spec"].get("bmcEnabled")) and not vm["spec"].get("recertEnabled")
         )
-    verify_storage(rows, by_uid, api)
+    if custody:
+        verify_ceph(root, rows, by_uid)
+    verify_storage(rows, by_uid, api, custody=custody)
     verify_workloads(root, rows, by_uid)
 
 
-def verify_storage(rows, by_uid, api):
+def validate_profile_nodes(topology, custody):
+    kinds = {"vmNode", "containerNode", "networkNode", "storageNode"}
+    fields = {"bmcEnabled", "recertEnabled", "isShowroom"}
+    if custody:
+        kinds |= {"clusterNode", "cephClusterNode"}
+        fields.remove("bmcEnabled")
+        fields.remove("isShowroom")  # Still requires the exact existing container manifest.
+    for node in topology.get("nodes", []):
+        require(node.get("type") in kinds)
+        require(not any(node.get("data", {}).get(k) for k in fields))
+
+
+def verify_storage(rows, by_uid, api, *, custody=False):
     runtime_kinds = {"Pod", "VirtualMachineInstance", "ReplicaSet"}
     for kind in ("PersistentVolumeClaim", "DataVolume"):
         for value in rows[kind]:
@@ -625,8 +689,10 @@ def verify_storage(rows, by_uid, api):
                 "managed_storage_deleting",
             )
             parent = by_uid[value["metadata"]["ownerReferences"][0]["uid"]]
+            from helpers.native_custody import persistent_state
             require(
-                parent["kind"] not in runtime_kinds | {"VirtualMachine", "Deployment"},
+                parent["kind"] not in runtime_kinds | {"VirtualMachine", "Deployment"}
+                or (custody and persistent_state(value, parent)),
                 "managed_storage_not_retained",
             )
             if kind == "DataVolume":
@@ -693,6 +759,13 @@ def verify_pvc(pvc, api):
 
 
 def parent_kind(value, by_uid):
+    from helpers.native_custody import bmc_shape, matches, writer_shape
+    if not value["metadata"].get("ownerReferences"):
+        roots = [v for v in by_uid.values() if v.get("kind") == "TroshkaProject"]
+        if len(roots) == 1 and matches(value, roots[0]) and writer_shape(value, roots[0], by_uid):
+            return "CustodyWriter"
+        if len(roots) == 1 and matches(value, roots[0]) and bmc_shape(value, roots[0], by_uid):
+            return "TroshkaProject"  # Explicit custody, never a fabricated ownerRef.
     return by_uid[value["metadata"]["ownerReferences"][0]["uid"]]["kind"]
 
 
@@ -721,11 +794,14 @@ def verify_virtual_machines(rows, by_uid):
 
 
 def verify_helpers(rows, by_uid):
+    from helpers.native_custody import evidence
+    custody = any(v.get("kind") == "TroshkaProject" and evidence(v) is not None for v in by_uid.values())
     for value in rows["Deployment"]:
-        require(parent_kind(value, by_uid) in {"TroshkaProject", "TroshkaNetwork"})
+        ceph = custody and parent_kind(value, by_uid) == "TroshkaCeph"
+        require(ceph or parent_kind(value, by_uid) in {"TroshkaProject", "TroshkaNetwork"})
         name = value["metadata"]["name"]
         require(
-            name.startswith(("dnsmasq-", "gateway-", "exec-", "vnc-")),
+            ceph or (custody and name.startswith("bmc-")) or name.startswith(("dnsmasq-", "gateway-", "exec-", "vnc-")),
             "managed_helper_unsupported",
         )
         require(
@@ -737,19 +813,22 @@ def verify_helpers(rows, by_uid):
 
 
 def verify_pods(root, rows, by_uid):
+    from helpers.native_custody import evidence
     for value in rows["VirtualMachineInstance"]:
         require(parent_kind(value, by_uid) == "VirtualMachine")
     for value in rows["Pod"]:
         require(
             parent_kind(value, by_uid)
-            in {"TroshkaProject", "ReplicaSet", "VirtualMachineInstance"}
+            in ({"TroshkaProject", "ReplicaSet", "VirtualMachineInstance"}
+                | ({"Job", "CustodyWriter"} if evidence(root) is not None else set()))
         )
         if parent_kind(value, by_uid) == "TroshkaProject":
             manifest = container_manifests(root, rows).get(value["metadata"]["name"])
             if manifest is None:
                 raise ManagedPowerError("managed_bare_pod_unsupported")
+            from helpers.native_custody import container_spec_matches
             require(
-                manifest_matches(manifest["spec"], value["spec"]),
+                container_spec_matches(manifest["spec"], value["spec"]) if evidence(root) is not None else manifest_matches(manifest["spec"], value["spec"]),
                 "managed_container_changed",
             )
 
@@ -870,15 +949,18 @@ def snapshot(root, rows, by_uid, request):
     }
     require(set(manifests) == bare_names, "managed_container_not_settled")
     targets = []
-    for kind in ("VirtualMachine", "Deployment", "Pod"):
+    for kind in ("VirtualMachine", "Deployment", "Pod", "Job"):
         for value in rows[kind]:
-            if kind == "Pod" and parent_kind(value, by_uid) != "TroshkaProject":
+            if kind == "Pod" and parent_kind(value, by_uid) not in {"TroshkaProject", "CustodyWriter"}:
                 continue
             meta = value["metadata"]
             target = {"kind": kind, "name": meta["name"], "uid": meta["uid"]}
             if kind == "Pod":
-                target["manifestDigest"] = digest(manifests[meta["name"]])
-                target["nodeId"] = container_node_id(root, value)
+                if parent_kind(value, by_uid) == "CustodyWriter":
+                    target["custodyWriter"] = True
+                else:
+                    target["manifestDigest"] = digest(manifests[meta["name"]])
+                    target["nodeId"] = container_node_id(root, value)
             else:
                 target["desired"] = {
                     k: value["spec"][k]
@@ -902,7 +984,7 @@ def snapshot(root, rows, by_uid, request):
 
 def retained_digest(rows):
     result = []
-    kinds = ["TroshkaVM", "TroshkaNetwork", "PersistentVolumeClaim", "DataVolume"]
+    kinds = ["TroshkaVM", "TroshkaNetwork", "PersistentVolumeClaim", "DataVolume", "TroshkaCeph"]
     kinds.extend(sorted(SUPPORT_KINDS.intersection(rows)))
     for kind in kinds:
         for value in rows[kind]:
@@ -1194,7 +1276,7 @@ def restore_pod(api, root, target, state, manifests):
 
 
 def off_inventory(rows):
-    if rows["Pod"] or rows["VirtualMachineInstance"]:
+    if rows["Pod"] or rows["VirtualMachineInstance"] or rows.get("Job"):
         return False
     if any(
         v["metadata"].get("deletionTimestamp")
@@ -1223,6 +1305,10 @@ def stop_targets(api, root, rows, state):
         for v in values
     }
     expected = {(t["kind"], t["name"]): t for t in state["targets"]}
+    if not drain_writers(api, root, indexed, state):
+        return
+    if not drain_bmc(api, root, rows):
+        return
     for kind in ("VirtualMachine", "Deployment"):
         require(
             {v["metadata"]["name"] for v in rows[kind]}
@@ -1232,7 +1318,7 @@ def stop_targets(api, root, rows, state):
     for key, target in expected.items():
         value = indexed.get(key)
         if value is None:
-            require(target["kind"] == "Pod", "managed_target_missing")
+            require(target["kind"] in {"Pod", "Job"}, "managed_target_missing")
             continue
         require(value["metadata"]["uid"] == target["uid"], "managed_target_changed")
         require(
@@ -1242,18 +1328,51 @@ def stop_targets(api, root, rows, state):
         stop_target(api, value)
 
 
+def drain_writers(api, root, indexed, state):
+    """Delete the pinned backend writers and observe absence before VM stop."""
+    from helpers.native_custody import matches
+    present = []
+    for target in state["targets"]:
+        if not target.get("custodyWriter"):
+            continue
+        value = indexed.get(("Pod", target["name"]))
+        if value is not None:
+            require(value["metadata"]["uid"] == target["uid"] and matches(value, root), "custody_writer_changed")
+            require(intent(root_for(root, root["metadata"]["namespace"], api)) == intent(root), "managed_episode_changed")
+            present.append(value)
+    for value in present:
+        stop_target(api, value)
+    return not present
+
+
+def drain_bmc(api, root, rows):
+    """BMC can mutate power/disks: prove its pods gone before touching VMs."""
+    from helpers.native_custody import evidence
+    if evidence(root) is None:
+        return True
+    deployments = [v for v in rows["Deployment"] if v["metadata"]["name"].startswith("bmc-")]
+    for value in deployments:
+        stop_target(api, value)
+    uids = {v["metadata"]["uid"] for v in deployments}
+    replicas = [v for v in rows["ReplicaSet"] if any(r.get("uid") in uids for r in v["metadata"].get("ownerReferences", []))]
+    uids.update(v["metadata"]["uid"] for v in replicas)
+    pods = [v for v in rows["Pod"] if any(r.get("uid") in uids for r in v["metadata"].get("ownerReferences", []))]
+    return not pods and all(v["spec"].get("replicas") == 0 and v.get("status", {}).get("observedGeneration") == v["metadata"]["generation"] for v in deployments) and all(v["spec"].get("replicas") == 0 for v in replicas)
+
+
 def stop_target(api, value):
     kind, spec = value["kind"], value.get("spec", {})
-    if kind == "Pod":
+    if kind in {"Pod", "Job"}:
         if not value["metadata"].get("deletionTimestamp"):
             api.request(
                 "DELETE",
-                "Pod",
+                kind,
                 value["metadata"]["namespace"],
                 value["metadata"]["name"],
                 {
                     "apiVersion": "v1",
                     "kind": "DeleteOptions",
+                    "propagationPolicy": "Foreground",
                     "preconditions": {
                         k: value["metadata"][k] for k in ("uid", "resourceVersion")
                     },

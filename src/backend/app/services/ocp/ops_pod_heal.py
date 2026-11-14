@@ -429,9 +429,21 @@ def heal_stuck_ops_pod(
     namespace: str,
     pod_name: str,
     *,
+    project_id: str,
     now=None,
     threshold_s=_STUCK_OPS_THRESHOLD_S,
 ) -> dict[str, Any]:
+    from app.services.providers.kubevirt import ops_writer_guard
+
+    with ops_writer_guard(project_id):
+        return _heal_stuck_ops_pod_locked(
+            core_api, namespace, pod_name, now=now, threshold_s=threshold_s
+        )
+
+
+def _heal_stuck_ops_pod_locked(
+    core_api, namespace, pod_name, *, now=None, threshold_s=_STUCK_OPS_THRESHOLD_S
+):
     """Delete+recreate a stuck or OVN-misplaced ops pod, or report exhausted.
 
     Returns a result dict with ``action`` in ``ok`` / ``reschedule`` / ``exhausted``
