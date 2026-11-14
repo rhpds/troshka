@@ -137,6 +137,10 @@ def prepare_native(db, project, mode):
             operations.unavailable("Original cleanup mode is already pending")
         return previous
     namespace_mode = _namespace_authority(rows)
+    if any(r.state != "confirmed" for r in rows):
+        from app.services.native_pending_cleanup import prepare
+
+        return prepare(db, project, rows, mode)
     context = power.retained_context(db, project, rows)
     row = quota_storage.measurement_row(rows)
     identity = context["identity"]
@@ -268,6 +272,10 @@ def seal_native_inventory(api, work):
 
     intent = NativeCleanupIntent.model_validate(work["intent"])
     context = work["context"]
+    if intent.pending_initialization is not None:
+        from app.services.native_pending_cleanup import seal
+
+        return seal(api, intent)
     module = power.helpers()
     if isinstance(api, module.PowerClient):
         api.begin_inventory()
@@ -377,6 +385,16 @@ def _checked_native(db, project_id, intent_id):
         or project.host_id != str(intent.host_id)
     ):
         raise accounting.AccountingUnavailable("Settled cleanup target was replaced")
+    if intent.pending_initialization is not None and intent.phase not in {
+        "settled",
+        "finalized",
+    }:
+        from app.services.native_managed_power import helpers
+        from app.services.native_pending_cleanup import validate
+
+        _, target, _ = validate(db, project, rows)
+        if helpers().digest(target) != intent.pending_initialization["target_digest"]:
+            raise accounting.AccountingUnavailable("Pending cleanup deployment changed")
     return project, rows, intent
 
 
@@ -404,7 +422,12 @@ def reconcile_native(project_id, intent_id):
                 db.expunge(provider)
                 db.commit()
                 if intent.phase == "stopping":
-                    enforcement.reconcile_worker(intent.stop_action_id)
+                    if intent.pending_initialization is not None:
+                        from app.services.native_pending_cleanup import stop
+
+                        stop(db, provider, intent)
+                    else:
+                        enforcement.reconcile_worker(intent.stop_action_id)
                     project, rows, intent = _checked_native(db, project_id, intent_id)
                     action = db.get(QuotaAction, intent.stop_action_id)
                     proof = (
@@ -730,6 +753,11 @@ def _settle_native(db, project, rows, intent):
     )
     from app.schemas.kubevirt_storage import NativeStorageReport
     from app.services import quota_native, quota_storage
+
+    if intent.pending_initialization is not None:
+        from app.services.native_pending_cleanup import require_no_known_storage
+
+        require_no_known_storage(db, str(intent.domain_id), intent.root)
 
     identity = quota_storage.measurement_row(rows).dispatch_metadata[
         "native_storage_identity"

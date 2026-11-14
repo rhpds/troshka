@@ -116,9 +116,20 @@ def cleanup_intent(root):
         require(len(value["objects"]) <= 1000 and value["inventory_digest"] == digest(sorted(value["objects"], key=lambda v: (v["kind"], v["name"]))), "cleanup_inventory_changed")
         stopped = intent(root)
         require(stopped is not None and stopped["mode"] == "stopped" and stopped["requestId"] == value["stop_proof"]["request_id"] and stopped["allocationGeneration"] == value["generation"], "cleanup_off_proof_changed")
+        if value.get("pending_initialization") is not None:
+            validate_pending_cleanup_marker(root, value, stopped)
         return value
     except (KeyError, TypeError, ValueError) as error:
         raise ManagedPowerError("cleanup_intent_invalid") from error
+
+
+def validate_pending_cleanup_marker(root, value, stopped):
+    pending = value["pending_initialization"]
+    deployment = root.get("status", {}).get("managedDeployment", {})
+    journal = {"creates": deployment.get("creates", {}), "generatedClaims": deployment.get("generatedClaims", {})}
+    state = root.get("status", {}).get("managedPower", {})
+    require(stopped.get("pendingInitialization") == pending["request"] and journal == pending["journal"], "pending_cleanup_journal_changed")
+    require(state.get("state") == "off" and state.get("producerDrained") is True and state.get("pendingCleanup") == digest({"request": stopped, "journal": journal}), "pending_cleanup_ack_changed")
 
 
 def cleanup_bootstrap(value, by_uid=None):
@@ -903,6 +914,11 @@ def reconcile_stop(api, root):
             raise ManagedPowerError("managed_intent_missing")
         if request["mode"] == "running":
             reconcile_restore(api, root, request)
+            return
+        if request.get("pendingInitialization") is not None:
+            from helpers.managed_deploy import reconcile_pending_cleanup
+
+            reconcile_pending_cleanup(api, root)
             return
         rows, by_uid = inventory(api, root)
         profile(root, rows, by_uid, api)

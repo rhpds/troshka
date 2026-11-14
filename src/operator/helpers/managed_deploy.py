@@ -5,6 +5,7 @@ and halted definitions. A separate application CAS admits runtime after physical
 accounting; ordinary producers never reopen for this managed root.
 """
 
+import json
 import re
 from copy import deepcopy
 from decimal import ROUND_CEILING, Decimal
@@ -886,3 +887,139 @@ def retained_support(api, root, rows, by_uid):
                 if v["metadata"]["name"] == value["metadata"]["name"]
             )
             verify_spec(value, actual, allocations=allocation_proof(root, value))
+
+
+def pending_cleanup_request(root):
+    stopped = power.intent(root)
+    power.require(stopped is not None and stopped["mode"] == "stopped")
+    original = stopped["pendingInitialization"]
+    copy = deepcopy(root)
+    copy["metadata"]["annotations"][power.ANNOTATION] = json.dumps(original)
+    wanted = request(copy)
+    power.require(wanted["phase"] == "initializing", "pending_cleanup_runtime_released")
+    power.require(stopped["allocationGeneration"] == wanted["allocationGeneration"])
+    state = state_for(copy, wanted)
+    power.require(
+        not state.get("release") and state.get("phase") != "runtime",
+        "pending_cleanup_runtime_released",
+    )
+    return wanted, state
+
+
+def observe_pending_cleanup(api, root):
+    """Read-only partial initialization inventory; absent ambiguous creates stay journaled.
+
+    This bounded recovery supports no known tenant storage. A present disk, even
+    at the expected name, is never adopted or repaired by cancellation.
+    """
+    wanted, state = pending_cleanup_request(root)
+    namespace = root["metadata"]["namespace"]
+    power.require(
+        api.get("Namespace", None, namespace)["metadata"]["uid"]
+        == wanted["namespaceUid"],
+        "managed_namespace_changed",
+    )
+    power.require(
+        api.get("Namespace", None, "kube-system")["metadata"]["uid"]
+        == wanted["clusterKey"],
+        "managed_cluster_changed",
+    )
+    planned = render(root, wanted["storageClass"])
+    power.require(
+        plan_digest(planned)
+        == wanted["planDigest"]
+        == root["spec"]["managedPlanDigest"],
+        "managed_plan_changed",
+    )
+    kinds = (
+        set(power.KINDS) - {"Namespace", "PersistentVolume", "TroshkaProject"}
+    ) | set(power.CLEANUP_KINDS)
+    rows = [value for kind in sorted(kinds) for value in api.rows(kind, namespace)]
+    power.require(len(rows) <= 1000, "managed_inventory_limit")
+    by_uid = {v["metadata"]["uid"]: v for v in [root, *rows]}
+    power.require(len(by_uid) == len(rows) + 1, "managed_identity_duplicate")
+    expected = {(v["kind"], v["metadata"]["name"]): v for v in planned}
+    journal = {
+        "creates": deepcopy(state.get("creates", {})),
+        "generatedClaims": deepcopy(state.get("generatedClaims", {})),
+    }
+    power.require(not journal["generatedClaims"], "pending_cleanup_known_storage")
+    for key in journal["creates"]:
+        power.require(
+            tuple(key.split(":", 1)) in expected, "pending_cleanup_journal_changed"
+        )
+        power.require(
+            not (
+                key.split(":", 1)[0] in {"DataVolume", "PersistentVolumeClaim"}
+                and journal["creates"][key].get("uid")
+            ),
+            "pending_cleanup_known_storage",
+        )
+        if key.split(":", 1)[0] in {"DataVolume", "PersistentVolumeClaim"}:
+            power.require(
+                journal["creates"][key].get("intentDigest")
+                == power.digest(expected[tuple(key.split(":", 1))]),
+                "pending_cleanup_journal_changed",
+            )
+    for value in rows:
+        verify_pending_object(api, root, value, expected, journal, by_uid)
+    power.require(
+        not any(
+            v.get("spec", {}).get("claimRef", {}).get("namespace") == namespace
+            for v in api.rows("PersistentVolume", None)
+        ),
+        "pending_cleanup_known_storage",
+    )
+    return rows, journal
+
+
+def verify_pending_object(api, root, value, expected, journal, by_uid):
+    key = (value["kind"], value["metadata"]["name"])
+    if power.cleanup_bootstrap(value, by_uid) is not None:
+        return
+    power.require(key in expected, "managed_unrelated_resource")
+    power.require(
+        value["kind"]
+        not in {
+            "Pod",
+            "VirtualMachineInstance",
+            "DataVolume",
+            "PersistentVolumeClaim",
+            "VolumeSnapshot",
+        },
+        "pending_cleanup_storage_or_writer_present",
+    )
+    power.verify_chain(value, root, by_uid)
+    entry = journal["creates"].get(":".join(key), {})
+    power.require(
+        entry.get("uid") == value["metadata"]["uid"], "managed_target_changed"
+    )
+    desired = deepcopy(expected[key])
+    bind_vm_owner(api, desired, root["metadata"]["namespace"])
+    if value["kind"] == "VirtualMachine":
+        desired["spec"]["runStrategy"] = "Halted"
+    if value["kind"] == "Deployment":
+        desired["spec"]["replicas"] = 0
+    power.require(
+        entry.get("intentDigest") == power.digest(desired),
+        "pending_cleanup_journal_changed",
+    )
+    verify_spec(desired, value, allocations=entry.get("allocations"))
+    power.cleanup_runtime(value)
+    power.require(not value["metadata"].get("deletionTimestamp"))
+
+
+def reconcile_pending_cleanup(api, root):
+    _, journal = observe_pending_cleanup(api, root)
+    request = power.intent(root)
+    current = power.root_for(root, root["metadata"]["namespace"], api)
+    power.require(power.intent(current) == request, "managed_episode_changed")
+    power.write_status(
+        api,
+        current,
+        {
+            "state": "off",
+            "producerDrained": True,
+            "pendingCleanup": power.digest({"request": request, "journal": journal}),
+        },
+    )

@@ -402,6 +402,60 @@ def test_clone_lost_original_dv_response_cannot_be_adopted(clone_api, monkeypatc
     )
 
 
+@pytest.mark.parametrize(
+    "outcome", ["absent", "appeared", "known_uid", "changed_journal"]
+)
+def test_pending_clone_cancellation_never_replays_unknown_create(
+    clone_api, monkeypatch, outcome
+):
+    api = clone_api
+    body = api.values["TroshkaProject", "project"]
+    plan = deploy.plan_digest(deploy.render(body, "synthetic-reviewed-storage"))
+    body["spec"]["managedPlanDigest"] = plan
+    phase(
+        api, "initializing", planDigest=plan, payloadDigest=power.digest(body["spec"])
+    )
+    original = api.request
+
+    def lost(method, kind, namespace, name, desired):
+        if kind == "DataVolume":
+            if outcome == "appeared":
+                original(method, kind, namespace, name, desired)
+            raise TimeoutError("original DV POST has no returned UID")
+        return original(method, kind, namespace, name, desired)
+
+    monkeypatch.setattr(api, "request", lost)
+    with pytest.raises(TimeoutError):
+        deploy.reconcile(api, root(api))
+    body = api.values["TroshkaProject", "project"]
+    entry = next(
+        v
+        for k, v in body["status"]["managedDeployment"]["creates"].items()
+        if k.startswith("DataVolume:")
+    )
+    if outcome == "known_uid":
+        entry["uid"] = "previous-known-disk"
+    if outcome == "changed_journal":
+        body["status"]["managedDeployment"]["creates"]["DataVolume:unknown"] = entry
+    original_journal = deepcopy(body["status"]["managedDeployment"])
+    body["metadata"]["annotations"][power.ANNOTATION] = json.dumps(
+        {
+            "version": 1,
+            "mode": "stopped",
+            "requestId": "cancel-original",
+            "allocationGeneration": "operation-1",
+            "pendingInitialization": power.intent(body),
+        }
+    )
+    calls = deepcopy(api.calls)
+    power.reconcile_stop(api, root(api))
+    state = root(api)["status"]["managedPower"]
+    assert state["producerDrained"] == (outcome == "absent")
+    assert state["state"] == ("off" if outcome == "absent" else "blocked")
+    assert root(api)["status"]["managedDeployment"] == original_journal
+    assert all(call[0] == "PATCH" for call in api.calls[len(calls) :])
+
+
 def test_pending_has_no_children_and_configured_fractional_demand(api):
     deploy.reconcile(api, root(api))
     assert api.calls == []

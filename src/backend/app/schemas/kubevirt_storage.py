@@ -205,6 +205,14 @@ class NativeCleanupIntent(Evidence):
     settlement_report_id: UUID | None = None
     settled_at: datetime | None = None
     last_error: str | None = None
+    pending_initialization: dict | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_pending(self, handler):
+        value = handler(self)
+        if self.pending_initialization is None:
+            value.pop("pending_initialization", None)
+        return value
 
 
 class RetiringRoot(Evidence):

@@ -790,6 +790,25 @@ def reconcile(project_id):
 
 def advance(project_id, operation_id, target, profile, provider):
     from app.core.database import SessionLocal
+    from app.services.quota_enforcement import _execution_guard
+
+    with SessionLocal() as guard_db:
+        with _execution_guard(guard_db, "native-deploy:" + project_id) as acquired:
+            if not acquired:
+                return
+            row = (
+                guard_db.query(QuotaReservation)
+                .filter_by(operation_id=operation_id)
+                .one()
+            )
+            if row.dispatch_metadata.get("cancelled"):
+                return
+            guard_db.rollback()
+            return _advance(project_id, operation_id, target, profile, provider)
+
+
+def _advance(project_id, operation_id, target, profile, provider):
+    from app.core.database import SessionLocal
 
     phase = target["phase"]
     if phase == "reserved":
