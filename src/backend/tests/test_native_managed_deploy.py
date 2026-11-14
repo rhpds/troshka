@@ -1067,6 +1067,23 @@ def initialized(q, amount=16, report_change=None):
     return operation_id
 
 
+def test_initialization_metering_uses_observed_time_with_advancing_clock(
+    deploy_case, monkeypatch
+):
+    q = deploy_case
+    operation_id = initialized(q)
+    target = current_target(q, operation_id)
+    proof = deploy.observe(q.apis[q.new_id], target, operation_id)
+
+    def advancing_now():
+        FixedDatetime.current += timedelta(microseconds=1)
+        return FixedDatetime.current
+
+    monkeypatch.setattr(operations, "now", advancing_now)
+    deploy.admit_runtime(q.new_id, operation_id, target, proof)
+    assert current_target(q, operation_id)["phase"] == "runtime-intent"
+
+
 def test_startup_allowance_reserves_protected_amount_not_virtual_capacity(deploy_case):
     q = deploy_case
     with q.sessions() as db:

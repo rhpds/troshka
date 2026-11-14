@@ -1096,7 +1096,7 @@ def admit_runtime(project_id, operation_id, target, proof):
             db,
             project,
             now=operations.now(),
-            snapshot=power.billing_snapshot(db, project, [row]),
+            snapshot=power.billing_snapshot(db, project, [row], proof),
         )
         if not measured_initialization(db, row, measurement):
             update(row, blocker="initialization_not_blank")

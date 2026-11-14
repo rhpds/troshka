@@ -1564,12 +1564,15 @@ def admission_vector(rows):
 def billing_snapshot(db, project, rows=None, proof=None):
     """Same monetary rates/provisioned disk pricing; verified configured compute."""
     from app.services import metering_service as metering
-    from app.services.native_managed_deploy import pending_profile
+    from app.services.native_managed_deploy import current_off_proof, pending_profile
 
     rows = rows or operations.current_generation(operations._rows(db, project.id))
     pending = pending_profile(db, project, rows)
     if pending:
         desired, active, observed = [], False, operations.now()
+        target = rows[0].dispatch_metadata["native_deploy"]
+        if target.get("root"):
+            observed = datetime.fromisoformat(current_off_proof(target)["observed_at"])
     else:
         demand, desired, active, observed = current_profile(db, project, rows)
     if proof is not None:
