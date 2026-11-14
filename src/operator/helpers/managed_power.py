@@ -153,6 +153,8 @@ def cleanup_bootstrap(value, by_uid=None):
 def cleanup_ca_configmap(value):
     meta = value["metadata"]
     name = meta["name"]
+    if name == "odh-kserve-custom-ca-bundle":
+        return cleanup_odh_configmap(value)
     shapes = {
         "kube-root-ca.crt": ("kubernetes.io/description", "Contains a CA bundle that can be used to verify the kube-apiserver when using internal endpoints such as the internal service IP or kubernetes.default.svc. No other usage is guaranteed across distributions of Kubernetes clusters.", "ca.crt"),
         "openshift-service-ca.crt": ("service.beta.openshift.io/inject-cabundle", "true", "service-ca.crt"),
@@ -163,6 +165,21 @@ def cleanup_ca_configmap(value):
     if meta.get("annotations", {}).get(annotation) != expected or set(value.get("data", {})) != {data_key} or value.get("binaryData"):
         return None
     return {"kind": "ConfigMap", "name": name, "publisher": {annotation: expected}, "data_keys": [data_key]}
+
+
+def cleanup_odh_configmap(value):
+    """Recognize the exact namespace CA publisher shape; retain until namespace GC."""
+    meta = value["metadata"]
+    labels = {"opendatahub.io/managed": "true"}
+    if (
+        meta.get("labels") != labels
+        or meta.get("annotations")
+        or set(value.get("data", {})) != {"cabundle.crt"}
+        or value.get("binaryData")
+        or value.get("immutable")
+    ):
+        return None
+    return {"kind": "ConfigMap", "name": meta["name"], "publisher_labels": labels, "data_keys": ["cabundle.crt"]}
 
 
 def cleanup_pull_secret(value, by_uid):

@@ -303,6 +303,13 @@ def test_pending_undeploy_settles_after_namespace_and_storage_absence(pending_ca
 
     q = pending_case
     api = q.apis[q.new_id]
+    bootstrap = q.support.resource("ConfigMap", "odh-kserve-custom-ca-bundle")
+    bootstrap["metadata"]["namespace"] = api.rows("TroshkaProject", None)[0][
+        "metadata"
+    ]["namespace"]
+    bootstrap["metadata"]["labels"] = {"opendatahub.io/managed": "true"}
+    bootstrap["data"] = {"cabundle.crt": "synthetic public CA"}
+    api.values["ConfigMap", "odh-kserve-custom-ca-bundle"] = bootstrap
     before = deepcopy(current_target(q, q.operation_id))
     request(q)
     fn, args = q.queued.pop()
@@ -321,6 +328,10 @@ def test_pending_undeploy_settles_after_namespace_and_storage_absence(pending_ca
     root = api.rows("TroshkaProject", None)[0]
     assert deploy.power.helpers().cleanup_delete(api, root) is False
     assert deploy.power.helpers().cleanup_delete(api, root) is True
+    assert api.values["ConfigMap", "odh-kserve-custom-ca-bundle"] == bootstrap
+    assert not any(
+        call[0] == "DELETE" and call[1][0] == "ConfigMap" for call in api.calls
+    )
     del api.values["TroshkaProject", root["metadata"]["name"]]
     fn(*args)
     assert api.find("Namespace", None, intent.root.namespace) is None

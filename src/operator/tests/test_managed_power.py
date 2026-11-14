@@ -191,7 +191,7 @@ def test_cleanup_preserves_exact_openshift_bootstrap_and_blocks_changed_ownershi
     assert not api.calls
 
 
-@pytest.mark.parametrize("name", ["kube-root-ca.crt", "openshift-service-ca.crt"])
+@pytest.mark.parametrize("name", ["kube-root-ca.crt", "openshift-service-ca.crt", "odh-kserve-custom-ca-bundle"])
 @pytest.mark.parametrize("change", ["original", "annotation", "foreign", "replacement"])
 def test_cleanup_preserves_original_ca_publishers_until_namespace_deletion(name, change):
     parent = resource("TroshkaProject", "project")
@@ -199,12 +199,19 @@ def test_cleanup_preserves_original_ca_publishers_until_namespace_deletion(name,
     annotation = {"kubernetes.io/description": "Contains a CA bundle that can be used to verify the kube-apiserver when using internal endpoints such as the internal service IP or kubernetes.default.svc. No other usage is guaranteed across distributions of Kubernetes clusters."} if name == "kube-root-ca.crt" else {"service.beta.openshift.io/inject-cabundle": "true"}
     ca["metadata"]["annotations"] = annotation
     ca["data"] = {"ca.crt" if name == "kube-root-ca.crt" else "service-ca.crt": "synthetic public CA"}
+    if name == "odh-kserve-custom-ca-bundle":
+        ca["metadata"].pop("annotations")
+        ca["metadata"]["labels"] = {"opendatahub.io/managed": "true"}
+        ca["data"] = {"cabundle.crt": "synthetic public CA"}
     objects = [{"kind": "ConfigMap", "name": name, "namespace": "ns", "uid": ca["metadata"]["uid"], "namespace_bootstrap": power.cleanup_bootstrap(ca)}]
     assert objects[0]["namespace_bootstrap"]
     payload = {"version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "allocation-1", "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1}, "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"}, "objects": objects, "inventory_digest": power.digest(objects)}
     parent["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload), power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"})}
     if change == "annotation":
-        ca["metadata"]["annotations"] = {}
+        if name == "odh-kserve-custom-ca-bundle":
+            ca["metadata"]["labels"] = {}
+        else:
+            ca["metadata"]["annotations"] = {}
     elif change == "foreign":
         ca["metadata"]["name"] = "foreign-ca"
     elif change == "replacement":
@@ -217,6 +224,28 @@ def test_cleanup_preserves_original_ca_publishers_until_namespace_deletion(name,
         with pytest.raises(power.ManagedPowerError):
             power.cleanup_delete(api, parent)
     assert not api.calls  # Never individually delete a live publisher's CA map.
+
+
+@pytest.mark.parametrize("change", ["owner", "annotation", "extra_label", "extra_data", "binary", "immutable", "unknown"])
+def test_cleanup_rejects_nonstandard_odh_configmaps(change):
+    value = resource("ConfigMap", "odh-kserve-custom-ca-bundle")
+    value["metadata"]["labels"] = {"opendatahub.io/managed": "true"}
+    value["data"] = {"cabundle.crt": "synthetic public CA"}
+    if change == "owner":
+        value["metadata"]["ownerReferences"] = [{"uid": "another-owner"}]
+    elif change == "annotation":
+        value["metadata"]["annotations"] = {"unknown": "true"}
+    elif change == "extra_label":
+        value["metadata"]["labels"]["unknown"] = "true"
+    elif change == "extra_data":
+        value["data"]["unknown"] = "value"
+    elif change == "binary":
+        value["binaryData"] = {"unknown": "dmFsdWU="}
+    elif change == "immutable":
+        value["immutable"] = True
+    else:
+        value["metadata"]["name"] = "unknown-configmap"
+    assert power.cleanup_bootstrap(value) is None
 
 
 @pytest.fixture
