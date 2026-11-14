@@ -287,9 +287,19 @@ def test_pending_inventory_changes_do_not_delete(pending_case, change):
         assert cleanup.native_intent(db, q.new_id).phase == "stopping"
 
 
-@pytest.mark.parametrize("root_change", [None, "spec", "uid", "generation"])
+@pytest.mark.parametrize(
+    "root_change,collection",
+    [
+        (None, "direct"),
+        ("spec", "direct"),
+        ("uid", "direct"),
+        ("generation", "direct"),
+        (None, "source"),
+        (None, "source-unavailable"),
+    ],
+)
 def test_pending_undeploy_settles_after_namespace_and_storage_absence(
-    pending_case, root_change
+    pending_case, root_change, collection
 ):
     from app.models.kubevirt_storage import (
         NativeCollectionDomain,
@@ -306,6 +316,19 @@ def test_pending_undeploy_settles_after_namespace_and_storage_absence(
     from tests.test_native_managed_resume import FixedDatetime
 
     q = pending_case
+    if collection != "direct":
+        # A frozen source remains on the cancelled allocation even when its
+        # interrupted create never yielded storage or a verification receipt.
+        with q.sessions() as db:
+            row = (
+                db.query(QuotaReservation).filter_by(operation_id=q.operation_id).one()
+            )
+            metadata = deepcopy(row.dispatch_metadata)
+            metadata["native_deploy"]["sources"] = {
+                "new-disk": {"operation_id": "interrupted-source"}
+            }
+            row.dispatch_metadata = metadata
+            db.commit()
     api = q.apis[q.new_id]
     bootstrap = q.support.resource("ConfigMap", "odh-kserve-custom-ca-bundle")
     bootstrap["metadata"]["namespace"] = api.rows("TroshkaProject", None)[0][
@@ -380,18 +403,75 @@ def test_pending_undeploy_settles_after_namespace_and_storage_absence(
                 persistentVolumeReclaimPolicy="Delete",
             )
     advance_clock()
-    report = collect_cleanup(q, intent)
-    assert report.retiring_roots[0].objects_absent, report.collection_errors
-    with q.sessions() as db:
-        import_report(
-            db,
-            report,
-            enrollment_id=q.enrollment_id,
-            expected_enrollment_digest=q.digest,
-            now=FixedDatetime.current,
+    if collection == "direct":
+        report = collect_cleanup(q, intent)
+        with q.sessions() as db:
+            import_report(
+                db,
+                report,
+                enrollment_id=q.enrollment_id,
+                expected_enrollment_digest=q.digest,
+                now=FixedDatetime.current,
+            )
+            db.commit()
+    else:
+        from app.services import native_managed_collector as collector
+        from app.services.quota_admission import usage
+
+        with q.sessions() as db:
+            row = (
+                db.query(QuotaReservation).filter_by(operation_id=q.operation_id).one()
+            )
+            assert row.dispatch_metadata["cancelled"]
+            held = deepcopy(row.requested)
+            assert held["storage_bytes"] > 0
+            assert (
+                usage(db, "project", q.new_id)[1].storage_bytes == held["storage_bytes"]
+            )
+        work = collector.snapshot(q.sessions, q.pins, q.target_id)
+        assert work["images"] == []
+        assert q.operation_id in work["operations"]
+        retiring, _ = collector.retiring_inputs(q.sessions, intent.domain_id)
+        assert [(v.intent_id, v.root) for v in retiring] == [
+            (intent.intent_id, intent.root)
+        ]
+        intent = retiring[0]
+        if collection == "source-unavailable":
+
+            def unavailable(kind, namespace, name):
+                raise TimeoutError("original namespace absence cannot be verified")
+
+            api.find = unavailable
+        report = collector.cycle(
+            q.sessions,
+            q.pins,
+            q.target_id,
+            q.report.collector_id,
+            {q.provider_id: q.reader},
+            q.backend,
+            lambda manifest, previous, started: collect_cleanup(
+                q, intent, failed=collection == "source-unavailable"
+            ),
         )
-        db.commit()
+    if collection != "source-unavailable":
+        assert report.retiring_roots[0].objects_absent, report.collection_errors
     fn(*args)
+    if collection == "source-unavailable":
+        assert any(
+            b.code == "retiring_root_unavailable" for b in report.collection_errors
+        )
+        with q.sessions() as db:
+            row = (
+                db.query(QuotaReservation).filter_by(operation_id=q.operation_id).one()
+            )
+            assert row.state == "reconciling"
+            assert row.requested == held
+            assert (
+                usage(db, "project", q.new_id)[1].storage_bytes == held["storage_bytes"]
+            )
+            assert cleanup.native_intent(db, q.new_id).phase == "pending"
+            assert db.get(Project, q.new_id).state == "cleanup_pending"
+        return
     with q.sessions() as db:
         final = cleanup.native_intent(db, q.new_id)
         assert final.phase == "finalized", final.last_error

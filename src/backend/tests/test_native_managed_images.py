@@ -275,6 +275,32 @@ def test_source_denial_precedes_reservation_or_provider_mutation(
     assert q.apis[q.new_id].calls == before
 
 
+@pytest.mark.parametrize("state", ["pending", "dispatched", "reconciling"])
+@pytest.mark.parametrize("invalid", [False, True])
+def test_pending_source_verification_keeps_active_validation(
+    image_case, state, invalid
+):
+    from app.models.kubevirt_storage import NativeCollectionDomain
+    from app.services.native_managed_verification import pending
+
+    q = image_case
+    operation_id = start(q)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation_id).one()
+        row.state = state
+        metadata = deepcopy(row.dispatch_metadata)
+        if invalid:
+            metadata["native_deploy"]["payload_digest"] = "0" * 64
+        row.dispatch_metadata = metadata
+        db.commit()
+        domain = db.get(NativeCollectionDomain, metadata["native_deploy"]["domain_id"])
+        if invalid:
+            with pytest.raises(AccountingUnavailable):
+                pending(db, domain)
+        else:
+            assert pending(db, domain) == [(operation_id, metadata["native_deploy"])]
+
+
 def test_creation_and_verification_adapter_interfaces_are_separate():
     from app.services.native_cache_provider import (
         CacheCreationAdapter,

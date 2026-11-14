@@ -17,6 +17,10 @@ def pending(db, domain):
     for row in db.query(QuotaReservation).filter(
         QuotaReservation.state.in_(("pending", "dispatched", "reconciling"))
     ):
+        # Cancelled allocations remain charged until retirement proves absence;
+        # they must no longer enter image verification or create transfer.
+        if row.dispatch_metadata.get("cancelled"):
+            continue
         target = row.dispatch_metadata.get("native_deploy", {})
         if target.get("domain_id") != domain.id or not target.get("sources"):
             continue
