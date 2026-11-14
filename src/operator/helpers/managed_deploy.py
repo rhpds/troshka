@@ -590,7 +590,7 @@ def ensure_resource(api, root, state, wanted, desired):
         == value["metadata"].get("ownerReferences"),
         "managed_owner_changed",
     )
-    verify_spec(value, actual, allocations=journal[key].get("allocations"))
+    verify_spec(value, actual, allocations=journal[key].get("allocations"), api=api)
     if value["kind"] == "TroshkaVM":
         actual = acknowledge_vm(api, actual)
     changed = bind_allocations(journal[key], value, actual)
@@ -742,8 +742,62 @@ def allocation_proof(root, expected, actual=None):
     return saved["allocations"]
 
 
-def verify_spec(expected, actual, *, allocations=None):
+def registry_secret_matches(secret, account):
+    meta, owner = secret.get("metadata", {}), account["metadata"]
+    annotations = meta.get("annotations", {})
+    return (
+        not meta.get("deletionTimestamp")
+        and meta.get("namespace") == owner["namespace"]
+        and meta.get("ownerReferences")
+        == [
+            {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "name": owner["name"],
+                "uid": owner["uid"],
+            }
+        ]
+        and secret.get("type") == "kubernetes.io/dockercfg"
+        and annotations.get("openshift.io/internal-registry-auth-token.service-account")
+        == owner["name"]
+        and annotations.get("openshift.io/internal-registry-auth-token.binding")
+        == "bound"
+    )
+
+
+def service_account_defaults(expected, actual, api):
+    if expected["kind"] != "ServiceAccount" or api is None:
+        return ()
+    fields = [
+        field
+        for field in ("secrets", "imagePullSecrets")
+        if field not in expected and actual.get(field)
+    ]
+    if not fields:
+        return ()
+    meta = actual["metadata"]
+    name = meta.get("annotations", {}).get(
+        "openshift.io/internal-registry-pull-secret-ref"
+    )
+    power.require(
+        isinstance(name, str)
+        and bool(name)
+        and all(actual[field] == [{"name": name}] for field in fields),
+        "managed_registry_reference_changed",
+    )
+    secret = api.get("Secret", meta["namespace"], name)
+    power.require(
+        secret.get("metadata", {}).get("name") == name
+        and registry_secret_matches(secret, actual),
+        "managed_registry_reference_unverified",
+    )
+    return fields
+
+
+def verify_spec(expected, actual, *, allocations=None, api=None):
     planned, observed = configuration(expected), configuration(actual)
+    for field in service_account_defaults(expected, actual, api):
+        observed.pop(field, None)
     captured = server_allocations(expected, actual)
     if allocations is not None:
         power.require(
@@ -765,6 +819,19 @@ def verify_spec(expected, actual, *, allocations=None):
     )
 
 
+def normalize_service_account_alias(spec, kind):
+    if kind == "Pod":
+        pod = spec
+    elif kind == "Deployment":
+        pod = spec.get("template", {}).get("spec", {})
+    else:
+        return
+    account = pod.get("serviceAccountName")
+    if isinstance(account, str) and account and pod.get("serviceAccount") == account:
+        # Kubernetes mirrors this deprecated alias; conflicting identities stay visible.
+        pod.pop("serviceAccount")
+
+
 def configuration(value) -> dict:
     if value["kind"] in power.SUPPORT_KINDS:
         spec = {
@@ -778,6 +845,7 @@ def configuration(value) -> dict:
         spec.pop("runStrategy", None)
     if value["kind"] == "Deployment":
         spec.pop("replicas", None)
+    normalize_service_account_alias(spec, value["kind"])
     return canonical_fields(spec, _CONFIGURATION_DEFAULTS.get(value["kind"], {}), ())
 
 
@@ -809,6 +877,16 @@ def canonical_fields(value, defaults, path):
         if normalized is not None and normalized != {} and normalized != []:
             result[key] = normalized
     return result
+
+
+def idle_replica_sets(values):
+    return all(
+        type(v["spec"].get("replicas")) is int
+        and v["spec"]["replicas"] == 0
+        and type(v.get("status", {}).get("replicas", 0)) is int
+        and v.get("status", {}).get("replicas", 0) == 0
+        for v in values
+    )
 
 
 def observe(api, root, *, runtime=False, allow_missing_pods=False):
@@ -854,6 +932,7 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
             expected[key],
             value,
             allocations=allocation_proof(root, expected[key], value),
+            api=api,
         )
         power.require(not value["metadata"].get("deletionTimestamp"))
     power.verify_storage(rows, by_uid, api)
@@ -861,7 +940,7 @@ def observe(api, root, *, runtime=False, allow_missing_pods=False):
         power.require(
             not rows["Pod"]
             and not rows["VirtualMachineInstance"]
-            and not rows["ReplicaSet"],
+            and idle_replica_sets(rows["ReplicaSet"]),
             "managed_runtime_present",
         )
         power.require(
@@ -1008,7 +1087,9 @@ def retained_support(api, root, rows, by_uid):
                 for v in rows[value["kind"]]
                 if v["metadata"]["name"] == value["metadata"]["name"]
             )
-            verify_spec(value, actual, allocations=allocation_proof(root, value))
+            verify_spec(
+                value, actual, allocations=allocation_proof(root, value), api=api
+            )
 
 
 def pending_cleanup_request(root):
@@ -1260,7 +1341,7 @@ def verify_pending_object(
         entry.get("intentDigest") == power.digest(desired),
         "pending_cleanup_journal_changed",
     )
-    verify_spec(desired, value, allocations=entry.get("allocations"))
+    verify_spec(desired, value, allocations=entry.get("allocations"), api=api)
     power.cleanup_runtime(value)
     power.require(not value["metadata"].get("deletionTimestamp"))
 

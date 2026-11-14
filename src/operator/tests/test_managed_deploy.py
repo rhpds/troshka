@@ -521,6 +521,30 @@ def test_pending_has_no_children_and_configured_fractional_demand(api):
     assert any(v["kind"] == "PersistentVolumeClaim" for v in manifests)
 
 
+@pytest.mark.parametrize(
+    "desired, actual", [(0, 0), (1, 0), (0, 1), (None, 0), (False, 0)]
+)
+def test_initialization_accepts_only_idle_owned_replica_sets(api, desired, actual):
+    phase(api, "initializing")
+    deploy.reconcile(api, root(api))
+    parent = api.rows("Deployment", "ns")[0]
+    replica = resource(
+        "ReplicaSet",
+        "console-replicas",
+        owner=parent,
+        spec={"replicas": desired},
+        status={"replicas": actual},
+    )
+    api.values["ReplicaSet", "console-replicas"] = replica
+    if type(desired) is int and desired == actual == 0:
+        rows, _, _ = deploy.observe(api, root(api))
+        assert len(rows["ReplicaSet"]) == 1
+        assert not rows["Pod"] and not rows["VirtualMachineInstance"]
+    else:
+        with pytest.raises(power.ManagedPowerError, match="managed_runtime_present"):
+            deploy.observe(api, root(api))
+
+
 def test_initialization_holds_writers_and_replay_preserves_uids(api):
     phase(api, "initializing")
     deploy.reconcile(api, root(api))
@@ -951,6 +975,84 @@ def test_nondefault_or_wrong_type_additions_are_not_api_defaults(
     spec[path[-1]] = value
     with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
         deploy.verify_spec(expected, actual)
+
+
+@pytest.mark.parametrize("kind", ["Pod", "Deployment"])
+def test_service_account_api_alias_preserves_planned_identity(kind):
+    pod = {"serviceAccountName": "troshka-vnc"}
+    spec = pod if kind == "Pod" else {"template": {"spec": pod}}
+    expected = resource(kind, "console", spec=spec)
+    actual = deepcopy(expected)
+    actual_pod = actual["spec"] if kind == "Pod" else actual["spec"]["template"]["spec"]
+    actual_pod["serviceAccount"] = "troshka-vnc"
+    before = deepcopy(actual)
+
+    deploy.verify_spec(expected, actual)
+    assert actual == before
+
+    actual_pod["serviceAccount"] = "different-account"
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(expected, actual)
+    actual_pod["serviceAccountName"] = "different-account"
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(expected, actual)
+
+
+def test_service_account_alias_without_explicit_account_is_not_ignored():
+    expected = resource("Pod", "console", spec={"containers": []})
+    actual = deepcopy(expected)
+    actual["spec"]["serviceAccount"] = "troshka-vnc"
+    with pytest.raises(power.ManagedPowerError, match="configuration_changed"):
+        deploy.verify_spec(expected, actual)
+
+
+def registry_account():
+    expected = resource("ServiceAccount", "console", spec={})
+    actual = deepcopy(expected)
+    actual["metadata"]["annotations"] = {
+        "openshift.io/internal-registry-pull-secret-ref": "console-dockercfg"
+    }
+    actual["secrets"] = actual["imagePullSecrets"] = [{"name": "console-dockercfg"}]
+    secret = resource("Secret", "console-dockercfg", spec={})
+    secret["metadata"]["namespace"] = actual["metadata"]["namespace"]
+    secret["metadata"]["ownerReferences"] = [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "name": "console",
+            "uid": actual["metadata"]["uid"],
+        }
+    ]
+    secret["metadata"]["annotations"] = {
+        "openshift.io/internal-registry-auth-token.service-account": "console",
+        "openshift.io/internal-registry-auth-token.binding": "bound",
+    }
+    secret["type"] = "kubernetes.io/dockercfg"
+    return expected, actual, secret
+
+
+def test_service_account_generated_registry_references_require_owned_secret():
+    expected, actual, secret = registry_account()
+    before = deepcopy(actual)
+    deploy.verify_spec(expected, actual, api=FakeAPI([secret]))
+    assert actual == before
+
+
+@pytest.mark.parametrize("change", ["owner", "type", "publisher", "extra", "namespace"])
+def test_service_account_foreign_registry_references_rejected(change):
+    expected, actual, secret = registry_account()
+    if change == "owner":
+        secret["metadata"]["ownerReferences"][0]["uid"] = "foreign"
+    elif change == "type":
+        secret["type"] = "Opaque"
+    elif change == "publisher":
+        secret["metadata"]["annotations"] = {}
+    elif change == "extra":
+        actual["imagePullSecrets"].append({"name": "foreign"})
+    else:
+        secret["metadata"]["namespace"] = "foreign"
+    with pytest.raises(power.ManagedPowerError):
+        deploy.verify_spec(expected, actual, api=FakeAPI([secret]))
 
 
 def test_troshkavm_api_defaults_preserve_immutable_plan(api):
