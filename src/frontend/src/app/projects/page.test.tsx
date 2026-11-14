@@ -150,6 +150,23 @@ describe("new project creation", () => {
 
 describe("projects listing", () => {
   async function loaded() { render(<ProjectsPage />); await screen.findByText("Alpha"); }
+  it.each(["api", "network", "non-json"])("bulk deployment reports %s failures and still submits other projects", async (failure) => {
+    routes["/api/v1/projects/"] = response([row("Alpha"), row("Beta")]);
+    routes["/api/v1/projects/Alpha/deploy"] = failure === "network"
+      ? new Error("offline")
+      : failure === "non-json"
+        ? new Response("Bad Gateway", { status: 502 })
+        : response({ detail: "Configure Settings → OCP Pull Secret" }, 400);
+    await loaded(); fireEvent.click(screen.getByLabelText("Select all")); click("Deploy (2)");
+    const message = await screen.findByText(/Alpha: /);
+    expect(message).toHaveTextContent(failure === "api"
+      ? "Alpha: Configure Settings → OCP Pull Secret"
+      : failure === "network" ? "Alpha: Request failed" : "Alpha: Deploy failed (HTTP 502)");
+    expect(message).toHaveTextContent("1 of 2 deployment requests accepted");
+    expect(message).not.toHaveTextContent("Beta:");
+    expect(calls).toHaveBeenCalledWith("/api/v1/projects/Beta/deploy", { method: "POST" });
+    expect(calls.mock.calls.filter(([url]) => url === "/api/v1/projects/Alpha/deploy")).toHaveLength(1);
+  });
   it("filters names and descriptions and opens a project", async () => {
     await loaded();
     fireEvent.change(screen.getByPlaceholderText("Search projects..."), { target: { value: "Beta description" } });

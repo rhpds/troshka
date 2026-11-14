@@ -207,6 +207,17 @@ async function readProjectResponse(response: Response, fallback: string) {
   throw new ProjectRequestError(formatApiDetail(error.detail, fallback));
 }
 
+async function submitBulkDeploy(project: Project): Promise<string | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/projects/${project.id}/deploy`, { method: "POST" });
+    if (response.ok) return null;
+    const error = await response.json().catch(() => ({}));
+    return `${project.name}: ${formatApiDetail(error?.detail, `Deploy failed (HTTP ${response.status})`)}`;
+  } catch {
+    return `${project.name}: Request failed. Check the project status before retrying.`;
+  }
+}
+
 async function postProjectJson(url: string, body: Record<string, unknown>, fallback: string) {
   const response = await fetch(url, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -1111,6 +1122,7 @@ export default function ProjectsPage() {
   const [republishTarget, setRepublishTarget] = useState<Project | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [bulkDeployPending, setBulkDeployPending] = useState(false);
   const [spendById, setSpendById] = useState<Record<string, LiveSpend>>({});
   const [spendNowMs, setSpendNowMs] = useState(() => Date.now());
   const [spendFetchedAt, setSpendFetchedAt] = useState(() => Date.now());
@@ -1341,12 +1353,21 @@ export default function ProjectsPage() {
                     }}>Start ({selected.length})</Button>
                   )}
                   {allDraft && (
-                    <Button variant="secondary" size="sm" onClick={async () => {
+                    <Button variant="secondary" size="sm" isDisabled={bulkDeployPending} onClick={async () => {
                       if (!(await appConfirm({ title: "Deploy", message: `Deploy ${selected.length} project(s)?`, confirmLabel: "Deploy" }))) return;
-                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }); }
-                      setSelectedProjects(new Set());
-                      fetchProjects();
-                      pollUntilSettled();
+                      setBulkDeployPending(true);
+                      try {
+                        const results = await Promise.all(selected.map(submitBulkDeploy));
+                        const failures = results.filter((result): result is string => result !== null);
+                        if (failures.length) {
+                          setAlertMsg(`${selected.length - failures.length} of ${selected.length} deployment requests accepted.\n\n${failures.join("\n\n")}`);
+                        }
+                        setSelectedProjects(new Set());
+                        fetchProjects();
+                        pollUntilSettled();
+                      } finally {
+                        setBulkDeployPending(false);
+                      }
                     }}>Deploy ({selected.length})</Button>
                   )}
                   {allDeployed && (

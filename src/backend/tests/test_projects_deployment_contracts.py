@@ -51,6 +51,56 @@ def test_install_routes_enforce_project_ownership(endpoint, missing, status):
     assert exc.value.status_code == status
 
 
+@pytest.mark.parametrize("restart", [False, True])
+def test_missing_pull_secret_rejected_before_deploy_side_effects(
+    context, monkeypatch, restart
+):
+    project, host, db, user = context
+    from app.models.user import User
+
+    owner = SimpleNamespace(ocp_pull_secret=None, pull_through_registry=False)
+    db.query.side_effect = lambda model: Mock(
+        **{
+            "filter_by.return_value.first.return_value": project
+            if model is Project
+            else owner
+            if model is User
+            else host
+        }
+    )
+    enqueue, prepare, placement = Mock(), Mock(), Mock()
+    monkeypatch.setattr("app.core.redis.enqueue_job", enqueue)
+    monkeypatch.setattr(api.quota_operations, "prepare", prepare)
+    monkeypatch.setattr(api, "place_project", placement)
+    if restart:
+        monkeypatch.setattr(
+            "app.services.deploy_service.validate_restart_ocp_cluster_install",
+            lambda *_: None,
+        )
+    else:
+        project.state = "draft"
+        monkeypatch.setattr(api, "_resolve_provider_type", lambda *_: "kubevirt")
+        monkeypatch.setattr(api, "_collect_deploy_topology_errors", lambda *_: [])
+        monkeypatch.setattr(api, "calculate_project_requirements", lambda *_: {})
+        monkeypatch.setattr(api, "_has_deployable_workloads", lambda *_: True)
+        monkeypatch.setattr(api, "_validate_bmc_network", lambda *_: None)
+        monkeypatch.setattr(api, "_check_library_items_ready", lambda *_: None)
+        monkeypatch.setattr(api, "_validate_deploy_pool_and_host", lambda *_: None)
+    original_state = project.state
+    with pytest.raises(HTTPException) as exc:
+        if restart:
+            api.restart_ocp_install("project", user, db, cluster="c")
+        else:
+            api.deploy_project("project", user, db)
+    assert exc.value.status_code == 400
+    assert "pull secret" in exc.value.detail
+    assert project.state == original_state
+    enqueue.assert_not_called()
+    prepare.assert_not_called()
+    placement.assert_not_called()
+    db.commit.assert_not_called()
+
+
 @pytest.mark.parametrize("endpoint", [api.restart_ocp_install, api.cancel_ocp_install])
 def test_install_mutations_reject_inactive_project(context, endpoint):
     project, _, db, user = context

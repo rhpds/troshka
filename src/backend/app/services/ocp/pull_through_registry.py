@@ -230,6 +230,24 @@ def _clusters_needing_ptr(topology: dict, cluster_key: str | None) -> list[dict]
     ]
 
 
+def _requires_ocp_pull_secret(topology: dict, cluster_key: str | None) -> bool:
+    """Fresh OCP installs need credentials; OKD and captured disks do not."""
+    from app.services.deploy_service import _cluster_uses_recert
+    from app.services.ocp.client_mirror import is_okd_scos
+
+    for cluster in topology.get("clusters") or []:
+        if cluster_key is not None:
+            if cluster.get("id") != cluster_key:
+                continue
+        elif cluster.get("installOnDeploy", True) is False:
+            continue
+        if is_okd_scos(cluster.get("ocpDistribution")):
+            continue
+        if not _cluster_uses_recert(topology, cluster):
+            return True
+    return False
+
+
 def check_pull_through_registry_for_project(
     db,
     project,
@@ -237,8 +255,18 @@ def check_pull_through_registry_for_project(
     *,
     cluster_key: str | None = None,
 ) -> str | None:
-    """Return an error string when PTR is required but not reachable; else None."""
+    """Check install credentials and PTR before placement or job submission."""
     owner = db.query(User).filter_by(id=project.owner_id).first()
+    # Saving PTR credentials also stores the generated registry pull secret.
+    # A mirror URL alone cannot satisfy openshift-install's pullSecret input.
+    if not (owner and owner.ocp_pull_secret) and _requires_ocp_pull_secret(
+        topology or {}, cluster_key
+    ):
+        return (
+            "OpenShift installation requires a pull secret for the project owner. "
+            "Add an OCP pull secret or save pull-through registry credentials in "
+            "Settings → OCP Pull Secret before deploying or retrying installation."
+        )
     if not (owner and owner.pull_through_registry and owner.pull_through_registry_url):
         return None
 

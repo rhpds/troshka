@@ -1391,6 +1391,9 @@ def _mock_deploy_session(project, host=None):
     """Build a mock session that routes query().filter_by() calls by ID."""
     mock_session = MagicMock()
     _lookup = {PROJECT_ID: project}
+    _lookup[project.owner_id] = MagicMock(
+        ocp_pull_secret="encrypted-pull-secret", pull_through_registry=False
+    )
     if host:
         _lookup[host.id] = host
 
@@ -2489,7 +2492,9 @@ class TestOcpVmWaitForApi:
         result = _ocp_vm_wait_for_api(oc_fn, push_fn, deadline)
 
         assert result is False
-        push_fn.assert_any_call("timeout", "API server not reachable")
+        push_fn.assert_any_call(
+            "timeout", "OpenShift API server not reachable; check cluster install logs"
+        )
 
     def test_api_retries_then_succeeds(self):
         """API fails first then succeeds."""
@@ -4824,6 +4829,28 @@ class TestOpsPodDeadDetection:
         assert result == "failed"
         # Failed exactly at the threshold, not on the first not-running poll.
         assert mock_running.call_count == _OPS_POD_DEAD_POLLS
+
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running", return_value=True)
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_reports_missing_pull_secret(
+        self, _cancel, logs, _running, publish
+    ):
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        logs.return_value = {
+            "c1": 'level=fatal msg=invalid install-config configuration: pullSecret: Invalid value: ""\n[c1] install failed'
+        }
+        assert (
+            _monitor_ops_pod_install(
+                PROJECT_ID, _make_host(), [{"id": "c1"}], poll_interval=0
+            )
+            == "failed"
+        )
+        assert publish.call_args.args[1]["failure_detail"] == (
+            "OpenShift Install Failed: OCP pull secret is missing or invalid"
+        )
 
     @patch(f"{SVC}._cancel_ops_pod_install")
     @patch(f"{SVC}._store_ops_pod_creds")

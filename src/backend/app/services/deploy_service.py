@@ -3641,6 +3641,11 @@ def _publish_ops_pod_progress(project_id: str, progress: dict) -> None:
         if failed
         else f"install: {overall}"
     )
+    if overall == "failed":
+        detail = progress.get("failure_detail") or (
+            "OpenShift Install Failed: Installer reported an error; see install logs"
+        )
+        _ocp_push_status(project_id, "error", detail)
     items = ops_pod_progress_items(progress)
     if _project_infra_in_progress(project_id):
         _update_deploy_progress(
@@ -5930,6 +5935,13 @@ def _monitor_ops_pod_install(
             per_cluster, pod_running=dead_count < _OPS_POD_DEAD_POLLS
         )
         progress = ops_pod_install_progress(per_cluster)
+        if progress["overall"] == "failed":
+            from app.services.ocp.ops_pod_install import install_failure_detail
+
+            failed_key = progress["failed"][0]
+            progress["failure_detail"] = install_failure_detail(
+                per_cluster.get(failed_key, "")
+            )
         _publish_ops_pod_progress(project_id, progress)
         elapsed_now = int(_t.time() - elapsed_base)
         _ops_pod_harvest_and_finalize(
@@ -11975,7 +11987,7 @@ def _ocp_vm_wait_for_api(_oc, _push, deadline):
             pass
         _push("oc", _MSG_WAITING_API)
         _t.sleep(10)
-    _push("timeout", "API server not reachable")
+    _push("timeout", "OpenShift API server not reachable; check cluster install logs")
     return False
 
 
@@ -12760,7 +12772,9 @@ def _check_install_terminal_state(full_text, push_fn, project_id, start, _t):
         "context deadline exceeded",
     ]
     if any(m in full_text for m in _failure_markers):
-        push_fn("error", "install failed")
+        from app.services.ocp.ops_pod_install import install_failure_detail
+
+        push_fn("error", install_failure_detail(full_text))
         _ocp_update_status(project_id, "error")
         logger.warning("OCP install failed for %s", project_id[:8])
         return "error", None
@@ -13120,7 +13134,6 @@ def _ocp_push_status(project_id, phase, detail, items=None, vm_id=None, vm_name=
         msg["vm_id"] = vm_id
     if vm_name:
         msg["vm_name"] = vm_name
-    notify_project(project_id, msg)
     try:
         from app.core.database import SessionLocal as _PushSL
         from app.models.project import Project as _PushProj
@@ -13128,11 +13141,21 @@ def _ocp_push_status(project_id, phase, detail, items=None, vm_id=None, vm_name=
         _ss = _PushSL()
         _pp = _ss.get(_PushProj, project_id)
         if _pp:
+            previous = _pp.ocp_status_detail
+            if (
+                phase not in ("ready", "warning")
+                and isinstance(previous, str)
+                and previous.startswith("OpenShift Install Failed:")
+                and not detail.startswith("OpenShift Install Failed:")
+            ):
+                detail = previous
+                msg["detail"] = previous
             _pp.ocp_status_detail = detail
             _ss.commit()
         _ss.close()
     except Exception:
         logger.exception("Failed to save ocp_status_detail for %s", project_id[:8])
+    notify_project(project_id, msg)
 
 
 def _ping_one_cp_node(host, project_id, bastion_ip, password, name, idx) -> str:

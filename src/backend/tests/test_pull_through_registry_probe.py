@@ -6,6 +6,105 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 
+@pytest.mark.parametrize("registry_enabled", [False, True])
+def test_fresh_ocp_requires_stored_pull_secret(registry_enabled):
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    owner = MagicMock(
+        ocp_pull_secret=None,
+        pull_through_registry=registry_enabled,
+        pull_through_registry_url=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = owner
+    with patch(
+        "app.services.ocp.pull_through_registry.probe_pull_through_registry"
+    ) as probe:
+        error = check_pull_through_registry_for_project(
+            db, MagicMock(owner_id="owner"), {"clusters": [{"id": "ocp"}]}
+        )
+    assert error is not None
+    assert "Settings" in error
+    assert "pull secret" in error
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "clusters",
+    [
+        [],
+        [{"id": "okd", "ocpDistribution": "okd-scos"}],
+        [{"id": "ocp", "installOnDeploy": False}],
+    ],
+)
+def test_non_installing_or_okd_project_needs_no_pull_secret(clusters):
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = MagicMock(
+        ocp_pull_secret=None, pull_through_registry=False
+    )
+    assert (
+        check_pull_through_registry_for_project(
+            db, MagicMock(owner_id="owner"), {"clusters": clusters}
+        )
+        is None
+    )
+
+
+def test_restart_checks_only_selected_cluster_for_pull_secret():
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = MagicMock(
+        ocp_pull_secret=None, pull_through_registry=False
+    )
+    topology = {
+        "clusters": [
+            {"id": "ocp", "installOnDeploy": False},
+            {"id": "okd", "ocpDistribution": "okd-scos"},
+        ]
+    }
+    project = MagicMock(owner_id="owner")
+    assert (
+        check_pull_through_registry_for_project(
+            db, project, topology, cluster_key="okd"
+        )
+        is None
+    )
+    assert (
+        check_pull_through_registry_for_project(
+            db, project, topology, cluster_key="ocp"
+        )
+        is not None
+    )
+
+
+def test_pattern_recert_needs_no_pull_secret():
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = MagicMock(
+        ocp_pull_secret=None, pull_through_registry=False
+    )
+    topology = {"clusters": [{"id": "ocp"}]}
+    with patch("app.services.deploy_service._cluster_uses_recert", return_value=True):
+        assert (
+            check_pull_through_registry_for_project(
+                db, MagicMock(owner_id="owner"), topology
+            )
+            is None
+        )
+
+
 def test_probe_succeeds_on_http_200():
     from app.services.ocp.pull_through_registry import probe_pull_through_registry
 

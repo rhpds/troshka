@@ -1352,7 +1352,9 @@ class TestCheckInstallTerminalState:
             "Bootstrap failed to complete", push_fn, "proj-1", 100, time
         )
         assert result == ("error", None)
-        push_fn.assert_called_once_with("error", "install failed")
+        push_fn.assert_called_once_with(
+            "error", "OpenShift Install Failed: Cluster bootstrap failed"
+        )
         mock_update.assert_called_once_with("proj-1", "error")
 
     @patch("app.services.deploy_service._ocp_update_status")
@@ -8111,7 +8113,9 @@ class TestCheckInstallTerminalStateV2:
             )
 
         assert result == ("error", None)
-        push_fn.assert_called_with("error", "install failed")
+        push_fn.assert_called_with(
+            "error", "OpenShift Install Failed: Cluster bootstrap failed"
+        )
         mock_update.assert_called_once_with("proj-1", "error")
 
     def test_success_marker_returns_complete_with_elapsed(self):

@@ -268,6 +268,29 @@ def _aggregate_in_progress(clusters: dict[str, str]) -> str:
     return _RANK_TO_PHASE[min_rank]
 
 
+def install_failure_detail(log: str) -> str:
+    """Summarize confirmed failures without exposing raw log credentials."""
+    reasons = (
+        (
+            ("pullsecret: invalid", "pullsecret: required"),
+            "OCP pull secret is missing or invalid",
+        ),
+        (("unauthorized", "authentication required"), "Registry authentication failed"),
+        (("bootstrap failed",), "Cluster bootstrap failed"),
+        (("context deadline exceeded", "timed out"), "Installation timed out"),
+        (
+            ("agent iso not reachable", "iso not reachable at"),
+            "Installation ISO could not be reached",
+        ),
+    )
+    # Prefer the most recent specific failure, not earlier retry diagnostics.
+    for line in reversed(log.lower().splitlines()):
+        for markers, reason in reasons:
+            if any(marker in line for marker in markers):
+                return f"OpenShift Install Failed: {reason}"
+    return "OpenShift Install Failed: Installer reported an error; see install logs"
+
+
 def ops_pod_install_progress(
     per_cluster_log_or_status: dict[str, str], cancelled: bool = False
 ) -> dict:
