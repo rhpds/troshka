@@ -123,8 +123,10 @@ def prepare_native(db, project, mode):
     from app.models.kubevirt_storage import NativeRetainedBinding
     from app.services import native_managed_power as power
     from app.services import quota_native, quota_storage
-    from app.services.kubevirt_storage_graph import _ownership
+    from app.services.kubevirt_storage_enrollment import root_key
     from app.services.kubevirt_storage_reports import normalized_inventory
+    from app.services.native_clone_graph import cleanup_owned_images
+    from app.services.native_clone_lineage import resolve_lineages
     from app.services.quota_enforcement import request_native_stop
 
     project, rows = _native_lock(db, project.id)
@@ -153,22 +155,35 @@ def prepare_native(db, project, mode):
     _, source, report, _ = quota_native._measurement_report(
         db, domain, roots, manifest, operations.now()
     )
-    retained = db.query(NativeRetainedBinding).filter_by(domain_id=domain.id).all()
+    retired = settled_root_keys(db)
+    retained = [
+        b
+        for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
+        if b.root_key not in retired
+    ]
     inventory = normalized_inventory(source, roots, retained)
-    cache = set(b.image_key for b in inventory.cache_bindings)
-    _, nodes, _ = _ownership(inventory, {i.key: i for i in source.images}, cache, 32)
-    owned = nodes[pinned.project_id] - cache
+    retired_images = {
+        key.model_dump_json()
+        for proof in source.retiring_roots
+        if root_key(proof.root) in retired
+        for key in proof.owned_images
+    }
+    owned = cleanup_owned_images(
+        inventory,
+        [
+            image
+            for image in source.images
+            if image.key.model_dump_json() not in retired_images
+        ],
+        resolve_lineages(db, source.clone_references, manifest),
+        pinned.project_id,
+    )
     bindings = {
         b.pvc_uid: b
         for b in source.volume_bindings + source.retained_bindings
         if b.root == pinned
     }
-    if (
-        not owned
-        or not bindings
-        or source.snapshot_evidence
-        or any(i.snapshots for i in source.images if i.key in owned)
-    ):
+    if not owned or not bindings or source.snapshot_evidence:
         raise accounting.AccountingUnavailable(
             "Native cleanup requires a complete supported original storage graph"
         )

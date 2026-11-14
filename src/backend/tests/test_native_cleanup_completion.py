@@ -28,6 +28,44 @@ deploy_case = deploy_case_fixture
 native_ledger = native_ledger_fixture
 
 
+def test_cleanup_preparation_ignores_settled_binding_history(cleanup_case, monkeypatch):
+    from app.models.kubevirt_storage import NativeRetainedBinding
+    from app.models.project import Project
+    from app.services import quota_cleanup
+    from app.services.kubevirt_storage_enrollment import root_key
+    from app.services.kubevirt_storage_reports import binding_key
+
+    q = cleanup_case
+    old = q.report.volume_bindings[0]
+    old = old.model_copy(
+        update={
+            "pvc_uid": "already-settled-pvc",
+            "root": old.root.model_copy(
+                update={"namespace_uid": "already-settled-namespace"}
+            ),
+        }
+    )
+    retired = root_key(old.root)
+    monkeypatch.setattr(quota_cleanup, "settled_root_keys", lambda db: {retired})
+    with q.sessions() as db:
+        current = db.query(NativeRetainedBinding).first()
+        db.add(
+            NativeRetainedBinding(
+                key=binding_key(old),
+                root_key=retired,
+                domain_id=current.domain_id,
+                payload=old.model_dump(mode="json"),
+            )
+        )
+        db.commit()
+        intent = quota_cleanup.prepare_native(
+            db, db.get(Project, q.project_ids[0]), "undeploy"
+        )
+        assert intent.phase == "stopping"
+        assert old not in intent.bindings
+        db.rollback()
+
+
 @pytest.fixture
 def cleanup_case(resume_case, monkeypatch):
     from app.services import native_managed_power as power
