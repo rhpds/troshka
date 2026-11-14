@@ -77,6 +77,7 @@ def cleanup_case(resume_case, monkeypatch):
             )
             api.calls.append((method, (kind, name), deepcopy(body)))
             if kind == "TroshkaProject":
+                value["metadata"]["generation"] += 1
                 marker = value["metadata"]["annotations"][
                     power.helpers().CLEANUP_ANNOTATION
                 ]

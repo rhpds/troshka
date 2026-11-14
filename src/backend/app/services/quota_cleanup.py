@@ -285,8 +285,10 @@ def seal_native_inventory(api, work):
     fresh = power.observe_off(
         api, context, proof["request_id"], operations.now(), operations.now
     )
-    module.require(fresh is not None, "cleanup_off_proof_unavailable")
+    if fresh is None:
+        raise module.ManagedPowerError("cleanup_off_proof_unavailable")
     root = power._live_root(api, context, proof["request_id"])
+    fresh = {**fresh, "root_spec_digest": module.digest(root["spec"])}
     rows, by_uid = module.inventory(api, root)
     module.profile(root, rows, by_uid, api)
     full = _namespace_rows(api, intent.root.namespace)
@@ -585,10 +587,10 @@ def _cleanup_root(api, intent, original):
     root = api.find("TroshkaProject", intent.root.namespace, original.name)
     if root is not None:
         helpers().require(
-            root["metadata"]["uid"] == original.uid
-            and root["metadata"]["generation"] == intent.root.deployment_generation,
+            root["metadata"]["uid"] == original.uid,
             "cleanup_root_changed",
         )
+        helpers().validate_cleanup_root(root, intent.model_dump(mode="json"))
     return root
 
 

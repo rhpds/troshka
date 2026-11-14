@@ -103,6 +103,28 @@ def intent(root):
         raise ManagedPowerError("managed_intent_invalid") from error
 
 
+def validate_cleanup_root(root, value):
+    """DELETE may advance generation once without changing the pinned spec."""
+    pinned, meta = value["root"], root["metadata"]
+    expected = (value.get("stop_proof") or {}).get("root_spec_digest")
+    pending = value.get("pending_initialization")
+    if pending is not None:
+        expected = pending["request"]["payloadDigest"]
+    if expected is not None:
+        require(expected == digest(root["spec"]), "cleanup_root_spec_changed")
+    generation = pinned["deployment_generation"]
+    deleting_original = (
+        bool(meta.get("deletionTimestamp"))
+        and expected is not None
+        and meta["generation"] == generation + 1
+    )
+    require(
+        meta["uid"] == pinned["project_cr_uid"]
+        and (meta["generation"] == generation or deleting_original),
+        "cleanup_root_changed",
+    )
+
+
 def cleanup_intent(root):
     raw = root.get("metadata", {}).get("annotations", {}).get(CLEANUP_ANNOTATION)
     if raw is None:
@@ -110,15 +132,16 @@ def cleanup_intent(root):
     try:
         require(len(raw) <= 512 * 1024, "cleanup_intent_limit")
         value = json.loads(raw)
-        pinned = value["root"]
         require(value["version"] == "native-cleanup-v1" and value["namespace_mode"] == "managed", "cleanup_intent_invalid")
-        require(pinned["project_cr_uid"] == root["metadata"]["uid"] and pinned["deployment_generation"] == root["metadata"]["generation"], "cleanup_root_changed")
+        validate_cleanup_root(root, value)
         require(len(value["objects"]) <= 1000 and value["inventory_digest"] == digest(sorted(value["objects"], key=lambda v: (v["kind"], v["name"]))), "cleanup_inventory_changed")
         stopped = intent(root)
         require(stopped is not None and stopped["mode"] == "stopped" and stopped["requestId"] == value["stop_proof"]["request_id"] and stopped["allocationGeneration"] == value["generation"], "cleanup_off_proof_changed")
         if value.get("pending_initialization") is not None:
             validate_pending_cleanup_marker(root, value, stopped)
         return value
+    except ManagedPowerError:
+        raise
     except (KeyError, TypeError, ValueError) as error:
         raise ManagedPowerError("cleanup_intent_invalid") from error
 

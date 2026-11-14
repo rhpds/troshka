@@ -71,6 +71,7 @@ def pending_case(deploy_case, monkeypatch):
             )
             api.calls.append((method, (kind, name), deepcopy(body)))
             if kind == "TroshkaProject":
+                value["metadata"]["generation"] += 1
                 value["metadata"][
                     "deletionTimestamp"
                 ] = FixedDatetime.current.isoformat()
@@ -286,7 +287,10 @@ def test_pending_inventory_changes_do_not_delete(pending_case, change):
         assert cleanup.native_intent(db, q.new_id).phase == "stopping"
 
 
-def test_pending_undeploy_settles_after_namespace_and_storage_absence(pending_case):
+@pytest.mark.parametrize("root_change", [None, "spec", "uid", "generation"])
+def test_pending_undeploy_settles_after_namespace_and_storage_absence(
+    pending_case, root_change
+):
     from app.models.kubevirt_storage import (
         NativeCollectionDomain,
         NativeEnrollment,
@@ -326,6 +330,25 @@ def test_pending_undeploy_settles_after_namespace_and_storage_absence(pending_ca
         q.enrollment_id = domain.enrollment_id
         q.digest = db.get(NativeEnrollment, domain.enrollment_id).digest
     root = api.rows("TroshkaProject", None)[0]
+    assert root["metadata"]["generation"] == intent.root.deployment_generation + 1
+    if root_change:
+        live = api.values["TroshkaProject", root["metadata"]["name"]]
+        if root_change == "spec":
+            live["spec"]["action"] = "changed"
+        elif root_change == "uid":
+            live["metadata"]["uid"] = "replacement"
+        else:
+            live["metadata"]["generation"] += 1
+        calls = deepcopy(api.calls)
+        with pytest.raises(deploy.power.helpers().ManagedPowerError):
+            cleanup.submit_native_teardown(
+                api, {"intent": intent.model_dump(mode="json")}
+            )
+        assert api.calls == calls
+        return
+    # Retry must recognize the original deleting root before retirement.
+    cleanup.submit_native_teardown(api, {"intent": intent.model_dump(mode="json")})
+    fn(*args)
     assert deploy.power.helpers().cleanup_delete(api, root) is False
     assert deploy.power.helpers().cleanup_delete(api, root) is True
     assert api.values["ConfigMap", "odh-kserve-custom-ca-bundle"] == bootstrap
