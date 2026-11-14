@@ -205,6 +205,22 @@ def cleanup_odh_configmap(value):
     return {"kind": "ConfigMap", "name": meta["name"], "publisher_labels": labels, "data_keys": ["cabundle.crt"]}
 
 
+def cleanup_pull_account(sa, by_uid):
+    if sa.get("kind") != "ServiceAccount" or sa.get("apiVersion") != "v1":
+        return False
+    if cleanup_bootstrap(sa) is not None:
+        return True
+    roots = [v for v in by_uid.values() if v.get("kind") == "TroshkaProject"
+             and v.get("metadata", {}).get("namespace") == sa.get("metadata", {}).get("namespace")]
+    if len(roots) != 1:
+        return False
+    try:
+        verify_chain(sa, roots[0], by_uid)
+    except (ManagedPowerError, KeyError, TypeError):
+        return False
+    return True
+
+
 def cleanup_pull_secret(value, by_uid):
     meta = value["metadata"]
     refs = meta.get("ownerReferences", [])
@@ -217,9 +233,9 @@ def cleanup_pull_secret(value, by_uid):
     expected_ref = {"apiVersion": "v1", "kind": "ServiceAccount", "name": name, "uid": sa_meta.get("uid")}
     annotations = meta.get("annotations", {})
     valid = (
-        ref == expected_ref and name in {"default", "builder", "deployer"}
+        ref == expected_ref
         and sa_meta.get("namespace") == meta.get("namespace")
-        and cleanup_bootstrap(sa) is not None
+        and cleanup_pull_account(sa, by_uid)
         and sa_meta.get("annotations", {}).get("openshift.io/internal-registry-pull-secret-ref") == meta["name"]
         and value.get("type") == "kubernetes.io/dockercfg"
         and annotations.get("openshift.io/internal-registry-auth-token.service-account") == name
@@ -256,6 +272,7 @@ def cleanup_delete(api, root):
     rows = {kind: api.rows(kind, ns) for kind in sorted(kinds)}
     expected = {(v["kind"], v["name"]): v for v in value["objects"] if v.get("namespace")}
     by_uid = {obj["metadata"]["uid"]: obj for values in rows.values() for obj in values}
+    by_uid[root["metadata"]["uid"]] = root
     found = []
     for kind, objects in rows.items():
         for obj in objects:

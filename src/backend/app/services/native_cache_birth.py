@@ -22,6 +22,7 @@ from app.schemas.kubevirt_cache_birth import (
     validate_import_annotations,
 )
 from app.services.kubevirt_storage_enrollment import digest
+from app.services.native_collection_jobs import assert_collection_lease
 
 
 def _new_intent(
@@ -300,4 +301,5 @@ def verify_cache_birth(sessions, operation_id, adapter):
             reference = CacheBirthReference(
                 operation_id=operation_id, digest=row.receipt_digest
             )
+        assert_collection_lease()
     return reference

@@ -200,6 +200,41 @@ workloads:
     demoWorkloads: main
     namespacedWorkloads: main
 
+nativeCollection:
+  enabled: false
+  intervalSeconds: 60
+  domainIntervalSeconds: 60
+  readinessIntervalSeconds: 20
+  readinessTimeoutSeconds: 45
+  jobTimeoutSeconds: 240
+  providerSlots: 2
+  # Administrator-owned profile paths only; no credentials in this ConfigMap.
+  profiles: []
+  # Shares protected config/transport and CLI image settings with worker.
+  # Dedicated capacity prevents routine storage scans delaying fresh identity.
+  readinessWorker:
+    enabled: false
+    replicas: 1
+    dbPoolSize: 2
+    dbMaxOverflow: 0
+  worker:
+    enabled: false
+    replicas: 1
+    dbPoolSize: 2
+    dbMaxOverflow: 0
+    configMapName: ""
+    secretName: ""
+    # Optional version-tagged OpenShift CLI image exposing /usr/bin/oc.
+    # Set this when the backend image does not already contain oc.
+    # Copies only oc into the collection worker; never mounts transport secrets.
+    cliImage: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+
 worker:
   replicas: 100
   # Each RQ worker runs one job at a time, so a tiny pool is plenty. Postgres

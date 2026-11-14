@@ -717,8 +717,17 @@ class TestHandleAbandonedJob:
 # 8. _collect_queue_info
 # ---------------------------------------------------------------------------
 class TestCollectQueueInfo:
+    expected_queues = [
+        "project_lifecycle",
+        "host_lifecycle",
+        "default",
+        "native_cleanup",
+        "native_collection",
+        "native_readiness",
+    ]
+
     def test_returns_info_for_all_queues(self):
-        """Returns an entry for each of the 3 expected queues."""
+        """Report lifecycle, cleanup, collection, and reserved readiness queues."""
         from app.main import _collect_queue_info
 
         mock_q = MagicMock()
@@ -730,11 +739,7 @@ class TestCollectQueueInfo:
         with patch("rq.Queue", return_value=mock_q):
             result = _collect_queue_info(MagicMock())
 
-        assert len(result) == 3
-        names = [q["name"] for q in result]
-        assert "project_lifecycle" in names
-        assert "host_lifecycle" in names
-        assert "default" in names
+        assert [q["name"] for q in result] == self.expected_queues
 
     def test_queue_counts_propagated(self):
         """Queue depth numbers are correctly propagated."""
@@ -765,20 +770,17 @@ class TestCollectQueueInfo:
         with patch("rq.Queue", side_effect=_boom):
             result = _collect_queue_info(MagicMock())
 
-        assert len(result) == 3
+        assert [q["name"] for q in result] == self.expected_queues
         for entry in result:
             assert "error" in entry
 
-    def test_mixed_success_and_failure(self):
-        """One queue succeeds, another fails — both are reported."""
+    @pytest.mark.parametrize("failed_queue", ["host_lifecycle", "native_readiness"])
+    def test_mixed_success_and_failure(self, failed_queue):
+        """A failure in either worker profile preserves all other queue statuses."""
         from app.main import _collect_queue_info
 
-        call_count = 0
-
         def _factory(name, connection=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+            if name == failed_queue:
                 raise RuntimeError("broken")
             q = MagicMock()
             q.count = 1
@@ -790,11 +792,14 @@ class TestCollectQueueInfo:
         with patch("rq.Queue", side_effect=_factory):
             result = _collect_queue_info(MagicMock())
 
-        assert len(result) == 3
+        assert [q["name"] for q in result] == self.expected_queues
         errors = [e for e in result if "error" in e]
         successes = [e for e in result if "queued" in e]
         assert len(errors) == 1
-        assert len(successes) == 2
+        assert errors[0]["name"] == failed_queue
+        assert {entry["name"] for entry in successes} == set(self.expected_queues) - {
+            failed_queue
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Project cleanup may remove only its original, exclusively owned trash IDs."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from kubernetes.client.exceptions import ApiException
@@ -27,6 +28,76 @@ from tests.test_native_cleanup_completion import (
 from tests.test_native_managed_resume import FixedDatetime
 
 cleanup_case = cleanup_case_fixture
+
+
+@pytest.mark.parametrize(
+    "expires_during", ["inventory", "second_namespace", "removal", "removal_success"]
+)
+def test_lease_loss_fences_trash_submission_and_preserves_result(
+    cleanup_case, expires_during
+):
+    from app.schemas.kubevirt_storage import BackendImageState
+    from app.services import native_collection_jobs as jobs
+    from app.services import native_trash_cleanup, quota_cleanup
+
+    q = cleanup_case
+    intent, report = pending(q)
+    state = SimpleNamespace(active=True, namespaces=0)
+    calls = []
+
+    class Reader:
+        def cluster_identity(self):
+            return intent.root.cluster_key
+
+        def namespace(self, name):
+            state.namespaces += 1
+            if expires_during == "second_namespace" and state.namespaces == 2:
+                state.active = False
+            raise ApiException(status=404)
+
+    class Backend:
+        def image_inventory(self, key, **kwargs):
+            if expires_during == "inventory":
+                state.active = False
+            return ReadResult(
+                status="complete",
+                collected_at=FixedDatetime.current,
+                value=BackendImageState(
+                    **key.model_dump(),
+                    active=False,
+                    trash=True,
+                    collected_at=FixedDatetime.current,
+                ),
+            )
+
+        def remove_trash(self, key):
+            calls.append(key)
+            state.active = False
+            if expires_during == "removal_success":
+                return ReadResult(status="complete", collected_at=FixedDatetime.current)
+            raise TimeoutError("response lost after submission")
+
+    redis = SimpleNamespace(get=lambda key: "owner" if state.active else None)
+    token = jobs._execution.set((redis, {"lease": "owner"}))
+    try:
+        with pytest.raises(RuntimeError, match="lease expired"):
+            native_trash_cleanup.reconcile(
+                q.sessions, report, {str(intent.provider_id): Reader()}, Backend()
+            )
+    finally:
+        jobs._execution.reset(token)
+    assert len(calls) == (1 if expires_during.startswith("removal") else 0)
+    with q.sessions() as db:
+        saved = quota_cleanup.native_intent(db, q.project_ids[0])
+        assert saved.phase == "pending"
+        if expires_during == "inventory":
+            assert saved.trash_removals == {}
+        else:
+            assert len(saved.trash_removals) == 1
+            expected = {"removal": "uncertain", "removal_success": "accepted"}.get(
+                expires_during, "submitted"
+            )
+            assert next(iter(saved.trash_removals.values())).status == expected
 
 
 def pending(q):

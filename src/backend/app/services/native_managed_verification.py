@@ -7,6 +7,7 @@ from app.models.native_clone_lineage import NativeCloneLineage
 from app.models.quota import QuotaReservation
 from app.schemas.kubevirt_storage import CloneReference
 from app.schemas.kubevirt_storage_enrollment import DomainExtension
+from app.services.native_collection_jobs import assert_collection_lease
 
 
 def pending(db, domain):
@@ -52,6 +53,7 @@ def verify_sources(sessions, selected, readers, backend, profile):
             readers[str(profile.target.provider_id)], backend, client, profile
         )
         for operation_id, target in selected:
+            before = len(references)
             for source in target["sources"].values():
                 with sessions() as db:
                     row = db.get(NativeCacheBirth, source["operation_id"])
@@ -68,6 +70,14 @@ def verify_sources(sessions, selected, readers, backend, profile):
                     )
                     continue  # Provisioning is observed again next scheduled cycle.
                 references.append(reference)
+            if target["sources"] and len(references) - before == len(target["sources"]):
+                diagnostic(
+                    sessions,
+                    operation_id,
+                    target,
+                    "cache_verification_pending",
+                    clear=True,
+                )
     finally:
         client.close()
     return references
@@ -112,6 +122,7 @@ def publish_sources(sessions, anchor, target_id, references, readers, backend):
                 )
             }
         )
+        assert_collection_lease()
         db.commit()
     verified = verify_native_enrollment(request, readers, backend, pins=pins)
     with sessions.begin() as db:
@@ -119,6 +130,8 @@ def publish_sources(sessions, anchor, target_id, references, readers, backend):
         if domain.enrollment_id != previous or pending(db, domain) != selected:
             raise ValueError("cache enrollment predecessor or operation changed")
         enroll_native_roots(db, verified, expected_target_id=target_id)
+        db.flush()
+        assert_collection_lease()
 
 
 def lineage_inputs(sessions, manifest):
@@ -182,6 +195,7 @@ def transfer_creation(sessions, operation_id, target, reader):
                         operation_id=operation_id,
                     ),
                 )
+        assert_collection_lease()
     return True
 
 
@@ -201,6 +215,7 @@ def verify_clones(sessions, selected, readers, backend, profile):
                 continue
             if not transfer_creation(sessions, operation_id, target, reader):
                 continue
+            verified = 0
             for identity in target.get("clone_lineages", {}).values():
                 try:
                     verify_clone(sessions, identity, adapter)
@@ -209,20 +224,39 @@ def verify_clones(sessions, selected, readers, backend, profile):
                         sessions, operation_id, target, "clone_verification_pending"
                     )
                     continue
+                verified += 1
+            if verified and verified == len(target["clone_lineages"]):
+                diagnostic(
+                    sessions,
+                    operation_id,
+                    target,
+                    "clone_verification_pending",
+                    clear=True,
+                )
     finally:
         client.close()
 
 
-def diagnostic(sessions, operation_id, target, code):
+def diagnostic(sessions, operation_id, target, code, *, clear=False):
     """Sanitized operation diagnostics do not alter frozen source/plan authority."""
     with sessions.begin() as db:
         row = (
             db.query(QuotaReservation)
             .filter_by(operation_id=operation_id)
+            .with_for_update()
             .one_or_none()
         )
-        if row is not None and row.dispatch_metadata.get("native_deploy") == target:
-            row.dispatch_metadata = {
-                **row.dispatch_metadata,
-                "native_image_diagnostic": code,
-            }
+        if (
+            row is not None
+            and row.dispatch_metadata.get("native_deploy") == target
+            and not row.dispatch_metadata.get("cancelled")
+        ):
+            metadata = dict(row.dispatch_metadata)
+            if clear:
+                if metadata.get("native_image_diagnostic") == code:
+                    metadata.pop("native_image_diagnostic")
+            else:
+                metadata["native_image_diagnostic"] = code
+            row.dispatch_metadata = metadata
+        db.flush()
+        assert_collection_lease()

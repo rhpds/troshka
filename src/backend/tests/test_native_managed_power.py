@@ -326,7 +326,10 @@ def test_enforcement_releases_only_compute_after_full_proof(
     assert before == after and before > 0
 
 
-def test_stop_episode_stable_across_retry_and_rearmed_on_reopen(ledger, managed):
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_stop_episode_stable_across_retry_and_rearmed_on_reopen(
+    ledger, managed, terminal
+):
     db, project, _, _, _ = ledger
     project.budget_usd = 0
     enforcement.evaluate(db, NOW)
@@ -336,10 +339,39 @@ def test_stop_episode_stable_across_retry_and_rearmed_on_reopen(ledger, managed)
     attempt = run.operation_id
     assert enforcement._prepare_stop(db, run, NOW + timedelta(seconds=31))
     assert run.details["managed_stop_id"] == first and run.operation_id != attempt
-    run.state = "completed"
+    assert run.attempts == 2
+    assert run.next_attempt_at == NOW + timedelta(seconds=91)
+    run.state = terminal
     enforcement._ensure_run(db, project, [], NOW + timedelta(seconds=32))
+    assert run.attempts == 0
     assert enforcement._prepare_stop(db, run, NOW + timedelta(seconds=33))
     assert run.details["managed_stop_id"] != first
+    assert run.attempts == 1
+    assert run.next_attempt_at == NOW + timedelta(seconds=63)
+
+
+@pytest.mark.parametrize("state", ["completed", "cancelled", "issued"])
+@pytest.mark.parametrize("has_compute", [True, False])
+def test_explicit_stop_resets_attempts_only_for_new_episode(
+    ledger, managed, monkeypatch, state, has_compute
+):
+    db, project, _, _, _ = ledger
+    project.budget_usd = 0
+    enforcement.evaluate(db, NOW)
+    run = actions(db, project, "stop_run")[0]
+    assert enforcement._prepare_stop(db, run, NOW)
+    original_stop = run.details["managed_stop_id"]
+    run.state, run.attempts = state, 4
+    deadline = run.next_attempt_at
+    monkeypatch.setattr(enforcement, "_has_compute", lambda *args: has_compute)
+    enforcement.request_native_stop(db, project)
+    new_episode = state in {"completed", "cancelled"} and has_compute
+    assert run.attempts == (0 if new_episode else 4)
+    assert run.details.get("managed_stop_id") == (
+        None if new_episode else original_stop
+    )
+    if state == "issued":
+        assert accounting.utc(run.next_attempt_at) == accounting.utc(deadline)
 
 
 def test_policy_correction_before_first_dispatch_cancels(ledger, managed):

@@ -124,7 +124,10 @@ def prepare_native(db, project, mode):
     from app.services import native_managed_power as power
     from app.services import quota_native, quota_storage
     from app.services.kubevirt_storage_enrollment import root_key
-    from app.services.kubevirt_storage_reports import normalized_inventory
+    from app.services.kubevirt_storage_reports import (
+        normalized_inventory,
+        scoped_retained,
+    )
     from app.services.native_clone_graph import cleanup_owned_images
     from app.services.native_clone_lineage import resolve_lineages
     from app.services.quota_enforcement import request_native_stop
@@ -153,14 +156,17 @@ def prepare_native(db, project, mode):
         db, db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
     )
     _, source, report, _ = quota_native._measurement_report(
-        db, domain, roots, manifest, operations.now()
+        db, domain, roots, manifest, operations.now(), project_id=project.id
     )
+    if source.project_scope is not None:
+        roots = [r for r in roots if r.project_id == project.id]
     retired = settled_root_keys(db)
     retained = [
         b
         for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
         if b.root_key not in retired
     ]
+    retained = scoped_retained(source, roots, retained)
     inventory = normalized_inventory(source, roots, retained)
     retired_images = {
         key.model_dump_json()
@@ -875,8 +881,10 @@ def submit_namespace_teardown(api, work):
 
 
 def _settle_native(db, project, rows, intent):
+    from app.services.native_collection_jobs import assert_collection_lease
+
+    assert_collection_lease()
     from app.models.kubevirt_storage import (
-        NativeCollectionDomain,
         NativeStorageSnapshot,
     )
     from app.schemas.kubevirt_storage import NativeStorageReport
@@ -893,8 +901,7 @@ def _settle_native(db, project, rows, intent):
     measurement = quota_native.storage_measurement(
         db, project, intent.generation, identity, operations.now()
     )
-    domain = db.get(NativeCollectionDomain, str(intent.domain_id))
-    report = db.get(NativeStorageSnapshot, domain.latest_report_id)
+    report = db.get(NativeStorageSnapshot, measurement.report_id)
     source = NativeStorageReport.model_validate(report.payload)
     proofs = [p for p in source.retiring_roots if p.intent_id == intent.intent_id]
     quota_storage.apply_measurement(db, project, rows, measurement, operations.now())

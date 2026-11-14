@@ -1,5 +1,12 @@
 {{- if and .Values.deploy .Values.postgres.deploy }}
 {{- $flavor := .Values.postgres.envFlavor | default "rhel" }}
+{{- $collectionConnections := 0 }}
+{{- if .Values.nativeCollection.worker.enabled }}
+{{- $collectionConnections = mul .Values.nativeCollection.worker.replicas (add .Values.nativeCollection.worker.dbPoolSize .Values.nativeCollection.worker.dbMaxOverflow) }}
+{{- end }}
+{{- if .Values.nativeCollection.readinessWorker.enabled }}
+{{- $collectionConnections = add $collectionConnections (mul .Values.nativeCollection.readinessWorker.replicas (add .Values.nativeCollection.readinessWorker.dbPoolSize .Values.nativeCollection.readinessWorker.dbMaxOverflow)) }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -55,7 +62,7 @@ spec:
             # Auto-scales when worker/tunnel replicas change so the fleet never
             # exhausts the DB (the root cause of "remaining connection slots reserved").
             - name: POSTGRESQL_MAX_CONNECTIONS
-              value: {{ add (add (add (mul .Values.worker.replicas .Values.worker.dbPoolSize) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) (mul (default 0 .Values.tunnel.replicas) (add (default 2 .Values.tunnel.dbPoolSize) (default 2 .Values.tunnel.dbMaxOverflow)))) 20 | quote }}
+              value: {{ add (add (add (mul .Values.worker.replicas (add .Values.worker.dbPoolSize .Values.worker.dbMaxOverflow)) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) (mul (default 0 .Values.tunnel.replicas) (add (default 2 .Values.tunnel.dbPoolSize) (default 2 .Values.tunnel.dbMaxOverflow)))) (add 20 $collectionConnections) | quote }}
             {{- end }}
           volumeMounts:
             - name: data

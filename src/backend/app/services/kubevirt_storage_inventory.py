@@ -40,7 +40,7 @@ def inventory_digest(inventory):
         fields += ("absent_cache_bindings",)
     if inventory.clone_references:
         fields += ("clone_references",)
-    data = {
+    data: dict[str, object] = {
         name: sorted(
             (v.model_dump(mode="json") for v in getattr(inventory, name)),
             key=lambda v: json.dumps(v, sort_keys=True),
@@ -49,6 +49,8 @@ def inventory_digest(inventory):
     }
     if inventory.backend_scope is not None:
         data["backend_scope"] = inventory.backend_scope.model_dump(mode="json")
+    if inventory.project_scope is not None:
+        data["project_scope"] = str(inventory.project_scope)
     return hashlib.sha256(
         json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

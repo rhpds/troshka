@@ -124,6 +124,7 @@ def enrollment(db, provider_id, *, domain_id=None):
 
 
 def current(db, provider_id, now, *, domain_id=None):
+    from app.services.native_collection_shared import current_shared_observation
     from app.services.quota_native import _measurement_report
 
     domain, manifest, profile = enrollment(db, provider_id, domain_id=domain_id)
@@ -138,6 +139,9 @@ def current(db, provider_id, now, *, domain_id=None):
     manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
     if manifest.pins.initialization_evidence != profile:
         raise AccountingUnavailable("Native initialization authorization changed")
+    observation = current_shared_observation(db, domain, profile, now)
+    if observation is not None:
+        return domain, manifest, profile, observation
     roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
     _, source, _, _ = _measurement_report(db, domain, roots, manifest, now)
     observation = validate_observation(profile, source.initialization_observation, now)

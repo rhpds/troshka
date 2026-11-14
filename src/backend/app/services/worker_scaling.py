@@ -19,6 +19,7 @@ def compute_max_workers(
     backend_conns_per_proc: int,
     worker_conns_per_proc: int,
     reserve: int = DEFAULT_CONN_RESERVE,
+    collection_connections: int = 0,
 ) -> int:
     """Largest worker replica count that keeps total DB connections under
     ``max_connections``. Always at least 1 (a fleet must have a worker)."""
@@ -26,6 +27,7 @@ def compute_max_workers(
         max_connections
         - max(0, reserve)
         - max(0, backend_replicas) * max(0, backend_conns_per_proc)
+        - max(0, collection_connections)
     )
     per_worker = worker_conns_per_proc if worker_conns_per_proc > 0 else 1
     return max(1, budget // per_worker)
@@ -57,6 +59,20 @@ def db_pool_fits(
 # ── Live-env: k8s Deployment scaling + Postgres capacity ────────────────────
 _WORKER_DEPLOYMENT = "troshka-worker"
 _BACKEND_DEPLOYMENT = "troshka-backend"
+_COLLECTION_DEPLOYMENT = "troshka-collection-worker"
+_READINESS_DEPLOYMENT = "troshka-readiness-worker"
+
+
+def _collection_capacity(apps, namespace, deployment=_COLLECTION_DEPLOYMENT):
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        dep = apps.read_namespaced_deployment(deployment, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return 0, 0
+        raise
+    return int(dep.spec.replicas or 0), _deploy_conns_per_proc(dep)
 
 
 def _apps_api():
@@ -120,15 +136,28 @@ def worker_scaling_status() -> dict:
     worker_conns = _deploy_conns_per_proc(wdep)
     backend_conns = _deploy_conns_per_proc(bdep)
     max_conns = get_max_connections()
+    collection_replicas, collection_conns = _collection_capacity(apps, ns)
+    readiness_replicas, readiness_conns = _collection_capacity(
+        apps, ns, _READINESS_DEPLOYMENT
+    )
     return {
         "worker_replicas": worker_replicas,
         "max_workers": compute_max_workers(
-            max_conns, backend_replicas, backend_conns, worker_conns
+            max_conns,
+            backend_replicas,
+            backend_conns,
+            worker_conns,
+            collection_connections=collection_replicas * collection_conns
+            + readiness_replicas * readiness_conns,
         ),
         "max_connections": max_conns,
         "worker_conns_per_proc": worker_conns,
         "backend_conns_per_proc": backend_conns,
         "backend_replicas": backend_replicas,
+        "collection_worker_replicas": collection_replicas,
+        "collection_worker_conns_per_proc": collection_conns,
+        "readiness_worker_replicas": readiness_replicas,
+        "readiness_worker_conns_per_proc": readiness_conns,
         "pool_size": _env_int(bdep, "TROSHKA_DATABASE__POOL_SIZE", 5),
         "max_overflow": _env_int(bdep, "TROSHKA_DATABASE__MAX_OVERFLOW", 10),
     }
@@ -177,7 +206,11 @@ def set_db_pool(pool_size: int, max_overflow: int) -> dict:
     """
     st = worker_scaling_status()
     if not db_pool_fits(
-        st["max_connections"],
+        st["max_connections"]
+        - st.get("collection_worker_replicas", 0)
+        * st.get("collection_worker_conns_per_proc", 0)
+        - st.get("readiness_worker_replicas", 0)
+        * st.get("readiness_worker_conns_per_proc", 0),
         pool_size,
         max_overflow,
         st["backend_replicas"],

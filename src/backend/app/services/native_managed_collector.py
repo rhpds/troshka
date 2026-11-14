@@ -231,32 +231,71 @@ def apply_extension(sessions, anchor, work, verified, target_id):
                     "managed pending operation changed during independent verification"
                 )
         result = enroll_native_roots(db, verified, expected_target_id=target_id)
+        from app.services.native_collection_jobs import assert_collection_lease
+
+        assert_collection_lease()
         db.commit()
         return result
 
 
-def failed_report(manifest, collector_id, started):
+def scoped_roots(manifest, project_id=None):
+    roots = manifest.pins.project_roots
+    if project_id is None:
+        return roots
+    selected = [r for r in roots if str(r.project_id) == str(project_id)]
+    if len(selected) != 1:
+        raise ValueError("project collection requires exactly one enrolled root")
+    return selected
+
+
+def project_snapshot(sessions, pins, target_id, project_id):
+    from app.services.kubevirt_storage_reports import report_cursor
+
+    with sessions() as db:
+        domain, manifest = anchored(db, pins)
+        reporting = db.get(NativeReportingTarget, 1)
+        if reporting is None or reporting.target_id != target_id:
+            raise ValueError("managed collector reporting target changed")
+        scoped_roots(manifest, project_id)
+        cursor = report_cursor(db, domain, project_id)
+        previous = (
+            db.get(NativeStorageSnapshot, cursor.latest_report_id)
+            if cursor.latest_report_id
+            else None
+        )
+        return {
+            "manifest": manifest,
+            "previous": deepcopy(previous.payload) if previous else None,
+            "selected": [],
+            "images": [],
+        }
+
+
+def failed_report(manifest, collector_id, started, project_id=None):
+    roots = scoped_roots(manifest, project_id)
     blockers = [
         Blocker(code="project_discovery_unavailable", project_id=r.project_id)
-        for r in manifest.pins.project_roots
+        for r in roots
     ]
     if not blockers:
         blockers = [Blocker(code="project_discovery_unavailable")]
     inventory = NativeInventory(
         collector_id=collector_id,
-        project_roots=manifest.pins.project_roots,
+        project_scope=project_id,
+        project_roots=roots,
         collected_at=started,
         blockers=blockers,
     )
     return NativeStorageReport(
         report_id=uuid4(),
         collector_id=collector_id,
+        project_scope=project_id,
         started_at=started,
         completed_at=datetime.now(UTC),
         inventory_digest=inventory_digest(inventory),
-        cluster_keys=sorted({r.cluster_key for r in manifest.pins.project_roots}),
+        cluster_keys=sorted({r.cluster_key for r in roots}),
         pool_keys=manifest.pins.pool_keys,
-        project_roots=manifest.pins.project_roots,
+        project_roots=roots,
         volume_bindings=[],
         images=[],
         retained_bindings=[],
@@ -265,7 +304,7 @@ def failed_report(manifest, collector_id, started):
     )
 
 
-def reconcile_allocations(sessions, manifest):
+def reconcile_allocations(sessions, manifest, project_id=None):
     from app.models.user import User
     from app.services import quota_storage
     from app.services.quota_locks import lock_rows
@@ -277,7 +316,7 @@ def reconcile_allocations(sessions, manifest):
         retired = settled_root_keys(db)
         ids = [
             str(r.project_id)
-            for r in manifest.pins.project_roots
+            for r in scoped_roots(manifest, project_id)
             if root_key(r) not in retired
         ]
         operation_ids = all_operation_ids(db, ids)
@@ -306,6 +345,9 @@ def reconcile_allocations(sessions, manifest):
                 quota_storage.apply_measurement(
                     db, project, rows, None, operations.now()
                 )
+        from app.services.native_collection_jobs import assert_collection_lease
+
+        assert_collection_lease()
         db.commit()
     from app.services.quota_cleanup import native_intents, reconcile_native
 
@@ -315,9 +357,36 @@ def reconcile_allocations(sessions, manifest):
             for v in native_intents(db)
             if str(v.domain_id) == str(manifest.pins.domain_id)
             and v.phase != "finalized"
+            and (project_id is None or str(v.root.project_id) == str(project_id))
         ]
     for project_id, intent_id in pending:
+        assert_collection_lease()
         reconcile_native(project_id, intent_id)
+
+
+def prepare_work(sessions, pins, target_id, readers, backend):
+    """Coordinate enrollment and image verification once per domain."""
+    from app.services.native_collection_jobs import assert_collection_lease
+    from app.services.native_managed_verification import (
+        publish_sources,
+        verify_clones,
+        verify_sources,
+    )
+
+    assert_collection_lease()
+    work = snapshot(sessions, pins, target_id)
+    if work["selected"]:
+        verified = verify_new_roots(work, readers, backend)
+        assert_collection_lease()
+        apply_extension(sessions, pins, work, verified, target_id)
+    if work["images"]:
+        profile = work["manifest"].pins.initialization_evidence
+        references = verify_sources(sessions, work["images"], readers, backend, profile)
+        assert_collection_lease()
+        publish_sources(sessions, pins, target_id, references, readers, backend)
+        assert_collection_lease()
+        verify_clones(sessions, work["images"], readers, backend, profile)
+    return work
 
 
 def cycle(
@@ -328,27 +397,17 @@ def cycle(
     readers,
     backend,
     collect,
+    *,
+    project_id=None,
 ):
-    """Call repeatedly from the existing collector schedule, never per project."""
+    """Collect a domain or an explicitly scoped project without changing authority."""
     started = datetime.now(UTC)
     try:
-        work = snapshot(sessions, pins, target_id)
-        if work["selected"]:
-            verified = verify_new_roots(work, readers, backend)
-            apply_extension(sessions, pins, work, verified, target_id)
-        if work["images"]:
-            from app.services.native_managed_verification import (
-                publish_sources,
-                verify_clones,
-                verify_sources,
-            )
-
-            profile = work["manifest"].pins.initialization_evidence
-            references = verify_sources(
-                sessions, work["images"], readers, backend, profile
-            )
-            publish_sources(sessions, pins, target_id, references, readers, backend)
-            verify_clones(sessions, work["images"], readers, backend, profile)
+        work = (
+            prepare_work(sessions, pins, target_id, readers, backend)
+            if project_id is None
+            else project_snapshot(sessions, pins, target_id, project_id)
+        )
         with sessions() as db:
             domain, manifest = anchored(db, pins)
             enrollment_id = domain.enrollment_id
@@ -358,11 +417,15 @@ def cycle(
             raise ValueError(
                 "managed collection requires protected initialization evidence"
             )
-        observation = initialization.observe(
-            profile,
-            readers[str(profile.target.provider_id)],
-            backend,
-            clock=lambda: datetime.now(UTC),
+        observation = (
+            initialization.observe(
+                profile,
+                readers[str(profile.target.provider_id)],
+                backend,
+                clock=lambda: datetime.now(UTC),
+            )
+            if project_id is None
+            else None
         )
         # Never stamp an older observation with a new receipt time.
         report = report.model_copy(
@@ -375,7 +438,12 @@ def cycle(
         with sessions() as db:
             domain, manifest = anchored(db, pins)
             enrollment_id = domain.enrollment_id
-        report = failed_report(manifest, collector_id, started)
+        report = failed_report(manifest, collector_id, started, project_id)
+    if str(report.project_scope) != str(project_id):
+        raise ValueError("collection returned a different project scope")
+    from app.services.native_collection_jobs import assert_collection_lease
+
+    assert_collection_lease()
     with sessions() as db:
         import_report(
             db,
@@ -384,12 +452,15 @@ def cycle(
             expected_enrollment_digest=manifest.digest,
             now=datetime.now(UTC),
         )
+        assert_collection_lease()
         db.commit()
     try:
         from app.services.native_trash_cleanup import reconcile
 
+        assert_collection_lease()
         reconcile(sessions, report, readers, backend)
-        reconcile_allocations(sessions, manifest)
+        assert_collection_lease()
+        reconcile_allocations(sessions, manifest, project_id)
     except Exception:
         pass  # Imported partial attempts invalidate readiness; old charges remain.
     return report

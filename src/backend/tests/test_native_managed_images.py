@@ -642,6 +642,86 @@ def test_normal_owner_route_selects_pinned_host_and_hands_real_worker_frozen_pla
     assert not q.apis[q.new_id].rows("VirtualMachine", None)
 
 
+@pytest.mark.parametrize("kind", ["cache", "clone"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "partial", "other", "cancelled", "changed", "lease_lost"]
+)
+def test_successful_verification_clears_only_its_current_diagnostic(
+    image_case, monkeypatch, kind, outcome
+):
+    from app.services import native_cache_birth, native_clone_lineage
+    from app.services import native_managed_verification as verification
+    from tests.test_native_cache_birth import CreationAdapter
+
+    q = image_case
+    operation = start(q)
+    identity = native_cache_birth.prepare_managed_cache(
+        q.sessions, operation, "image-disk"
+    )
+    native_cache_birth.submit_cache_birth(q.sessions, identity, CreationAdapter(q))
+    code = kind + "_verification_pending"
+    with q.sessions.begin() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation).one()
+        target = deepcopy(row.dispatch_metadata["native_deploy"])
+        # Two subjects ensure success for one cannot clear another's failure.
+        target["sources"]["second"] = deepcopy(next(iter(target["sources"].values())))
+        target.update(
+            phase="initialization-intent",
+            clone_lineages={"first": "one", "second": "two"},
+        )
+        stored = deepcopy(target)
+        if outcome == "changed":
+            stored["phase"] = "runtime-intent"
+        row.dispatch_metadata = {
+            **row.dispatch_metadata,
+            "native_deploy": stored,
+            "native_image_diagnostic": "unrelated_error"
+            if outcome == "other"
+            else code,
+            "cancelled": outcome == "cancelled",
+        }
+    calls = []
+
+    def verified(*args):
+        calls.append(args)
+        if outcome == "partial" and len(calls) == 1:
+            raise ValueError("still pending")
+        return object()
+
+    monkeypatch.setattr(native_cache_birth, "verify_cache_birth", verified)
+    monkeypatch.setattr(native_clone_lineage, "verify_clone", verified)
+    monkeypatch.setattr(verification, "transfer_creation", lambda *args: True)
+    if outcome == "lease_lost":
+
+        def lost():
+            raise RuntimeError("lease lost")
+
+        monkeypatch.setattr(verification, "assert_collection_lease", lost)
+    run = verification.verify_sources if kind == "cache" else verification.verify_clones
+    args = (
+        q.sessions,
+        [(operation, target)],
+        {q.provider_id: q.reader},
+        q.backend,
+        q.pins.initialization_evidence,
+    )
+    if outcome == "lease_lost":
+        with pytest.raises(RuntimeError, match="lease lost"):
+            run(*args)
+    else:
+        run(*args)
+    with q.sessions() as db:
+        row = db.query(QuotaReservation).filter_by(operation_id=operation).one()
+        expected = (
+            None
+            if outcome == "success"
+            else "unrelated_error"
+            if outcome == "other"
+            else code
+        )
+        assert row.dispatch_metadata.get("native_image_diagnostic") == expected
+
+
 def prepare_verified_image_operation(q, monkeypatch, *, publish_initialization=True):
     """Real journals, publication, enrollment, worker and renderer; synthetic I/O."""
     from app.models.kubevirt_cache_birth import NativeCacheBirth

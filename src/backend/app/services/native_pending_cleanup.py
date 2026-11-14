@@ -108,7 +108,10 @@ def prepare(db, project, rows, mode):
         bindings, owned = known_storage(db, project, row, identity, pinned, domain)
     else:
         require_no_known_storage(db, domain.id, pinned)
-    if not domain.latest_report_id:
+    from app.services.kubevirt_storage_reports import report_cursor
+
+    cursor = report_cursor(db, domain, project.id)
+    if not cursor.latest_report_id:
         raise AccountingUnavailable("Pending cleanup enrollment report unavailable")
     action = enforcement._action(
         db,
@@ -139,7 +142,7 @@ def prepare(db, project, rows, mode):
         provider_id=identity["provider_id"],
         domain_id=domain.id,
         enrollment_id=domain.enrollment_id,
-        initial_report_id=domain.latest_report_id,
+        initial_report_id=cursor.latest_report_id,
         root=pinned,
         owned_images=owned,
         bindings=bindings,

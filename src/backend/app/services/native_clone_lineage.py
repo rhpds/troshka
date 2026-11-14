@@ -24,6 +24,7 @@ from app.schemas.native_clone_lineage import (
 )
 from app.services.kubevirt_storage_enrollment import digest, root_identity
 from app.services.native_cache_birth import validated_receipt
+from app.services.native_collection_jobs import assert_collection_lease
 
 
 def _source(db, reference):
@@ -272,6 +273,7 @@ def verify_clone(sessions, lineage_id, adapter):
             ):
                 raise ValueError("concurrent clone lineage changed")
             proof = winner
+        assert_collection_lease()
     return CloneReference(lineage_id=lineage_id, digest=digest(proof))
 
 

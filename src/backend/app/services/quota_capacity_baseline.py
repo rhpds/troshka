@@ -872,6 +872,7 @@ def _cache_only_domains(db, source, now):
     """Retired tenant roots may leave enrolled platform cache, never tenant bytes."""
     from app.models.kubevirt_storage import NativeEnrollment
     from app.services.kubevirt_storage_enrollment import validated_enrollment
+    from app.services.native_collection_shared_storage import reusable_shared_images
 
     active = {r["domain_id"] for r in source["native_roots"]}
     candidates = set(source.get("retired_native_domains", [])) - active
@@ -886,9 +887,11 @@ def _cache_only_domains(db, source, now):
         _require(domain is not None, "Retired native collection domain is missing")
         enrollment = db.get(NativeEnrollment, domain.enrollment_id)
         _require(enrollment is not None, "Retired native enrollment is missing")
-        native._measurement_report(
-            db, domain, [], validated_enrollment(enrollment), now or operations.now()
-        )
+        observed_at = now or operations.now()
+        if reusable_shared_images(db, domain, observed_at) is None:
+            native._measurement_report(
+                db, domain, [], validated_enrollment(enrollment), observed_at
+            )
     return covered
 
 

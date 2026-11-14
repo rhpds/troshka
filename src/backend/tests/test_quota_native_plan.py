@@ -406,7 +406,9 @@ def test_deployment_container_wrappers_match_planned_manifests(
     )
 
 
-def test_native_only_first_deploy_is_denied_before_host_selection(native_target):
+def test_native_first_deploy_without_provider_is_denied_before_host_selection(
+    native_target, monkeypatch
+):
     from app.services.native_managed_power import prepare
     from app.services.quota_operations import select_adapter
 
@@ -414,9 +416,16 @@ def test_native_only_first_deploy_is_denied_before_host_selection(native_target)
     project.provider_id = None
     project.host_id = None
     project.topology["placement"] = {"requires_kubevirt": True}
+    select_host = Mock(
+        side_effect=AssertionError("Host selection preceded provider validation")
+    )
+    monkeypatch.setattr("app.services.placement.find_available_host", select_host)
     assert select_adapter(Mock(), project) == "kubevirt"
-    with pytest.raises(AccountingUnavailable, match="first-deploy.*unavailable"):
+    with pytest.raises(
+        AccountingUnavailable, match="requires the project's selected provider"
+    ):
         prepare(Mock(), project, "deploy")
+    select_host.assert_not_called()
 
 
 def test_aggregate_overflow_is_accounting_unavailable():

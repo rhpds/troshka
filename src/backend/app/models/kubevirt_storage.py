@@ -52,6 +52,32 @@ class NativePoolClaim(Base):
     payload: Mapped[dict] = mapped_column(JSONB)
 
 
+class NativeProjectAttempt(Base):
+    """Durable latest attempt; never fall back after a scoped collection failure."""
+
+    __tablename__ = "native_project_attempts"
+    domain_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    project_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    root_key: Mapped[str] = mapped_column(String(64))
+    enrollment_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
+    latest_report_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    latest_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    conflicted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class NativeSharedObservation(Base):
+    """Latest coordinated installed-identity attempt, independent of disk scans."""
+
+    __tablename__ = "native_shared_observations"
+    domain_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    enrollment_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observation: Mapped[dict | None] = mapped_column(JSONB)
+    observation_digest: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+
+
 class NativeProjectRoot(Base):
     __tablename__ = "native_project_roots"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -60,6 +86,17 @@ class NativeProjectRoot(Base):
     provider_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
     enrollment_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
     payload: Mapped[dict] = mapped_column(JSONB)
+
+
+class NativeSharedStorageObservation(Base):
+    __tablename__ = "native_shared_storage_observations"
+    domain_id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    enrollment_id: Mapped[str] = mapped_column(UUID(as_uuid=False))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    digest: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
 
 
 class NativeRetainedBinding(Base):

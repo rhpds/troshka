@@ -49,6 +49,16 @@ def _save_worker_meta(job):
         pass
 
 
+def worker_queues(profile):
+    if profile == "lifecycle":
+        return ["project_lifecycle", "host_lifecycle", "default"]
+    if profile == "collection":
+        return ["native_cleanup", "native_collection"]
+    if profile == "readiness":
+        return ["native_readiness"]
+    raise ValueError("Unknown RQ worker queue profile")
+
+
 def run_worker():
     """Start an RQ worker that listens on deploy, provision, and default queues."""
     from redis import Redis
@@ -67,7 +77,8 @@ def run_worker():
     get_redis()  # ensure progress keys use Redis, not per-process memory
 
     conn = Redis.from_url(url)
-    queues = ["project_lifecycle", "host_lifecycle", "default"]
+    profile = os.environ.get("TROSHKA_WORKER_PROFILE", "lifecycle")
+    queues = worker_queues(profile)
     worker_name = f"{_POD_NAME}.{os.getpid()}"
 
     if platform.system() == "Darwin":
@@ -106,7 +117,8 @@ def run_worker():
     try:
         from app.services.deploy_service import resume_ops_pod_monitors
 
-        resume_ops_pod_monitors()
+        if profile == "lifecycle":
+            resume_ops_pod_monitors()
     except Exception:
         _logger.exception("resume_ops_pod_monitors on startup failed")
 
@@ -114,7 +126,8 @@ def run_worker():
     try:
         from app.services.workloads.run_service import resume_workload_monitors
 
-        resume_workload_monitors()
+        if profile == "lifecycle":
+            resume_workload_monitors()
     except Exception:
         _logger.exception("resume_workload_monitors on startup failed")
 

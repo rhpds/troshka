@@ -9,6 +9,15 @@ metadata:
     app.kubernetes.io/component: backend
 data:
   config.yaml: |
+    native_collection:
+      enabled: {{ .Values.nativeCollection.enabled }}
+      interval_seconds: {{ .Values.nativeCollection.intervalSeconds }}
+      domain_interval_seconds: {{ .Values.nativeCollection.domainIntervalSeconds }}
+      readiness_interval_seconds: {{ .Values.nativeCollection.readinessIntervalSeconds }}
+      readiness_timeout_seconds: {{ .Values.nativeCollection.readinessTimeoutSeconds }}
+      job_timeout_seconds: {{ .Values.nativeCollection.jobTimeoutSeconds }}
+      provider_slots: {{ .Values.nativeCollection.providerSlots }}
+      profiles: {{ .Values.nativeCollection.profiles | toJson }}
     app:
       name: troshka
       port: 8200

@@ -1,0 +1,3 @@
+{{- if and .Values.deploy .Values.nativeCollection.worker.enabled }}
+{{ include "troshka.nativeWorker" (dict "root" . "worker" .Values.nativeCollection.worker "profile" "collection" "timeout" .Values.nativeCollection.jobTimeoutSeconds) }}
+{{- end }}

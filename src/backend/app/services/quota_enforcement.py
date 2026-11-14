@@ -344,6 +344,7 @@ def _ensure_run(db, project, cause_ids, now):
         changed or _has_compute(db, project.id)
     ):
         run.state, run.next_attempt_at = "pending", None
+        run.attempts = 0
         run.details = {}
 
 
@@ -370,6 +371,7 @@ def request_native_stop(db, project, off_action="stop", *, for_cleanup=False):
         db, "project", project.id, 0, "current", "stop_run", 100, _now(), project.id
     )
     if run.state in {"completed", "cancelled"} and _has_compute(db, project.id):
+        run.attempts = 0
         run.details = {}
     if run.state in {"completed", "cancelled"}:
         # A repeated stop of already off compute reobserves the same episode.

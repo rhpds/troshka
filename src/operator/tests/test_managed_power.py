@@ -191,6 +191,44 @@ def test_cleanup_preserves_exact_openshift_bootstrap_and_blocks_changed_ownershi
     assert not api.calls
 
 
+@pytest.mark.parametrize("change", ["original", "owner", "namespace", "binding", "kind", "root_missing"])
+def test_cleanup_accepts_only_bound_pull_secret_of_project_service_account(change):
+    parent = resource("TroshkaProject", "project")
+    sa = resource("ServiceAccount", "troshka-vnc", parent)
+    secret = resource("Secret", "troshka-vnc-dockercfg-original")
+    secret["type"] = "kubernetes.io/dockercfg"
+    sa["metadata"]["annotations"] = {"openshift.io/internal-registry-pull-secret-ref": secret["metadata"]["name"]}
+    secret["metadata"].update(annotations={"openshift.io/internal-registry-auth-token.service-account": "troshka-vnc", "openshift.io/internal-registry-auth-token.binding": "bound"}, ownerReferences=[{"apiVersion": "v1", "kind": "ServiceAccount", "name": "troshka-vnc", "uid": sa["metadata"]["uid"]}])
+    if change == "owner":
+        sa["metadata"]["ownerReferences"][0]["uid"] = "foreign"
+    elif change == "namespace":
+        sa["metadata"]["namespace"] = "foreign"
+    elif change == "binding":
+        secret["metadata"]["annotations"]["openshift.io/internal-registry-auth-token.binding"] = "unbound"
+    elif change == "kind":
+        sa["kind"] = "ConfigMap"
+    by_uid = {v["metadata"]["uid"]: v for v in [sa, secret, parent]}
+    if change == "root_missing":
+        del by_uid[parent["metadata"]["uid"]]
+    grant = power.cleanup_bootstrap(secret, by_uid)
+    if change != "original":
+        assert grant is None
+        return
+    assert grant and grant["service_account_uid"] == sa["metadata"]["uid"]
+    objects = [{"kind": v["kind"], "name": v["metadata"]["name"], "namespace": "ns", "uid": v["metadata"]["uid"], "namespace_bootstrap": grant if v is secret else None} for v in [sa, secret]]
+    payload = {"version": "native-cleanup-v1", "namespace_mode": "managed", "intent_id": "cleanup-1", "generation": "allocation-1", "root": {"namespace": "ns", "namespace_uid": "ns-uid", "project_cr_uid": parent["metadata"]["uid"], "deployment_generation": 1}, "stop_proof": {"request_id": "stop-1", "generation": "allocation-1"}, "objects": objects, "inventory_digest": power.digest(sorted(objects, key=lambda v: (v["kind"], v["name"])))}
+    parent["metadata"]["annotations"] = {power.CLEANUP_ANNOTATION: json.dumps(payload), power.ANNOTATION: json.dumps({"version": 1, "mode": "stopped", "requestId": "stop-1", "allocationGeneration": "allocation-1"})}
+    api = FakeAPI([parent, sa, secret, resource("Namespace", "ns")])
+    def delete_account(method, kind, namespace, name, body):
+        assert (method, kind, namespace, name) == ("DELETE", "ServiceAccount", "ns", "troshka-vnc")
+        assert body["preconditions"] == {"uid": sa["metadata"]["uid"], "resourceVersion": "1"}
+        api.calls.append((method, (kind, name), deepcopy(body)))
+        return {"kind": "Status", "status": "Success"}
+    api.request = delete_account
+    assert power.cleanup_delete(api, parent) is False
+    assert [(method, target) for method, target, _ in api.calls] == [("DELETE", ("ServiceAccount", "troshka-vnc"))]
+
+
 @pytest.mark.parametrize("name", ["kube-root-ca.crt", "openshift-service-ca.crt", "odh-kserve-custom-ca-bundle"])
 @pytest.mark.parametrize("change", ["original", "annotation", "foreign", "replacement"])
 def test_cleanup_preserves_original_ca_publishers_until_namespace_deletion(name, change):

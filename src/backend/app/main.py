@@ -570,12 +570,16 @@ async def lifespan(app):
     from app.services.database_access import start_access_bootstrap
 
     access_bootstrap_stop = start_access_bootstrap()
+    from app.services.native_collection_jobs import start_collection_dispatcher
+
+    collection_dispatch_stop = start_collection_dispatcher()
 
     audit("lifespan startup complete")
     yield
 
     audit("lifespan shutdown begin")
     access_bootstrap_stop.set()
+    collection_dispatch_stop.set()
     # Shutdown
     from app.core.redis import close_redis
 
@@ -851,7 +855,14 @@ def _collect_queue_info(r):
     from rq import Queue
 
     queues_info = []
-    for qname in ["project_lifecycle", "host_lifecycle", "default"]:
+    for qname in [
+        "project_lifecycle",
+        "host_lifecycle",
+        "default",
+        "native_cleanup",
+        "native_collection",
+        "native_readiness",
+    ]:
         try:
             q = Queue(qname, connection=r)
             queues_info.append(

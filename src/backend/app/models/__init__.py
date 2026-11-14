@@ -9,9 +9,12 @@ from app.models.kubevirt_storage import (
     NativeEnrollment,
     NativeEnrollmentRequest,
     NativePoolClaim,
+    NativeProjectAttempt,
     NativeProjectRoot,
     NativeReportingTarget,
     NativeRetainedBinding,
+    NativeSharedObservation,
+    NativeSharedStorageObservation,
     NativeStorageSnapshot,
 )
 from app.models.library import (
@@ -63,6 +66,9 @@ __all__ = [
     "NativeEnrollmentRequest",
     "NativeEnrollment",
     "NativeCollectionDomain",
+    "NativeProjectAttempt",
+    "NativeSharedObservation",
+    "NativeSharedStorageObservation",
     "NativePoolClaim",
     "NativeProjectRoot",
     "NativeRetainedBinding",

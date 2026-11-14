@@ -16,10 +16,13 @@ from app.schemas.kubevirt_storage import (
 from app.services import quota_cleanup as cleanup
 from app.services import quota_operations as operations
 from app.services.kubevirt_storage_enrollment import digest, utc
+from app.services.kubevirt_storage_reports import report_cursor
 from app.services.kubevirt_storage_usage import MAX_REPORT_AGE
+from app.services.native_collection_jobs import assert_collection_lease
 
 
 def _authorized_report(db, intent, proof, report):
+    assert_collection_lease()
     domain = (
         db.query(NativeCollectionDomain)
         .filter_by(id=str(intent.domain_id))
@@ -27,11 +30,18 @@ def _authorized_report(db, intent, proof, report):
         .one()
     )
     saved = db.get(NativeStorageSnapshot, str(report.report_id))
+    cursor = report_cursor(db, domain, intent.root.project_id)
     now = operations.now()
     if (
         saved is None
         or not saved.accepted
-        or domain.latest_report_id != saved.id
+        or cursor.latest_report_id != saved.id
+        or cursor.conflicted
+        or saved.enrollment_id != domain.enrollment_id
+        or (
+            report.project_scope is not None
+            and report.project_scope != intent.root.project_id
+        )
         or saved.domain_id != str(intent.domain_id)
         or saved.digest != digest(report)
         or not 0
@@ -123,18 +133,23 @@ def _remove_one(sessions, report, proof, readers, backend, key):
         intent = cleanup._save_native(
             db, intent, trash_removals={**intent.trash_removals, receipt_key: receipt}
         )
+        db.flush()
+        assert_collection_lease()
         db.commit()  # Persist before submission; ambiguity must never replay a removal.
         _, _, intent = cleanup._checked_native(
             db, str(proof.root.project_id), str(proof.intent_id)
         )
         _authorized_report(db, intent, proof, report)
         _namespace_absent(reader, intent)
+        assert_collection_lease()
         status = "uncertain"
         try:
             result = backend.remove_trash(key)
             if result.status == "complete":
                 status = "accepted"
         finally:
+            # Even an expired execution must retain the result of an action it
+            # already submitted. This journal never proves accounting release.
             cleanup._save_native(
                 db,
                 intent,
@@ -144,6 +159,7 @@ def _remove_one(sessions, report, proof, readers, backend, key):
                 },
             )
             db.commit()
+        assert_collection_lease()
 
 
 def reconcile(sessions, report, readers, backend):
@@ -153,6 +169,7 @@ def reconcile(sessions, report, readers, backend):
             try:
                 _remove_one(sessions, report, proof, readers, backend, key)
             except Exception:
+                assert_collection_lease()
                 # Keep the durable pending/submitted state and full storage charge.
                 # A later complete collector report is the only settlement authority.
                 continue

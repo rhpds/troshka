@@ -7,7 +7,8 @@ uses a separate read-only repeatable-read transaction, never caller quota writes
 
 from contextlib import contextmanager
 from datetime import timedelta
-from typing import TypedDict
+from types import SimpleNamespace
+from typing import TypedDict, cast
 
 from fastapi import HTTPException
 from sqlalchemy.engine import Engine
@@ -24,10 +25,19 @@ from app.models.kubevirt_storage import (
 from app.models.project import Project
 from app.models.provider import Provider
 from app.models.user import User
-from app.schemas.kubevirt_storage import NativeStorageReport, NativeStorageUsage
+from app.schemas.kubevirt_storage import (
+    NativeStorageReport,
+    NativeStorageUsage,
+    PoolAllocation,
+    PoolKey,
+)
 from app.services.kubevirt_storage_enrollment import utc
 from app.services.kubevirt_storage_graph import attribute_graph
-from app.services.kubevirt_storage_reports import normalized_inventory
+from app.services.kubevirt_storage_reports import (
+    normalized_inventory,
+    report_cursor,
+    scoped_retained,
+)
 from app.services.quota_policy import authorize_policy
 
 MAX_REPORT_AGE = timedelta(minutes=15)
@@ -107,13 +117,16 @@ def _project_membership(db, scope, identity):
     return query.all()
 
 
-def domain_evidence(db, domain, roots):
+def domain_evidence(db, domain, roots, project_id=None):
     """Reconstruct actor-independent graph evidence for a domain's latest attempt."""
-    if domain.conflicted:
+    from app.services.quota_cleanup import active_roots, settled_root_keys
+
+    cursor = report_cursor(db, domain, project_id)
+    if cursor.conflicted:
         return None, None, {"collection_domain_conflict"}
     report = (
-        db.get(NativeStorageSnapshot, domain.latest_report_id)
-        if domain.latest_report_id
+        db.get(NativeStorageSnapshot, cursor.latest_report_id)
+        if cursor.latest_report_id
         else None
     )
     if report is None:
@@ -121,7 +134,19 @@ def domain_evidence(db, domain, roots):
     if not report.accepted:
         return None, None, set(report.reason_codes)
     source = NativeStorageReport.model_validate(report.payload)
-    from app.services.quota_cleanup import active_roots, settled_root_keys
+    if report.enrollment_id != domain.enrollment_id:
+        return None, source, {"report_unavailable"}
+    if source.project_scope is not None:
+        if str(source.project_scope) != str(project_id):
+            return None, source, {"report_unavailable"}
+        roots = (
+            db.query(NativeProjectRoot)
+            .filter_by(domain_id=domain.id, project_id=str(project_id))
+            .all()
+        )
+        roots = active_roots(db, roots)
+        if len(roots) != 1 or getattr(cursor, "root_key", None) != roots[0].key:
+            return None, source, {"report_unavailable"}
 
     roots = active_roots(db, roots)
     retired = settled_root_keys(db)
@@ -130,6 +155,7 @@ def domain_evidence(db, domain, roots):
         for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
         if b.root_key not in retired
     ]
+    retained = scoped_retained(source, roots, retained)
     inventory = normalized_inventory(source, roots, retained)
     from app.services.kubevirt_storage_enrollment import root_key
 
@@ -154,23 +180,66 @@ def domain_evidence(db, domain, roots):
     return attribute_graph(inventory, images, clone_lineages=lineages), source, set()
 
 
-def _collect_evidence(db, roots, domains):
+def _shared_platform(db, domain, roots, now):
+    from app.schemas.quota import AccountingUnavailable
+    from app.services.native_collection_shared_storage import reusable_shared_images
+
+    try:
+        shared = reusable_shared_images(db, domain, now)
+    except AccountingUnavailable:
+        return [], None, {"report_unavailable"}
+    if shared is None:
+        graph, source, failures = domain_evidence(db, domain, roots)
+        return graph.platform_pools if graph is not None else [], source, failures
+    images, started = shared
+    from app.models.kubevirt_storage import NativeEnrollment
+    from app.services.kubevirt_storage_enrollment import validated_enrollment
+
+    manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
+    totals = dict.fromkeys(manifest.pins.pool_keys, 0)
+    for image in images:
+        key = PoolKey(ceph_fsid=image.key.ceph_fsid, pool_id=image.key.pool_id)
+        # reusable_shared_images rejects observations without measured bytes.
+        totals[key] = totals.get(key, 0) + cast(int, image.allocated_bytes)
+        if totals[key] > MAX_BYTES:
+            return [], None, {"aggregation_overflow"}
+    pools = [
+        PoolAllocation(pool_key=k, allocated_bytes=v, known_allocated_bytes=v)
+        for k, v in totals.items()
+    ]
+    return pools, SimpleNamespace(started_at=started, images=images), set()
+
+
+def _collect_evidence(db, roots, domains, now):
     allocations, platform, sources, reasons = {}, [], {}, {}
     for domain in domains:
         domain_roots = [r for r in roots if r.domain_id == domain.id]
-        graph, source, failures = domain_evidence(db, domain, domain_roots)
-        reasons[domain.id] = failures
-        if graph is None:
-            continue
-        platform.extend(graph.platform_pools)
-        sources[domain.id] = source
-        for project in graph.projects:
-            identity = str(project.project_id)
+        shared_pools, shared_source, shared_failures = _shared_platform(
+            db, domain, domain_roots, now
+        )
+        reasons[domain.id] = shared_failures
+        if shared_source is not None:
+            platform.extend(shared_pools)
+            sources[domain.id] = shared_source
+        for identity in {r.project_id for r in domain_roots}:
+            key = (domain.id, identity)
+            graph, source, failures = domain_evidence(
+                db, domain, domain_roots, project_id=identity
+            )
+            reasons[key] = failures
+            if graph is None:
+                continue
+            sources[key] = source
+            project = next(
+                (p for p in graph.projects if str(p.project_id) == identity), None
+            )
+            if project is None:
+                continue
             if identity in allocations:
                 # Multiple namespaces/domains for a project need explicit resolution.
                 allocations[identity] = None
             else:
-                allocations[identity] = (project, domain.id)
+                allocations[identity] = (project, key)
     return allocations, platform, sources, reasons
 
 
@@ -178,7 +247,7 @@ def _scope_values(expected, roots, evidence, now):
     allocations, _, sources, failures = evidence
     known, covered, observed, reasons = 0, 0, [], set()
     provisioned: list[int | None] = []
-    domains = {r.domain_id for r in roots if r.project_id in expected}
+    domains = {(r.domain_id, r.project_id) for r in roots if r.project_id in expected}
     for domain in domains:
         reasons |= failures.get(domain, {"report_unavailable"})
     for identity in sorted(expected):
@@ -226,11 +295,13 @@ def _admin_fields(actor, evidence, orphan_ids, now) -> _AdminFields:
     # Physical pool claims prevent overlapping domains; Task 1 deduplicates images.
     incomplete = (
         not platform
-        or any(failures.values())
+        or any(value for key, value in failures.items() if isinstance(key, str))
         or any(p.allocated_bytes is None for p in platform)
     )
     stale = any(
-        now - _oldest_evidence(source) > MAX_REPORT_AGE for source in sources.values()
+        now - _oldest_evidence(source) > MAX_REPORT_AGE
+        for key, source in sources.items()
+        if isinstance(key, str)
     )
     platform_total = (
         None if incomplete or stale else sum(p.allocated_bytes for p in platform)
@@ -285,7 +356,7 @@ def _read_authorized(db, actor_id, scope, scope_id, now):
         .filter(NativeCollectionDomain.id.in_(domain_ids))
         .all()
     )
-    evidence = _collect_evidence(db, roots, domains)
+    evidence = _collect_evidence(db, roots, domains, now)
     known, provisioned, covered, observed, reasons = _scope_values(
         expected, roots, evidence, now
     )

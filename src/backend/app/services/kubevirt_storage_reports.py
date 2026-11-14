@@ -5,6 +5,7 @@ from app.models.host import Host
 from app.models.kubevirt_storage import (
     NativeCollectionDomain,
     NativeEnrollment,
+    NativeProjectAttempt,
     NativeProjectRoot,
     NativeRetainedBinding,
     NativeStorageSnapshot,
@@ -30,6 +31,7 @@ from app.services.kubevirt_storage_inventory import inventory_digest
 def report_inventory(report):
     """Reconstruct all original evidence, including unresolved CSI snapshots."""
     return NativeInventory(
+        project_scope=report.project_scope,
         collector_id=report.collector_id,
         collected_at=report.started_at,
         project_roots=report.project_roots,
@@ -117,6 +119,19 @@ def binding_key(binding):
     return digest(identity)
 
 
+def scoped_retained(report, roots, retained):
+    """Require private retained identities and only this scan's shared sources.
+
+    Protected lineage validation independently requires every reachable source;
+    unrelated platform cache identities must not couple project readiness.
+    """
+    if report.project_scope is None:
+        return retained
+    keys = {r.key for r in roots}
+    caches = {binding_key(b) for b in report.cache_bindings}
+    return [b for b in retained if b.root_key in keys or b.key in caches]
+
+
 def _binding_identity(binding):
     identity = binding.model_dump(
         mode="json", exclude={"provisioned_bytes", "owner_reference_uids"}
@@ -156,6 +171,14 @@ def _domain_errors(report, manifest, roots):
         saved = enrolled.get(root_key(root))
         if saved is None or saved.payload != root_identity(root):
             errors.add("unenrolled_project_root")
+    if report.project_scope is not None:
+        pinned = {root_key(r): r for r in manifest.pins.project_roots}
+        supplied = [
+            *report.project_roots,
+            *[b.root for b in report.volume_bindings + report.retained_bindings],
+        ]
+        if any(pinned.get(root_key(r)) != r for r in supplied):
+            errors.add("project_generation_mismatch")
     clusters = {p.cluster_key for p in manifest.pins.provider_clusters}
     pools = set(manifest.pins.pool_keys)
     if not set(report.cluster_keys) <= clusters or not set(report.pool_keys) <= pools:
@@ -315,6 +338,29 @@ def _persist_bindings(db, report, domain_id, clone_lineages=(), cache_receipts=(
         db.flush()
 
 
+def report_cursor(db, domain, project_id=None):
+    """Select a durable project attempt, with fallback only before its first scan."""
+    if project_id is None:
+        return domain
+    return db.get(NativeProjectAttempt, (domain.id, str(project_id))) or domain
+
+
+def _project_cursor(db, domain, root):
+    cursor = db.get(NativeProjectAttempt, (domain.id, root.project_id))
+    if cursor is None:
+        cursor = NativeProjectAttempt(
+            domain_id=domain.id,
+            project_id=root.project_id,
+            root_key=root.key,
+            enrollment_id=domain.enrollment_id,
+            conflicted=domain.conflicted,
+            latest_report_id=domain.latest_report_id,
+            latest_started_at=domain.latest_started_at,
+        )
+        db.add(cursor)
+    return cursor
+
+
 def _advance_attempt(db, domain, snapshot):
     if domain.latest_started_at is None or utc(snapshot.started_at) > utc(
         domain.latest_started_at
@@ -377,17 +423,25 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
     )
     if domain.enrollment_id != enrollment_id:
         raise ValueError("obsolete enrollment version")
+    from app.services.native_collection_jobs import assert_collection_lease
+
+    assert_collection_lease()
     from app.services.quota_cleanup import active_roots, settled_root_keys
 
     retired = settled_root_keys(db)
     roots = active_roots(
         db, db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
     )
+    if report.project_scope is not None:
+        roots = [r for r in roots if r.project_id == str(report.project_scope)]
+        if len(roots) != 1:
+            raise ValueError("project scope requires one enrolled root")
     retained = [
         b
         for b in db.query(NativeRetainedBinding).filter_by(domain_id=domain.id)
         if b.root_key not in retired
     ]
+    retained = scoped_retained(report, roots, retained)
     inventory = normalized_inventory(report, roots, retained)
     from app.services.native_clone_lineage import resolve_lineages
 
@@ -397,7 +451,7 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
     except ValueError:
         clone_lineages, clone_errors = [], {"managed_clone_authority_unverified"}
     # Validate the recomputed graph's exact quantities before accepting evidence.
-    attribute_graph(inventory, report.images, clone_lineages=clone_lineages)
+    graph = attribute_graph(inventory, report.images, clone_lineages=clone_lineages)
     errors = _domain_errors(report, manifest, roots) | _live_identity_errors(
         db, roots, manifest
     )
@@ -422,7 +476,29 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
             db, report, domain.id, clone_lineages, manifest.pins.cache_birth_receipts
         )
     db.flush()
-    _advance_attempt(db, domain, snapshot)
+    assert_collection_lease()
+    if report.project_scope is not None:
+        cursor = _project_cursor(db, domain, roots[0])
+        _advance_attempt(db, cursor, snapshot)
+        if cursor.latest_report_id == snapshot.id:
+            cursor.root_key = roots[0].key
+            cursor.enrollment_id = domain.enrollment_id
+    else:
+        _advance_attempt(db, domain, snapshot)
+        # Complete domain observations deliberately restore scoped cursors during
+        # rollback; failed domain scans never invalidate independent project scans.
+        if (
+            not errors
+            and not report.collection_errors
+            and all(p.coverage == "complete" and not p.blockers for p in graph.projects)
+        ):
+            for root in roots:
+                cursor = report_cursor(db, domain, root.project_id)
+                if cursor is not domain:
+                    _advance_attempt(db, cursor, snapshot)
+                    if cursor.latest_report_id == snapshot.id:
+                        cursor.root_key = root.key
+                        cursor.enrollment_id = domain.enrollment_id
     db.flush()
     return identity
 
@@ -438,14 +514,21 @@ def _retiring_errors(db, report, domain):
     errors = set()
     for proof in report.retiring_roots:
         intent = intents.get(proof.intent_id)
-        if intent is None or (
-            proof.operation_id != intent.operation_id
-            or proof.root != intent.root
-            or proof.inventory_digest != intent.inventory_digest
-            or set(proof.owned_images) != set(intent.owned_images)
-            or proof.observed_at < intent.teardown_at
-            or proof.observed_at < report.started_at
-            or proof.observed_at > report.completed_at
+        if (
+            (
+                report.project_scope is not None
+                and proof.root.project_id != report.project_scope
+            )
+            or intent is None
+            or (
+                proof.operation_id != intent.operation_id
+                or proof.root != intent.root
+                or proof.inventory_digest != intent.inventory_digest
+                or set(proof.owned_images) != set(intent.owned_images)
+                or proof.observed_at < intent.teardown_at
+                or proof.observed_at < report.started_at
+                or proof.observed_at > report.completed_at
+            )
         ):
             errors.add("retiring_root_authorization_changed")
     reported = {p.intent_id for p in report.retiring_roots}

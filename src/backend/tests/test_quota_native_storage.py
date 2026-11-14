@@ -1051,7 +1051,7 @@ def test_stopped_storage_and_operation_identities_are_retained(native_ledger):
         assert root.owner_id == q.owner_id and root.organization_id == q.org_id
 
 
-def test_complete_measurement_does_not_enable_native_growth_or_stop(
+def test_complete_measurement_does_not_supply_deploy_provider_or_stop_authority(
     native_ledger, monkeypatch
 ):
     q = native_ledger
@@ -1064,7 +1064,9 @@ def test_complete_measurement_does_not_enable_native_growth_or_stop(
 
         with pytest.raises(HTTPException) as error:
             operations.prepare(db, project, "deploy")
-        assert "first-deploy" in error.value.detail["message"]
+        assert (
+            "requires the project's selected provider" in error.value.detail["message"]
+        )
         db.add(QuotaPolicy(scope="project", scope_id=project.id, storage_bytes=30))
         db.commit()
         enforcement.evaluate(db, NOW)

@@ -12,6 +12,11 @@ rules:
     resources: ["deployments"]
     resourceNames: ["troshka-backend", "troshka-frontend", "troshka-worker", "troshka-tunnel"]
     verbs: ["get", "patch"]
+  # Capacity reporting reserves these pools but must not scale/restart them.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["troshka-collection-worker", "troshka-readiness-worker"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]

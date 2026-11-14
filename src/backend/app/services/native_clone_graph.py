@@ -59,6 +59,53 @@ def _record_parent(expected, verified, key, parent, verified_at):
     return compatible
 
 
+def _scoped_proofs(inventory, proofs):
+    """Keep sibling source edges, without requiring sibling private observations."""
+    scope = inventory.project_scope
+    if scope is None:
+        return proofs, False
+    sources = {p.source.image_key for p in proofs if p.binding.root.project_id == scope}
+    relevant = [p for p in proofs if p.source.image_key in sources]
+    owners = defaultdict(set)
+    for proof in proofs:
+        for key in (proof.binding.image_key, proof.intermediate):
+            owners[key].add(proof.binding.root.project_id)
+    invalid = any(
+        scope in projects and len(projects) != 1 for projects in owners.values()
+    )
+    invalid |= bool(sources & owners.keys())
+    invalid |= any(scope in owners.get(p.source.image_key, set()) for p in proofs)
+    return relevant, invalid
+
+
+def _lineage_expectations(
+    inventory, observations, proof, expected, verified, snapshots, children, own
+):
+    head, middle, source = (
+        proof.binding.image_key,
+        proof.intermediate,
+        proof.source.image_key,
+    )
+    valid = _record_parent(expected, verified, source, None, proof.verified_at)
+    if own and _retired_clone(inventory, observations, proof):
+        # Only confirmed absence of both private images retires their edges.
+        # The obsolete source snapshot must disappear too.
+        return valid
+    snapshots[source].add(proof.intermediate_parent)
+    children[source].add(middle)
+    if own:
+        for key, parent in (
+            (head, proof.head_parent),
+            (middle, proof.intermediate_parent),
+        ):
+            valid &= _record_parent(expected, verified, key, parent, proof.verified_at)
+        snapshots[middle].add(proof.head_parent)
+        children[middle].add(head)
+        snapshots[head]  # Head must stay snapshot-free.
+        children[head]
+    return valid
+
+
 def authorize_graph(inventory, observations, proofs):
     """Return exact snapshot-bearing subjects or a conservative global blocker.
 
@@ -73,41 +120,18 @@ def authorize_graph(inventory, observations, proofs):
         for b in inventory.volume_bindings + inventory.retained_bindings
     ]
     caches = [binding_identity(b) for b in inventory.cache_bindings]
-    invalid = False
+    proofs, invalid = _scoped_proofs(inventory, proofs)
     for proof in proofs:
-        head, middle, source = (
-            proof.binding.image_key,
-            proof.intermediate,
-            proof.source.image_key,
-        )
-        private.add(middle)
+        own = inventory.project_scope in (None, proof.binding.root.project_id)
+        if own:
+            private.add(proof.intermediate)
         if (
-            binding_identity(proof.binding) not in bindings
-            or binding_identity(proof.source) not in caches
-        ):
+            own and binding_identity(proof.binding) not in bindings
+        ) or binding_identity(proof.source) not in caches:
             invalid = True
-        if _retired_clone(inventory, observations, proof):
-            # Only confirmed absence of both private images retires their edges.
-            # The shared source remains live. Its obsolete snapshot must also
-            # disappear so surviving clones stay verifiable after settlement.
-            invalid |= not _record_parent(
-                expected, verified, source, None, proof.verified_at
-            )
-            continue
-        for key, parent in (
-            (head, proof.head_parent),
-            (middle, proof.intermediate_parent),
-            (source, None),
-        ):
-            invalid |= not _record_parent(
-                expected, verified, key, parent, proof.verified_at
-            )
-        snapshots[middle].add(proof.head_parent)
-        snapshots[source].add(proof.intermediate_parent)
-        snapshots[head]  # Head must stay snapshot-free.
-        children[middle].add(head)
-        children[source].add(middle)
-        children[head]
+        invalid |= not _lineage_expectations(
+            inventory, observations, proof, expected, verified, snapshots, children, own
+        )
     for key, parent in expected.items():
         if not _current_subject_matches(
             observations.get(key),

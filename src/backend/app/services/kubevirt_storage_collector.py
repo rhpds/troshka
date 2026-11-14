@@ -304,7 +304,11 @@ def _collect_images(
         images.append(image)
         if image.parent:
             queue.append((image.parent.image_key, depth + 1))
-        queue.extend((child, depth + 1) for child in image.children)
+        # Scoped jobs inspect exact child metadata but never follow descendants.
+        # Private descendants must already be reachable from enrolled bindings;
+        # graph authorization rejects unknown consumers without measuring them.
+        if inventory.project_scope is None:
+            queue.extend((child, depth + 1) for child in image.children)
     return images
 
 
@@ -479,6 +483,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         **attributed.model_dump(exclude={"projects"}),
         projects=projects,
         report_id=uuid4(),
+        project_scope=inventory.project_scope,
         collector_id=inventory.collector_id,
         started_at=started,
         completed_at=clock(),

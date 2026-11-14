@@ -1,0 +1,4 @@
+{{- if and .Values.deploy .Values.nativeCollection.readinessWorker.enabled }}
+{{- $worker := mergeOverwrite (deepCopy .Values.nativeCollection.worker) .Values.nativeCollection.readinessWorker }}
+{{ include "troshka.nativeWorker" (dict "root" . "worker" $worker "profile" "readiness" "timeout" .Values.nativeCollection.readinessTimeoutSeconds) }}
+{{- end }}

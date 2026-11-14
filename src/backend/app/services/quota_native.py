@@ -144,7 +144,7 @@ def _measurement_binding(db, project, root, domain, identity):
     return host, provider, pinned, manifest
 
 
-def _measurement_report(db, domain, roots, manifest, now):
+def _measurement_report(db, domain, roots, manifest, now, project_id=None):
     from app.models.kubevirt_storage import NativeStorageSnapshot
     from app.services.kubevirt_storage_enrollment import digest, root_key, utc
     from app.services.kubevirt_storage_usage import MAX_REPORT_AGE, domain_evidence
@@ -152,10 +152,15 @@ def _measurement_report(db, domain, roots, manifest, now):
 
     roots = active_roots(db, roots)
     retired = settled_root_keys(db)
-    graph, source, failures = domain_evidence(db, domain, roots)
-    report = db.get(NativeStorageSnapshot, domain.latest_report_id) if source else None
+    from app.services.kubevirt_storage_reports import report_cursor
+
+    cursor = report_cursor(db, domain, project_id)
+    graph, source, failures = domain_evidence(db, domain, roots, project_id=project_id)
+    report = db.get(NativeStorageSnapshot, cursor.latest_report_id) if source else None
     if failures or graph is None or source is None or report is None:
         raise AccountingUnavailable("Native latest collection attempt is unavailable")
+    if source.project_scope is not None:
+        roots = [r for r in roots if r.project_id == str(project_id)]
     if (
         {r.key for r in roots}
         != {root_key(r) for r in source.project_roots if root_key(r) not in retired}
@@ -168,7 +173,7 @@ def _measurement_report(db, domain, roots, manifest, now):
         or report.enrollment_id != domain.enrollment_id
         or str(source.report_id) != report.id
         or digest(source) != report.digest
-        or utc(domain.latest_started_at) != utc(report.started_at)
+        or utc(cursor.latest_started_at) != utc(report.started_at)
         or utc(source.started_at) != utc(report.started_at)
         or utc(source.completed_at) != utc(report.completed_at)
     ):
@@ -176,10 +181,8 @@ def _measurement_report(db, domain, roots, manifest, now):
     times = [utc(source.started_at), *[utc(i.collected_at) for i in source.images]]
     if not (
         min(times) >= utc(now) - MAX_REPORT_AGE
-        and utc(source.started_at)
-        <= min(times)
-        <= max(times)
-        <= utc(source.completed_at)
+        and utc(source.started_at) <= min(times)
+        and min(times) <= max(times) <= utc(source.completed_at)
         and utc(source.completed_at) <= utc(report.imported_at) <= utc(now)
     ):
         raise AccountingUnavailable(
@@ -213,7 +216,7 @@ def storage_measurement(db, project, generation_id, identity, now):
         )
         roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
         graph, source, report, observed = _measurement_report(
-            db, domain, roots, manifest, now
+            db, domain, roots, manifest, now, project_id=project.id
         )
         supplied = [
             r
