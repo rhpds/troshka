@@ -132,7 +132,9 @@ def prepare(db, project, *, host_id):
     host, provider = selected_host(db, project, host_id)
     from app.services.quota_capacity_baseline import _empty
 
-    if not _empty(db, project, operations._rows(db, project.id)):
+    if not _empty(
+        db, project, operations.current_generation(operations._rows(db, project.id))
+    ):
         raise AccountingUnavailable("Native deployment requires a verified empty draft")
     domain, manifest, profile, observation = initialization.current(
         db, provider.id, operations.now()

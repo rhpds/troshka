@@ -93,6 +93,52 @@ def test_api_unclaimed_undeploy_fences_stale_delivery(unclaimed, monkeypatch, st
         assert db.get(Project, q.new_id).state == "draft"
 
 
+@pytest.mark.parametrize("blocker", [None, "pending", "observed"])
+def test_actual_deploy_api_after_unclaimed_undeploy(unclaimed, monkeypatch, blocker):
+    q = unclaimed
+    queued = []
+    monkeypatch.setattr(
+        "app.core.redis.enqueue_job",
+        lambda fn, *args, **kwargs: queued.append((fn, args, kwargs)),
+    )
+    with q.sessions() as db:
+        actor = db.get(User, q.owner_id)
+        actor.role = "admin"
+        db.commit()
+        assert projects.undeploy_project(q.new_id, actor, db) == {"status": "draft"}
+        original = (
+            db.query(QuotaReservation).filter_by(operation_id=q.operation_id).one()
+        )
+        assert original.state == "confirmed" and not any(original.observed.values())
+        if blocker == "pending":
+            original.state = "pending"
+        elif blocker == "observed":
+            original.observed = {**original.observed, "storage_bytes": 1}
+        db.commit()
+        history = deepcopy(original.dispatch_metadata)
+        if blocker:
+            with pytest.raises(HTTPException, match="verified empty draft"):
+                projects.deploy_project(q.new_id, actor, db, host_id=q.host_id)
+            db.rollback()
+            assert not queued
+            assert (
+                db.query(QuotaReservation).filter_by(project_id=q.new_id).count() == 1
+            )
+            return
+        result = projects.deploy_project(q.new_id, actor, db, host_id=q.host_id)
+        assert result["status"] == "deploying" and result["host_id"] == q.host_id
+        rows = operations._rows(db, q.new_id)
+        assert len(rows) == 2
+        current = operations.current_generation(rows)
+        assert len(current) == 1 and current[0].operation_id != q.operation_id
+        assert current[0].state == "pending"
+        assert current[0].dispatch_metadata["native_deploy"]["phase"] == "reserved"
+        assert queued[0][2]["quota_operation_id"] == current[0].operation_id
+        assert original.dispatch_metadata == history
+        assert db.get(Project, q.new_id).owner_id == q.owner_id
+        assert db.get(Project, q.new_id).topology == q.topology
+
+
 @pytest.mark.parametrize(
     "condition",
     [
