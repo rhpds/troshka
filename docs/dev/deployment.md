@@ -37,6 +37,12 @@ plan update. Toolbox exec carries Ceph privileges; the API cannot restrict the
 commands executed inside that pod. Project Role/RoleBinding objects are owned by
 their pinned TroshkaProject; cache grants are shared and unowned. This does not
 issue credentials, configure collector profiles, or enable quota enforcement.
+Project custody checks inventory Secret objects and key sets and validate
+ConfigMap configuration. Their `get/list` permissions also permit reading Secret
+values: Kubernetes RBAC cannot restrict this grant to metadata or key names.
+Explicitly review that credential exposure when approving the project scope.
+Shared-cache grants omit Secrets and ConfigMaps because cache discovery does not
+require those custody checks.
 New projects or replacement identities need a freshly reviewed plan; the deploy
 script never expands scope through discovery. Omitting the option leaves existing
 collector grants untouched. For an online compatibility release also use

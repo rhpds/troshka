@@ -70,6 +70,8 @@ def test_scope_and_project_ownership(monkeypatch, domain):
             assert obj["metadata"]["ownerReferences"][0]["uid"] == "root-uid"
         if obj["metadata"].get("namespace") == "cache":
             assert "ownerReferences" not in obj["metadata"]
+            for rule in obj.get("rules", []):
+                assert not {"secrets", "configmaps"}.intersection(rule["resources"])
         for rule in obj.get("rules", []):
             if rule["resources"] == ["pods/exec"]:
                 assert obj["metadata"]["namespace"] == "storage"

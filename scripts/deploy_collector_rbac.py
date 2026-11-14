@@ -143,6 +143,13 @@ def render(domain, owners):
     for ns in namespaces:
         role = copy.deepcopy(template)
         role["metadata"]["namespace"] = ns
+        if ns not in owners:
+            for rule in role["rules"]:
+                rule["resources"] = [
+                    resource
+                    for resource in rule["resources"]
+                    if resource not in {"secrets", "configmaps"}
+                ]
         if ns in owners:
             role["metadata"]["ownerReferences"] = [owners[ns]]
         objects.extend([role, binding("Role", NAME, ns, owners.get(ns))])
