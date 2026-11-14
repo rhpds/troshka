@@ -1,17 +1,17 @@
-# Persistent dev app; backend source: f96abc951ec62a5268eeacf11e9db7385b4e870c.
-# Frontend source: 500edb408d7ded5616867d0d4887947106d0a09d.
+# Persistent dev app: Argo follows main; application images follow latest.
+# Infrastructure images stay versioned independently.
 # Supply auth.initialAdmin explicitly on first installation; never put secrets here.
 namespace:
   create: false
   name: troshka-dev
 backend:
   image:
-    repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-backend
-    tag: v2026.11.13-192642-dev
+    repository: quay.io/redhat-gpte/troshka-backend
+    tag: latest
 frontend:
   image:
-    repository: image-registry.openshift-image-registry.svc:5000/troshka-dev/troshka-frontend
-    tag: v2026.11.13-170117-dev
+    repository: quay.io/redhat-gpte/troshka-frontend
+    tag: latest
 route:
   host: troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com
 auth:
