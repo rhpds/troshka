@@ -714,7 +714,7 @@ def test_shipped_identity_can_read_every_inventory_kind(identity):
         for rule in doc["rules"]
         if not rule.get("resourceNames")
     ]
-    for kind in power.INVENTORY:
+    for kind in set(power.INVENTORY) | power.SUPPORT_KINDS:
         version, resource_name = power.KINDS[kind]
         group = version.split("/")[0] if "/" in version else ""
         verbs = {

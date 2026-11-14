@@ -117,6 +117,10 @@ kind: ClusterRole
 metadata:
   name: troshka-provider-namespaced
 rules:
+  # Independent cleanup proof inventories namespace support resources.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["get", "list"]
   # Independent managed-off proof includes controller recreation inventory.
   - apiGroups: ["apps"]
     resources: ["replicasets", "statefulsets", "daemonsets"]
@@ -192,7 +196,7 @@ rules:
     verbs: ["get", "list", "patch", "delete", "update"]
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["create", "get"]
+    verbs: ["create", "get", "list"]
   - apiGroups: [""]
     resources: ["serviceaccounts"]
     resourceNames: ["troshka", "troshka-operator"]
