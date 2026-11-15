@@ -33,7 +33,18 @@ def owner(value, kind, uid):
     return len(refs) == 1 and refs[0]["kind"] == kind and refs[0]["uid"] == uid
 
 
-def image_ids(pod):
+def running_image_digest(row, aliases):
+    raw = row.get("imageID", "")
+    match = re.fullmatch(r"(?:[^\s]+@)?(sha256:[a-f0-9]{64})", raw)
+    reported = match[1] if match else "sha256:" + raw
+    for alias in aliases:
+        if alias.container == row["name"] and alias.reported_digest == reported:
+            return alias.manifest_digest
+    require(match is not None, "CSI immutable running image unavailable")
+    return reported
+
+
+def image_ids(pod, aliases=()):
     require(not pod["metadata"].get("deletionTimestamp"), "terminating CSI pod")
     status = pod["status"]
     require(status.get("phase") == "Running", "CSI pod not running")
@@ -56,18 +67,11 @@ def image_ids(pod):
     )
     result = {}
     for row in rows:
-        match = re.fullmatch(
-            r"(?:[^\s]+@)?(sha256:[a-f0-9]{64})", row.get("imageID", "")
-        )
         require(
-            row.get("ready") is True
-            and bool(row.get("state", {}).get("running"))
-            and match is not None,
+            row.get("ready") is True and bool(row.get("state", {}).get("running")),
             "CSI immutable running image unavailable",
         )
-        if match is None:
-            raise ValueError("CSI image digest missing")
-        result[row["name"]] = match[1]
+        result[row["name"]] = running_image_digest(row, aliases)
     require("csi-rbdplugin" in result, "unsupported CSI container layout")
     return result
 
@@ -543,7 +547,9 @@ def require_pod_configuration(workload, pod, kind, dependencies=None):
     )
 
 
-def workload_identity(workload, kind, pods, replica_sets, dependencies=None):
+def workload_identity(
+    workload, kind, pods, replica_sets, dependencies=None, aliases=()
+):
     count = ready_count(workload, kind)
     uid = workload["metadata"]["uid"]
     if kind == "Deployment":
@@ -558,7 +564,7 @@ def workload_identity(workload, kind, pods, replica_sets, dependencies=None):
     )
     for pod in selected:
         require_pod_configuration(workload, pod, kind, dependencies)
-    images = [image_ids(p) for p in selected]
+    images = [image_ids(p, aliases) for p in selected]
     require(all(value == images[0] for value in images), "mixed CSI images")
     expected = {
         c["name"]: c for c in workload["spec"]["template"]["spec"]["containers"]
@@ -575,16 +581,17 @@ def workload_identity(workload, kind, pods, replica_sets, dependencies=None):
     )
     return CsiWorkloadIdentity(
         uid=uid,
-        spec_sha256=digest(
-            {"spec": workload["spec"], "admission_dependencies": dependencies}
-        )
-        if dependencies
-        else digest(workload["spec"]),
+        spec_sha256=(
+            digest({"spec": workload["spec"], "admission_dependencies": dependencies})
+            if dependencies
+            else digest(workload["spec"])
+        ),
         images=images[0],
+        image_aliases=list(aliases),
     )
 
 
-def csi_identity(bundle):
+def csi_identity(bundle, reviewed_installation=None):
     controller, node = bundle["controller"], bundle["node"]
     require(
         all(
@@ -604,6 +611,11 @@ def csi_identity(bundle):
             bundle["controller_pods"],
             bundle["replica_sets"],
             bundle.get("admission_dependencies", {}).get("controller"),
+            (
+                reviewed_installation.controller.image_aliases
+                if reviewed_installation
+                else ()
+            ),
         ),
         node=workload_identity(
             node,
@@ -611,6 +623,7 @@ def csi_identity(bundle):
             bundle["node_pods"],
             [],
             bundle.get("admission_dependencies", {}).get("node"),
+            reviewed_installation.node.image_aliases if reviewed_installation else (),
         ),
     )
     require(
@@ -674,12 +687,13 @@ def verify_kubernetes_target(kube_value, target):
             mount_options=sc.get("mountOptions", []),
         )
         == target.storage_class_options
-        and csi_identity(kube_value) == target.csi_installation,
+        and csi_identity(kube_value, target.csi_installation)
+        == target.csi_installation,
         "Kubernetes installation identity changed",
     )
 
 
-def target_from_reads(kube_value, backend, timestamps):
+def target_from_reads(kube_value, backend, timestamps, reviewed_installation=None):
     sc = kube_value["storage_class"]
     params = sc.get("parameters", {})
     fsid = source(backend.cluster_identity(), timestamps)
@@ -739,7 +753,7 @@ def target_from_reads(kube_value, backend, timestamps):
             mount_options=sc.get("mountOptions", []),
         ),
         csi_version=OBSERVER_VERSION,
-        csi_installation=csi_identity(kube_value),
+        csi_installation=csi_identity(kube_value, reviewed_installation),
         ceph_version=server_version(source(backend.server_versions(), timestamps)),
         rbd_command_version=source(backend.command_version(), timestamps),
     )
@@ -757,7 +771,9 @@ class ProductionObserver:
                 kube.initialization_identity(profile.target.storage_class_name),
                 timestamps,
             )
-            target = target_from_reads(first, backend, timestamps)
+            target = target_from_reads(
+                first, backend, timestamps, profile.target.csi_installation
+            )
             last = source(
                 kube.initialization_identity(profile.target.storage_class_name),
                 timestamps,

@@ -139,6 +139,20 @@ These are exact reviewed names. The renderer adds named GET grants plus pod and
 ReplicaSet LIST grants only in that namespace; it adds no Secret reads or exec
 access. Collection uses its protected TLS-verified kubeconfig for these reads,
 independently of the ordinary provider credentials.
+If CRI reports a configuration digest on one node and a manifest digest on
+others, the protected profile can record reviewed `image_aliases` under its
+`target.csi_installation.controller` or `.node` identity. Each entry specifies
+`container`, `reported_digest`, `manifest_digest`, and `validation_reference`.
+Both digests use `sha256:` notation; the manifest must match that container's
+pinned `images` entry. Retain evidence from the node's `crictl inspecti` output
+linking its `status.id` to the exact manifest in `status.repoDigests`, and use a
+content-hash reference to that reviewed evidence. Never infer equivalence from
+the configured image name or tag. Aliases are administrator-provided protected
+configuration, not values accepted from pod metadata. Unreviewed bare digests,
+unknown images, and all existing readiness/ownership checks still fail closed.
+Empty alias lists are omitted from serialization so existing profile hashes
+remain unchanged. Profile preparation may pass the reviewed installation to
+`target_from_reads`; all installation fields are still independently observed.
 For single-provider enrollment verification, `import_kubevirt_storage.py verify
 --kubeconfig /absolute/path/to/collector.kubeconfig` explicitly selects the same
 protected transport. It requires verified TLS and still checks the pinned cluster

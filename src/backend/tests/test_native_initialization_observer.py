@@ -827,6 +827,83 @@ def test_running_platform_digest_is_independent_of_desired_index(installed):
     assert initialization.observe(profile, q.reader, q.backend).target == profile.target
 
 
+def reviewed_alias_profile(q):
+    body = q.profile.model_dump(mode="json")
+    body["target"]["csi_installation"]["node"]["image_aliases"] = [
+        {
+            "container": "csi-rbdplugin",
+            "reported_digest": "sha256:" + "a" * 64,
+            "manifest_digest": "sha256:" + "1" * 64,
+            "validation_reference": "reviewed-cri-inspecti-fixture",
+        }
+    ]
+    return InitializationEvidence.model_validate(body)
+
+
+@pytest.mark.parametrize("prefix", ["", "sha256:", "registry.example/csi@sha256:"])
+def test_reviewed_config_digest_alias_matches_manifest(installed, prefix):
+    q = installed
+    profile = reviewed_alias_profile(q)
+    q.data["node_pods"][0]["status"]["containerStatuses"][0]["imageID"] = (
+        prefix + "a" * 64
+    )
+    assert initialization.observe(profile, q.reader, q.backend).target == profile.target
+    from app.services.native_initialization_observer import verify_kubernetes_target
+
+    bundle = q.reader.initialization_identity(profile.target.storage_class_name).value
+    verify_kubernetes_target(bundle, profile.target)
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "wrong-container", "unready", "uid"])
+def test_reviewed_alias_does_not_hide_identity_changes(installed, mutation):
+    q = installed
+    profile = reviewed_alias_profile(q)
+    status = q.data["node_pods"][0]["status"]["containerStatuses"]
+    status[0]["imageID"] = "a" * 64
+    if mutation == "unknown":
+        status[0]["imageID"] = "b" * 64
+    elif mutation == "wrong-container":
+        status[1]["imageID"] = "a" * 64
+    elif mutation == "unready":
+        status[0]["ready"] = False
+    else:
+        q.data["node"]["metadata"]["uid"] = "replacement"
+    with pytest.raises(AccountingUnavailable):
+        initialization.observe(profile, q.reader, q.backend)
+
+
+def test_bare_config_digest_without_review_is_rejected(installed):
+    q = installed
+    q.data["node_pods"][0]["status"]["containerStatuses"][0]["imageID"] = "a" * 64
+    with pytest.raises(AccountingUnavailable):
+        initialization.observe(q.profile, q.reader, q.backend)
+
+
+def test_empty_aliases_preserve_existing_profile_serialization(installed):
+    node = installed.profile.target.csi_installation.node
+    assert "image_aliases" not in node.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["wrong-manifest", "duplicate", "invalid-digest", "no-evidence"]
+)
+def test_alias_configuration_requires_unambiguous_reviewed_mapping(installed, mutation):
+    from pydantic import ValidationError
+
+    body = reviewed_alias_profile(installed).model_dump(mode="json")
+    aliases = body["target"]["csi_installation"]["node"]["image_aliases"]
+    if mutation == "wrong-manifest":
+        aliases[0]["manifest_digest"] = "sha256:" + "9" * 64
+    elif mutation == "duplicate":
+        aliases.append(deepcopy(aliases[0]))
+    elif mutation == "invalid-digest":
+        aliases[0]["reported_digest"] = "latest"
+    else:
+        aliases[0]["validation_reference"] = ""
+    with pytest.raises(ValidationError):
+        InitializationEvidence.model_validate(body)
+
+
 def test_named_rbd_namespace_uses_exact_public_object_schema(installed):
     q = installed
     q.outputs["namespaces"] = [{"name": "tenant-ns"}]

@@ -59,12 +59,45 @@ class CloneReference(Evidence):
     digest: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class CsiImageAlias(Evidence):
+    """Administrator-reviewed CRI config-to-manifest digest equivalence."""
+
+    container: Text
+    reported_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    manifest_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    validation_reference: Text
+
+
 class CsiWorkloadIdentity(Evidence):
     uid: Text
     spec_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     images: dict[Text, Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]] = Field(
         min_length=1, max_length=32
     )
+    image_aliases: list[CsiImageAlias] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def reviewed_image_aliases(self):
+        seen = set()
+        for alias in self.image_aliases:
+            key = (alias.container, alias.reported_digest)
+            if (
+                key in seen
+                or self.images.get(alias.container) != alias.manifest_digest
+                or alias.reported_digest == alias.manifest_digest
+            ):
+                raise ValueError(
+                    "CSI alias must uniquely map to its pinned container image"
+                )
+            seen.add(key)
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_aliases(self, handler):
+        data = handler(self)
+        if not data.get("image_aliases"):
+            data.pop("image_aliases", None)
+        return data
 
 
 class CsiInstallationIdentity(Evidence):

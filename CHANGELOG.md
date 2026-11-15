@@ -14,6 +14,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- CSI identity validation supports explicitly reviewed, container-scoped CRI
+  configuration-to-manifest digest aliases without accepting unknown images or
+  changing existing collector profile hashes.
+
 - Added a private, reviewable Argo bootstrap with protected Helm adoption and
   explicit interrupted-sync recovery. Dev can follow `main` and watch `latest`
   application images through the OpenShift GitOps image updater.
