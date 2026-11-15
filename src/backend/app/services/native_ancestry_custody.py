@@ -164,6 +164,7 @@ def observe(bindings, kube, backend, pins, verified_at):
             and middle_children == {head},
             "Custody intermediate is not exclusive",
         )
+        assert source_parent is not None
         sources = [b for b in caches if b.image_key == source_parent.image_key]
         _require(
             len(sources) == 1, "Custody source is not an independently bound cache"

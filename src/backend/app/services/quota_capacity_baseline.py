@@ -1220,6 +1220,7 @@ def check_ready(db):
             marker is not None and marker.baseline_version == VERSION,
             "A reviewed fresh-capacity-v1 baseline is required",
         )
+        assert marker is not None
         details = marker.details
         _require(
             details.get("capacity_ready")

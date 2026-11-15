@@ -871,6 +871,7 @@ def submit_native_teardown(api, work):
         == marker,
         "cleanup_root_marker_changed",
     )
+    assert root is not None
     if root["metadata"].get("deletionTimestamp"):
         return
     api.request(

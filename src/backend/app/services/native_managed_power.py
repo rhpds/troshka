@@ -302,6 +302,7 @@ def resume_target(api, context, *, clock=None):
     module.require(
         request is not None and request["mode"] == "stopped", "managed_stop_required"
     )
+    assert request is not None
     proof = observe_off(api, context, request["requestId"], clock(), clock)
     module.require(proof is not None, "managed_off_proof_required")
     rows, by_uid = module.inventory(api, root)
