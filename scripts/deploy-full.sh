@@ -55,21 +55,7 @@ for cluster in ocpv01.dfw3 ocpv02.dfw3 ocpv06.dal10 ocpv07.wdc06 ocpv08.dal10 oc
   OPERATOR_KUBECONFIGS+=("$HOME/secrets/$cluster.infra.demo.redhat.com.kubeconfig")
 done
 
-echo "=== Verify collector configuration for every configured native host ==="
 COLLECTOR_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-preflight.XXXXXX")
-if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
-  COLLECTOR_STATE=$(mktemp -d "${TMPDIR:-/tmp}/troshka-collector-setup.XXXXXX")
-  echo "Private collector setup evidence will be retained at: $COLLECTOR_STATE"
-  python3 scripts/collector_provision.py --plan "$COLLECTOR_SETUP_PLAN" --output "$COLLECTOR_STATE/prepared" \
-    --application "$KC" troshka \
-    --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev
-elif ! python3 scripts/collector_fleet_preflight.py \
-  --application "$KC" troshka \
-  --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
-  --output "$COLLECTOR_REPORT"; then
-  echo "Collector configuration is incomplete; release not pushed or promoted. Report: $COLLECTOR_REPORT" >&2
-  exit 1
-fi
 echo "Collector configuration report: $COLLECTOR_REPORT"
 
 echo "=== Release $RELEASE_TAG ==="
@@ -126,7 +112,6 @@ if [ -n "$COLLECTOR_ACCESS_PLAN" ]; then
   python3 scripts/deploy_collector_rbac.py --plan "$COLLECTOR_ACCESS_PLAN" --output "$STATE/collector-access"
   python3 scripts/deploy_collector_rbac.py --apply --output "$STATE/collector-access"
 fi
-./scripts/promote-to-production.sh "$RELEASE_TAG"
 
 apply_rbac() {
   local kc=$1 before after ns role sa
@@ -168,9 +153,8 @@ PY
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     (
       apply_rbac "$kc"
-      EXTRA=()
-      [ "$SKIP_PROJECT_PODS" = false ] || EXTRA+=(--skip-project-pods)
-      python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" ${EXTRA[@]+"${EXTRA[@]}"}
+      python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" \
+        --image-tag "$RELEASE_TAG" --skip-project-pods
     ) >"$STATE/$(basename "$kc").log" 2>&1 &
     PIDS+=($!)
   done
@@ -185,18 +169,34 @@ else
   FAILED=false
 fi
 
+if [ "$FAILED" = true ]; then
+  echo "Operator cluster rollouts failed; production application was not promoted." >&2
+  exit 1
+fi
+echo "=== Configure collectors after host prerequisites, before app promotion ==="
+if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
+  COLLECTOR_STATE=$(mktemp -d "${TMPDIR:-/tmp}/troshka-collector-setup.XXXXXX")
+  echo "Private collector setup evidence will be retained at: $COLLECTOR_STATE"
+  python3 scripts/collector_provision.py --plan "$COLLECTOR_SETUP_PLAN" --output "$COLLECTOR_STATE/prepared" \
+    --application "$KC" troshka --application "$DEV_KC" troshka-dev
+  python3 scripts/collector_provision.py --apply --output "$COLLECTOR_STATE/prepared"
+fi
+python3 scripts/collector_fleet_preflight.py \
+  --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
+python3 scripts/collector_release_check.py \
+  --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$STATE/pre-promotion-accounting.json"
+python3 scripts/deploy_release.py idle --kubeconfig "$KC"
+./scripts/promote-to-production.sh "$RELEASE_TAG"
+if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
+  for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
+    python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json"
+  done
+fi
+
 echo "=== Verify Argo application, workers, tunnels, runtime schema and health ==="
 oc annotate applications.argoproj.io troshka -n openshift-gitops \
   argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
 python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json"
-if [ "$FAILED" = true ]; then
-  echo "Release promoted, but one or more cluster rollouts failed. See errors above." >&2
-  exit 1
-fi
-if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
-  echo "=== Install approved collector profiles, rotate credentials, enroll empty domains ==="
-  python3 scripts/collector_provision.py --apply --output "$COLLECTOR_STATE/prepared"
-fi
 echo "=== Verify collector configuration and fresh RQ accounting ==="
 python3 scripts/collector_fleet_preflight.py \
   --application "$KC" troshka \

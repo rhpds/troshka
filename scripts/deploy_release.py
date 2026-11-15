@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -152,7 +153,7 @@ def wait_rollout(kc, namespace, name):
     )
 
 
-def update_deployment(kc, dep, expected):
+def update_deployment(kc, dep, expected, image_tag="production"):
     namespace, name = dep["metadata"]["namespace"], dep["metadata"]["name"]
     try:
         verify_live(kc, namespace, name, expected)
@@ -160,7 +161,7 @@ def update_deployment(kc, dep, expected):
     except RuntimeError:
         pass  # Read/API failures still propagate; only a stale rollout is repaired.
     replacements = [
-        f"{c['name']}={REGISTRY}{image_role(c['image'])}:production"
+        f"{c['name']}={REGISTRY}{image_role(c['image'])}:{image_tag}"
         for c in dep["spec"]["template"]["spec"]["containers"]
         if image_role(c["image"])
     ]
@@ -170,7 +171,7 @@ def update_deployment(kc, dep, expected):
     verify_live(kc, namespace, name, expected)
 
 
-def cluster(kc, expected, skip_project_pods=False, verify_only=False):
+def cluster(kc, expected, skip_project_pods=False, verify_only=False, image_tag="production"):
     deployments = json.loads(oc(kc, "get", "deployments", "-A", "-o", "json"))["items"]
     targets = []
     for dep in deployments:
@@ -198,7 +199,7 @@ def cluster(kc, expected, skip_project_pods=False, verify_only=False):
                 expected,
             )
             if verify_only
-            else pool.submit(update_deployment, kc, d, expected): d
+            else pool.submit(update_deployment, kc, d, expected, image_tag): d
             for d in targets
         }
         for future, dep in futures.items():
@@ -318,10 +319,12 @@ def main():
     parser.add_argument("--state", type=Path)
     parser.add_argument("--kubeconfig")
     parser.add_argument("--namespace", default="troshka")
-    parser.add_argument("--image-tag", choices=("production", "latest"), default="production")
+    parser.add_argument("--image-tag", default="production")
     parser.add_argument("--skip-project-pods", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", args.image_tag):
+        parser.error("--image-tag must be a valid container tag")
     if args.action in ("promote", "images"):
         if not args.tag or args.tag in ("latest", "production"):
             parser.error("a named release --tag is required")
@@ -336,7 +339,7 @@ def main():
         return
     expected = json.loads(args.state.read_text())
     if args.action == "cluster":
-        cluster(args.kubeconfig, expected, args.skip_project_pods, args.verify_only)
+        cluster(args.kubeconfig, expected, args.skip_project_pods, args.verify_only, args.image_tag)
     else:
         application(args.kubeconfig, expected, args.namespace, args.image_tag)
 

@@ -232,6 +232,8 @@ if name == "python3" and "cluster" in args and os.environ.get("FAIL_CLUSTER"):
     sys.exit(1)
 if name == "python3" and args[0] == "scripts/collector_release_check.py" and os.environ.get("FAIL_DEV_ACCOUNTING"):
     sys.exit(1)
+if name == "python3" and args[0] == "scripts/collector_fleet_preflight.py" and "troshka" in args and os.environ.get("FAIL_FLEET"):
+    sys.exit(1)
 """
     )
     fake.chmod(0o755)
@@ -267,11 +269,28 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     query = next(c for c in calls if c[:3] == ["gh", "run", "list"])
     assert query[query.index("--branch") + 1] == "vtest"
     assert any(c[0] == "python3" and "promote" in c and "vtest" in c for c in calls)
-    assert len([c for c in calls if c[0] == "python3" and "cluster" in c]) == 7
+    assert len([c for c in calls if c[0] == "python3" and "cluster" in c]) == 14
     promote = next(i for i, c in enumerate(calls) if c[0] == "python3" and "promote" in c)
     dev_image = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
     dev_accounting = next(i for i, c in enumerate(calls) if "scripts/collector_release_check.py" in c)
     assert dev_image < dev_accounting < promote
+    hosts = [i for i, c in enumerate(calls) if "cluster" in c and "--image-tag" in c and "vtest" in c]
+    fleet = next(i for i, c in enumerate(calls) if "scripts/collector_fleet_preflight.py" in c and "troshka" in c)
+    assert len(hosts) == 7
+    assert dev_accounting < min(hosts) <= max(hosts) < fleet < promote
+    assert all("--skip-project-pods" in calls[i] for i in hosts)
+
+
+def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        env={**env, "FAIL_FLEET": "1"}, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len([c for c in calls if "cluster" in c]) == 7
+    assert not any("promote" in c for c in calls)
 
 
 def test_failed_dev_accounting_never_promotes(shell_commands):
@@ -300,7 +319,7 @@ def test_failed_ci_never_promotes(shell_commands):
 
 
 def test_failed_cluster_is_not_reported_as_success(shell_commands):
-    env, _ = shell_commands
+    env, log = shell_commands
     result = subprocess.run(
         ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
         env={**env, "FAIL_CLUSTER": "1"},
@@ -310,3 +329,23 @@ def test_failed_cluster_is_not_reported_as_success(shell_commands):
     )
     assert result.returncode != 0
     assert "cluster rollouts failed" in result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any("promote" in c for c in calls)
+
+
+def test_operator_upgrade_uses_release_tag_before_promotion(release, monkeypatch):
+    calls = []
+    checks = iter([False, True])
+    def verify(*args):
+        if not next(checks):
+            raise RuntimeError("stale image")
+    monkeypatch.setattr(release, "verify_live", verify)
+    monkeypatch.setattr(release, "wait_rollout", lambda *args: None)
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args))
+    dep = {"metadata": {"namespace": "troshka-operator", "name": "troshka-operator"},
+           "spec": {"template": {"spec": {"containers": [
+               {"name": "operator", "image": release.REGISTRY + "operator:production"}
+           ]}}}}
+    release.update_deployment("config", dep, {"operator": "digest"}, "vtest")
+    change = next(c for c in calls if "set" in c)
+    assert change[-1] == "operator=" + release.REGISTRY + "operator:vtest"

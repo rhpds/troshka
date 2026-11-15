@@ -12,8 +12,9 @@ images; adoption preserves active overlays until the first rollout is reviewed.
 
 From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a
 UTC release tag (`vYYYY.MM.DD-HHMMSS`), atomically pushes HEAD to `main` and the
-tag, waits for the tag's full image build, and promotes that release to the
-existing `production` image tags. `main` remains the integration branch;
+tag, waits for the tag's full image build, upgrades host prerequisites, verifies
+collector readiness, and promotes that release to the existing `production`
+image tags. `main` remains the integration branch;
 Argo CD Image Updater still deploys `production` digests.
 
 Before promotion, the script requires dev Argo to run the exact release digests
@@ -30,7 +31,13 @@ deployment, check out that release and run
 the build when queried, the script reports this resume command without promoting
 anything. Never move a published release tag.
 
-Before tagging or pushing, full deployment runs `collector_fleet_preflight.py`
+After the dev checks, deployment applies host CRDs/RBAC and rolls the operators
+using the named release image tag. Project helper pods are left until after app
+promotion. An operator failure stops the release before production tags change;
+operators already updated remain on the named release and can be verified on
+resume. This stage does not request VM stops or changes to Ceph.
+
+After host prerequisites, full deployment runs `collector_fleet_preflight.py`
 against both the production and permanent dev applications. It reads configured
 native hosts from each application's database, including hosts with no projects,
 and requires exactly one protected profile with an existing enrollment anchor for
@@ -39,12 +46,15 @@ missing host profile blocks the release and produces a retained JSON report.
 The probe runs read-only in the collection worker; no credentials are returned.
 This is a configuration gate, not a fresh accounting or capacity acceptance test.
 With `--collector-setup-plan /absolute/path/to/approved.json`, a read-only setup
-validation replaces this initial gate. The plan must cover both applications and
-every configured native host. Existing profiles cannot be overwritten. After the
-release rolls out, deployment installs immutable protected configuration, rotates
+validation and application run before the fleet gate. The plan must cover both applications and
+every configured native host. Existing profiles cannot be overwritten. Deployment
+installs immutable protected configuration, rotates
 seven-day collector-only tokens, waits for both collector worker deployments,
 and enrolls explicitly authorized empty domains. Existing enrollment anchors are
-validated and preserved. Neither scheduling nor quota enablement is changed.
+validated and preserved. Fresh fleet accounting must then pass before production
+app promotion. Neither scheduling nor quota enablement is changed. If profiles or
+accepted storage-version evidence are still missing, host upgrades remain applied
+and app promotion stops; deployment does not manufacture acceptance evidence.
 
 The operator creates project namespace permissions on first deployment; it does
 not create the cluster's collector profile or initial enrollment. Cluster setup

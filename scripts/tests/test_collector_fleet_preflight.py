@@ -2,8 +2,6 @@
 
 import importlib.util
 import json
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -75,26 +73,3 @@ def test_all_applications_are_reported_even_after_failure(fleet, monkeypatch):
     assert len(report["applications"]) == 2
     assert report["applications"][1]["ready"] is True
     assert report["ready"] is False
-
-
-def test_failed_fleet_preflight_prevents_push_and_promotion(tmp_path):
-    calls = tmp_path / "calls"
-    for name, body in {
-        "git": 'echo "git $*" >> "$CALLS"\ncase "$1" in status) exit 0;; rev-parse) echo revision; exit 0;; *) exit 97;; esac',
-        "python3": 'echo "python3 $*" >> "$CALLS"\nexit 1',
-    }.items():
-        path = tmp_path / name
-        path.write_text("#!/bin/sh\n" + body + "\n")
-        path.chmod(0o700)
-    script = Path(__file__).resolve().parents[1] / "deploy-full.sh"
-    result = subprocess.run(
-        ["bash", str(script), "--tag", "vtest"], text=True, capture_output=True, check=False,
-        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
-             "CALLS": str(calls)}, timeout=10,
-    )
-    assert result.returncode != 0
-    commands = calls.read_text()
-    assert "collector_fleet_preflight.py" in commands
-    assert "git tag" not in commands
-    assert "git push" not in commands
-    assert "deploy_release.py images" not in commands
