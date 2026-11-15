@@ -50,7 +50,14 @@ def test_full_deploy_checks_worker_and_fails_closed(monkeypatch, scenario):
             )
         if "pods" in args and "get" in args:
             pods = []
-            for name in ("backend", "frontend", "worker", "tunnel"):
+            for name in (
+                "backend",
+                "frontend",
+                "worker",
+                "tunnel",
+                "collection-worker",
+                "readiness-worker",
+            ):
                 digest = (
                     "old"
                     if scenario == "stale-worker" and name == "worker"
@@ -108,3 +115,8 @@ def test_full_deploy_checks_worker_and_fails_closed(monkeypatch, scenario):
             args[:4] == ["oc", "rollout", "status", "deployment/troshka-tunnel"]
             for args in calls
         )
+        for worker in ("collection-worker", "readiness-worker"):
+            assert any(
+                args[:4] == ["oc", "rollout", "status", f"deployment/troshka-{worker}"]
+                for args in calls
+            )

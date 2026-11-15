@@ -1882,6 +1882,38 @@ class TestRetryPbAgentInstall:
 class TestLifespan:
     """Test the lifespan async context manager calls all startup functions."""
 
+    @pytest.fixture(autouse=True)
+    def isolate_background_services(self):
+        from contextlib import ExitStack
+
+        # These pollers outlive the lifespan and would otherwise mutate later
+        # tests' ledgers through their patched database/session dependencies.
+        services = (
+            "workload_timer.start_workload_timer",
+            "metering_service.start_metering_poll",
+            "quota_enforcement.start_enforcement_poll",
+            "app_updater.start_app_updater",
+            "database_access.start_access_bootstrap",
+            "native_collection_jobs.start_collection_dispatcher",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch("app.core.lifecycle.start_heartbeat"))
+            stack.enter_context(
+                patch(
+                    "threading.Thread.start",
+                    side_effect=AssertionError(
+                        "Lifespan unit test started a real thread"
+                    ),
+                )
+            )
+            starters = [
+                stack.enter_context(patch(f"app.services.{service}"))
+                for service in services
+            ]
+            yield
+            for starter in starters:
+                starter.assert_called_once()
+
     def test_lifespan_calls_startup_functions_and_yields(self):
         import asyncio
 
