@@ -11,8 +11,9 @@ SKIP_PROJECT_PODS=false
 FORCE_NS_RBAC=false
 RELEASE_TAG=""
 COLLECTOR_ACCESS_PLAN=""
+COLLECTOR_SETUP_PLAN=""
 usage() {
-  echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac] [--collector-access-plan FILE]"
+  echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac] [--collector-access-plan FILE] [--collector-setup-plan FILE]"
   echo "Default: create vYYYY.MM.DD-HHMMSS (UTC) at HEAD and push HEAD to main plus the tag."
   echo "Resume an existing release with --skip-push --tag vNAME from its clean checkout."
 }
@@ -24,6 +25,7 @@ while [ "$#" -gt 0 ]; do
     --skip-project-pods) SKIP_PROJECT_PODS=true; shift ;;
     --sync-ns-rbac) FORCE_NS_RBAC=true; shift ;;
     --collector-access-plan) [ "$#" -ge 2 ] || { usage; exit 2; }; COLLECTOR_ACCESS_PLAN=$2; shift 2 ;;
+    --collector-setup-plan) [ "$#" -ge 2 ] || { usage; exit 2; }; COLLECTOR_SETUP_PLAN=$2; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -47,10 +49,28 @@ if ! [[ "$RELEASE_TAG" =~ ^v[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || [ "${#RELEASE_TAG
 fi
 
 KC="$HOME/secrets/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig"
+DEV_KC="$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig"
 OPERATOR_KUBECONFIGS=()
 for cluster in ocpv01.dfw3 ocpv02.dfw3 ocpv06.dal10 ocpv07.wdc06 ocpv08.dal10 ocpv09.dal13 ocpvdev01.dal13; do
   OPERATOR_KUBECONFIGS+=("$HOME/secrets/$cluster.infra.demo.redhat.com.kubeconfig")
 done
+
+echo "=== Verify collector configuration for every configured native host ==="
+COLLECTOR_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-preflight.XXXXXX")
+if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
+  COLLECTOR_STATE=$(mktemp -d "${TMPDIR:-/tmp}/troshka-collector-setup.XXXXXX")
+  echo "Private collector setup evidence will be retained at: $COLLECTOR_STATE"
+  python3 scripts/collector_provision.py --plan "$COLLECTOR_SETUP_PLAN" --output "$COLLECTOR_STATE/prepared" \
+    --application "$KC" troshka \
+    --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev
+elif ! python3 scripts/collector_fleet_preflight.py \
+  --application "$KC" troshka \
+  --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
+  --output "$COLLECTOR_REPORT"; then
+  echo "Collector configuration is incomplete; release not pushed or promoted. Report: $COLLECTOR_REPORT" >&2
+  exit 1
+fi
+echo "Collector configuration report: $COLLECTOR_REPORT"
 
 echo "=== Release $RELEASE_TAG ==="
 if [ "$SKIP_PUSH" = false ]; then
@@ -86,8 +106,15 @@ gh run watch "$IMAGE_RUN" --exit-status
 
 STATE=$(mktemp -d)
 trap 'rm -rf "$STATE"' EXIT
-echo "=== Preflight and promote all ten images to production ==="
+echo "=== Preflight all ten release images ==="
 python3 scripts/deploy_release.py images --tag "$RELEASE_TAG" --state "$STATE/digests.json"
+echo "=== Require dev Argo on this release and fresh accounting before promotion ==="
+python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
+  --namespace troshka-dev --image-tag latest --state "$STATE/digests.json"
+python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
+  --output "$STATE/dev-collector-preflight.json"
+python3 scripts/collector_release_check.py --application "$DEV_KC" troshka-dev \
+  --output "$STATE/dev-accounting.json"
 oc get deployment troshka-backend -n troshka --kubeconfig="$KC" --request-timeout=30s >/dev/null
 if [ "$SKIP_OPERATORS" = false ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
@@ -108,6 +135,8 @@ apply_rbac() {
   oc apply -f src/operator/crds/ --kubeconfig="$kc" --request-timeout=30s
   oc apply -f src/operator/deploy/clusterrole.yaml --kubeconfig="$kc" --request-timeout=30s
   oc apply -f "$STATE/provider-rbac.yaml" --kubeconfig="$kc" --request-timeout=30s
+  oc apply -f infra/storage-collector-base-rbac.yaml --kubeconfig="$kc" --request-timeout=30s
+  oc apply -f infra/storage-collector-project-rbac.yaml --kubeconfig="$kc" --request-timeout=30s
   after=$(oc get clusterrole troshka-provider-namespaced troshka-operator-namespaced \
     --kubeconfig="$kc" --request-timeout=30s -o jsonpath='{range .items[*]}{.metadata.resourceVersion}{" "}{end}')
   if [ "$FORCE_NS_RBAC" = true ] || [ "$before" != "$after" ]; then
@@ -164,4 +193,19 @@ if [ "$FAILED" = true ]; then
   echo "Release promoted, but one or more cluster rollouts failed. See errors above." >&2
   exit 1
 fi
+if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
+  echo "=== Install approved collector profiles, rotate credentials, enroll empty domains ==="
+  python3 scripts/collector_provision.py --apply --output "$COLLECTOR_STATE/prepared"
+fi
+echo "=== Verify collector configuration and fresh RQ accounting ==="
+python3 scripts/collector_fleet_preflight.py \
+  --application "$KC" troshka \
+  --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
+  --output "$COLLECTOR_REPORT"
+ACCOUNTING_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-accounting.XXXXXX")
+echo "Accounting evidence will be retained at: $ACCOUNTING_REPORT"
+python3 scripts/collector_release_check.py \
+  --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
+  --application "$KC" troshka \
+  --output "$ACCOUNTING_REPORT"
 echo "=== Release $RELEASE_TAG deployed and verified ==="

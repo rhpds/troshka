@@ -243,30 +243,34 @@ def idle(kc):
     print("Job queues are idle", flush=True)
 
 
-def application(kc, expected):
-    for name, role in (
+def application(kc, expected, namespace="troshka", image_tag="production"):
+    targets = [
         ("backend", "backend"),
         ("frontend", "frontend"),
         ("worker", "backend"),
         ("tunnel", "backend"),
-    ):
+    ]
+    for name in ("collection-worker", "readiness-worker"):
+        if oc(kc, "get", "deployment", f"troshka-{name}", "-n", namespace, "--ignore-not-found", "-o", "name"):
+            targets.append((name, "backend"))
+    for name, role in targets:
         deployment = f"troshka-{name}"
-        image = f"{REGISTRY}{role}:production@{expected[role]}"
+        image = f"{REGISTRY}{role}:{image_tag}@{expected[role]}"
         run(
             [
                 "oc",
                 "wait",
                 f"deployment/{deployment}",
                 "-n",
-                "troshka",
+                namespace,
                 f"--for=jsonpath={{.spec.template.spec.containers[0].image}}={image}",
                 "--timeout=600s",
                 f"--kubeconfig={kc}",
             ],
             timeout=630,
         )
-        wait_rollout(kc, "troshka", deployment)
-        verify_live(kc, "troshka", deployment, expected)
+        wait_rollout(kc, namespace, deployment)
+        verify_live(kc, namespace, deployment, expected)
         print(f"{deployment}: all replicas ready on the release digest", flush=True)
     # Compare the actual packaged schema, not just the deployment's image field.
     schema = oc(
@@ -274,7 +278,7 @@ def application(kc, expected):
         "exec",
         "deployment/troshka-backend",
         "-n",
-        "troshka",
+        namespace,
         "--",
         "python3",
         "-c",
@@ -291,7 +295,7 @@ def application(kc, expected):
         "exec",
         "deployment/troshka-backend",
         "-n",
-        "troshka",
+        namespace,
         "--",
         "python3",
         "-c",
@@ -299,6 +303,9 @@ def application(kc, expected):
     )
     if health != "200":
         raise RuntimeError("Backend health check failed")
+    for field, value in (("sync.status", "Synced"), ("health.status", "Healthy"), ("operationState.phase", "Succeeded")):
+        oc(kc, "wait", f"applications.argoproj.io/{namespace}", "-n", "openshift-gitops",
+           f"--for=jsonpath={{.status.{field}}}={value}", "--timeout=600s", timeout=630)
     print("Runtime schema matches; backend health HTTP 200", flush=True)
 
 
@@ -310,6 +317,8 @@ def main():
     parser.add_argument("--tag")
     parser.add_argument("--state", type=Path)
     parser.add_argument("--kubeconfig")
+    parser.add_argument("--namespace", default="troshka")
+    parser.add_argument("--image-tag", choices=("production", "latest"), default="production")
     parser.add_argument("--skip-project-pods", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
@@ -329,7 +338,7 @@ def main():
     if args.action == "cluster":
         cluster(args.kubeconfig, expected, args.skip_project_pods, args.verify_only)
     else:
-        application(args.kubeconfig, expected)
+        application(args.kubeconfig, expected, args.namespace, args.image_tag)
 
 
 if __name__ == "__main__":

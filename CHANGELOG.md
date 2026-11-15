@@ -18,6 +18,14 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   explicit interrupted-sync recovery. Dev can follow `main` and watch `latest`
   application images through the OpenShift GitOps image updater.
 
+- Full deployment can install approved collector profiles, rotate dedicated
+  credentials, and enroll empty storage domains without replacing existing
+  enrollments. Release verification now requires fresh accounting through the
+  normal worker queues, including configured hosts with no projects. Dev must run
+  the exact release images and pass fresh accounting before production promotion.
+
+- Collector release preflight: full deployment checks every configured native host, including empty hosts, for an unambiguous protected profile and enrollment anchor before pushing or promoting; incomplete or unavailable configuration produces a blocking per-host report.
+
 - OpenShift deployment validation: reject fresh OCP installs before placement or job submission when the project owner has no pull secret; direct users to configure an OCP pull secret or pull-through registry credentials, while allowing OKD and captured-cluster re-certification. Bulk Deploy reports failures by project while continuing other deployments. Confirmed installer failures show “OpenShift Install Failed” with a safe reason, and API timeouts explicitly identify OpenShift without replacing a confirmed install failure.
 - About and release history: added an About overlay above Getting Started with the build version, author information, and expandable monthly release notes; reconstructed development history back to June 4. Notes reload each time About opens, so local changelog edits need no frontend restart; production reads the file packaged in its deployed image.
 - Group administration and billing: added managed groups, delegated managers, searchable membership pickers, team billing, and a unified Groups interface for membership, quotas, and reporting.

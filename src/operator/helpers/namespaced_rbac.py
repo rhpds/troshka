@@ -174,3 +174,22 @@ def ensure_troshka_namespaced_rbac(
         sa_name="troshka-operator",
         sa_namespace=operator_namespace,
     )
+
+
+def ensure_collector_namespace_grants(namespace: str) -> None:
+    """Install project-only read access; reject a conflicting existing binding."""
+    api = client.RbacAuthorizationV1Api()
+    name = "troshka-storage-collector-namespaced"
+    body = _rolebinding_body(
+        binding_name=name, namespace=namespace, cluster_role=name,
+        sa_name="troshka-storage-collector", sa_namespace="troshka",
+    )
+    if base_namespace_grants_mode() == "external":
+        _verify_binding(api, namespace, body)
+        return
+    try:
+        api.create_namespaced_role_binding(namespace=namespace, body=body)
+    except ApiException as error:
+        if error.status != 409:
+            raise
+        _verify_binding(api, namespace, body)

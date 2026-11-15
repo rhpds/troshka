@@ -160,6 +160,31 @@ def test_online_reader_rejects_wrong_cluster_and_closes_transport(cli, monkeypat
     assert closed == [True]
 
 
+def test_online_custody_uses_provider_transport_not_collector(cli, monkeypatch):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+
+    from app.services.native_online_enrollment import ReadOnlyManaged
+
+    collector_api = SimpleNamespace(close=lambda: None)
+    provider_api = object()
+    kube = SimpleNamespace(api=collector_api, cluster_identity=lambda: "cluster")
+    provider = SimpleNamespace(api=provider_api, cluster_identity=lambda: "cluster")
+    monkeypatch.setattr(cli, "KubernetesReader", lambda *args, **kwargs: kube)
+    with ExitStack() as cleanup:
+        readers = cli._online_readers(
+            SimpleNamespace(kubeconfig="protected-kubeconfig"),
+            {"provider": provider},
+            {"backend": object()},
+            SimpleNamespace(collector_ids=["collector"], cache_roots=[]),
+            SimpleNamespace(max_objects=100),
+            123,
+            cleanup,
+        )
+        assert readers["provider"].api is collector_api
+        assert ReadOnlyManaged(readers["provider"])._reader.api is provider_api
+
+
 def test_online_cli_private_prepare_and_explicit_target_apply(
     cli, native_case, monkeypatch, tmp_path
 ):
@@ -658,6 +683,45 @@ def test_verify_direct_requires_explicit_credentials(verification_case):
     assert s.verify() == 1
     assert not s.commands
     assert not s.clients
+
+
+def test_verify_explicit_collector_transport_uses_verified_tls(verification_case):
+    s = verification_case
+    assert s.verify(["--kubeconfig", str(s.kubeconfig_path)]) == 0
+    assert s.configurations[0].host == "https://storage.invalid"
+    assert s.configurations[0].verify_ssl is True
+    assert all(client.closed for client in s.clients)
+
+
+def test_verify_explicit_collector_transport_still_rejects_wrong_cluster(
+    verification_case,
+):
+    s = verification_case
+    s.cluster = "unrelated-cluster"
+    assert s.verify(["--kubeconfig", str(s.kubeconfig_path)]) == 1
+    assert not s.output.exists()
+    assert all(client.closed for client in s.clients)
+
+
+def test_verify_collector_transport_rejects_multiple_providers(
+    cli, verification_case, monkeypatch
+):
+    s = verification_case
+    monkeypatch.setattr(cli, "requested_providers", lambda request: {"one", "two"})
+    assert s.verify(["--kubeconfig", str(s.kubeconfig_path)]) == 1
+    assert not s.clients
+    assert not s.output.exists()
+
+
+def test_verify_collector_transport_rejects_insecure_tls(verification_case):
+    import yaml
+
+    s = verification_case
+    s.kubeconfig_body["clusters"][0]["cluster"]["insecure-skip-tls-verify"] = True
+    s.kubeconfig_path.write_text(yaml.safe_dump(s.kubeconfig_body))
+    assert s.verify(["--kubeconfig", str(s.kubeconfig_path)]) == 1
+    assert not s.clients
+    assert not s.output.exists()
 
 
 @pytest.mark.parametrize("auth", ["exec", "auth-provider"])

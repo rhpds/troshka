@@ -70,6 +70,7 @@ rules:
       - troshka-rook-mgr
       - troshka-provider-namespaced
       - troshka-operator-namespaced
+      - troshka-storage-collector-namespaced
   - apiGroups: ["objectbucket.io"]
     resources: ["objectbucketclaims"]
     verbs: ["get", "create"]

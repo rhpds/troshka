@@ -20,6 +20,76 @@ from tests.test_kubevirt_storage_reports import native_case as native_case_fixtu
 native_case = native_case_fixture
 
 
+def test_first_shared_scan_requires_exact_discovered_custody_source():
+    from app.services.kubevirt_storage_reports import report_inventory
+    from tests.test_native_clone_lineage import chain
+
+    report, _, proofs = chain()
+    inventory = report_inventory(report)
+    bindings = shared._source_bindings([], proofs, inventory)
+    assert bindings == [proofs[0].source]
+
+
+@pytest.mark.parametrize("fault", ["missing", "replaced", "absent", "no_inventory"])
+def test_first_shared_scan_rejects_missing_or_changed_source(fault):
+    from app.services.kubevirt_storage_reports import report_inventory
+    from tests.test_native_clone_lineage import chain
+
+    report, _, proofs = chain()
+    inventory = report_inventory(report)
+    if fault == "missing":
+        inventory = inventory.model_copy(update={"cache_bindings": []})
+    elif fault == "replaced":
+        inventory = inventory.model_copy(
+            update={
+                "cache_bindings": [
+                    proofs[0].source.model_copy(update={"pvc_uid": "replacement"})
+                ]
+            }
+        )
+    elif fault == "absent":
+        inventory = inventory.model_copy(
+            update={"absent_cache_bindings": [proofs[0].source]}
+        )
+    else:
+        inventory = None
+    with pytest.raises(AccountingUnavailable):
+        shared._source_bindings([], proofs, inventory)
+
+
+def test_bootstrap_discovery_survives_publication_and_reuse(native_case, monkeypatch):
+    from app.models.kubevirt_storage import NativeRetainedBinding
+    from app.services import native_clone_lineage
+    from app.services.kubevirt_storage_reports import report_inventory
+    from tests.test_native_clone_lineage import chain
+
+    case = native_case
+    report, images, proofs = chain()
+    inventory = report_inventory(report)
+    monkeypatch.setattr(native_clone_lineage, "resolve_lineages", lambda *args: proofs)
+    monkeypatch.setattr(shared, "_scan", lambda *args: [images[-1]])
+    with case.sessions() as db:
+        assert db.query(NativeRetainedBinding).count() == 0
+        manifest = VerifiedEnrollment.model_validate(
+            db.get(NativeEnrollment, case.enrollment_id).payload
+        )
+    measured = shared.collect_shared_storage(
+        case.sessions,
+        manifest,
+        Rbd(),
+        images[-1].collected_at,
+        clock=lambda: images[-1].collected_at,
+        cache_inventory=lambda: inventory,
+    )
+    with case.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(case.pins.domain_id))
+        assert (
+            shared.reusable_shared_images(db, domain, images[-1].collected_at)[0]
+            == measured
+        )
+        assert db.query(NativeRetainedBinding).count() == 0
+
+
 @pytest.mark.parametrize("state", ["complete", "stale", "failed"])
 def test_cache_only_baseline_uses_independent_shared_evidence(native_case, state):
     from app.services.quota_capacity_baseline import _cache_only_domains

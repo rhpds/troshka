@@ -225,9 +225,11 @@ def coordinate(
             backend,
             started,
             limits=limits,
-            cache_inventory=(lambda: shared_inventory(manifest, started))
-            if shared_inventory
-            else None,
+            cache_inventory=(
+                (lambda: shared_inventory(manifest, started))
+                if shared_inventory
+                else None
+            ),
         )
     except Exception as error:
         raise PlatformStorageUnavailableError(
@@ -268,7 +270,11 @@ def collect_configured(
     sessions = sessionmaker(bind=db.get_bind())
     db.rollback()  # Never hold the CLI's initial read transaction over network I/O.
     with ExitStack() as cleanup:
-        readers = {provider_id: ProviderReader(provider, limits, deadline)}
+        readers = {
+            provider_id: ProviderReader.from_kubeconfig(
+                provider_id, read_static_kubeconfig(args.kubeconfig), limits, deadline
+            )
+        }
         cleanup.callback(readers[provider_id].close)
         kubeconfig_data = (
             read_static_kubeconfig(backend_config.kubeconfig)
@@ -364,9 +370,9 @@ def collect_configured(
                     )
                 return inventory.model_copy(
                     update={
-                        "project_scope": UUID(project_id)
-                        if project_id is not None
-                        else None,
+                        "project_scope": (
+                            UUID(project_id) if project_id is not None else None
+                        ),
                         "backend_scope": BackendScope(
                             cluster_keys=sorted(
                                 {p.cluster_key for p in manifest.pins.provider_clusters}

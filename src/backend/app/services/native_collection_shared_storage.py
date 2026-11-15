@@ -25,7 +25,30 @@ def _image_identity(key: ImageKey) -> tuple[str, int, str, str]:
     return key.ceph_fsid, key.pool_id, key.rbd_namespace, key.image_id
 
 
-def _inputs(db, manifest):
+def _source_bindings(bindings, proofs, inventory):
+    """Bootstrap only verified lineage sources confirmed by current discovery."""
+    from app.services.native_clone_graph import binding_identity
+
+    result = list(bindings)
+    identities = [binding_identity(b) for b in result]
+    for proof in proofs:
+        identity = binding_identity(proof.source)
+        if identity in identities:
+            continue
+        if inventory is None or inventory.blockers:
+            raise AccountingUnavailable("Shared source binding unavailable")
+        absent = [binding_identity(b) for b in inventory.absent_cache_bindings]
+        matches = [
+            b for b in inventory.cache_bindings if binding_identity(b) == identity
+        ]
+        if len(matches) != 1 or identity in absent:
+            raise AccountingUnavailable("Shared source binding unavailable")
+        result.append(matches[0])
+        identities.append(identity)
+    return result
+
+
+def _inputs(db, manifest, inventory=None):
     from app.models.native_clone_lineage import NativeCloneLineage
     from app.schemas.kubevirt_storage import CloneReference
     from app.services.native_clone_lineage import resolve_lineages
@@ -48,16 +71,9 @@ def _inputs(db, manifest):
             domain_id=domain_id, root_key="cache"
         )
     ]
+    bindings = _source_bindings(bindings, proofs, inventory)
     if private & {_image_identity(b.image_key) for b in bindings}:
         raise AccountingUnavailable("Shared cache overlaps private clone storage")
-    cache_keys = {digest(b) for b in bindings}
-    if any(digest(p.source) not in cache_keys for p in proofs):
-        # Binding identity excludes mutable provisioned size, just as import does.
-        from app.services.native_clone_graph import binding_identity
-
-        identities = [binding_identity(b) for b in bindings]
-        if any(binding_identity(p.source) not in identities for p in proofs):
-            raise AccountingUnavailable("Shared source binding unavailable")
     return bindings, proofs
 
 
@@ -212,9 +228,9 @@ def collect_shared_storage(
     limits = limits or CollectionLimits()
     images, failure, inventory = None, None, None
     try:
-        with sessions() as db:
-            bindings, proofs = _inputs(db, manifest)
         inventory = cache_inventory() if cache_inventory is not None else None
+        with sessions() as db:
+            bindings, proofs = _inputs(db, manifest, inventory)
         absent_keys = _absence_keys(inventory, bindings)
         images = _scan(
             bindings, proofs, manifest, backend, started, limits, clock, absent_keys
@@ -248,7 +264,7 @@ def collect_shared_storage(
         payload = None
         if images is not None:
             try:
-                bindings, proofs = _inputs(db, manifest)
+                bindings, proofs = _inputs(db, manifest, inventory)
                 _validate_images(
                     images,
                     bindings,
@@ -258,7 +274,7 @@ def collect_shared_storage(
                     _absence_keys(inventory, bindings),
                 )
                 payload = {"images": [i.model_dump(mode="json") for i in images]}
-                if inventory is not None and any(i.absence is not None for i in images):
+                if inventory is not None:
                     payload["cache_absence_inventory"] = inventory.model_dump(
                         mode="json"
                     )
@@ -332,9 +348,9 @@ def reusable_shared_images(db, domain, now):
 
     try:
         manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
-        bindings, proofs = _inputs(db, manifest)
         raw = row.payload.get("cache_absence_inventory")
         inventory = NativeInventory.model_validate(raw) if raw is not None else None
+        bindings, proofs = _inputs(db, manifest, inventory)
         _validate_images(
             images,
             bindings,

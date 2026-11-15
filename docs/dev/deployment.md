@@ -16,13 +16,89 @@ tag, waits for the tag's full image build, and promotes that release to the
 existing `production` image tags. `main` remains the integration branch;
 Argo CD Image Updater still deploys `production` digests.
 
+Before promotion, the script requires dev Argo to run the exact release digests
+through `latest`, checks every active app worker deployment, and requires fresh
+dev readiness and shared/project accounting through the normal queues. A failed
+dev check exits before changing production image tags. Dev collector setup must
+already be ready for this gate, including when a setup plan is supplied for other
+hosts. Confirmed queue collisions may wait for fresh evidence; stale reports or
+an unavailable/ambiguous enqueue never satisfy the gate.
+
 Use `--tag vNAME` to choose a release name. To resume a failed or interrupted
 deployment, check out that release and run
 `./scripts/deploy-full.sh --skip-push --tag vNAME`. If GitHub has not registered
 the build when queried, the script reports this resume command without promoting
 anything. Never move a published release tag.
 
-For a release that installs native storage collection, add
+Before tagging or pushing, full deployment runs `collector_fleet_preflight.py`
+against both the production and permanent dev applications. It reads configured
+native hosts from each application's database, including hosts with no projects,
+and requires exactly one protected profile with an existing enrollment anchor for
+each provider. An inaccessible worker, malformed profile, missing enrollment, or
+missing host profile blocks the release and produces a retained JSON report.
+The probe runs read-only in the collection worker; no credentials are returned.
+This is a configuration gate, not a fresh accounting or capacity acceptance test.
+With `--collector-setup-plan /absolute/path/to/approved.json`, a read-only setup
+validation replaces this initial gate. The plan must cover both applications and
+every configured native host. Existing profiles cannot be overwritten. After the
+release rolls out, deployment installs immutable protected configuration, rotates
+seven-day collector-only tokens, waits for both collector worker deployments,
+and enrolls explicitly authorized empty domains. Existing enrollment anchors are
+validated and preserved. Neither scheduling nor quota enablement is changed.
+
+The operator creates project namespace permissions on first deployment; it does
+not create the cluster's collector profile or initial enrollment. Cluster setup
+is deliberately separate so an empty host can be ready before its first project.
+
+Every full release ends with `collector_release_check.py`. It submits readiness,
+shared-storage, and project collection through the normal RQ queues, then checks
+fresh persisted observations and each project's latest accepted report. Old
+successes, newer failures, changed enrollment, active cleanup, and incomplete
+attempts block success. This is accounting verification, not new storage-version
+acceptance or permission to enable quotas.
+
+Setup uses a private retained directory, printed before preparation. It contains
+credentials after apply; do not publish it. An interrupted apply is never retried
+automatically. Inspect its journal, installed immutable objects, application
+configuration, and enrollment before preparing a new attempt. Old configuration
+and transport objects are retained for recovery; token expiry still applies.
+
+The setup plan has an `applications` array. Each entry specifies `kubeconfig`,
+`namespace`, Argo `application`, `transports` (protected kubeconfig filename to
+administrator kubeconfig path), and optional `additions`. Each addition contains
+the normal collector `profile` and `files` mapping `pins`, `inventory`, and
+`backend_config` to reviewed local JSON files. Pins must already carry accepted
+initialization evidence and explicit empty-domain authorization. Setup never
+invents those approvals. The transport map must cover existing and added profiles.
+With no additions, the same plan rotates credentials while preserving profiles.
+All referenced paths should be absolute. The applications must already have their
+collector worker configuration in Helm `valuesObject`; conflicting Helm parameter
+overrides are rejected. Unsupported or unapproved clusters still block release.
+
+Run the check independently without pushing or deploying:
+
+```bash
+python3 scripts/collector_fleet_preflight.py \
+  --application "$HOME/secrets/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig" troshka \
+  --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
+  --output /tmp/troshka-collector-preflight.json
+```
+
+Full releases apply `infra/storage-collector-base-rbac.yaml` to every operator
+cluster, including hosts with no projects. It installs the dedicated collector
+account, read-only PV/snapshot inventory, and named CSI installation reads.
+It does not install credentials, accounting profiles, project namespace grants,
+or toolbox exec access. `--skip-operators` also skips this baseline installation.
+The baseline allows GET of namespace metadata so newly created project namespaces
+can be verified without editing a cluster-wide allowlist after every deployment.
+`infra/storage-collector-project-rbac.yaml` defines the read-only project
+ClusterRole without a ClusterRoleBinding. The operator creates its RoleBinding
+only in each new deployment's project namespace and verifies any existing binding
+before reuse. Cleanup recognizes that exact role and collector ServiceAccount.
+Neither collector role grants Secret access. The role is never bound across
+the cluster or in shared cache namespaces.
+
+For the remaining scoped native storage collection access, add
 `--collector-access-plan /absolute/path/to/approved-plan.json`. This explicitly
 opts in only the provider clusters and namespaces in that administrator-reviewed
 plan; it does not grant collector access on all seven operator clusters.
@@ -41,14 +117,29 @@ plan update. Toolbox exec carries Ceph privileges; the API cannot restrict the
 commands executed inside that pod. Project Role/RoleBinding objects are owned by
 their pinned TroshkaProject; cache grants are shared and unowned. This does not
 issue credentials, configure collector profiles, or enable quota enforcement.
-Project custody checks inventory Secret objects and key sets and validate
-ConfigMap configuration. Their `get/list` permissions also permit reading Secret
-values: Kubernetes RBAC cannot restrict this grant to metadata or key names.
-Explicitly review that credential exposure when approving the project scope.
-Shared-cache grants omit Secrets and ConfigMaps because cache discovery does not
-require those custody checks.
-New projects or replacement identities need a freshly reviewed plan; the deploy
-script never expands scope through discovery. Omitting the option leaves existing
+Full project custody checks, including Secret identities and key sets, run with
+the existing worker/operator credential. Collectors check the remaining workload
+and storage identities without reading Secrets. They cannot approve namespace
+deletion, and settlement still requires namespace absence. Shared-cache grants
+also omit ConfigMaps because cache discovery does not require those checks.
+CSI readiness also needs installation metadata. Set each domain's optional
+`readiness_access` object with `namespace`, `storage_class`, `driver`,
+`controller`, `node`, `service_accounts` (list), and `priority_classes` (list).
+These are exact reviewed names. The renderer adds named GET grants plus pod and
+ReplicaSet LIST grants only in that namespace; it adds no Secret reads or exec
+access. Collection uses its protected TLS-verified kubeconfig for these reads,
+independently of the ordinary provider credentials.
+For single-provider enrollment verification, `import_kubevirt_storage.py verify
+--kubeconfig /absolute/path/to/collector.kubeconfig` explicitly selects the same
+protected transport. It requires verified TLS and still checks the pinned cluster
+identity. Without that option, verification uses the configured provider credential;
+online compatibility verification checks both cluster identities and uses the
+provider credential for full custody reads while retaining the collector transport
+for storage reads.
+New deployments receive their project binding automatically. Existing projects
+without that binding, cache roots, or replacement toolbox identities need a freshly
+reviewed access plan; the deploy script never expands scope through discovery.
+Omitting the option leaves existing
 collector grants untouched. For an online compatibility release also use
 `--skip-project-pods` to avoid restarting project helper services.
 

@@ -131,7 +131,8 @@ overrides original external/unknown ownership. Unsupported snapshot ancestry,
 capture or ambiguous storage shapes remain unavailable.
 
 For an originally managed namespace, cleanup recognizes only the existing exact
-Troshka provider/operator base grants and the observed OpenShift defaults:
+Troshka provider/operator base grants, the exact read-only
+`troshka-storage-collector-namespaced` binding, and the observed OpenShift defaults:
 `system:deployers`, `system:image-builders`, `system:image-pullers`, and
 `default`/`builder`/`deployer` ServiceAccounts. Role references and subjects must
 match the same original namespace. Generated internal-registry dockercfg Secrets
@@ -144,6 +145,13 @@ and preserved; cleanup never individually deletes these live publisher maps.
 Foreign, changed or additional unowned
 resources block destructive teardown. This is not compatibility with arbitrary
 namespace customizations or externally owned namespaces.
+
+Secret custody is checked by the worker/operator with its existing credential,
+not by the storage collector. Collector roles grant no Secret access. During
+retirement, the collector rechecks non-Secret identities and storage while the
+worker retains the full namespace-deletion gate. Omitting Secret reads is not
+proof of their absence: collector settlement still requires the original
+namespace to be absent, along with the exact disk and trash absence checks.
 
 The original Project, owner, organization, host, slot and storage charges remain
 visible as `cleanup_pending`. Full managed Stop proof closes compute first.

@@ -31,7 +31,10 @@ native_ledger = native_ledger_fixture
 @pytest.mark.parametrize(
     "change", [None, "uid", "spec", "namespace", "foreign", "root"]
 )
-def test_namespace_readiness_uses_sealed_custody_after_source_parents_disappear(change):
+@pytest.mark.parametrize("collector", [False, True])
+def test_namespace_readiness_uses_sealed_custody_after_source_parents_disappear(
+    change, collector, monkeypatch
+):
     from app.schemas.kubevirt_storage import NativeCleanupIntent
     from app.services import quota_cleanup
     from app.services.native_managed_power import helpers
@@ -133,6 +136,8 @@ def test_namespace_readiness_uses_sealed_custody_after_source_parents_disappear(
             return deepcopy(self.values.get((kind, name)))
 
         def rows(self, kind, namespace):
+            if collector and kind == "Secret":
+                raise AssertionError("Collector must not request Secrets")
             return [deepcopy(v) for (k, _), v in self.values.items() if k == kind]
 
     api = API()
@@ -150,6 +155,20 @@ def test_namespace_readiness_uses_sealed_custody_after_source_parents_disappear(
         root["metadata"]["uid"] = "replacement"
         api.values["TroshkaProject", "project"] = root
     work = {"intent": intent.model_dump(mode="json")}
+    if collector:
+        from app.services.kubevirt_storage_inventory import KubernetesReader
+
+        reader = KubernetesReader.__new__(KubernetesReader)
+        reader.api = api
+        monkeypatch.setattr(power, "PowerClient", lambda transport: transport)
+        if change in {"spec", "namespace", "root"}:
+            with pytest.raises(power.ManagedPowerError):
+                reader.cleanup_rows(intent)
+        else:
+            rows = reader.cleanup_rows(intent)
+            assert "Secret" not in rows
+            assert rows["ConfigMap"]
+        return
     if change:
         with pytest.raises(power.ManagedPowerError):
             quota_cleanup.namespace_teardown_ready(api, work)
@@ -615,7 +634,7 @@ def collect_cleanup(q, intent, *, gone=False, failed=False):
             )
 
         def cleanup_rows(self, value):
-            return quota_cleanup._checked_cleanup_rows(
+            return quota_cleanup.checked_collector_cleanup_rows(
                 namespaces[value.root.namespace], value
             )
 

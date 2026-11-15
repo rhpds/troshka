@@ -18,8 +18,30 @@ class ProviderReader:
         config.host = credentials["api_url"]
         config.api_key = {"authorization": "Bearer " + credentials["token"]}
         config.verify_ssl = credentials.get("verify_ssl", False)
+        self._configure(provider.id, config, limits, deadline)
+
+    @classmethod
+    def from_kubeconfig(cls, provider_id, kubeconfig, limits, deadline):
+        """Use the protected collector transport for CSI identity reads."""
+        from kubernetes import client, config
+
+        configuration = client.Configuration()
+        config.load_kube_config_from_dict(
+            kubeconfig, client_configuration=configuration
+        )
+        if not configuration.verify_ssl or not configuration.host.startswith(
+            "https://"
+        ):
+            raise ValueError("Collector transport requires verified TLS")
+        reader = cls.__new__(cls)
+        reader._configure(provider_id, configuration, limits, deadline)
+        return reader
+
+    def _configure(self, provider_id, config, limits, deadline):
+        from kubernetes import client
+
         self.api = client.ApiClient(config)
-        self.provider_id = provider.id
+        self.provider_id = provider_id
         try:
             self.api.rest_client.pool_manager.connection_pool_kw["retries"] = 0
             self.core = client.CoreV1Api(self.api)

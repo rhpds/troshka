@@ -73,6 +73,7 @@ def test_scope_and_project_ownership(monkeypatch, domain):
             for rule in obj.get("rules", []):
                 assert not {"secrets", "configmaps"}.intersection(rule["resources"])
         for rule in obj.get("rules", []):
+            assert not {"secrets", "*"}.intersection(rule["resources"])
             if rule["resources"] == ["pods/exec"]:
                 assert obj["metadata"]["namespace"] == "storage"
                 assert rule["resourceNames"] == ["tools-exact"]
@@ -122,6 +123,33 @@ def test_revalidation_blocks_all_mutations(monkeypatch, domain, tmp_path):
 def test_duplicate_cluster_scope_rejected(domain, tmp_path):
     with pytest.raises(ValueError, match="one entry per cluster"):
         collector.prepare({"domains": [domain, domain]}, tmp_path)
+
+
+def test_readiness_access_is_explicit_named_and_read_only(domain):
+    assert collector.readiness_objects(domain) == []
+    domain["readiness_access"] = {
+        "namespace": "openshift-storage",
+        "storage_class": "approved-sc",
+        "driver": "approved-driver",
+        "controller": "approved-controller",
+        "node": "approved-node",
+        "priority_classes": ["system-node-critical"],
+        "service_accounts": ["approved-sa"],
+    }
+    objects = collector.readiness_objects(domain)
+    assert len(objects) == 4
+    for obj in objects:
+        for rule in obj.get("rules", []):
+            assert not {"secrets", "configmaps", "pods/exec"} & set(rule["resources"])
+            if "list" in rule["verbs"]:
+                assert obj["metadata"]["namespace"] == "openshift-storage"
+                assert rule["resources"][0] in {"pods", "replicasets"}
+            else:
+                assert rule["verbs"] == ["get"]
+                assert rule["resourceNames"]
+    domain["readiness_access"]["driver"] = "*"
+    with pytest.raises(ValueError, match="exact"):
+        collector.readiness_objects(domain)
 
 
 @pytest.mark.parametrize(

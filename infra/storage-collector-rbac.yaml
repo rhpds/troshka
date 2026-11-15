@@ -3,7 +3,7 @@
   "kind": "Role",
   "metadata": {"name": "troshka-storage-collector"},
   "rules": [
-    {"apiGroups": [""], "resources": ["pods", "persistentvolumeclaims", "serviceaccounts", "services", "configmaps", "secrets"], "verbs": ["get", "list"]},
+    {"apiGroups": [""], "resources": ["pods", "persistentvolumeclaims", "serviceaccounts", "services", "configmaps"], "verbs": ["get", "list"]},
     {"apiGroups": ["kubevirt.io"], "resources": ["virtualmachines", "virtualmachineinstances"], "verbs": ["get", "list"]},
     {"apiGroups": ["troshka.redhat.com"], "resources": ["troshkaprojects", "troshkavms", "troshkanetworks", "troshkancephs"], "verbs": ["get", "list"]},
     {"apiGroups": ["cdi.kubevirt.io"], "resources": ["datavolumes"], "verbs": ["get", "list"]},

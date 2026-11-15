@@ -582,9 +582,9 @@ class KubernetesReader:
 
     def cleanup_rows(self, intent):
         from app.services.native_managed_power import helpers
-        from app.services.quota_cleanup import _checked_cleanup_rows
+        from app.services.quota_cleanup import checked_collector_cleanup_rows
 
-        return _checked_cleanup_rows(helpers().PowerClient(self.api), intent)
+        return checked_collector_cleanup_rows(helpers().PowerClient(self.api), intent)
 
     def pod(self, namespace, name):
         return self._dict(

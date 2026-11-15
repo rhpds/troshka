@@ -230,6 +230,8 @@ if name == "gh" and args[:2] == ["run", "view"]:
     print(os.environ.get("CI_CONCLUSION", "success"))
 if name == "python3" and "cluster" in args and os.environ.get("FAIL_CLUSTER"):
     sys.exit(1)
+if name == "python3" and args[0] == "scripts/collector_release_check.py" and os.environ.get("FAIL_DEV_ACCOUNTING"):
+    sys.exit(1)
 """
     )
     fake.chmod(0o755)
@@ -266,6 +268,22 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     assert query[query.index("--branch") + 1] == "vtest"
     assert any(c[0] == "python3" and "promote" in c and "vtest" in c for c in calls)
     assert len([c for c in calls if c[0] == "python3" and "cluster" in c]) == 7
+    promote = next(i for i, c in enumerate(calls) if c[0] == "python3" and "promote" in c)
+    dev_image = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
+    dev_accounting = next(i for i, c in enumerate(calls) if "scripts/collector_release_check.py" in c)
+    assert dev_image < dev_accounting < promote
+
+
+def test_failed_dev_accounting_never_promotes(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        env={**env, "FAIL_DEV_ACCOUNTING": "1"}, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any("scripts/collector_release_check.py" in c for c in calls)
+    assert not any("promote" in c for c in calls)
 
 
 def test_failed_ci_never_promotes(shell_commands):

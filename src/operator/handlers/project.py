@@ -2561,6 +2561,7 @@ def _create_vm_crs(
 @managed_producer(project=True)
 async def project_create(spec, meta, namespace, name, body, patch, **_):
     from helpers.namespaced_rbac import (
+        ensure_collector_namespace_grants,
         ensure_managed_base_namespace_grants,
         preflight_external_base_namespace_grants,
     )
@@ -2584,6 +2585,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     if action not in ("deploy",):
         logger.warning(f"Unknown action {action} for {name}")
         return
+
+    ensure_collector_namespace_grants(namespace)
 
     patch.status["phase"] = "Deploying"
     patch.status["deployStartedAt"] = time.time()

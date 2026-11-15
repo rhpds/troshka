@@ -355,7 +355,14 @@ def test_runtime_scoped_inventory_authorizes_shared_clone_graph(monkeypatch):
         runtime, "_managed_inputs", lambda args: (pins, config, SimpleNamespace())
     )
     monkeypatch.setattr(runtime, "_backend_reader", lambda *args: backend)
-    monkeypatch.setattr(runtime, "ProviderReader", lambda *args: MagicMock())
+    protected_transport = {"test": "protected-collector-config"}
+    factory = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        runtime, "ProviderReader", SimpleNamespace(from_kubeconfig=factory)
+    )
+    monkeypatch.setattr(
+        runtime, "read_static_kubeconfig", lambda path: protected_transport
+    )
     monkeypatch.setattr(runtime, "KubernetesReader", lambda *args, **kw: MagicMock())
     monkeypatch.setattr(
         inventory_service,
@@ -389,3 +396,5 @@ def test_runtime_scoped_inventory_authorizes_shared_clone_graph(monkeypatch):
     assert len(result.projects) == 1
     assert result.projects[0].allocated_bytes == 30
     assert not result.projects[0].blockers
+    assert factory.call_args.args[0] == provider_id
+    assert factory.call_args.args[1] is protected_transport

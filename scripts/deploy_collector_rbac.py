@@ -174,7 +174,66 @@ def render(domain, owners):
             binding("Role", toolbox_name, toolbox["namespace"]),
         ]
     )
+    objects.extend(readiness_objects(domain))
     return {"apiVersion": "v1", "kind": "List", "items": objects}
+
+
+def readiness_objects(domain):
+    """Optional explicit read-only CSI scope; never grant storage mutation."""
+    scope = domain.get("readiness_access")
+    if scope is None:
+        return []
+    namespace = scope["namespace"]
+    name = NAME + "-readiness"
+    cluster_rules = [
+        ("storage.k8s.io", "storageclasses", [scope["storage_class"]]),
+        ("storage.k8s.io", "csidrivers", [scope["driver"]]),
+        ("scheduling.k8s.io", "priorityclasses", scope["priority_classes"]),
+    ]
+    namespaced_rules = [
+        ("apps", "deployments", [scope["controller"]]),
+        ("apps", "daemonsets", [scope["node"]]),
+        ("", "serviceaccounts", scope["service_accounts"]),
+    ]
+
+    def named_rules(entries):
+        result = []
+        for group, resource, names in entries:
+            require(
+                all(isinstance(n, str) and n and n != "*" for n in names),
+                "Readiness access requires exact resource names",
+            )
+            if names:
+                result.append(
+                    {
+                        "apiGroups": [group],
+                        "resources": [resource],
+                        "resourceNames": sorted(set(names)),
+                        "verbs": ["get"],
+                    }
+                )
+        return result
+
+    rules = named_rules(namespaced_rules) + [
+        {"apiGroups": [group], "resources": [resource], "verbs": ["list"]}
+        for group, resource in (("apps", "replicasets"), ("", "pods"))
+    ]
+    return [
+        {
+            "apiVersion": API,
+            "kind": "ClusterRole",
+            "metadata": {"name": name},
+            "rules": named_rules(cluster_rules),
+        },
+        binding("ClusterRole", name),
+        {
+            "apiVersion": API,
+            "kind": "Role",
+            "metadata": {"name": name, "namespace": namespace},
+            "rules": rules,
+        },
+        binding("Role", name, namespace),
+    ]
 
 
 def prepare(plan, output):

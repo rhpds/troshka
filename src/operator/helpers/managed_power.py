@@ -268,6 +268,7 @@ def cleanup_grant_body(name, namespace):
     accounts = {
         "troshka-provider-namespaced": ("troshka", "troshka", "troshka-provider-namespaced"),
         "troshka-operator-namespaced": ("troshka-operator", "troshka-operator", "troshka-operator-namespaced"),
+        "troshka-storage-collector-namespaced": ("troshka-storage-collector", "troshka", "troshka-storage-collector-namespaced"),
         "system:deployers": ("deployer", namespace, "system:deployer"),
         "system:image-builders": ("builder", namespace, "system:image-builder"),
     }

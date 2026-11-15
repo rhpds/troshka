@@ -47,7 +47,7 @@ from app.services.native_collection_config import (
     _check_backend_coverage,
     read_operator_file,
 )
-from app.services.native_collection_config import _managed_inputs as _managed_inputs
+from app.services.native_collection_config import _managed_inputs as _managed_inputs  # noqa: PLC0414 -- compatibility export used by collector bootstrap
 from app.services.native_provider_reader import ProviderReader
 from collect_kubevirt_storage import atomic_report
 from pydantic import RootModel, TypeAdapter
@@ -77,13 +77,23 @@ def _verify(db, args):
         for config in backends
         if isinstance(config, ToolboxBackendConfig)
     }
+    provider_ids = requested_providers(request)
+    collector_transport = None
+    if not online and getattr(args, "kubeconfig", None):
+        if len(provider_ids) != 1:
+            raise ValueError("explicit collector transport requires one provider")
+        collector_transport = read_static_kubeconfig(args.kubeconfig)
     with ExitStack() as cleanup:
         readers = {}
-        for identity in requested_providers(request):
+        for identity in provider_ids:
             provider = db.get(Provider, identity)
             if provider is None or provider.type != "kubevirt":
                 raise ValueError("native provider missing")
-            reader = ProviderReader(provider, limits, deadline)
+            reader = (
+                ProviderReader.from_kubeconfig(identity, collector_transport, limits, deadline)
+                if collector_transport is not None
+                else ProviderReader(provider, limits, deadline)
+            )
             cleanup.callback(reader.close)
             readers[identity] = reader
         backend_readers = {
@@ -118,6 +128,9 @@ def _online_readers(args, providers, backends, pins, limits, deadline, cleanup):
     cleanup.callback(kube.api.close)
     if kube.cluster_identity() != provider.cluster_identity():
         raise ValueError("online reader differs from configured provider cluster")
+    # Storage reads use the collector; full custody uses the existing provider
+    # identity only after both transports prove the same cluster.
+    kube.custody_api = provider.api
     return {provider_id: kube}
 
 
@@ -159,6 +172,10 @@ def _parser():
     verify = commands.add_parser("verify", help="Read-only cluster/backend verification, independent of reports")
     verify.add_argument("--verification-timeout-seconds", type=int, default=600)
     verify.add_argument("--command-timeout-seconds", type=int, default=15)
+    verify.add_argument(
+        "--kubeconfig",
+        help="Protected TLS-verified collector transport for a single provider",
+    )
     for name in ("request", "pins", "backend-config", "output"):
         verify.add_argument("--" + name, required=True)
     online_verify = commands.add_parser(

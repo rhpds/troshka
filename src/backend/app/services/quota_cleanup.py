@@ -408,13 +408,13 @@ def _cleanup_context(intent):
     }
 
 
-def _namespace_rows(api, namespace):
+def _namespace_rows(api, namespace, *, excluded_kinds=frozenset()):
     from app.services.native_managed_power import helpers
 
     module = helpers()
     kinds = set(module.KINDS) - {"Namespace", "PersistentVolume", "TroshkaProject"}
     kinds |= set(module.CLEANUP_KINDS)
-    return {kind: api.rows(kind, namespace) for kind in sorted(kinds)}
+    return {kind: api.rows(kind, namespace) for kind in sorted(kinds - excluded_kinds)}
 
 
 def seal_native_inventory(api, work):
@@ -697,10 +697,28 @@ def _original_namespace(api, intent):
 
 
 def _checked_cleanup_rows(api, intent):
+    """Worker's complete custody check, including Secrets, before deletion."""
+    return _validate_cleanup_rows(
+        api, intent, _namespace_rows(api, intent.root.namespace)
+    )
+
+
+def checked_collector_cleanup_rows(api, intent):
+    """Storage observation only; never grants authority to delete the namespace.
+
+    The worker seals and rechecks Secret custody. Collector settlement still
+    requires namespace absence, so omitted Secrets are not absence evidence.
+    """
+    rows = _namespace_rows(
+        api, intent.root.namespace, excluded_kinds=frozenset({"Secret"})
+    )
+    return _validate_cleanup_rows(api, intent, rows)
+
+
+def _validate_cleanup_rows(api, intent, rows):
     from app.services.native_managed_power import helpers
 
     module = helpers()
-    rows = _namespace_rows(api, intent.root.namespace)
     original_root = next(v for v in intent.objects if v.kind == "TroshkaProject")
     root = _cleanup_root(api, intent, original_root)
     expected = {(v.kind, v.name): v for v in intent.objects if v.namespace}

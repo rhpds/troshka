@@ -142,7 +142,7 @@ class ReadOnlyManaged:
     def __init__(self, kube):
         from app.services.native_managed_power import helpers
 
-        self._reader = helpers().PowerClient(kube.api)
+        self._reader = helpers().PowerClient(getattr(kube, "custody_api", kube.api))
         self._reader.begin_inventory()
 
     def rows(self, kind, namespace):

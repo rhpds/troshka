@@ -1,0 +1,46 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1", "kind": "ServiceAccount",
+      "metadata": {"name": "troshka-storage-collector", "namespace": "troshka"},
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
+      "metadata": {"name": "troshka-storage-collector-base"},
+      "rules": [
+        {"apiGroups": [""], "resources": ["namespaces"], "verbs": ["get"]},
+        {"apiGroups": [""], "resources": ["persistentvolumes"], "verbs": ["get", "list"]},
+        {"apiGroups": ["snapshot.storage.k8s.io"], "resources": ["volumesnapshotcontents"], "verbs": ["get", "list"]},
+        {"apiGroups": ["storage.k8s.io"], "resources": ["storageclasses"], "resourceNames": ["ocs-storagecluster-ceph-rbd"], "verbs": ["get"]},
+        {"apiGroups": ["storage.k8s.io"], "resources": ["csidrivers"], "resourceNames": ["openshift-storage.rbd.csi.ceph.com"], "verbs": ["get"]},
+        {"apiGroups": ["scheduling.k8s.io"], "resources": ["priorityclasses"], "resourceNames": ["system-cluster-critical", "system-node-critical"], "verbs": ["get"]}
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
+      "metadata": {"name": "troshka-storage-collector-base"},
+      "subjects": [{"kind": "ServiceAccount", "name": "troshka-storage-collector", "namespace": "troshka"}],
+      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "troshka-storage-collector-base"}
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+      "metadata": {"name": "troshka-storage-collector-base", "namespace": "openshift-storage"},
+      "rules": [
+        {"apiGroups": ["apps"], "resources": ["deployments"], "resourceNames": ["openshift-storage.rbd.csi.ceph.com-ctrlplugin"], "verbs": ["get"]},
+        {"apiGroups": ["apps"], "resources": ["daemonsets"], "resourceNames": ["openshift-storage.rbd.csi.ceph.com-nodeplugin"], "verbs": ["get"]},
+        {"apiGroups": [""], "resources": ["serviceaccounts"], "resourceNames": ["ceph-csi-rbd-ctrlplugin-sa", "ceph-csi-rbd-nodeplugin-sa"], "verbs": ["get"]},
+        {"apiGroups": ["apps"], "resources": ["replicasets"], "verbs": ["list"]},
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["list"]}
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+      "metadata": {"name": "troshka-storage-collector-base", "namespace": "openshift-storage"},
+      "subjects": [{"kind": "ServiceAccount", "name": "troshka-storage-collector", "namespace": "troshka"}],
+      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "troshka-storage-collector-base"}
+    }
+  ]
+}
