@@ -263,6 +263,53 @@ def test_cleanup_dispatch_does_not_wait_for_routine_due_interval():
         assert jobs.dispatch_once() == 1  # no simulated time advance
 
 
+def test_disabled_routine_collection_still_dispatches_only_pending_cleanup():
+    redis = RedisMemory()
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "settings", return_value={"enabled": False}),
+        patch("app.core.database.SessionLocal"),
+        patch.object(jobs, "Queue") as queue,
+        patch.object(
+            jobs,
+            "dispatch_candidates",
+            return_value=[
+                ("domain", None, False),
+                ("domain", "ordinary", False),
+                ("domain", "retiring", True),
+            ],
+        ),
+    ):
+        assert jobs.dispatch_once() == 1
+        assert jobs.dispatch_once() == 0
+        assert queue.call_args.args == ("native_cleanup",)
+        assert queue.return_value.enqueue.call_count == 1
+        assert queue.return_value.enqueue.call_args.args[1:] == ("domain", "retiring")
+
+
+def test_disabled_routine_collection_without_cleanup_does_not_require_redis():
+    with (
+        patch.object(jobs, "settings", return_value={"enabled": False}),
+        patch("app.core.database.SessionLocal"),
+        patch.object(jobs, "get_redis_raw") as redis,
+        patch.object(
+            jobs, "dispatch_candidates", return_value=[("domain", None, False)]
+        ),
+    ):
+        assert jobs.dispatch_once() == 0
+        redis.assert_not_called()
+
+
+def test_cleanup_dispatcher_starts_when_routine_collection_disabled():
+    with (
+        patch.object(jobs, "settings", return_value={"enabled": False}),
+        patch.object(jobs.threading, "Thread") as thread,
+    ):
+        stop = jobs.start_collection_dispatcher()
+        thread.return_value.start.assert_called_once()
+        stop.set()
+
+
 def test_readiness_dispatch_interval_preserves_shared_freshness_headroom():
     redis = RedisMemory()
     with (

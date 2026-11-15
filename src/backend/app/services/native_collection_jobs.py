@@ -323,15 +323,16 @@ def dispatch_candidates(db):
 
 
 def dispatch_once():
-    if not settings().get("enabled", False):
-        return 0
     from app.core.database import SessionLocal
 
+    automatic = settings().get("enabled", False)
+    with SessionLocal() as db:
+        candidates = [item for item in dispatch_candidates(db) if automatic or item[2]]
+    if not candidates:
+        return 0
     redis = get_redis_raw()
     redis.ping()
     count = 0
-    with SessionLocal() as db:
-        candidates = list(dispatch_candidates(db))
     for domain_id, project_id, cleanup in candidates:
         if project_id is None:
             count += _dispatch_readiness(redis, domain_id)
@@ -370,8 +371,6 @@ def _dispatch_readiness(redis, domain_id):
 
 def start_collection_dispatcher():
     stop = threading.Event()
-    if not settings().get("enabled", False):
-        return stop
 
     def loop():
         while not stop.is_set():
