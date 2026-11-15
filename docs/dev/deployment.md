@@ -14,11 +14,15 @@ From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a
 UTC release tag (`vYYYY.MM.DD-HHMMSS`), atomically pushes HEAD to `main` and the
 tag, waits for the tag's full image build, upgrades host prerequisites, verifies
 collector readiness, and promotes that release to the existing `production`
-image tags. `main` remains the integration branch;
-Argo CD Image Updater still deploys `production` digests.
+image tags. It also advances the production Argo application's Git revision to
+that named release, preserving its Helm settings. `main` remains the integration
+branch; Argo CD Image Updater still deploys `production` digests.
 
-Before promotion, the script requires dev Argo to run the exact release digests
-through `latest`, checks every active app worker deployment, and requires fresh
+Before promotion, the script waits for any image build for the same commit on
+`main`, then aligns backend/frontend `latest` with the named release by digest.
+This prevents concurrent main/tag builds from leaving dev on different images.
+It requires dev Argo to run those exact release digests, checks every active app
+worker deployment, and requires fresh
 dev readiness and shared/project accounting through the normal queues. A failed
 dev check exits before changing production image tags. Dev collector setup must
 already be ready for this gate, including when a setup plan is supplied for other

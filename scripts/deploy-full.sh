@@ -89,11 +89,22 @@ gh run watch "$IMAGE_RUN" --exit-status
 [ "$(gh run view "$IMAGE_RUN" --json conclusion --jq .conclusion)" = success ] || {
   echo "Release build did not succeed." >&2; exit 1;
 }
+# Both builds publish latest. Wait for the main build before aligning dev with
+# the named release, so it cannot overwrite the candidate after verification.
+MAIN_IMAGE_RUN=$(gh run list --branch main --commit "$HEAD_REV" --limit 1 \
+  -w build-images.yml --json databaseId --jq '.[0].databaseId // empty')
+if [ -n "$MAIN_IMAGE_RUN" ]; then
+  gh run watch "$MAIN_IMAGE_RUN" --exit-status
+  [ "$(gh run view "$MAIN_IMAGE_RUN" --json conclusion --jq .conclusion)" = success ] || {
+    echo "Main image build did not succeed." >&2; exit 1;
+  }
+fi
 
 STATE=$(mktemp -d)
 trap 'rm -rf "$STATE"' EXIT
 echo "=== Preflight all ten release images ==="
 python3 scripts/deploy_release.py images --tag "$RELEASE_TAG" --state "$STATE/digests.json"
+python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG"
 echo "=== Require dev Argo on this release and fresh accounting before promotion ==="
 python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
   --namespace troshka-dev --image-tag latest --state "$STATE/digests.json"
@@ -187,6 +198,7 @@ python3 scripts/collector_release_check.py \
   --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$STATE/pre-promotion-accounting.json"
 python3 scripts/deploy_release.py idle --kubeconfig "$KC"
 ./scripts/promote-to-production.sh "$RELEASE_TAG"
+python3 scripts/deploy_release.py pin-application --kubeconfig "$KC" --tag "$RELEASE_TAG"
 if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json"

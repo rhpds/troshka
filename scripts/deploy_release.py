@@ -75,6 +75,42 @@ def promote(tag):
     return expected
 
 
+def stage_dev_images(tag):
+    # Main and release builds can both publish latest. Resolve both release
+    # images first and copy by digest so dev tests exactly the promotion candidate.
+    expected = {role: digest(role, tag) for role in ("backend", "frontend")}
+    for role, image_digest in expected.items():
+        run([
+            "skopeo", "copy", "--all",
+            f"docker://{REGISTRY}{role}@{image_digest}",
+            f"docker://{REGISTRY}{role}:latest",
+        ], timeout=600)
+        if digest(role, "latest") != image_digest:
+            raise RuntimeError(f"Dev digest mismatch for {role}")
+        print(f"  {role}: dev latest aligned with {tag}", flush=True)
+
+
+def pin_application_release(kc, namespace, tag):
+    if not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", tag):
+        raise RuntimeError("A named release tag starting with v is required")
+    app = json.loads(oc(kc, "get", "applications.argoproj.io", namespace,
+                        "-n", "openshift-gitops", "-o", "json"))
+    spec = app.get("spec", {})
+    source = spec.get("source", {})
+    if (spec.get("destination", {}).get("namespace") != namespace
+            or source.get("path") != "deploy/helm"):
+        raise RuntimeError("Unexpected Argo application target")
+    if source.get("targetRevision") == tag:
+        return
+    patch = [
+        {"op": "test", "path": "/metadata/resourceVersion", "value": app["metadata"]["resourceVersion"]},
+        {"op": "replace", "path": "/spec/source/targetRevision", "value": tag},
+    ]
+    oc(kc, "patch", "applications.argoproj.io", namespace, "-n", "openshift-gitops",
+       "--type=json", "-p", json.dumps(patch))
+    print(f"Argo {namespace}: Git revision pinned to {tag}", flush=True)
+
+
 def matching_pods(dep, pods):
     labels = dep["spec"]["selector"]["matchLabels"]
     return [
@@ -310,10 +346,19 @@ def application(kc, expected, namespace="troshka", image_tag="production"):
     print("Runtime schema matches; backend health HTTP 200", flush=True)
 
 
+def application_release_action(args, parser):
+    if not args.tag or not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", args.tag):
+        parser.error("a named release --tag starting with v is required")
+    if args.action == "stage-dev":
+        stage_dev_images(args.tag)
+    else:
+        pin_application_release(args.kubeconfig, args.namespace, args.tag)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("promote", "images", "cluster", "application", "idle")
+        "action", choices=("promote", "images", "cluster", "application", "idle", "stage-dev", "pin-application")
     )
     parser.add_argument("--tag")
     parser.add_argument("--state", type=Path)
@@ -325,6 +370,9 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", args.image_tag):
         parser.error("--image-tag must be a valid container tag")
+    if args.action in ("stage-dev", "pin-application"):
+        application_release_action(args, parser)
+        return
     if args.action in ("promote", "images"):
         if not args.tag or args.tag in ("latest", "production"):
             parser.error("a named release --tag is required")

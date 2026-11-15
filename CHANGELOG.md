@@ -27,6 +27,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   enrollments. Release verification now requires fresh accounting through the
   normal worker queues, including configured hosts with no projects. Dev must run
   the exact release images and pass fresh accounting before production promotion.
+  Deployment aligns dev's `latest` images after concurrent builds finish and pins
+  production's Argo Git revision to the promoted release without replacing Helm settings.
 
 - Collector release preflight: full deployment upgrades host operators and RBAC using the named release before configuring and checking collectors. Every configured native host, including empty hosts, must have an unambiguous protected profile, enrollment anchor, and fresh accounting before production app promotion; failed host rollouts or incomplete accounting block promotion.
 

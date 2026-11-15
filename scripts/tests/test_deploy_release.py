@@ -209,6 +209,80 @@ def test_promotion_digest_mismatch_fails(release, monkeypatch):
         release.promote("vtest")
 
 
+def test_stage_dev_resolves_both_images_before_copy(release, monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["skopeo", "inspect"] and args[-1].endswith("frontend:vtest"):
+            raise RuntimeError("missing frontend")
+        return "sha256:abc"
+
+    monkeypatch.setattr(release, "run", run)
+    with pytest.raises(RuntimeError, match="missing frontend"):
+        release.stage_dev_images("vtest")
+    assert not any(c[:2] == ["skopeo", "copy"] for c in calls)
+
+
+def test_stage_dev_copies_immutable_sources_and_checks_latest(release, monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return "sha256:abc"
+
+    monkeypatch.setattr(release, "run", run)
+    release.stage_dev_images("vtest")
+    copies = [c for c in calls if c[:2] == ["skopeo", "copy"]]
+    assert len(copies) == 2
+    assert all(c[-2].endswith("@sha256:abc") for c in copies)
+    assert {c[-1] for c in copies} == {
+        f"docker://{release.REGISTRY}{role}:latest" for role in ("backend", "frontend")
+    }
+    assert len([c for c in calls if c[:2] == ["skopeo", "inspect"] and c[-1].endswith(":latest")]) == 2
+
+
+def test_stage_dev_rejects_destination_digest_mismatch(release, monkeypatch):
+    monkeypatch.setattr(release, "run", lambda args, **kw: "sha256:bad" if args[-1].endswith(":latest") else "sha256:good")
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        release.stage_dev_images("vtest")
+
+
+def test_pin_application_changes_only_git_revision_with_concurrency_guard(release, monkeypatch):
+    app = {"metadata": {"resourceVersion": "123"}, "spec": {
+        "destination": {"namespace": "troshka"},
+        "source": {"path": "deploy/helm", "targetRevision": "vold", "helm": {"parameters": [{"name": "worker.replicas", "value": "100"}]}},
+    }}
+    calls = []
+
+    def oc(kc, *args, **kwargs):
+        calls.append(args)
+        return json.dumps(app)
+
+    monkeypatch.setattr(release, "oc", oc)
+    release.pin_application_release("kc", "troshka", "vtest")
+    patch_call = calls[-1]
+    patch = json.loads(patch_call[patch_call.index("-p") + 1])
+    assert patch == [
+        {"op": "test", "path": "/metadata/resourceVersion", "value": "123"},
+        {"op": "replace", "path": "/spec/source/targetRevision", "value": "vtest"},
+    ]
+
+
+@pytest.mark.parametrize("namespace,path", [("other", "deploy/helm"), ("troshka", "other")])
+def test_pin_application_rejects_wrong_target(release, monkeypatch, namespace, path):
+    calls = []
+
+    def oc(kc, *args, **kwargs):
+        calls.append(args)
+        return json.dumps({"spec": {"destination": {"namespace": namespace}, "source": {"path": path}}})
+
+    monkeypatch.setattr(release, "oc", oc)
+    with pytest.raises(RuntimeError, match="target"):
+        release.pin_application_release("kc", "troshka", "vtest")
+    assert len(calls) == 1
+
+
 @pytest.fixture
 def shell_commands(tmp_path):
     """Replace external CLIs; execute the real shell orchestration."""
@@ -225,9 +299,10 @@ with open(os.environ["COMMAND_LOG"], "a") as stream:
 if name == "git" and args[0] == "rev-parse":
     print("candidate")
 if name == "gh" and args[:2] == ["run", "list"]:
-    print("42")
+    print("43" if "main" in args else "42")
 if name == "gh" and args[:2] == ["run", "view"]:
-    print(os.environ.get("CI_CONCLUSION", "success"))
+    key = "MAIN_CI_CONCLUSION" if args[2] == "43" else "CI_CONCLUSION"
+    print(os.environ.get(key, "success"))
 if name == "python3" and "cluster" in args and os.environ.get("FAIL_CLUSTER"):
     sys.exit(1)
 if name == "python3" and args[0] == "scripts/collector_release_check.py" and os.environ.get("FAIL_DEV_ACCOUNTING"):
@@ -281,6 +356,25 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     assert all("--skip-project-pods" in calls[i] for i in hosts)
 
 
+def test_full_deploy_aligns_dev_after_main_build_and_pins_prod_git(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    main_build = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "run", "list"] and "main" in c)
+    stage = next(i for i, c in enumerate(calls) if "stage-dev" in c)
+    dev = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
+    promote = next(i for i, c in enumerate(calls) if "promote" in c)
+    pin = next(i for i, c in enumerate(calls) if "pin-application" in c)
+    prod = next(i for i, c in enumerate(calls) if "application" in c and "latest" not in c)
+    assert main_build < stage < dev < promote < pin < prod
+    assert calls[pin][calls[pin].index("--tag") + 1] == "vtest"
+    assert any(c[:3] == ["gh", "run", "watch"] for c in calls[main_build:stage])
+
+
 def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_commands):
     env, log = shell_commands
     result = subprocess.run(
@@ -316,6 +410,18 @@ def test_failed_ci_never_promotes(shell_commands):
     assert result.returncode != 0
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert not any("promote" in c for c in calls)
+
+
+def test_failed_main_build_never_aligns_dev_or_promotes(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        env={**env, "MAIN_CI_CONCLUSION": "failure"},
+        capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any("stage-dev" in c or "promote" in c for c in calls)
 
 
 def test_failed_cluster_is_not_reported_as_success(shell_commands):
