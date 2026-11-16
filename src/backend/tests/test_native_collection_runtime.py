@@ -12,6 +12,39 @@ from tests.test_kubevirt_storage_reports import native_case as native_case_fixtu
 native_case = native_case_fixture
 
 
+@pytest.mark.parametrize("configured, expected_scan", [(60, 50), (600, 50), (20, 10)])
+def test_readiness_budget_allows_slow_identity_checks_but_bounds_evidence_age(
+    monkeypatch, configured, expected_scan
+):
+    from app.services import native_collection_jobs as jobs
+    from app.services import native_collection_runtime as runtime
+
+    domain = str(uuid4())
+    profile = dict(
+        domain_id=domain,
+        target_id=str(uuid4()),
+        pins="/pins",
+        backend_config="/backends",
+        inventory="/inventory",
+        kubeconfig="/kube",
+    )
+    settings = {"readiness_timeout_seconds": configured}
+    monkeypatch.setattr(jobs, "settings", lambda: settings)
+    monkeypatch.setattr(
+        runtime,
+        "config",
+        SimpleNamespace(
+            get=lambda key, default=None: [profile]
+            if key.endswith("profiles")
+            else settings
+        ),
+    )
+    args = runtime.profile_for(domain, readiness=True)
+    assert args.verification_timeout_seconds == expected_scan
+    assert args.verification_timeout_seconds + 10 <= jobs.readiness_timeout()
+    assert args.command_timeout_seconds == 15
+
+
 @pytest.mark.parametrize("field", ["namespace", "container"])
 @pytest.mark.parametrize("invalid", [None, "other", "", "trailing-newline"])
 @pytest.mark.parametrize("mapping_type", [dict, UserDict])

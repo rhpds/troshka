@@ -205,7 +205,7 @@ nativeCollection:
   intervalSeconds: 60
   domainIntervalSeconds: 60
   readinessIntervalSeconds: 20
-  readinessTimeoutSeconds: 45
+  readinessTimeoutSeconds: 60
   jobTimeoutSeconds: 240
   providerSlots: 2
   # Administrator-owned profile paths only; no credentials in this ConfigMap.

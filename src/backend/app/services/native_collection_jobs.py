@@ -41,7 +41,9 @@ def _timeout():
 
 
 def readiness_timeout():
-    return max(15, min(50, int(settings().get("readiness_timeout_seconds", 45))))
+    # Runtime reserves ten seconds for publication/failure handling. A 60-second
+    # job allows a 50-second scan without relaxing the 60-second evidence age.
+    return max(15, min(60, int(settings().get("readiness_timeout_seconds", 60))))
 
 
 def _readiness_key(domain_id):

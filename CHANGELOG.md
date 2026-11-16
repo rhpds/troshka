@@ -16,6 +16,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 - Release builds run the eight operator and helper images in parallel, while
   keeping production promotion gated on the complete image build.
+  Native storage readiness allows 50 seconds for sequential identity checks,
+  with aligned worker deadlines and leases, while retaining the 60-second
+  evidence freshness requirement.
 
 - Deployment validation identifies disconnected VM NICs in the canvas and rejects
   them before provisioning. Native deployments surface terminal VM errors without

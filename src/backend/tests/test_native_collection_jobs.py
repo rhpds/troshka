@@ -365,3 +365,25 @@ def test_readiness_has_one_separate_backend_slot():
     assert not jobs._acquire_slots(
         redis, ["native:readiness:backend:fsid"], "second", {}, readiness=True
     )
+
+
+def test_readiness_reservations_cover_queue_wait_and_longer_execution():
+    redis = RedisMemory()
+    with (
+        patch.object(jobs, "settings", return_value={}),
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
+        assert jobs.enqueue_readiness("domain")
+        call = queue.return_value.enqueue.call_args
+        assert call.kwargs["job_timeout"] == 60
+        assert call.kwargs["ttl"] == 60
+        assert jobs._acquire_slots(redis, ["readiness"], "owner", {}, readiness=True)
+        redis.now = 119
+        assert redis.get("readiness:0") == "owner"
+        redis.now = 120
+        assert redis.get("readiness:0") is None
+        redis.now = 179
+        assert redis.get(jobs._readiness_key("domain") + ":pending") is not None
+        redis.now = 180
+        assert redis.get(jobs._readiness_key("domain") + ":pending") is None
