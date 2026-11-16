@@ -1,7 +1,10 @@
 """Release proof rejects stale, failed, and superseded accounting attempts."""
 
 import importlib.util
+import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -132,3 +135,88 @@ def test_new_project_after_coordination_is_checked(check, monkeypatch, capsys):
 
 def test_remote_payload_is_valid_python(check):
     compile(check.remote_source(), "remote-check", "exec")
+
+
+def test_project_checks_overlap_with_two_active_limit(check, monkeypatch, capsys):
+    rows = [("domain", None, False)] + [("domain", str(i), False) for i in range(5)]
+    monkeypatch.setattr(check, "candidates", lambda: rows)
+    monkeypatch.setattr(check, "observe", lambda *_: evidence())
+    both_started, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    calls, active, peak = [], 0, 0
+
+    def verify(domain, project, kind):
+        nonlocal active, peak
+        with lock:
+            calls.append((project, kind))
+            if project is not None:
+                active += 1
+                peak = max(peak, active)
+                if active == 2:
+                    both_started.set()
+        if project is not None:
+            assert release.wait(5)
+            with lock:
+                active -= 1
+        return {"domain_id": domain, "project_id": project, "kind": kind,
+                "started_at": "2026-11-14T12:00:00+00:00"}
+
+    monkeypatch.setattr(check, "verify_attempt", verify)
+    with ThreadPoolExecutor(max_workers=1) as runner:
+        result = runner.submit(check.remote_main)
+        try:
+            assert both_started.wait(2), "project verification remained serial"
+            with lock:
+                assert calls[:2] == [(None, "readiness"), (None, "shared")]
+                assert len(calls) == 4  # Remaining projects have not started yet.
+        finally:
+            release.set()
+        assert result.result(timeout=5) == 0
+    assert peak == 2
+    assert sorted(p for p, _ in calls if p is not None) == [str(i) for i in range(5)]
+    assert len(json.loads(capsys.readouterr().out)["completed"]) == 7
+
+
+def test_parallel_failure_keeps_other_inflight_success(check, monkeypatch, capsys):
+    rows = [("domain", None, False), ("domain", "bad", False), ("domain", "good", False)]
+    monkeypatch.setattr(check, "candidates", lambda: rows)
+    started = threading.Barrier(2, timeout=2)
+
+    def verify(domain, project, kind):
+        if project is not None:
+            started.wait()
+            if project == "bad":
+                raise RuntimeError("sensitive provider error must remain hidden")
+        return {"domain_id": domain, "project_id": project, "kind": kind,
+                "started_at": "2026-11-14T12:00:00+00:00"}
+
+    monkeypatch.setattr(check, "verify_attempt", verify)
+    assert check.remote_main() == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [v["project_id"] for v in report["completed"]] == [None, None, "good"]
+    assert "sensitive" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("change", ["cleanup", "inventory", "superseded"])
+def test_parallel_release_preserves_final_safety_gates(check, monkeypatch, capsys, change):
+    initial = [("domain", None, False)]
+    current = initial + [("domain", "a", change == "cleanup"), ("domain", "b", False)]
+    final = current + [("domain", "new", False)] if change == "inventory" else current
+    rounds = iter([initial, current, final])
+    monkeypatch.setattr(check, "candidates", lambda: next(rounds))
+
+    def verify(domain, project, kind):
+        return {"domain_id": domain, "project_id": project, "kind": kind,
+                "started_at": "2026-11-14T12:00:00+00:00"}
+
+    def observe(domain, project, kind):
+        row = evidence()
+        if change == "superseded" and project == "a":
+            row["status"] = "failed"
+        return row
+
+    monkeypatch.setattr(check, "verify_attempt", verify)
+    monkeypatch.setattr(check, "observe", observe)
+    assert check.remote_main() == 1
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["completed"]) == (2 if change == "cleanup" else 4)

@@ -25,6 +25,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 - Release builds run the eight operator and helper images in parallel, while
   keeping production promotion gated on the complete image build.
+  Release accounting checks run at most two project scans concurrently, retaining
+  freshness and final inventory checks and stopping new scans after a failure.
   Native storage readiness allows 50 seconds for sequential identity checks,
   with aligned worker deadlines and leases, while retaining the 60-second
   evidence freshness requirement.

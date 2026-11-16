@@ -10,7 +10,9 @@ import os
 import subprocess
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
+from itertools import islice
 from pathlib import Path
 
 
@@ -130,6 +132,27 @@ def candidates():
         return list(dispatch_candidates(db))
 
 
+def verify_projects(current, completed):
+    """Start at most two fresh attempts; retain in-flight successes on failure."""
+    projects = iter((domain, project) for domain, project, _ in current if project is not None)
+    failed = False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = {pool.submit(verify_attempt, domain, project, "project")
+                   for domain, project in islice(projects, 2)}
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    completed.append(future.result())
+                except Exception:  # noqa: BLE001 -- retain evidence, never provider text
+                    failed = True
+            if not failed:
+                pending.update(pool.submit(verify_attempt, domain, project, "project")
+                               for domain, project in islice(projects, 2 - len(pending)))
+    if failed:
+        raise RuntimeError("project accounting verification failed")
+
+
 def remote_main():
     completed = []
     try:
@@ -145,9 +168,7 @@ def remote_main():
         current = candidates()
         if any(cleanup for _, _, cleanup in current):
             raise ValueError("project cleanup active")
-        for domain, project, _ in current:
-            if project is not None:
-                completed.append(verify_attempt(domain, project, "project"))
+        verify_projects(current, completed)
         if set(current) != set(candidates()):
             raise ValueError("project inventory changed during verification")
         # A newer failure must invalidate an earlier successful observation.
