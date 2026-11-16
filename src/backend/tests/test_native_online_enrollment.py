@@ -242,6 +242,35 @@ def test_reconcile_rejects_changed_existing_storage_identity(online_case):
         db.rollback()
 
 
+def test_reconcile_does_not_preserve_receipt_added_after_validation(
+    online_case, monkeypatch
+):
+    q = online_case
+    value = verified(q)
+    original = online._storage_enrollment
+
+    def concurrent_receipt(db, manifest, target_id):
+        enrollment_id = original(db, manifest, target_id)
+        db.add(
+            NativeCustodyReceipt(
+                id=str(uuid4()),
+                project_id=q.project_ids[0],
+                digest="f" * 64,
+                payload={"receipt": value, "enrollment_id": enrollment_id},
+            )
+        )
+        db.flush()
+        return enrollment_id
+
+    monkeypatch.setattr(online, "_storage_enrollment", concurrent_receipt)
+    with q.sessions() as db:
+        with pytest.raises(AccountingUnavailable, match="Existing custody differs"):
+            online.apply(
+                db, value, expected_target_id=q.target_id, preserve_existing=True
+            )
+        db.rollback()
+
+
 @pytest.mark.parametrize(
     "change", ["namespace", "root", "generation", "topology", "pvc", "pool"]
 )

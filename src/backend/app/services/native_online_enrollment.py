@@ -414,6 +414,7 @@ def apply(db, verified, *, expected_target_id, preserve_existing=False):
         "Online verification must be fresh; verify again",
     )
     enrollment._validate_manifest(db, receipt.enrollment, expected_target_id)
+    preserved = {}
     for identity in receipt.prepared.request.projects:
         project = db.get(Project, str(identity.project_id))
         _legacy(db, project)
@@ -423,20 +424,13 @@ def apply(db, verified, *, expected_target_id, preserve_existing=False):
             "Retained topology changed; prepare again",
         )
         if preserve_existing:
-            _preserved_custody(db, project, receipt)
+            preserved[project.id] = _preserved_custody(db, project, receipt)
     enrollment_id = _storage_enrollment(db, receipt.enrollment, expected_target_id)
     result = []
     for identity in receipt.prepared.request.projects:
         project_id = str(identity.project_id)
-        previous = (
-            db.query(NativeCustodyReceipt)
-            .filter_by(project_id=project_id)
-            .one_or_none()
-            if preserve_existing
-            else None
-        )
         result.append(
-            previous.id if previous else _save(db, receipt, project_id, enrollment_id)
+            preserved.get(project_id) or _save(db, receipt, project_id, enrollment_id)
         )
     db.flush()
     return result
@@ -467,12 +461,13 @@ def _preserved_custody(db, project, receipt):
     previous = retained(db, project)
     if previous is None:
         return
-    _, original, _ = previous
+    row, original, _ = previous
     _require(
         _project_evidence(original, project.id)
         == _project_evidence(receipt, project.id),
         "Existing custody evidence changed; explicit reconciliation required",
     )
+    return row.id
 
 
 def _storage_enrollment(db, manifest, target_id):
