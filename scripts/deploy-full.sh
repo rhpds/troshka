@@ -55,6 +55,17 @@ for cluster in ocpv01.dfw3 ocpv02.dfw3 ocpv06.dal10 ocpv07.wdc06 ocpv08.dal10 oc
   OPERATOR_KUBECONFIGS+=("$HOME/secrets/$cluster.infra.demo.redhat.com.kubeconfig")
 done
 
+preflight_helper_networks() {
+  if [ "$SKIP_OPERATORS" = false ]; then
+    local kc
+    local flags=()
+    [ "$SKIP_PROJECT_PODS" = false ] || flags+=(--skip-project-pods)
+    for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
+      python3 scripts/deploy_release.py preflight --kubeconfig "$kc" "${flags[@]}"
+    done
+  fi
+}
+
 COLLECTOR_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-preflight.XXXXXX")
 echo "Collector configuration report: $COLLECTOR_REPORT"
 
@@ -104,6 +115,7 @@ STATE=$(mktemp -d)
 trap 'rm -rf "$STATE"' EXIT
 echo "=== Preflight all ten release images ==="
 python3 scripts/deploy_release.py images --tag "$RELEASE_TAG" --state "$STATE/digests.json"
+preflight_helper_networks
 python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG"
 echo "=== Require dev Argo on this release and fresh accounting before promotion ==="
 python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
@@ -197,6 +209,7 @@ python3 scripts/collector_fleet_preflight.py \
 python3 scripts/collector_release_check.py \
   --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$STATE/pre-promotion-accounting.json"
 python3 scripts/deploy_release.py idle --kubeconfig "$KC"
+preflight_helper_networks
 ./scripts/promote-to-production.sh "$RELEASE_TAG"
 python3 scripts/deploy_release.py pin-application --kubeconfig "$KC" --tag "$RELEASE_TAG"
 if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then

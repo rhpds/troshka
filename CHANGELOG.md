@@ -41,6 +41,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   diagnostics and the existing host assignment.
   KubeVirt reconfiguration correctly handles removed VM nodes, preventing a
   slice error after network changes have already been applied.
+  Apply Changes checks live network consumers before removing networks, and
+  releases verify helper network attachments before restarting workloads.
 
 - Project status badges use neutral gray for stopped projects in the project list
   and project detail view.

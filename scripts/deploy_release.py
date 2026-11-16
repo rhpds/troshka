@@ -166,6 +166,66 @@ def read_deployment(kc, namespace, name):
     return json.loads(oc(kc, "get", "deployment", name, "-n", namespace, "-o", "json"))
 
 
+def _text_attachment(value):
+    parts = [v.strip() for v in value.strip().split("@")]
+    if len(parts) > 2 or (len(parts) == 2 and not parts[1]):
+        raise ValueError("invalid interface selection")
+    path = [v.strip() for v in parts[0].split("/")]
+    if len(path) == 1:
+        return {"name": path[0]}
+    if len(path) == 2:
+        return {"namespace": path[0], "name": path[1]}
+    raise ValueError("invalid network selection")
+
+
+def _attachment_identity(item, namespace):
+    if not isinstance(item, dict):
+        raise TypeError("invalid network selection")
+    name, namespace = item.get("name"), item.get("namespace") or namespace
+    for value in (namespace, name):
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", value
+        ):
+            raise ValueError("invalid network identity")
+    return namespace, name
+
+
+def network_attachments(dep):
+    """Read Multus text/JSON selections without logging annotation contents."""
+    namespace, name = dep["metadata"]["namespace"], dep["metadata"]["name"]
+    raw = dep["spec"]["template"].get("metadata", {}).get("annotations", {}).get(
+        "k8s.v1.cni.cncf.io/networks", ""
+    )
+    try:
+        raw = raw.strip()
+        if not raw:
+            return set()
+        if raw.startswith(("[", "{")):
+            items = json.loads(raw)
+            if not isinstance(items, list):
+                raise TypeError("expected network selection array")
+        else:
+            items = [_text_attachment(value) for value in raw.split(",")]
+        return {_attachment_identity(item, namespace) for item in items}
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError(f"{namespace}/{name}: Invalid Multus network selection") from None
+
+
+def preflight_networks(kc, dep):
+    for namespace, name in sorted(network_attachments(dep)):
+        value = oc(kc, "get", "network-attachment-definitions.k8s.cni.cncf.io", name,
+                   "-n", namespace, "--ignore-not-found", "-o", "json")
+        state = "missing" if not value else ""
+        if value and json.loads(value)["metadata"].get("deletionTimestamp"):
+            state = "terminating"
+        if state:
+            target = f"{dep['metadata']['namespace']}/{dep['metadata']['name']}"
+            raise RuntimeError(
+                f"{target}: {state} network attachment {namespace}/{name}; "
+                "restore its intended network before releasing; release will not recreate it"
+            )
+
+
 def verify_live(kc, namespace, name, expected):
     dep = read_deployment(kc, namespace, name)
     pods = json.loads(oc(kc, "get", "pods", "-n", namespace, "-o", "json"))["items"]
@@ -191,6 +251,8 @@ def wait_rollout(kc, namespace, name):
 
 def update_deployment(kc, dep, expected, image_tag="production"):
     namespace, name = dep["metadata"]["namespace"], dep["metadata"]["name"]
+    dep = read_deployment(kc, namespace, name)
+    preflight_networks(kc, dep)
     try:
         verify_live(kc, namespace, name, expected)
         return
@@ -207,7 +269,7 @@ def update_deployment(kc, dep, expected, image_tag="production"):
     verify_live(kc, namespace, name, expected)
 
 
-def cluster(kc, expected, skip_project_pods=False, verify_only=False, image_tag="production"):
+def cluster_targets(kc, skip_project_pods=False):
     deployments = json.loads(oc(kc, "get", "deployments", "-A", "-o", "json"))["items"]
     targets = []
     for dep in deployments:
@@ -224,6 +286,21 @@ def cluster(kc, expected, skip_project_pods=False, verify_only=False, image_tag=
             targets.append(dep)
     if not any(d["metadata"]["name"] == "troshka-operator" for d in targets):
         raise RuntimeError("Operator deployment missing")
+    return targets
+
+
+def preflight(kc, skip_project_pods=False):
+    targets = cluster_targets(kc, skip_project_pods)
+    for dep in targets:
+        preflight_networks(kc, dep)
+    print(f"{Path(kc).name}: helper network dependencies present", flush=True)
+
+
+def cluster(kc, expected, skip_project_pods=False, verify_only=False, image_tag="production"):
+    targets = cluster_targets(kc, skip_project_pods)
+    # Fail the entire cluster before scheduling even one rollout mutation.
+    for dep in targets:
+        preflight_networks(kc, dep)
     failures = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
@@ -358,7 +435,7 @@ def application_release_action(args, parser):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("promote", "images", "cluster", "application", "idle", "stage-dev", "pin-application")
+        "action", choices=("promote", "images", "cluster", "application", "idle", "stage-dev", "pin-application", "preflight")
     )
     parser.add_argument("--tag")
     parser.add_argument("--state", type=Path)
@@ -384,6 +461,9 @@ def main():
         return
     if args.action == "idle":
         idle(args.kubeconfig)
+        return
+    if args.action == "preflight":
+        preflight(args.kubeconfig, args.skip_project_pods)
         return
     expected = json.loads(args.state.read_text())
     if args.action == "cluster":

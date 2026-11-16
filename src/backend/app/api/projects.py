@@ -5138,9 +5138,6 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             )
             return
 
-        gateway_net_changed = _apply_kubevirt_network_and_ceph(
-            custom_api, ns, p_id, current, deployed, diff, project_cr, errors
-        )
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
         changed_vm_ids = _find_changed_kubevirt_vms(current, deployed)
         added_vm_ids = [n["id"] for n in diff.get("added_vms", [])]
@@ -5152,6 +5149,23 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         if bus_err:
             _kubevirt_reconfigure_fail(proj, s, p_id, bus_err, notify_project)
             return
+
+        if diff.get("removed_networks"):
+            from kubernetes.client import AppsV1Api
+
+            from app.services.kubevirt_network_removal import validate_network_removal
+
+            _, core_api, api_client = _get_k8s_clients(provider)
+            validate_network_removal(
+                custom_api,
+                core_api,
+                AppsV1Api(api_client),
+                ns,
+                diff["removed_networks"],
+            )
+        gateway_net_changed = _apply_kubevirt_network_and_ceph(
+            custom_api, ns, p_id, current, deployed, diff, project_cr, errors
+        )
 
         _apply_kubevirt_vm_changes(
             custom_api, ns, p_id, diff, changed_vm_ids, current_vms, current

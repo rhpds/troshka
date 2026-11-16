@@ -305,6 +305,8 @@ if name == "gh" and args[:2] == ["run", "view"]:
     print(os.environ.get(key, "success"))
 if name == "python3" and "cluster" in args and os.environ.get("FAIL_CLUSTER"):
     sys.exit(1)
+if name == "python3" and "preflight" in args and os.environ.get("FAIL_NETWORK"):
+    sys.exit(1)
 if name == "python3" and args[0] == "scripts/collector_release_check.py" and os.environ.get("FAIL_DEV_ACCOUNTING"):
     sys.exit(1)
 if name == "python3" and args[0] == "scripts/collector_fleet_preflight.py" and "troshka" in args and os.environ.get("FAIL_FLEET"):
@@ -452,6 +454,119 @@ def test_operator_upgrade_uses_release_tag_before_promotion(release, monkeypatch
            "spec": {"template": {"spec": {"containers": [
                {"name": "operator", "image": release.REGISTRY + "operator:production"}
            ]}}}}
+    monkeypatch.setattr(release, "read_deployment", lambda *args: dep)
     release.update_deployment("config", dep, {"operator": "digest"}, "vtest")
     change = next(c for c in calls if "set" in c)
     assert change[-1] == "operator=" + release.REGISTRY + "operator:vtest"
+
+
+def helper_deployment(annotation=None, name="bmc"):
+    dep = deployment()
+    dep["metadata"].update(namespace="troshka-project", name=name)
+    dep["spec"]["template"]["spec"]["containers"][0]["image"] = "quay.io/redhat-gpte/troshka-bmc:production"
+    if annotation is not None:
+        dep["spec"]["template"]["metadata"] = {"annotations": {
+            "k8s.v1.cni.cncf.io/networks": annotation,
+        }}
+    return dep
+
+
+def test_missing_network_blocks_update_before_any_mutation(release, monkeypatch):
+    dep = helper_deployment("net-bmc-nad")
+    calls = []
+    monkeypatch.setattr(release, "read_deployment", lambda *args: dep)
+    monkeypatch.setattr(release, "verify_live", lambda *args: None)
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="troshka-project/net-bmc-nad"):
+        release.update_deployment("kc", dep, {})
+    assert calls and all(c[1] == "get" for c in calls)
+
+
+@pytest.mark.parametrize("annotation,expected", [
+    (None, set()), ("", set()),
+    ("net-one, other/net-two@iface", {("troshka-project", "net-one"), ("other", "net-two")}),
+    ('[{"name":"net-one","interface":"net1"},{"name":"net-two","namespace":"other","ips":["192.0.2.1"]}]', {("troshka-project", "net-one"), ("other", "net-two")}),
+    (" other / net-two @ iface ", {("other", "net-two")}),
+    ("[]", set()),
+])
+def test_multus_attachment_forms(release, annotation, expected):
+    assert release.network_attachments(helper_deployment(annotation)) == expected
+
+
+@pytest.mark.parametrize("annotation", ["[bad", '["net-one"]', '[{}]', '{"name":1}',
+    "one,,two", "other/one/two", "one@", '{"name":"net","namespace":1}',
+    '{"name":"secret-value!"}', '{"name":"net-one","namespace":"other"}'])
+def test_invalid_multus_annotations_fail_closed_without_echo(release, annotation):
+    with pytest.raises(RuntimeError, match="Invalid Multus") as error:
+        release.network_attachments(helper_deployment(annotation))
+    assert annotation not in str(error.value)
+
+
+def test_operator_without_multus_never_queries_network_api(release, monkeypatch):
+    monkeypatch.setattr(release, "oc", lambda *args: pytest.fail("unexpected API call"))
+    release.preflight_networks("kc", helper_deployment())
+
+
+def test_existing_but_terminating_nad_blocks_rollout(release, monkeypatch):
+    monkeypatch.setattr(release, "oc", lambda *args: json.dumps({"metadata": {"deletionTimestamp": "now"}}))
+    with pytest.raises(RuntimeError, match="terminating"):
+        release.preflight_networks("kc", helper_deployment("net-one"))
+
+
+def test_network_api_errors_propagate_before_rollout(release, monkeypatch):
+    def unavailable(*args):
+        raise subprocess.CalledProcessError(1, ["oc", "get"])
+    monkeypatch.setattr(release, "oc", unavailable)
+    with pytest.raises(subprocess.CalledProcessError):
+        release.preflight_networks("kc", helper_deployment("net-one"))
+
+
+def test_network_check_uses_explicit_namespace_and_deduplicates(release, monkeypatch):
+    calls = []
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args) or '{"metadata":{}}')
+    release.preflight_networks("kc", helper_deployment("other/net-one@iface, other/net-one"))
+    assert calls == [("kc", "get", "network-attachment-definitions.k8s.cni.cncf.io", "net-one",
+                      "-n", "other", "--ignore-not-found", "-o", "json")]
+
+
+def test_update_rechecks_current_template_instead_of_discovery_snapshot(release, monkeypatch):
+    monkeypatch.setattr(release, "read_deployment", lambda *args: helper_deployment("new-network"))
+    monkeypatch.setattr(release, "oc", lambda *args: "")
+    monkeypatch.setattr(release, "verify_live", lambda *args: pytest.fail("dependency should fail first"))
+    with pytest.raises(RuntimeError, match="new-network"):
+        release.update_deployment("kc", helper_deployment(), {})
+
+
+def test_cluster_preflights_every_target_before_starting_any_update(release, monkeypatch):
+    operator = helper_deployment(name="troshka-operator")
+    operator["metadata"]["namespace"] = "troshka-operator"
+    helper = helper_deployment("net-missing")
+    def oc(kc, *args):
+        return json.dumps({"items": [operator, helper]}) if args[1] == "deployments" else ""
+    monkeypatch.setattr(release, "oc", oc)
+    monkeypatch.setattr(release, "update_deployment", lambda *args: pytest.fail("mutated before fleet checked"))
+    with pytest.raises(RuntimeError, match="net-missing"):
+        release.cluster("kc", {})
+
+
+def test_full_deploy_network_preflight_precedes_mutations(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+                            env=env, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    checks = [i for i, c in enumerate(calls) if "preflight" in c]
+    assert len(checks) == 14  # Early fleet check and fresh check before promotion.
+    stage = next(i for i, c in enumerate(calls) if "stage-dev" in c)
+    promote = next(i for i, c in enumerate(calls) if "promote" in c)
+    assert max(checks[:7]) < stage < min(checks[7:]) < max(checks[7:]) < promote
+
+
+def test_failed_network_preflight_never_changes_workloads_or_images(shell_commands):
+    env, log = shell_commands
+    result = subprocess.run(["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+                            env={**env, "FAIL_NETWORK": "1"}, capture_output=True, check=False)
+    assert result.returncode != 0
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any("promote" in c or "stage-dev" in c or "cluster" in c for c in calls)
+    assert not any(c[:2] == ["oc", "apply"] for c in calls)

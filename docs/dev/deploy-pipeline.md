@@ -2,6 +2,21 @@
 
 > Extracted from the top-level `CLAUDE.md` to keep it lean. Read this file when working on the topics below.
 
+### KubeVirt network removal
+
+Apply Changes checks live network consumers before deleting any removed network.
+A network still referenced by a VM, pod, or helper deployment cannot be removed
+in the same Apply Changes operation as its consumers. Detach or remove consumers
+first and wait for their reconciliation, then remove the unused network. If a
+retained helper still requires it, use the full redeploy workflow instead.
+Read failures block removal rather than treating an unreadable inventory as empty.
+
+Full releases check helper network attachments before staging and before promotion,
+then recheck each deployment before updating it. A missing or terminating attachment
+requires restoring the intended network or resolving the stale helper first. These
+checks do not recreate project resources or grant new cleanup authority, and they
+do not replace rollout health checks or prove CNI functionality.
+
 ### Template Import/Export
 - **Import**: `POST /projects/{id}/import-template` — takes `template_yaml` dict, generates topology via `resolve_inline_template` + `generate_topology_from_template` (includes auto-layout), patches project in-place. Templates require `networks` and either `vms` or `ocp`. Only works on `draft` projects.
 - **Export**: `GET /projects/{id}/export-template` and `GET /patterns/{id}/export-template` — reverse-maps canvas topology JSONB to simple `infra_template.yaml` format via `export_topology_to_template()`. Returns YAML with `text/yaml` content type. Includes OCP metadata, disconnected config, bastion services, and DNS records if present on the topology.
