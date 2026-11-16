@@ -14,6 +14,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Online storage enrollment can reconcile newly deployed projects sharing cached
+  base images while preserving matching existing ownership receipts. Reconciliation
+  independently verifies all sibling clones and rejects changed ownership evidence.
+
 - Release builds run the eight operator and helper images in parallel, while
   keeping production promotion gated on the complete image build.
   Native storage readiness allows 50 seconds for sequential identity checks,

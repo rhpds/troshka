@@ -133,6 +133,35 @@ the receipt timestamp follow the bounded ancestry scan. If evidence expires, ver
 identity or topology changes require fresh preparation. A conflicting existing
 custody receipt requires explicit reconciliation rather than silent replacement.
 
+### Adding projects that share enrolled base images
+
+With quotas disabled, ordinary deployments do not create quota reservations or
+managed-clone receipts. A new project can therefore add legitimate children to
+an enrolled cache image before accounting knows their ownership. The shared
+storage check correctly remains unavailable until these children are verified;
+this is not evidence that the clones should be deleted.
+
+Prepare and verify the complete domain, including previously enrolled projects
+and the new siblings. Preserve all existing roots and collection identities in
+the pins, and use a `domain_extension` referencing the current enrollment ID and
+digest when adding roots. Review namespace custody and any exact topology
+differences as above. Apply the fresh combined verification with:
+
+```sh
+src/backend/venv/bin/python3 scripts/import_kubevirt_storage.py \
+  --target-id <target-uuid> enroll-online --enrollment online-verified.json \
+  --preserve-existing
+```
+
+This explicit reconciliation retains existing receipts byte-for-byte only when
+their current owner/provider identity, saved and live topology, object identities,
+volume bindings and clone ancestry still match. Verification timestamps and
+sibling project membership may differ. New projects receive their own receipts.
+Changed existing evidence still blocks the transaction; the flag does not replace
+receipts, enable quotas, change workloads or waive exact clone graph validation.
+Repeat enrollment for later quota-disabled deployments that introduce new roots;
+the managed collector automatically extends only admitted quota operations.
+
 Capture VM instance UIDs and creation times before and after enrollment, and
 verify application availability and unchanged project ownership. A successful
 database enrollment alone is not evidence of uninterrupted guest operation.

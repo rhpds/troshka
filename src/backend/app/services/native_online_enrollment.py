@@ -401,7 +401,7 @@ def _validate_coverage(receipt):
         )
 
 
-def apply(db, verified, *, expected_target_id):
+def apply(db, verified, *, expected_target_id, preserve_existing=False):
     _disabled()
     receipt = _validated(verified)
     prepared = db.get(NativeCustodyRequest, str(receipt.prepared.request.request_id))
@@ -422,12 +422,57 @@ def apply(db, verified, *, expected_target_id):
             == receipt.prepared.topologies[project.id],
             "Retained topology changed; prepare again",
         )
+        if preserve_existing:
+            _preserved_custody(db, project, receipt)
     enrollment_id = _storage_enrollment(db, receipt.enrollment, expected_target_id)
     result = []
     for identity in receipt.prepared.request.projects:
-        result.append(_save(db, receipt, str(identity.project_id), enrollment_id))
+        project_id = str(identity.project_id)
+        previous = (
+            db.query(NativeCustodyReceipt)
+            .filter_by(project_id=project_id)
+            .one_or_none()
+            if preserve_existing
+            else None
+        )
+        result.append(
+            previous.id if previous else _save(db, receipt, project_id, enrollment_id)
+        )
     db.flush()
     return result
+
+
+def _project_evidence(receipt, project_id):
+    """Compare ownership evidence, excluding verification time and sibling roots."""
+    return {
+        "target": str(receipt.enrollment.request.target_id),
+        "domain": str(receipt.enrollment.pins.domain_id),
+        "saved_topology": receipt.prepared.topologies[project_id],
+        "runtime_topology": receipt.runtime_topologies[project_id],
+        "objects": receipt.object_identities[project_id],
+        "bindings": sorted(
+            enrollment.digest(b)
+            for b in receipt.bindings
+            if str(b.root.project_id) == project_id
+        ),
+        "ancestry": sorted(
+            enrollment.digest(p.model_dump(mode="json", exclude={"verified_at"}))
+            for p in receipt.ancestry
+            if str(p.binding.root.project_id) == project_id
+        ),
+    }
+
+
+def _preserved_custody(db, project, receipt):
+    previous = retained(db, project)
+    if previous is None:
+        return
+    _, original, _ = previous
+    _require(
+        _project_evidence(original, project.id)
+        == _project_evidence(receipt, project.id),
+        "Existing custody evidence changed; explicit reconciliation required",
+    )
 
 
 def _storage_enrollment(db, manifest, target_id):

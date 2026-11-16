@@ -191,6 +191,10 @@ def _parser():
         "enroll-online", help="Apply verified custody receipt; no provider writes or quota enablement"
     )
     online_enroll.add_argument("--enrollment", required=True)
+    online_enroll.add_argument(
+        "--preserve-existing", action="store_true",
+        help="Preserve matching existing receipts while adding verified projects",
+    )
     ingest = commands.add_parser("import")
     for name in ("report", "enrollment-id", "enrollment-digest"):
         ingest.add_argument("--" + name, required=True)
@@ -251,7 +255,8 @@ def _online_dispatch(db, args):
         atomic_report(args.output, RootModel(prepared))
         return prepared["request"]["request_id"]
     return native_online_enrollment.apply(
-        db, read_operator_file(args.enrollment), expected_target_id=args.target_id
+        db, read_operator_file(args.enrollment), expected_target_id=args.target_id,
+        preserve_existing=args.preserve_existing,
     )
 
 

@@ -202,6 +202,46 @@ def test_online_enrollment_preserves_live_workloads_and_accounting(online_case):
         assert {db.get(Project, key).state for key in q.project_ids} == {"active"}
 
 
+def test_reconcile_preserves_existing_receipt_and_adds_missing_project(online_case):
+    q = online_case
+    apply_receipt(q)
+    with q.sessions() as db:
+        rows = db.query(NativeCustodyReceipt).order_by(NativeCustodyReceipt.id).all()
+        kept_id, kept_payload = rows[0].id, deepcopy(rows[0].payload)
+        db.delete(rows[1])
+        q.prepared = online.prepare(db, q.project_ids)
+        db.commit()
+    value = verified(q)
+    with q.sessions() as db:
+        online.apply(db, value, expected_target_id=q.target_id, preserve_existing=True)
+        db.commit()
+        assert db.get(NativeCustodyReceipt, kept_id).payload == kept_payload
+        assert db.query(NativeCustodyReceipt).count() == len(q.project_ids)
+        assert db.query(QuotaReservation).count() == 0
+    assert all(not api.calls for api in q.apis.values())
+
+
+def test_reconcile_rejects_changed_existing_storage_identity(online_case):
+    q = online_case
+    apply_receipt(q)
+    with q.sessions() as db:
+        q.prepared = online.prepare(db, q.project_ids)
+        db.commit()
+    value = verified(q)
+    value["bindings"][0]["pvc_uid"] = "replaced-pvc"
+    value["digest"] = online.enrollment.digest(
+        {k: v for k, v in value.items() if k != "digest"}
+    )
+    with q.sessions() as db:
+        with pytest.raises(
+            AccountingUnavailable, match="Existing custody evidence changed"
+        ):
+            online.apply(
+                db, value, expected_target_id=q.target_id, preserve_existing=True
+            )
+        db.rollback()
+
+
 @pytest.mark.parametrize(
     "change", ["namespace", "root", "generation", "topology", "pvc", "pool"]
 )

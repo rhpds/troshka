@@ -207,8 +207,8 @@ def test_online_cli_private_prepare_and_explicit_target_apply(
         calls.append(("prepare", ids))
         return prepared
 
-    def apply(db, receipt, *, expected_target_id):
-        calls.append(("apply", receipt, expected_target_id))
+    def apply(db, receipt, *, expected_target_id, preserve_existing=False):
+        calls.append(("apply", receipt, expected_target_id, preserve_existing))
         return ["custody-receipt"]
 
     monkeypatch.setattr(
@@ -249,7 +249,21 @@ def test_online_cli_private_prepare_and_explicit_target_apply(
         )
         == 0
     )
-    assert calls[-1] == ("apply", prepared, q.target_id)
+    assert calls[-1] == ("apply", prepared, q.target_id, False)
+    assert (
+        cli.main(
+            [
+                "--target-id",
+                q.target_id,
+                "enroll-online",
+                "--enrollment",
+                str(output),
+                "--preserve-existing",
+            ]
+        )
+        == 0
+    )
+    assert calls[-1] == ("apply", prepared, q.target_id, True)
 
 
 def test_collector_report_cannot_bootstrap_cli_enrollment(
