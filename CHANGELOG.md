@@ -14,6 +14,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Release builds run the eight operator and helper images in parallel, while
+  keeping production promotion gated on the complete image build.
+
 - Deployment validation identifies disconnected VM NICs in the canvas and rejects
   them before provisioning. Native deployments surface terminal VM errors without
   waiting two hours; worker deadlines allow time to report operator failures.
