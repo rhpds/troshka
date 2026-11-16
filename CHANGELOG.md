@@ -14,6 +14,17 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Deployment validation identifies disconnected VM NICs in the canvas and rejects
+  them before provisioning. Native deployments surface terminal VM errors without
+  waiting two hours; worker deadlines allow time to report operator failures.
+  Redeploy stops unless cleanup explicitly confirms success, preserving cleanup
+  diagnostics and the existing host assignment.
+  KubeVirt reconfiguration correctly handles removed VM nodes, preventing a
+  slice error after network changes have already been applied.
+
+- Project status badges use neutral gray for stopped projects in the project list
+  and project detail view.
+
 - CSI identity validation supports explicitly reviewed, container-scoped CRI
   configuration-to-manifest digest aliases without accepting unknown images or
   changing existing collector profile hashes.

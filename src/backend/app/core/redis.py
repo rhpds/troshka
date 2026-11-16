@@ -37,6 +37,9 @@ _mem_lock = threading.Lock()
 # Queue names
 QUEUE_DEFAULT = "default"
 QUEUE_DEPLOY = "project_lifecycle"
+# Allow setup/cleanup plus the operator's two-hour deployment deadline and
+# backend error propagation before RQ interrupts the orchestration.
+DEPLOY_JOB_TIMEOUT = 10800
 QUEUE_PROVISION = "host_lifecycle"
 
 
@@ -282,7 +285,9 @@ def enqueue_job(
                 (host_id or "")[:8],
             )
             if project_id:
-                get_redis().set(f"job:project:{project_id}", job.id, ex=7200)
+                get_redis().set(
+                    f"job:project:{project_id}", job.id, ex=max(7200, job_timeout + 300)
+                )
             from app.services.quota_operations import record_delivery
 
             record_delivery(kwargs.get("quota_operation_id"), job.id, "rq")

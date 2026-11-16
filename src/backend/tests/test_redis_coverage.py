@@ -913,12 +913,13 @@ class TestEnqueueJob:
                 queue_name="deploy",
                 project_id="proj-1",
                 host_id="host-1",
+                job_timeout=10800,
             )
 
         assert result is mock_job
         # Verify project_id was stored in Redis via get_redis().set()
         mock_redis_client.set.assert_called_once_with(
-            "job:project:proj-1", mock_job.id, ex=7200
+            "job:project:proj-1", mock_job.id, ex=11100
         )
 
     @patch("app.core.redis.is_redis_available", return_value=True)

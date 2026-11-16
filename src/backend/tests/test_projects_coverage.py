@@ -1425,13 +1425,27 @@ class TestDeployAddedVmsKubevirt:
 class TestApplyKubevirtVmChanges:
     def test_deletes_removed_vms(self):
         from app.api.projects import _apply_kubevirt_vm_changes
+        from app.services.deploy_topology import diff_topologies
 
         custom_api = MagicMock()
-        diff = {"removed_vms": ["vm-abcdefgh"]}
+        retained = {"id": "retained-vm", "type": "vmNode", "data": {}}
+        current = {"nodes": [retained], "edges": []}
+        deployed = {
+            "nodes": [
+                retained,
+                {"id": "vm-abcdefgh", "type": "vmNode", "data": {}},
+            ],
+            "edges": [],
+        }
+        diff = diff_topologies(current, deployed)
         _apply_kubevirt_vm_changes(custom_api, "ns1", "p1234567", diff, [], {}, {})
-        custom_api.delete_namespaced_custom_object.assert_called_once()
-        call_kwargs = custom_api.delete_namespaced_custom_object.call_args
-        assert call_kwargs[1]["name"] == "vm-vm-abcde"
+        custom_api.delete_namespaced_custom_object.assert_called_once_with(
+            group="troshka.redhat.com",
+            version="v1alpha1",
+            namespace="ns1",
+            plural="troshkavms",
+            name="vm-vm-abcde",
+        )
 
     def test_patches_changed_vms(self):
         from app.api.projects import _apply_kubevirt_vm_changes
@@ -1476,7 +1490,7 @@ class TestApplyKubevirtVmChanges:
 
         custom_api = MagicMock()
         custom_api.delete_namespaced_custom_object.side_effect = Exception("404")
-        diff = {"removed_vms": ["vm-xx"]}
+        diff = {"removed_vms": [{"id": "vm-xx", "type": "vmNode", "data": {}}]}
         # Should not raise
         _apply_kubevirt_vm_changes(custom_api, "ns", "p1", diff, [], {}, {})
 

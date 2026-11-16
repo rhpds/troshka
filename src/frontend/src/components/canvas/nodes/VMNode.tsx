@@ -8,6 +8,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import { confirmPowerWarn } from "@/lib/powerWarn";
 import { vmStatusLabel } from "@/lib/vmStatus";
+import { vmNetworkIssues } from "@/lib/vmNetworkValidation";
 import { useCanvasDisplay } from "@/components/canvas/CanvasDisplayContext";
 
 type VmAction = "start" | "stop" | "forcestop" | "restart" | "pause" | "unpause" | "hibernate";
@@ -308,11 +309,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     const sn = nodes.find((n) => n.id === sid);
     return sn && (sn.data as Record<string, unknown>).format !== "iso";
   });
-  const hasNetwork = edges.some(
-    (e) =>
-      (e.source === id || e.target === id) &&
-      nodes.some((n) => n.id === (e.source === id ? e.target : e.source) && n.type === "networkNode")
-  );
+  const networkIssues = vmNetworkIssues(nodes.filter((node) => node.id === id || node.type === "networkNode"), edges);
+  const hasNetwork = networkIssues.length === 0;
 
   const hasSharedDisk = connectedStorageIds.some((sid) => {
     const storageNode = nodes.find((n) => n.id === sid);
@@ -419,9 +417,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               {hasStorage && !hasWritableDisk && (
                 <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No installable disk device</span>
               )}
-              {!hasNetwork && (
-                <span className="vm-node-warning" title="No network connected">⚠ No network</span>
-              )}
+              {networkIssues.map((issue) => (
+                <span key={issue.nicId} className="vm-node-warning" title={issue.message}>⚠ {issue.nicName}: no network</span>
+              ))}
               {hasSharedDisk && (
                 <span className="vm-node-warning" title="Disk shared with another VM — requires cluster-aware filesystem">⚠ Shared disk</span>
               )}

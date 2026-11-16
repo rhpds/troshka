@@ -2260,12 +2260,14 @@ def _collect_deploy_topology_errors(topology) -> list:
         validate_showroom_topology,
         validate_topology_ips,
         validate_topology_names,
+        validate_vm_network_connections,
     )
 
     return (
         validate_topology_names(topology)
         + validate_topology_ips(topology)
         + validate_showroom_topology(topology)
+        + validate_vm_network_connections(topology)
     )
 
 
@@ -2299,7 +2301,15 @@ def _persist_placement_and_enqueue(
     quota_kwargs = (
         {"quota_operation_id": quota_operation_id} if quota_operation_id else {}
     )
-    enqueue_job(deploy_project_async, project.id, project_id=project.id, **quota_kwargs)
+    from app.core.redis import DEPLOY_JOB_TIMEOUT
+
+    enqueue_job(
+        deploy_project_async,
+        project.id,
+        project_id=project.id,
+        job_timeout=DEPLOY_JOB_TIMEOUT,
+        **quota_kwargs,
+    )
 
     if result.get("multi_host"):
         return {
@@ -4700,7 +4710,8 @@ def _apply_kubevirt_vm_changes(
 ):
     """Delete removed VMs and patch changed VMs on KubeVirt."""
     # Delete removed VMs
-    for vm_id in diff.get("removed_vms", []):
+    for node in diff.get("removed_vms", []):
+        vm_id = node["id"]
         cr_name = f"vm-{vm_id[:8]}"
         try:
             custom_api.delete_namespaced_custom_object(
@@ -7115,6 +7126,9 @@ def redeploy_project(
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
     ocp_mode = _resolve_redeploy_ocp_mode(project, (body.ocp_mode if body else None))
+    topo_errors = _collect_deploy_topology_errors(project.topology)
+    if topo_errors:
+        raise HTTPException(400, "Topology has errors: " + "; ".join(topo_errors))
     destroy_ctx, old_host_id = _redeploy_destroy_context(db, project, ocp_mode)
 
     # Cancel any in-flight deploy thread for this project
@@ -7141,7 +7155,7 @@ def redeploy_project(
     db.commit()
     _delete_deploy_progress(project.id)
 
-    from app.core.redis import enqueue_job
+    from app.core.redis import DEPLOY_JOB_TIMEOUT, enqueue_job
     from app.workers.jobs import job_redeploy_bg
 
     enqueue_job(
@@ -7150,6 +7164,7 @@ def redeploy_project(
         destroy_ctx,
         old_host_id,
         ocp_mode,
+        job_timeout=DEPLOY_JOB_TIMEOUT,
         project_id=project.id,
         host_id=old_host_id,
     )

@@ -361,6 +361,33 @@ def infra_ip_overlap_warnings(topology: dict) -> list[str]:
     return warnings
 
 
+def validate_vm_network_connections(topology: dict) -> list[str]:
+    """Require each declared VM NIC to resolve through a canvas network edge."""
+    nodes = {node["id"]: node for node in topology.get("nodes", [])}
+    errors = []
+    for node in nodes.values():
+        if node.get("type") != "vmNode":
+            continue
+        # Scope edges to this VM so another VM's stale/duplicate NIC ID cannot
+        # make a disconnected interface appear connected.
+        edges = [
+            edge
+            for edge in topology.get("edges", [])
+            if node["id"] in (edge.get("source"), edge.get("target"))
+        ]
+        connected = _build_nic_to_network_map({"edges": edges}, nodes)
+        data = node.get("data", {})
+        for nic in data.get("nics", []):
+            if nic.get("id") not in connected:
+                errors.append(
+                    f"VM {data.get('name') or node['id']}: NIC "
+                    f"{nic.get('name') or nic.get('id') or 'unnamed'} "
+                    f"({nic.get('id', 'missing ID')}) is not connected to a network. "
+                    "Connect it to a network or remove the unused NIC."
+                )
+    return errors
+
+
 def _build_nic_to_network_map(
     topology: dict, nodes_by_id: dict[str, dict]
 ) -> dict[str, str]:

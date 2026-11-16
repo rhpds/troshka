@@ -16,6 +16,7 @@ import boto3  # noqa: F401 — eager import to prevent thread race
 import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
 
 from app.core.redis import (
+    DEPLOY_JOB_TIMEOUT,
     RedisSemaphore,
     add_to_set,
     clear_cancelled,
@@ -75,7 +76,7 @@ from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
-_deploy_semaphore = RedisSemaphore("deploy", limit=100, ttl=7200)
+_deploy_semaphore = RedisSemaphore("deploy", limit=100, ttl=DEPLOY_JOB_TIMEOUT)
 
 
 class DeployError(Exception):
@@ -7675,8 +7676,9 @@ def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
     from app.services.ws_pubsub import notify_project
 
     _clear_deploy_cancelled(project_id)
-    deploy_deadline = _time.time() + 7200
-    for _ in range(1440):
+    # Give the operator's 7200s deadline time to publish its diagnostic.
+    deploy_deadline = _time.time() + 7500
+    for _ in range(1500):
         if _time.time() > deploy_deadline:
             break
         outcome = _poll_kubevirt_once(
@@ -7687,7 +7689,7 @@ def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
         time.sleep(5)
 
     project.state = "error"
-    project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
+    project.deploy_error = "Deploy timed out waiting for operator (125 minutes)"
     db.commit()
     _delete_deploy_progress(project_id)
     notify_project(
@@ -10531,6 +10533,14 @@ def _deploying_project(db, project_id):
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project or project.state != "deploying":
+        return None
+    from app.services.deploy_topology import validate_vm_network_connections
+
+    network_errors = validate_vm_network_connections(project.topology or {})
+    if network_errors:
+        _set_deploy_error_and_notify(
+            db, project_id, project, "Topology has errors: " + "; ".join(network_errors)
+        )
         return None
     operation_id = quota_operations.current_operation.get()
     if operation_id:
@@ -14252,6 +14262,16 @@ def _destroy_kubevirt_native(project_id, host, session, delete_record):
         )
 
 
+def _wait_cleanup_job(host, job_id, timeout):
+    """A finished agent request is not necessarily a successful deletion."""
+    job = wait_for_job(host, job_id, timeout=timeout)
+    if job.get("status") != "completed":
+        error = (job.get("result") or {}).get(
+            "error"
+        ) or "cleanup completion was not confirmed"
+        raise TroshkadError(f"Cleanup job {job_id} failed: {error}")
+
+
 def _destroy_container(host, project_id, ctr, topo, pool):
     """Destroy a single container or pod via troshkad."""
     volumes = _find_container_volumes(ctr["node_id"], topo, project_id, pool)
@@ -14270,12 +14290,13 @@ def _destroy_container(host, project_id, ctr, topo, pool):
         }
     try:
         job_id = start_job(host, endpoint, payload)
-        wait_for_job(host, job_id, timeout=30)
+        _wait_cleanup_job(host, job_id, timeout=30)
     except TroshkadError as e:
         label = "pod" if ctr.get("is_pod") else "container"
         logger.warning(
             "Destroy %s: failed to destroy %s %s: %s", project_id[:8], label, name, e
         )
+        raise
 
 
 def _reap_orphan_project_domains(host, project_id: str, destroyed_domains: set) -> None:
@@ -14306,14 +14327,15 @@ def _destroy_topology_vms(host, project_id, topo) -> set:
     destroyed_domains = set()
     for vm in _extract_vms(topo):
         vm_name = _vm_domain_name(project_id, vm["node_id"])
-        destroyed_domains.add(vm_name)
         try:
             job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": vm_name})
-            wait_for_job(host, job_id, timeout=60)
+            _wait_cleanup_job(host, job_id, timeout=60)
         except TroshkadError as e:
             logger.warning(
                 "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
             )
+            raise
+        destroyed_domains.add(vm_name)
     return destroyed_domains
 
 
@@ -14344,9 +14366,10 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
         paths_to_remove.append(f"/var/lib/troshka/seeds/{project_id}")
     try:
         job_id = start_job(host, "/files/remove", {"paths": paths_to_remove})
-        wait_for_job(host, job_id, timeout=30)
+        _wait_cleanup_job(host, job_id, timeout=30)
     except TroshkadError as e:
         logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
+        raise
 
     # Kill metadata service and remove script/log
     try:

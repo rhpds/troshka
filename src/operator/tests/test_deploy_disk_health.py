@@ -86,6 +86,20 @@ def test_project_has_a_deadline_even_without_a_terminal_disk_error(monkeypatch):
     assert "timed out" in patch.status["error"]
 
 
+def test_terminal_vm_error_fails_project_before_waiting_for_disks():
+    api = MagicMock()
+    patch = MagicMock()
+    patch.status = {}
+    vm = {"metadata": {"name": "vm-123"}, "spec": {"name": "bastion"},
+          "status": {"state": "Error", "message": "NIC nic-one missing networkRef"}}
+    _handle_deploying_phase({}, {}, "ns", "proj", {}, patch, api, [vm], 0)
+    assert patch.status["phase"] == "Error"
+    assert "bastion" in patch.status["error"]
+    assert "NIC nic-one missing networkRef" in patch.status["error"]
+    assert patch.status["deployProgress"]["detail"] == patch.status["error"]
+    api.list_namespaced_custom_object.assert_not_called()
+
+
 def test_active_golden_transfer_ignores_stale_bound_s3_error():
     golden = {
         "status": {

@@ -1295,7 +1295,7 @@ def _start_auto_deploy(
     project: Project, body: PatternDeployRequest, db: Session
 ) -> None:
     """Start async deployment if auto_deploy is requested."""
-    from app.core.redis import enqueue_job
+    from app.core.redis import DEPLOY_JOB_TIMEOUT, enqueue_job
     from app.services import quota_accounting, quota_operations
     from app.services.deploy_service import deploy_project_async
     from app.services.ocp.pull_through_registry import (
@@ -1327,6 +1327,7 @@ def _start_auto_deploy(
             deploy_project_async,
             project.id,
             body.auto_start,
+            job_timeout=DEPLOY_JOB_TIMEOUT,
             project_id=project.id,
             quota_operation_id=operation_id,
         )
@@ -1338,7 +1339,11 @@ def _start_auto_deploy(
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
     enqueue_job(
-        deploy_project_async, project.id, body.auto_start, project_id=project.id
+        deploy_project_async,
+        project.id,
+        body.auto_start,
+        project_id=project.id,
+        job_timeout=DEPLOY_JOB_TIMEOUT,
     )
 
 
@@ -1458,10 +1463,12 @@ def _bulk_deploy_projects(project_ids: list[str]):
     finally:
         s.close()
 
-    from app.core.redis import enqueue_job
+    from app.core.redis import DEPLOY_JOB_TIMEOUT, enqueue_job
 
     for pid in ready_ids:
-        enqueue_job(deploy_project_async, pid, project_id=pid)
+        enqueue_job(
+            deploy_project_async, pid, project_id=pid, job_timeout=DEPLOY_JOB_TIMEOUT
+        )
 
 
 def _quota_bulk_deploy_projects(project_ids):

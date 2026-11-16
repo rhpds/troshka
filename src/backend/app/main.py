@@ -193,12 +193,14 @@ def _resume_or_skip_deploying(project, enqueue_job) -> None:
         project.id[:8],
         project.deploy_step,
     )
+    from app.core.redis import DEPLOY_JOB_TIMEOUT
     from app.services.deploy_service import deploy_project_async
 
     enqueue_job(
         deploy_project_async,
         project.id,
         resume_from=project.deploy_step,
+        job_timeout=DEPLOY_JOB_TIMEOUT,
     )
 
 

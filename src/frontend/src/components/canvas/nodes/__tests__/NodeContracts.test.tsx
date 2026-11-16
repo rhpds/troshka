@@ -82,6 +82,19 @@ describe("VM action result contracts", () => {
 });
 
 describe("node details and keyboard controls", () => {
+  it("identifies an unconnected NIC even when the VM has another connected NIC", () => {
+    const vmData = { ...data, nics: [{ id: "one", name: "eth0" }, { id: "two", name: "eth1" }] };
+    useCanvasStore.setState({
+      nodes: [
+        { id: "vm", type: "vmNode", position: { x: 0, y: 0 }, data: vmData },
+        { id: "net", type: "networkNode", position: { x: 0, y: 0 }, data: {} },
+      ],
+      edges: [{ id: "edge", source: "net", target: "vm", targetHandle: "nic-one-top" }],
+    });
+    render(<ReactFlowProvider><VMNode {...props(vmData)} /></ReactFlowProvider>);
+    expect(screen.getByText("⚠ eth1: no network")).toBeInTheDocument();
+    expect(screen.queryByText("⚠ eth0: no network")).not.toBeInTheDocument();
+  });
   it("opens the pod container list from the keyboard", async () => {
     vi.useRealTimers();
     const user = userEvent.setup();

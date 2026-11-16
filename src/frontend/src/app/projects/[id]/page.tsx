@@ -1,4 +1,5 @@
 "use client";
+import { vmNetworkIssues } from "@/lib/vmNetworkValidation";
 
 import LabeledField from "@/components/LabeledField";
 import ModalBackdrop from "@/components/ModalBackdrop";
@@ -1213,6 +1214,12 @@ export default function ProjectCanvasPage() {
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
 
   const publishTopology = async () => {
+    const canvas = useCanvasStore.getState();
+    const issues = vmNetworkIssues(canvas.nodes, canvas.edges);
+    if (issues.length) {
+      setAlertMsg(issues.map((issue) => issue.message).join("\n"));
+      return;
+    }
     try {
       await saveTopology();
       setProjectState("deploying");
@@ -1274,6 +1281,12 @@ export default function ProjectCanvasPage() {
   };
 
   const doRedeploy = async (ocpMode?: OcpRedeployMode) => {
+    const canvas = useCanvasStore.getState();
+    const issues = vmNetworkIssues(canvas.nodes, canvas.edges);
+    if (issues.length) {
+      setAlertMsg(issues.map((issue) => issue.message).join("\n"));
+      return;
+    }
     const previousState = projectState;
     setProjectState("deploying");
     setDeployProgress(null);
@@ -1347,7 +1360,7 @@ export default function ProjectCanvasPage() {
     stopping: "#fbbf24",
     migrating: "var(--troshka-yellow, #f0ab00)",
     active: "#4ade80",
-    stopped: "#f87171",
+    stopped: "#94a3b8",
     error: "#ef4444",
     deleting: "#f87171",
     cleanup_pending: "#fb923c",

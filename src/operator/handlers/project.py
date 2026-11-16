@@ -3400,11 +3400,22 @@ def _ensure_project_containers(spec, status, namespace, name, body, patch):
     logger.info("TroshkaProject %s: started %d container(s)", name, len(containers))
 
 
-def _check_deploy_failure(status, namespace, patch, custom_api):
+def _deployment_vm_error(vm_items):
+    """Promote terminal child errors, preserving the VM name and diagnostic."""
+    for vm in vm_items:
+        vm_status = vm.get("status", {})
+        if vm_status.get("state") == "Error":
+            name = vm.get("spec", {}).get("name") or vm.get("metadata", {}).get("name", "unknown")
+            message = vm_status.get("message") or "VM reconciliation failed"
+            return f"VM {name}: {message}"
+    return None
+
+
+def _check_deploy_failure(status, namespace, patch, custom_api, vm_items=()):
     """Stop waiting on missing images, failed disks, or an expired deployment."""
     from helpers.disk_health import deployment_disk_error
 
-    error = deployment_disk_error(custom_api, namespace)
+    error = _deployment_vm_error(vm_items) or deployment_disk_error(custom_api, namespace)
     started_at = status.get("deployStartedAt")
     if not started_at:
         patch.status["deployStartedAt"] = time.time()
@@ -3422,7 +3433,7 @@ def _handle_deploying_phase(
     spec, status, namespace, name, body, patch, custom_api, vm_items, ready_count
 ):
     """Handle all sub-phases of the Deploying state."""
-    if _check_deploy_failure(status, namespace, patch, custom_api):
+    if _check_deploy_failure(status, namespace, patch, custom_api, vm_items):
         return
 
     if _handle_recert(status, namespace, name, patch):

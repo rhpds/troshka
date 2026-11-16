@@ -96,7 +96,7 @@ const stateColors: Record<string, string> = {
   active: "#4ade80",
   stopping: "#fbbf24",
   starting: "#fbbf24",
-  stopped: "#f87171",
+  stopped: "#94a3b8",
   error: "#ef4444",
   deleting: "#fb923c",
   cleanup_pending: "#fb923c",

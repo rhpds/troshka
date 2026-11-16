@@ -967,6 +967,7 @@ class TestDestroyContainer:
     @patch("app.services.deploy_service.start_job")
     @patch("app.services.deploy_service._find_container_volumes", return_value=[])
     def test_destroy_regular_container(self, mock_vols, mock_start, mock_wait):
+        mock_wait.return_value = {"status": "completed"}
         mock_start.return_value = "job-1"
         host = MagicMock()
         ctr = {"node_id": "abc12345-1234", "name": "mycontainer", "is_pod": False}
@@ -983,6 +984,7 @@ class TestDestroyContainer:
     @patch("app.services.deploy_service.start_job")
     @patch("app.services.deploy_service._find_container_volumes", return_value=[])
     def test_destroy_pod(self, mock_vols, mock_start, mock_wait):
+        mock_wait.return_value = {"status": "completed"}
         mock_start.return_value = "job-2"
         host = MagicMock()
         ctr = {"node_id": "xyz-node", "name": "mypod", "is_pod": True}
@@ -1000,6 +1002,7 @@ class TestDestroyContainer:
         return_value=[{"mount_dir": "/data"}],
     )
     def test_destroy_with_volumes(self, mock_vols, mock_start, mock_wait):
+        mock_wait.return_value = {"status": "completed"}
         mock_start.return_value = "job-3"
         host = MagicMock()
         ctr = {"node_id": "abc12345", "name": "ctr", "is_pod": False}
@@ -1020,13 +1023,17 @@ class TestDestroyContainer:
     def test_destroy_troshkad_error_handled(self, mock_vols, mock_start):
         host = MagicMock()
         ctr = {"node_id": "abc12345", "name": "ctr"}
-        # Should not raise — error is caught and logged
-        _destroy_container(host, "proj-12345678", ctr, {}, None)
+        # A failed deletion must stop cleanup, especially before redeployment.
+        from app.services.troshkad_client import TroshkadError
+
+        with pytest.raises(TroshkadError, match="host down"):
+            _destroy_container(host, "proj-12345678", ctr, {}, None)
 
     @patch("app.services.deploy_service.wait_for_job")
     @patch("app.services.deploy_service.start_job")
     @patch("app.services.deploy_service._find_container_volumes", return_value=[])
     def test_destroy_container_calls_wait(self, mock_vols, mock_start, mock_wait):
+        mock_wait.return_value = {"status": "completed"}
         mock_start.return_value = "job-99"
         host = MagicMock()
         ctr = {"node_id": "abc12345", "name": "ctr", "is_pod": False}

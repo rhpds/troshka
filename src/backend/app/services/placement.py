@@ -956,6 +956,11 @@ def place_project(
 ) -> dict:
     """Assign a project to a host. Returns placement result."""
     from app.services import quota_operations
+    from app.services.deploy_topology import validate_vm_network_connections
+
+    network_errors = validate_vm_network_connections(project.topology or {})
+    if network_errors:
+        return {"error": "Topology has errors: " + "; ".join(network_errors)}
 
     managed = _managed_native_placement(db, project, host_id, quota_operation_id)
     if managed is not None:

@@ -660,7 +660,7 @@ def _whole_project_power(project, snapshot):
 def recover(project_id):
     """Recover only never-claimed work; claimed/lost work stays reconciling."""
     from app.core.database import SessionLocal
-    from app.core.redis import enqueue_job
+    from app.core.redis import DEPLOY_JOB_TIMEOUT, enqueue_job
     from app.services.deploy_service import deploy_project_async, start_project_async
 
     with SessionLocal() as db:
@@ -683,6 +683,9 @@ def recover(project_id):
         return enqueue_job(
             function,
             project_id,
+            job_timeout=DEPLOY_JOB_TIMEOUT
+            if row.dispatch_metadata["kind"] == "deploy"
+            else 7200,
             project_id=project_id,
             quota_operation_id=row.operation_id,
         )

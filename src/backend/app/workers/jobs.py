@@ -225,7 +225,10 @@ def job_redeploy_bg(
     s = SessionLocal()
     try:
         if destroy_ctx:
-            destroy_project_sync(destroy_ctx, delete_record=False)
+            if destroy_project_sync(destroy_ctx, delete_record=False) is not True:
+                # Failure and asynchronous cleanup are both unsafe to redeploy.
+                # Preserve the cleanup error/state and the original host binding.
+                return
             proj = s.get(Project, project_id)
             if not proj:
                 return

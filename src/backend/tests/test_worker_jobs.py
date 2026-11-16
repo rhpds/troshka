@@ -348,6 +348,37 @@ class TestJobHibernateVm:
 
 
 class TestJobRedeployBg:
+    def test_failed_cleanup_never_places_or_deploys(self):
+        from app.workers.jobs import job_redeploy_bg
+
+        for outcome in (False, None):
+            with (
+                patch("app.core.database.SessionLocal") as session,
+                patch(
+                    "app.services.deploy_service.destroy_project_sync",
+                    return_value=outcome,
+                ),
+                patch("app.services.placement.place_project") as place,
+                patch("app.services.deploy_service.deploy_project_async") as deploy,
+                patch("app.services.deploy_service._clear_deploy_cancelled") as clear,
+            ):
+                project = session.return_value.get.return_value
+                project.host_id = "old-host"
+                project.state = "error"
+                project.deploy_error = (
+                    "Original native namespace ownership is unavailable"
+                )
+                job_redeploy_bg("proj-1", {"host_id": "old-host"}, "old-host")
+                place.assert_not_called()
+                deploy.assert_not_called()
+                clear.assert_not_called()
+                assert project.host_id == "old-host"
+                assert project.state == "error"
+                assert (
+                    project.deploy_error
+                    == "Original native namespace ownership is unavailable"
+                )
+
     @patch("app.services.deploy_service.deploy_project_async")
     @patch("app.services.deploy_service._clear_deploy_cancelled")
     @patch("app.services.placement.place_project")
@@ -398,6 +429,7 @@ class TestJobRedeployBg:
         mock_place.return_value = {"host_id": "h1", "vni_map": {"n1": 100}}
 
         destroy_ctx = {"host_id": "h-old", "project_id": "proj-1"}
+        mock_destroy.return_value = True
 
         job_redeploy_bg("proj-1", destroy_ctx, "h-old")
 
