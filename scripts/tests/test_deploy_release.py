@@ -401,6 +401,25 @@ def test_failed_dev_accounting_never_promotes(shell_commands):
     assert not any("promote" in c for c in calls)
 
 
+@pytest.mark.parametrize("flags,mode", [([], "health"), (["--fresh-accounting"], "fresh"),
+    (["--accounting-project", "project-one"], "fresh")])
+def test_accounting_scans_only_after_promotion_when_requested(shell_commands, flags, mode):
+    env, log = shell_commands
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest", *flags],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    promote = next(i for i, c in enumerate(calls) if "promote" in c)
+    checks = [(i, c) for i, c in enumerate(calls) if "scripts/collector_release_check.py" in c]
+    assert len(checks) == 4
+    for i, call in checks:
+        assert call[call.index("--mode") + 1] == ("health" if i < promote else mode)
+        assert ("--project" in call) == (bool(flags) and flags[0] == "--accounting-project"
+                                        and i > promote and "troshka" in call)
+
+
 def test_failed_ci_never_promotes(shell_commands):
     env, log = shell_commands
     result = subprocess.run(

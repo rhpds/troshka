@@ -14,6 +14,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Routine releases check existing storage-accounting health without launching
+  fleet scans. Accounting changes can request fresh validation once after promotion,
+  across the fleet or selected production projects and their shared-storage domains.
+  Collector configuration, application health, and accounting acceptance guards remain.
+
 - Online storage enrollment can reconcile newly deployed projects sharing cached
   base images while preserving matching existing ownership receipts. Reconciliation
   independently verifies all sibling clones and rejects changed ownership evidence.

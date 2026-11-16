@@ -12,10 +12,14 @@ FORCE_NS_RBAC=false
 RELEASE_TAG=""
 COLLECTOR_ACCESS_PLAN=""
 COLLECTOR_SETUP_PLAN=""
+ACCOUNTING_MODE=health
+FULL_ACCOUNTING=false
+ACCOUNTING_PROJECTS=()
 usage() {
   echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac] [--collector-access-plan FILE] [--collector-setup-plan FILE]"
   echo "Default: create vYYYY.MM.DD-HHMMSS (UTC) at HEAD and push HEAD to main plus the tag."
   echo "Resume an existing release with --skip-push --tag vNAME from its clean checkout."
+  echo "Accounting changes: use --fresh-accounting, or repeat --accounting-project UUID for affected production projects."
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -24,12 +28,18 @@ while [ "$#" -gt 0 ]; do
     --skip-operators) SKIP_OPERATORS=true; shift ;;
     --skip-project-pods) SKIP_PROJECT_PODS=true; shift ;;
     --sync-ns-rbac) FORCE_NS_RBAC=true; shift ;;
+    --fresh-accounting) ACCOUNTING_MODE=fresh; FULL_ACCOUNTING=true; shift ;;
+    --accounting-project) [ "$#" -ge 2 ] || { usage; exit 2; }; ACCOUNTING_MODE=fresh; ACCOUNTING_PROJECTS+=(--project "$2"); shift 2 ;;
     --collector-access-plan) [ "$#" -ge 2 ] || { usage; exit 2; }; COLLECTOR_ACCESS_PLAN=$2; shift 2 ;;
     --collector-setup-plan) [ "$#" -ge 2 ] || { usage; exit 2; }; COLLECTOR_SETUP_PLAN=$2; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
+if [ "$FULL_ACCOUNTING" = true ] && [ "${#ACCOUNTING_PROJECTS[@]}" -gt 0 ]; then
+  echo "Choose --fresh-accounting or --accounting-project, not both." >&2
+  exit 2
+fi
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "Commit or stash changes before deploying a release." >&2
@@ -117,13 +127,13 @@ echo "=== Preflight all ten release images ==="
 python3 scripts/deploy_release.py images --tag "$RELEASE_TAG" --state "$STATE/digests.json"
 preflight_helper_networks
 python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG"
-echo "=== Require dev Argo on this release and fresh accounting before promotion ==="
+echo "=== Require dev Argo on this release and existing accounting health ==="
 python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
   --namespace troshka-dev --image-tag latest --state "$STATE/digests.json"
 python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
   --output "$STATE/dev-collector-preflight.json"
 python3 scripts/collector_release_check.py --application "$DEV_KC" troshka-dev \
-  --output "$STATE/dev-accounting.json"
+  --mode health --output "$STATE/dev-accounting.json"
 oc get deployment troshka-backend -n troshka --kubeconfig="$KC" --request-timeout=30s >/dev/null
 if [ "$SKIP_OPERATORS" = false ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
@@ -206,8 +216,10 @@ if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
 fi
 python3 scripts/collector_fleet_preflight.py \
   --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
+ACCOUNTING_BASELINE=$(mktemp "${TMPDIR:-/tmp}/troshka-accounting-baseline.XXXXXX")
+echo "Existing accounting baseline will be retained at: $ACCOUNTING_BASELINE"
 python3 scripts/collector_release_check.py \
-  --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$STATE/pre-promotion-accounting.json"
+  --mode health --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$ACCOUNTING_BASELINE"
 python3 scripts/deploy_release.py idle --kubeconfig "$KC"
 preflight_helper_networks
 ./scripts/promote-to-production.sh "$RELEASE_TAG"
@@ -222,7 +234,7 @@ echo "=== Verify Argo application, workers, tunnels, runtime schema and health =
 oc annotate applications.argoproj.io troshka -n openshift-gitops \
   argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
 python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json"
-echo "=== Verify collector configuration and fresh RQ accounting ==="
+echo "=== Verify collector configuration and accounting ($ACCOUNTING_MODE) ==="
 python3 scripts/collector_fleet_preflight.py \
   --application "$KC" troshka \
   --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
@@ -231,6 +243,8 @@ ACCOUNTING_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-accounting.XXXXXX"
 echo "Accounting evidence will be retained at: $ACCOUNTING_REPORT"
 python3 scripts/collector_release_check.py \
   --application "$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" troshka-dev \
-  --application "$KC" troshka \
+  --mode "$ACCOUNTING_MODE" --output "$ACCOUNTING_REPORT.dev"
+python3 scripts/collector_release_check.py \
+  --application "$KC" troshka --mode "$ACCOUNTING_MODE" "${ACCOUNTING_PROJECTS[@]}" \
   --output "$ACCOUNTING_REPORT"
 echo "=== Release $RELEASE_TAG deployed and verified ==="

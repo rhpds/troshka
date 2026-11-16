@@ -49,6 +49,51 @@ def test_no_evidence_is_pending(check):
     assert check.evidence_status(None, "2026-11-14T12:00:00+00:00") == "pending"
 
 
+def test_health_reads_old_success_without_starting_jobs(check, monkeypatch, capsys):
+    monkeypatch.setattr(check, "candidates", lambda: [("d", "p", False)])
+    monkeypatch.setattr(check, "observe", lambda *_: evidence())
+    monkeypatch.setattr(check, "verify_attempt", lambda *_: pytest.fail("must not scan"))
+    assert check.remote_main("health") == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "health"
+    assert len(report["completed"]) == 3
+
+
+@pytest.mark.parametrize("bad", [None, "failed", "conflicted", "enrollment"])
+def test_health_blocks_missing_or_invalid_latest_evidence(check, monkeypatch, bad):
+    row = evidence()
+    if bad == "failed":
+        row["status"] = "failed"
+    elif bad == "conflicted":
+        row["conflicted"] = True
+    elif bad == "enrollment":
+        row["enrollment_id"] = "old"
+    else:
+        row = None
+    monkeypatch.setattr(check, "candidates", lambda: [("d", "p", False)])
+    monkeypatch.setattr(check, "observe", lambda *_: row)
+    assert check.remote_main("health") == 1
+
+
+def test_targeted_scan_checks_only_selected_projects_and_domains(check, monkeypatch):
+    rows = [("a", "one", False), ("a", "two", False), ("b", "three", False)]
+    calls = []
+    monkeypatch.setattr(check, "candidates", lambda: rows)
+    monkeypatch.setattr(check, "observe", lambda *_: evidence())
+    def verify(d, p, k):
+        calls.append((d, p, k))
+        return dict(domain_id=d, project_id=p, kind=k, started_at=evidence()["started_at"])
+    monkeypatch.setattr(check, "verify_attempt", verify)
+    assert check.remote_main("fresh", ["one"]) == 0
+    assert calls == [("a", None, "readiness"), ("a", None, "shared"), ("a", "one", "project")]
+
+
+def test_unknown_target_fails_before_enqueuing(check, monkeypatch):
+    monkeypatch.setattr(check, "candidates", lambda: [("d", "p", False)])
+    monkeypatch.setattr(check, "verify_attempt", lambda *_: pytest.fail("must not scan"))
+    assert check.remote_main("fresh", ["typo"]) == 1
+
+
 def test_failed_enqueue_is_not_retried_or_reported_as_success(check):
     calls = []
     def enqueue(*args):

@@ -153,13 +153,46 @@ def verify_projects(current, completed):
         raise RuntimeError("project accounting verification failed")
 
 
-def remote_main():
+def check_existing(current):
+    """Read latest evidence without enqueueing or renewing its freshness."""
+    completed = []
+    scopes = [(d, None, k) for d in sorted({d for d, _, _ in current})
+              for k in ("readiness", "shared")]
+    scopes += [(d, p, "project") for d, p, _ in current if p is not None]
+    for domain, project, kind in scopes:
+        row = observe(domain, project, kind)
+        if evidence_status(row, "1970-01-01T00:00:00+00:00") != "complete":
+            raise ValueError("existing accounting unhealthy or missing")
+        completed.append(dict(domain_id=domain, project_id=project, kind=kind,
+                              started_at=row["started_at"], completed_at=row["completed_at"]))
+    return completed
+
+
+def selected_candidates(current, projects):
+    if not projects:
+        return current
+    if set(projects) - {p for _, p, _ in current}:
+        raise ValueError("requested project is not enrolled")
+    domains = {d for d, p, _ in current if p in projects}
+    return [(d, p, c) for d, p, c in current
+            if d in domains and (p is None or p in projects)]
+
+
+def remote_main(mode="fresh", projects=()):
     completed = []
     try:
         initial = candidates()
         if any(cleanup for _, _, cleanup in initial):
             raise ValueError("project cleanup active")
-        domains = sorted({domain for domain, _, _ in initial})
+        selected = selected_candidates(initial, projects)
+        if mode == "health":
+            completed = check_existing(initial)
+            if set(initial) != set(candidates()):
+                raise ValueError("project inventory changed during verification")
+            print(json.dumps({"ready": bool(initial), "mode": mode,
+                              "completed": completed}), flush=True)
+            return 0 if initial else 1
+        domains = sorted({domain for domain, _, _ in selected})
         # Coordinate first: this can enroll newly created project roots. Re-read
         # candidates afterward so projects created since the prior cycle count.
         for domain in domains:
@@ -168,7 +201,7 @@ def remote_main():
         current = candidates()
         if any(cleanup for _, _, cleanup in current):
             raise ValueError("project cleanup active")
-        verify_projects(current, completed)
+        verify_projects(selected_candidates(current, projects), completed)
         if set(current) != set(candidates()):
             raise ValueError("project inventory changed during verification")
         # A newer failure must invalidate an earlier successful observation.
@@ -176,25 +209,32 @@ def remote_main():
             if evidence_status(observe(item["domain_id"], item["project_id"], item["kind"]),
                                item["started_at"]) != "complete":
                 raise ValueError("accounting proof superseded")
-        result = {"ready": bool(domains), "completed": completed}
+        if projects:
+            check_existing(current)
+        result = {"ready": bool(domains), "mode": mode, "completed": completed}
     except Exception:  # noqa: BLE001 -- provider exceptions can contain credentials
         result = {"ready": False, "completed": completed, "blocker": "fresh_accounting_unverified"}
     print(json.dumps(result), flush=True)
     return 0 if result["ready"] else 1
 
 
-def remote_source():
-    return Path(__file__).read_text().rsplit('\nif __name__ == "__main__":', 1)[0] + "\nraise SystemExit(remote_main())\n"
+def remote_source(mode="fresh", projects=()):
+    return (Path(__file__).read_text().rsplit('\nif __name__ == "__main__":', 1)[0]
+            + f"\nraise SystemExit(remote_main({mode!r}, {projects!r}))\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--application", nargs=2, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=("health", "fresh"), default="fresh")
+    parser.add_argument("--project", action="append", default=[])
     args = parser.parse_args()
+    if args.project and args.mode != "fresh":
+        parser.error("--project requires --mode fresh")
     os.umask(0o077)
     reports = []
-    source = remote_source()
+    source = remote_source(args.mode, args.project)
     for kubeconfig, namespace in args.application:
         try:
             process = subprocess.run(
