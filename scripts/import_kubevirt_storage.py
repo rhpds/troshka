@@ -165,6 +165,10 @@ def _parser():
         "prepare-online", help="Prepare existing-project custody enrollment without stopping workloads"
     )
     online_prepare.add_argument("--project-id", action="append", required=True)
+    online_prepare.add_argument(
+        "--accounting-only-project-id", action="append", default=[],
+        help="Explicit retained-disk accounting for a selected project, including failed deployments; no cleanup authority",
+    )
     online_prepare.add_argument("--output", required=True)
     empty = commands.add_parser("prepare-empty-domain", help="Explicit trusted-admin fresh zero-root bootstrap")
     for name in ("pins", "pins-output", "output"):
@@ -251,7 +255,10 @@ def _online_dispatch(db, args):
     from app.services import native_online_enrollment
 
     if args.command == "prepare-online":
-        prepared = native_online_enrollment.prepare(db, args.project_id)
+        prepared = native_online_enrollment.prepare(
+            db, args.project_id,
+            accounting_only_project_ids=args.accounting_only_project_id,
+        )
         atomic_report(args.output, RootModel(prepared))
         return prepared["request"]["request_id"]
     return native_online_enrollment.apply(

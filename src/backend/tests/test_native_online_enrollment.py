@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -202,6 +203,117 @@ def test_online_enrollment_preserves_live_workloads_and_accounting(online_case):
         assert {db.get(Project, key).state for key in q.project_ids} == {"active"}
 
 
+def test_failed_project_accounting_preserves_failure_without_cleanup_authority(
+    online_case,
+):
+    q = online_case
+    project_id = q.project_ids[0]
+    with q.sessions() as db:
+        project = db.get(Project, project_id)
+        project.state, project.deploy_error = "error", "VM deployment timed out"
+        db.commit()
+        with pytest.raises(AccountingUnavailable):
+            online.prepare(db, q.project_ids)
+        db.rollback()
+        q.prepared = online.prepare(
+            db, q.project_ids, accounting_only_project_ids=[project_id]
+        )
+        db.commit()
+    before = {key: deepcopy(api.values) for key, api in q.apis.items()}
+    apply_receipt(q)
+    assert before == {key: api.values for key, api in q.apis.items()}
+    with q.sessions() as db:
+        project = db.get(Project, project_id)
+        assert (project.state, project.deploy_error) == (
+            "error",
+            "VM deployment timed out",
+        )
+        assert online.retained(db, project) is not None
+        assert (
+            db.query(QuotaReservation).count() == db.query(QuotaAllocation).count() == 0
+        )
+        project.state = "stopped"
+        with pytest.raises(AccountingUnavailable, match="accounting-only"):
+            online.cleanup_anchor(db, project, [])
+        row = SimpleNamespace(dispatch_metadata={"native_custody_id": "untrusted"})
+        with pytest.raises(AccountingUnavailable, match="accounting-only"):
+            online.namespace_authority(db, project, row)
+        with pytest.raises(AccountingUnavailable, match="accounting-only"):
+            online.validate_cleanup_bindings(db, project, [row], [])
+
+
+def test_preserving_accounting_only_receipt_cannot_upgrade_authority(online_case):
+    q = online_case
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db, q.project_ids, accounting_only_project_ids=q.project_ids
+        )
+        db.commit()
+    original_ids = apply_receipt(q)
+    with q.sessions() as db:
+        q.prepared = online.prepare(db, q.project_ids)
+        db.commit()
+    value = verified(q)
+    with q.sessions() as db:
+        assert (
+            online.apply(
+                db, value, expected_target_id=q.target_id, preserve_existing=True
+            )
+            == original_ids
+        )
+        with pytest.raises(AccountingUnavailable, match="accounting-only"):
+            online.cleanup_anchor(db, db.get(Project, q.project_ids[0]), [])
+
+
+@pytest.mark.parametrize(
+    "state", ["deploying", "destroying", "starting", "stopping", "draft"]
+)
+def test_accounting_only_does_not_adopt_transitional_projects(online_case, state):
+    q = online_case
+    with q.sessions() as db:
+        db.get(Project, q.project_ids[0]).state = state
+        db.commit()
+        with pytest.raises(AccountingUnavailable):
+            online.prepare(
+                db, q.project_ids, accounting_only_project_ids=[q.project_ids[0]]
+            )
+
+
+def test_accounting_only_selection_must_be_in_prepared_projects(online_case):
+    q = online_case
+    with q.sessions() as db:
+        with pytest.raises(AccountingUnavailable):
+            online.prepare(
+                db, q.project_ids, accounting_only_project_ids=[str(uuid4())]
+            )
+
+
+def test_accounting_only_scope_cannot_be_removed_after_preparation(online_case):
+    q = online_case
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db, q.project_ids, accounting_only_project_ids=q.project_ids
+        )
+        db.commit()
+    value = verified(q)
+    value["prepared"].pop("accounting_only_project_ids")
+    value["digest"] = online.enrollment.digest(
+        {k: v for k, v in value.items() if k != "digest"}
+    )
+    with q.sessions() as db:
+        with pytest.raises(AccountingUnavailable, match="independently prepared"):
+            online.apply(db, value, expected_target_id=q.target_id)
+        assert db.query(NativeCustodyReceipt).count() == 0
+
+
+def test_legacy_preparation_serialization_keeps_original_digest(online_case):
+    from app.schemas.native_online_enrollment import PreparedCustody
+
+    value = deepcopy(online_case.prepared)
+    assert "accounting_only_project_ids" not in value
+    assert PreparedCustody.model_validate(value).model_dump(mode="json") == value
+
+
 def test_reconcile_preserves_existing_receipt_and_adds_missing_project(online_case):
     q = online_case
     apply_receipt(q)
@@ -322,7 +434,9 @@ def test_online_rejects_changed_independent_identity(
     assert all(not api.calls for api in q.apis.values())
 
 
-@pytest.mark.parametrize("change", ["owner", "topology", "stale", "quotas"])
+@pytest.mark.parametrize(
+    "change", ["owner", "topology", "stale", "quotas", "transitional"]
+)
 @pytest.mark.parametrize("reviewed", [False, True])
 def test_apply_rechecks_prepared_state(online_case, change, monkeypatch, reviewed):
     q = online_case
@@ -339,6 +453,8 @@ def test_apply_rechecks_prepared_state(online_case, change, monkeypatch, reviewe
             db.commit()
         elif change == "stale":
             FixedDatetime.current += timedelta(seconds=61)
+        elif change == "transitional":
+            project.state = "deploying"
         else:
             monkeypatch.setattr(online.accounting, "quotas_enabled", lambda: True)
         with pytest.raises((ValueError, AccountingUnavailable)):

@@ -32,15 +32,24 @@ def _disabled():
     _require(not accounting.quotas_enabled(), "Online custody requires disabled quotas")
 
 
-def prepare(db, project_ids):
+def prepare(db, project_ids, *, accounting_only_project_ids=()):
     _disabled()
     request = enrollment.prepare_native_enrollment(db, project_ids)
+    accounting_only = sorted(set(accounting_only_project_ids))
+    _require(
+        set(accounting_only) <= {str(p.project_id) for p in request.projects},
+        "Accounting-only selection names an unprepared project",
+    )
     topologies = {}
     for identity in request.projects:
         project = db.get(Project, str(identity.project_id))
-        _legacy(db, project)
+        _legacy(db, project, accounting_only=project.id in accounting_only)
         topologies[project.id] = operations.retained_topology(project)
-    prepared = PreparedCustody(request=request, topologies=topologies)
+    prepared = PreparedCustody(
+        request=request,
+        topologies=topologies,
+        accounting_only_project_ids=accounting_only,
+    )
     db.add(
         NativeCustodyRequest(
             id=str(request.request_id),
@@ -52,8 +61,12 @@ def prepare(db, project_ids):
     return prepared.model_dump(mode="json")
 
 
-def _legacy(db, project):
-    _require(project.state in {"active", "stopped"}, "Legacy project must be stable")
+def _legacy(db, project, *, accounting_only=False):
+    _require(
+        project.state in {"active", "stopped"}
+        or (accounting_only and project.state == "error"),
+        "Legacy project must be stable",
+    )
     _require(
         project.deployed_topology is not None, "Retained deployed topology required"
     )
@@ -417,7 +430,11 @@ def apply(db, verified, *, expected_target_id, preserve_existing=False):
     preserved = {}
     for identity in receipt.prepared.request.projects:
         project = db.get(Project, str(identity.project_id))
-        _legacy(db, project)
+        _legacy(
+            db,
+            project,
+            accounting_only=project.id in receipt.prepared.accounting_only_project_ids,
+        )
         _require(
             operations.retained_topology(project)
             == receipt.prepared.topologies[project.id],
@@ -555,6 +572,7 @@ def cleanup_anchor(db, project, rows):
         return rows
     _disabled()
     receipt_row, receipt, root = custody
+    _require_cleanup_authority(receipt, project.id)
     _require(
         project.state in {"active", "stopped"}, "Cleanup requires stable legacy project"
     )
@@ -610,7 +628,8 @@ def namespace_authority(db, project, row):
     custody = retained(db, project)
     if custody is None:
         raise AccountingUnavailable("Native custody receipt unavailable")
-    receipt_row, _, root = custody
+    receipt_row, receipt, root = custody
+    _require_cleanup_authority(receipt, project.id)
     _require(
         row.dispatch_metadata.get("native_custody_id") == receipt_row.id
         and row.dispatch_metadata.get("native_storage_identity", {}).get("root")
@@ -627,6 +646,7 @@ def validate_cleanup_bindings(db, project, rows, bindings):
     if custody is None:
         raise AccountingUnavailable("Native custody receipt unavailable")
     _, receipt, root = custody
+    _require_cleanup_authority(receipt, project.id)
     expected = [b for b in receipt.bindings if b.root == root]
     from app.services.kubevirt_storage_reports import _binding_identity
 
@@ -634,4 +654,11 @@ def validate_cleanup_bindings(db, project, rows, bindings):
         sorted(enrollment.digest(_binding_identity(b)) for b in expected)
         == sorted(enrollment.digest(_binding_identity(b)) for b in bindings),
         "Cleanup storage identities differ from explicit custody",
+    )
+
+
+def _require_cleanup_authority(receipt, project_id):
+    _require(
+        project_id not in receipt.prepared.accounting_only_project_ids,
+        "An accounting-only receipt cannot authorize cleanup",
     )

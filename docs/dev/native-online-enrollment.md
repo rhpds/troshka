@@ -168,6 +168,24 @@ database enrollment alone is not evidence of uninterrupted guest operation.
 
 ## Later cleanup
 
+### Accounting-only evidence for failed deployments
+
+An administrator may explicitly select a failed project during preparation with
+`prepare-online --project-id <id> --accounting-only-project-id <id>`. Repeat both
+options as necessary; the accounting-only IDs must be part of the prepared set.
+This permits terminal `error` state while still rejecting draft and transitional
+states. Retained deployed topology, exact namespace ownership, storage identities,
+clone ancestry, fresh verification, disabled quotas, and absence of quota ledger
+records remain required. Review topology differences independently before attesting.
+
+The selected IDs are persisted in the prepared request and protected by its digest.
+New receipts for these projects cannot authorize cleanup, even after a later state
+change. Existing matching receipts retain their original contents and authority.
+Enrollment leaves the project state, failure details, workloads, and disks intact;
+it neither resumes deployment nor proves complete deployment or zero compute usage.
+To grant cleanup authority later requires a separate explicit reconciliation, not
+removal of this restriction from a saved receipt.
+
 Ordinary quota-disabled Start/Stop retains its existing behavior. Delete and
 Undeploy revalidate custody and disk identities, obtain a real managed shutdown
 proof, and settle only the project's private disk and trash identities. The

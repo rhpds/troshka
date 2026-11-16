@@ -78,6 +78,23 @@ class CustodyAttestation(Evidence):
 class PreparedCustody(Evidence):
     request: EnrollmentRequest
     topologies: dict[str, dict]
+    accounting_only_project_ids: list[str] = Field(
+        default_factory=list, max_length=10000
+    )
+
+    @model_validator(mode="after")
+    def accounting_scope(self):
+        projects = {str(p.project_id) for p in self.request.projects}
+        if not set(self.accounting_only_project_ids) <= projects:
+            raise ValueError("Accounting-only selection names an unprepared project")
+        return self
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_digest(self, handler):
+        value = handler(self)
+        if not self.accounting_only_project_ids:
+            value.pop("accounting_only_project_ids", None)
+        return value
 
 
 class VerifiedCustody(Evidence):

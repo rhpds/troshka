@@ -185,8 +185,9 @@ def test_online_custody_uses_provider_transport_not_collector(cli, monkeypatch):
         assert ReadOnlyManaged(readers["provider"])._reader.api is provider_api
 
 
+@pytest.mark.parametrize("accounting_only", [False, True])
 def test_online_cli_private_prepare_and_explicit_target_apply(
-    cli, native_case, monkeypatch, tmp_path
+    cli, native_case, monkeypatch, tmp_path, accounting_only
 ):
     from types import SimpleNamespace
 
@@ -203,8 +204,8 @@ def test_online_cli_private_prepare_and_explicit_target_apply(
     }
     calls = []
 
-    def prepare(db, ids):
-        calls.append(("prepare", ids))
+    def prepare(db, ids, *, accounting_only_project_ids):
+        calls.append(("prepare", ids, accounting_only_project_ids))
         return prepared
 
     def apply(db, receipt, *, expected_target_id, preserve_existing=False):
@@ -228,13 +229,18 @@ def test_online_cli_private_prepare_and_explicit_target_apply(
                 project_id,
                 "--output",
                 str(output),
+                *(
+                    ["--accounting-only-project-id", project_id]
+                    if accounting_only
+                    else []
+                ),
             ]
         )
         == 0
     )
     assert json.loads(output.read_text()) == prepared
     assert output.stat().st_mode & 0o777 == 0o600
-    assert calls == [("prepare", [project_id])]
+    assert calls == [("prepare", [project_id], [project_id] if accounting_only else [])]
     # A different database target fails before touching the custody service.
     assert (
         cli.main(
