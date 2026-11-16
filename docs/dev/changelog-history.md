@@ -10,6 +10,7 @@ Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags
 
 | Tag | Date (UTC) | Source commit |
 | --- | --- | --- |
+| v2026.11.16-retained-accounting | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-retained-accounting) |
 | v2026.11.16-retained-disks | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-retained-disks) |
 | v2026.11.16-shared-clones | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-shared-clones) |
 | v2026.11.16-164337 | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-164337) |

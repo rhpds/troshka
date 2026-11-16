@@ -19,6 +19,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   independently verifies all sibling clones and rejects changed ownership evidence.
   Explicit accounting-only enrollment can include failed deployments while retaining
   their failure state and denying cleanup authority from the new receipts.
+  Previously attested network support omissions can be reconciled for accounting
+  only when each missing identity is explicitly selected; retained receipts,
+  storage validation, runtime restrictions, and strict cleanup checks are preserved.
 
 - Release builds run the eight operator and helper images in parallel, while
   keeping production promotion gated on the complete image build.

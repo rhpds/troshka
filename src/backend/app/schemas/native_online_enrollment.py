@@ -75,11 +75,21 @@ class CustodyAttestation(Evidence):
         return value
 
 
+class RetainedAccountingSupport(Evidence):
+    receipt_id: Text
+    receipt_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    objects: list[dict] = Field(min_length=1, max_length=1000)
+    missing_object_uids: list[Text] = Field(min_length=1, max_length=1000)
+
+
 class PreparedCustody(Evidence):
     request: EnrollmentRequest
     topologies: dict[str, dict]
     accounting_only_project_ids: list[str] = Field(
         default_factory=list, max_length=10000
+    )
+    retained_accounting_support: dict[str, RetainedAccountingSupport] = Field(
+        default_factory=dict, max_length=10000
     )
 
     @model_validator(mode="after")
@@ -87,6 +97,10 @@ class PreparedCustody(Evidence):
         projects = {str(p.project_id) for p in self.request.projects}
         if not set(self.accounting_only_project_ids) <= projects:
             raise ValueError("Accounting-only selection names an unprepared project")
+        if not set(self.retained_accounting_support) <= set(
+            self.accounting_only_project_ids
+        ):
+            raise ValueError("Retained support requires accounting-only selection")
         return self
 
     @model_serializer(mode="wrap")
@@ -94,6 +108,8 @@ class PreparedCustody(Evidence):
         value = handler(self)
         if not self.accounting_only_project_ids:
             value.pop("accounting_only_project_ids", None)
+        if not self.retained_accounting_support:
+            value.pop("retained_accounting_support", None)
         return value
 
 

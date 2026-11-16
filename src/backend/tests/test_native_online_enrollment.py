@@ -333,6 +333,284 @@ def test_reconcile_preserves_existing_receipt_and_adds_missing_project(online_ca
     assert all(not api.calls for api in q.apis.values())
 
 
+def test_accounting_reconciliation_retains_receipt_after_selected_support_loss(
+    online_case,
+):
+    q = online_case
+    apply_receipt(q)
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    network = api.values.pop(("TroshkaNetwork", "net-basic"))
+    with q.sessions() as db:
+        original = online.retained(db, db.get(Project, pid))[0]
+        original_id, payload = original.id, deepcopy(original.payload)
+        q.prepared = online.prepare(
+            db,
+            q.project_ids,
+            accounting_only_project_ids=[pid],
+            accounting_only_missing_object_uids={pid: [network["metadata"]["uid"]]},
+        )
+        db.commit()
+    value = verified(q)
+    assert all(
+        v["uid"] != network["metadata"]["uid"] for v in value["object_identities"][pid]
+    )
+    with q.sessions() as db:
+        online.apply(db, value, expected_target_id=q.target_id, preserve_existing=True)
+        db.commit()
+        assert db.get(NativeCustodyReceipt, original_id).payload == payload
+    # The accounting exception must never relax the ordinary cleanup preflight.
+    with pytest.raises(Exception, match="custody_support_changed"):
+        online.validate_namespace(
+            q.reader,
+            {
+                "root": q.report.project_roots[0].model_dump(mode="json"),
+                "cleanup_custody": payload["receipt"]["object_identities"][pid],
+            },
+        )
+
+
+def test_failed_partial_runtime_can_record_only_retained_storage(online_case):
+    q = online_case
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    next(v for (kind, _), v in api.values.items() if kind == "TroshkaProject")[
+        "status"
+    ]["phase"] = "Error"
+    for key in list(api.values):
+        if key[0] in {"VirtualMachine", "VirtualMachineInstance"}:
+            api.values.pop(key)
+    with q.sessions() as db:
+        db.get(Project, pid).state = "error"
+        q.prepared = online.prepare(
+            db, q.project_ids, accounting_only_project_ids=[pid]
+        )
+        db.commit()
+    value = verified(q)
+    with q.sessions() as db:
+        online.apply(db, value, expected_target_id=q.target_id)
+        assert db.get(Project, pid).state == "error"
+    assert api.rows("VirtualMachine", None) == []
+    assert not api.calls
+
+
+def test_retained_ownerless_bmc_survives_selected_network_loss_for_accounting(
+    online_case,
+):
+    from app.services.native_managed_power import helpers
+
+    helpers()
+    from helpers.native_custody import bmc_manifest, bmc_shape
+
+    q = online_case
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    network = api.values["TroshkaNetwork", "net-basic"]
+    network["spec"]["networkType"] = "bmc"
+    for (kind, _), vm in api.values.items():
+        if kind == "TroshkaVM":
+            vm["spec"]["bmcEnabled"] = True
+    root = api.rows("TroshkaProject", None)[0]
+    by_uid = {v["metadata"]["uid"]: v for v in api.values.values()}
+    deployment = bmc_manifest(root, by_uid)
+    assert deployment is not None
+    deployment["metadata"].update(uid="retained-bmc", resourceVersion="1")
+    api.values["Deployment", deployment["metadata"]["name"]] = deployment
+    apply_receipt(q)
+    api.values.pop(("TroshkaNetwork", "net-basic"))
+    by_uid = {v["metadata"]["uid"]: v for v in api.values.values()}
+    assert not bmc_shape(deployment, root, by_uid)
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db,
+            q.project_ids,
+            accounting_only_project_ids=[pid],
+            accounting_only_missing_object_uids={pid: [network["metadata"]["uid"]]},
+        )
+        db.commit()
+    value = verified(q)
+    assert any(v["uid"] == "retained-bmc" for v in value["object_identities"][pid])
+    with q.sessions() as db:
+        online.apply(db, value, expected_target_id=q.target_id, preserve_existing=True)
+
+
+def test_retained_accounting_rejects_new_dynamic_hostpath_pod(online_case):
+    q = online_case
+    apply_receipt(q)
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    network = api.values.pop(("TroshkaNetwork", "net-basic"))
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db,
+            q.project_ids,
+            accounting_only_project_ids=[pid],
+            accounting_only_missing_object_uids={pid: [network["metadata"]["uid"]]},
+        )
+        db.commit()
+    deployment = api.rows("Deployment", None)[0]
+
+    def owned(kind, name, parent):
+        return {
+            "apiVersion": "apps/v1" if kind == "ReplicaSet" else "v1",
+            "kind": kind,
+            "metadata": {
+                "name": name,
+                "uid": name,
+                "namespace": deployment["metadata"]["namespace"],
+                "ownerReferences": [
+                    {
+                        "kind": parent["kind"],
+                        "apiVersion": parent["apiVersion"],
+                        "name": parent["metadata"]["name"],
+                        "uid": parent["metadata"]["uid"],
+                        "controller": True,
+                    }
+                ],
+            },
+            "spec": {},
+        }
+
+    replica = owned("ReplicaSet", "new-rs", deployment)
+    pod = owned("Pod", "new-pod", replica)
+    pod["spec"]["volumes"] = [{"name": "host", "hostPath": {"path": "/"}}]
+    api.values["ReplicaSet", "new-rs"] = replica
+    api.values["Pod", "new-pod"] = pod
+    with pytest.raises(Exception, match="managed_volume_unsupported"):
+        verified(q)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "new",
+        "changed",
+        "missing_storage",
+        "missing_vm",
+        "unselected_support",
+        "dynamic_owner",
+    ],
+)
+def test_retained_accounting_rejects_unreviewed_inventory_changes(online_case, change):
+    q = online_case
+    apply_receipt(q)
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    network = api.values.pop(("TroshkaNetwork", "net-basic"))
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db,
+            q.project_ids,
+            accounting_only_project_ids=[pid],
+            accounting_only_missing_object_uids={pid: [network["metadata"]["uid"]]},
+        )
+        db.commit()
+    if change in {"missing_storage", "missing_vm", "unselected_support"}:
+        kind = {
+            "missing_storage": "PersistentVolumeClaim",
+            "missing_vm": "TroshkaVM",
+            "unselected_support": "Deployment",
+        }[change]
+        api.values.pop(next(k for k in api.values if k[0] == kind))
+    elif change == "changed":
+        value = next(v for (kind, _), v in api.values.items() if kind == "Deployment")
+        value["metadata"].setdefault("labels", {})["foreign"] = "changed"
+    else:
+        root = api.rows("TroshkaProject", None)[0]
+        value = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap" if change == "new" else "Pod",
+            "metadata": {
+                "name": "foreign",
+                "namespace": root["metadata"]["namespace"],
+                "uid": "foreign",
+            },
+        }
+        api.values[value["kind"], "foreign"] = value
+    with pytest.raises(Exception, match="support|ownership|storage|PVC"):
+        verified(q)
+
+
+@pytest.mark.parametrize(
+    "change", ["without_flag", "unknown_uid", "storage_uid", "duplicate_uid"]
+)
+def test_missing_support_selection_requires_exact_retained_network_identity(
+    online_case, change
+):
+    q = online_case
+    apply_receipt(q)
+    pid = q.project_ids[0]
+    api = q.apis[pid]
+    uid = api.values["TroshkaNetwork", "net-basic"]["metadata"]["uid"]
+    selected = [uid]
+    if change == "unknown_uid":
+        selected = ["unknown"]
+    if change == "duplicate_uid":
+        selected = [uid, uid]
+    if change == "storage_uid":
+        selected = [
+            next(
+                v
+                for (kind, _), v in api.values.items()
+                if kind == "PersistentVolumeClaim"
+            )["metadata"]["uid"]
+        ]
+    with q.sessions() as db:
+        with pytest.raises(AccountingUnavailable):
+            online.prepare(
+                db,
+                q.project_ids,
+                accounting_only_project_ids=[] if change == "without_flag" else [pid],
+                accounting_only_missing_object_uids={pid: selected},
+            )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["no_preserve", "deleted_receipt", "replaced_receipt", "tampered_preparation"],
+)
+def test_retained_accounting_apply_requires_original_prepared_receipt(
+    online_case, change
+):
+    q = online_case
+    apply_receipt(q)
+    pid = q.project_ids[0]
+    network = q.apis[pid].values.pop(("TroshkaNetwork", "net-basic"))
+    with q.sessions() as db:
+        q.prepared = online.prepare(
+            db,
+            q.project_ids,
+            accounting_only_project_ids=[pid],
+            accounting_only_missing_object_uids={pid: [network["metadata"]["uid"]]},
+        )
+        db.commit()
+    value = verified(q)
+    with q.sessions() as db:
+        old = db.query(NativeCustodyReceipt).filter_by(project_id=pid).one()
+        if change == "deleted_receipt":
+            db.delete(old)
+        if change == "replaced_receipt":
+            old.id = str(uuid4())
+        db.flush()
+        if change == "tampered_preparation":
+            value["prepared"]["retained_accounting_support"][pid]["receipt_id"] = str(
+                uuid4()
+            )
+            value["digest"] = online.enrollment.digest(
+                {k: v for k, v in value.items() if k != "digest"}
+            )
+        with pytest.raises(
+            AccountingUnavailable,
+            match="existing custody|disappeared|changed|independently prepared",
+        ):
+            online.apply(
+                db,
+                value,
+                expected_target_id=q.target_id,
+                preserve_existing=change != "no_preserve",
+            )
+
+
 def test_reconcile_rejects_changed_existing_storage_identity(online_case):
     q = online_case
     apply_receipt(q)

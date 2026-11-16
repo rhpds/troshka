@@ -186,6 +186,28 @@ it neither resumes deployment nor proves complete deployment or zero compute usa
 To grant cleanup authority later requires a separate explicit reconciliation, not
 removal of this restriction from a saved receipt.
 
+For a previously attested project whose network support was partially removed,
+the Python preparation API additionally accepts
+`accounting_only_missing_object_uids={project_id: [exact_missing_uid, ...]}`.
+The project must also be explicitly selected in `accounting_only_project_ids`.
+Select the exact missing identities after an independent live inventory comparison;
+the preparer permits only retained network CRs, network attachment definitions,
+DNS support ConfigMaps/deployments, and gateway deployments. It records the old
+receipt ID, digest, full stable identities, and selected missing UIDs in the
+prepared request. There is no general permission to ignore missing support.
+
+Verification requires every remaining stable object to match that receipt exactly,
+no new stable objects, and exactly the selected omissions. Dynamic ownership,
+volume/mount restrictions, active-work checks, and fresh root/PVC/PV/CSI/clone
+verification still apply. An unchanged retained helper may be accounted for even
+when its selected network parent is absent. Failed partial deployments may lack
+VMs, but existing VMs and runtime objects remain validated; no successful runtime
+state is synthesized. Applying this reconciliation requires `preserve_existing=True`
+and the same unchanged original receipt. The receipt stays immutable, current
+observations contain only existing objects, and ordinary cleanup preflight still
+rejects the incomplete namespace. This mechanism neither repairs networks nor
+grants additional power or deletion authority.
+
 Ordinary quota-disabled Start/Stop retains its existing behavior. Delete and
 Undeploy revalidate custody and disk identities, obtain a real managed shutdown
 proof, and settle only the project's private disk and trash identities. The

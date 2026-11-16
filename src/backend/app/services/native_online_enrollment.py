@@ -32,7 +32,13 @@ def _disabled():
     _require(not accounting.quotas_enabled(), "Online custody requires disabled quotas")
 
 
-def prepare(db, project_ids, *, accounting_only_project_ids=()):
+def prepare(
+    db,
+    project_ids,
+    *,
+    accounting_only_project_ids=(),
+    accounting_only_missing_object_uids=None,
+):
     _disabled()
     request = enrollment.prepare_native_enrollment(db, project_ids)
     accounting_only = sorted(set(accounting_only_project_ids))
@@ -41,14 +47,25 @@ def prepare(db, project_ids, *, accounting_only_project_ids=()):
         "Accounting-only selection names an unprepared project",
     )
     topologies = {}
+    missing = accounting_only_missing_object_uids or {}
+    _require(
+        set(missing) <= set(accounting_only),
+        "Missing support requires accounting-only selection",
+    )
+    retained_support = {}
     for identity in request.projects:
         project = db.get(Project, str(identity.project_id))
         _legacy(db, project, accounting_only=project.id in accounting_only)
         topologies[project.id] = operations.retained_topology(project)
+        if project.id in missing:
+            retained_support[project.id] = _prepare_retained_support(
+                db, project, missing[project.id]
+            )
     prepared = PreparedCustody(
         request=request,
         topologies=topologies,
         accounting_only_project_ids=accounting_only,
+        retained_accounting_support=retained_support,
     )
     db.add(
         NativeCustodyRequest(
@@ -59,6 +76,221 @@ def prepare(db, project_ids, *, accounting_only_project_ids=()):
     )
     db.flush()
     return prepared.model_dump(mode="json")
+
+
+def _prepare_retained_support(db, project, missing):
+    previous = retained(db, project)
+    if previous is None:
+        raise AccountingUnavailable("Missing support requires retained custody")
+    row, receipt, _ = previous
+    objects = receipt.object_identities[project.id]
+    selected = set(missing)
+    _require(
+        bool(selected) and len(selected) == len(missing),
+        "Missing support selection must be explicit and unique",
+    )
+    _require(
+        selected <= {v["uid"] for v in objects if _missing_network_support(v)},
+        "Only retained network support may be selected",
+    )
+    return {
+        "receipt_id": row.id,
+        "receipt_digest": row.digest,
+        "objects": deepcopy(objects),
+        "missing_object_uids": sorted(selected),
+    }
+
+
+def _missing_network_support(value):
+    names = {
+        "TroshkaNetwork": ("net-",),
+        "NetworkAttachmentDefinition": ("net-",),
+        "ConfigMap": ("dnsmasq-net-",),
+        "Deployment": ("dnsmasq-net-", "gateway-troshka-"),
+    }
+    return value["name"].startswith(names.get(value["kind"], ()))
+
+
+def _retained_support_subset(current, support):
+    expected = support.objects
+    missing = [v for v in expected if v not in current]
+    _require(
+        all(v in expected for v in current),
+        "Retained accounting support changed or added",
+    )
+    _require(
+        {v["uid"] for v in missing} == set(support.missing_object_uids)
+        and all(_missing_network_support(v) for v in missing),
+        "Retained accounting support missing selection changed",
+    )
+
+
+def _accounting_owner_chain(value, root, by_uid, expected, module):
+    from helpers.native_custody import identity, stable
+
+    seen = set()
+    while value["metadata"]["uid"] != root["metadata"]["uid"]:
+        if stable(value) and identity(value) in expected:
+            return
+        uid = value["metadata"]["uid"]
+        module.require(uid not in seen, "managed_owner_cycle")
+        seen.add(uid)
+        refs = value["metadata"].get("ownerReferences", [])
+        module.require(
+            len(refs) == 1 and refs[0].get("controller") is True,
+            "managed_ownership_unverified",
+        )
+        ref = refs[0]
+        parent = by_uid.get(ref["uid"])
+        module.require(parent is not None, "managed_owner_missing")
+        module.require(
+            all(ref.get(k) == parent.get(k) for k in ("kind", "apiVersion"))
+            and ref["name"] == parent["metadata"]["name"],
+            "managed_owner_changed",
+        )
+        value = parent
+
+
+def _validate_retained_accounting(api, context, support):
+    """Read-only subset verification; never called by cleanup or power paths."""
+    from app.services import native_managed_power as power
+    from app.services.quota_cleanup import _namespace_rows
+
+    module = power.helpers()
+    from helpers.native_custody import identity, stable
+
+    root = power._live_root(api, context, "custody-preflight")
+    full = _namespace_rows(api, context["root"]["namespace"])
+    values = [root] + [v for entries in full.values() for v in entries]
+    module.require(len(values) <= 1000, "custody_inventory_limit")
+    by_uid = {v["metadata"]["uid"]: v for v in values}
+    module.require(len(by_uid) == len(values), "custody_duplicate_object_identity")
+    pins = sorted(
+        [identity(v) for v in values[1:] if stable(v)],
+        key=lambda v: (v["kind"], v["name"]),
+    )
+    _retained_support_subset(pins, support)
+    for value in values[1:]:
+        module.require(
+            value["kind"] != "VolumeSnapshot", "custody_snapshot_unsupported"
+        )
+        _accounting_owner_chain(value, root, by_uid, support.objects, module)
+    root = _custody_root(root, pins, module)
+    by_uid[root["metadata"]["uid"]] = root
+    rows = {kind: full.get(kind, []) for kind in module.INVENTORY}
+    _accounting_profile(root, rows, by_uid, api, module, support)
+    final = power._live_root(api, context, "custody-preflight")
+    module.require(final["spec"] == root["spec"], "custody_root_spec_changed")
+    return pins
+
+
+def _verify_namespace(kube, root, prepared, expected=None):
+    support = prepared.retained_accounting_support.get(str(root.project_id))
+    context = {"root": root.model_dump(mode="json")}
+    if support is not None:
+        result = _validate_retained_accounting(ReadOnlyManaged(kube), context, support)
+        _require(
+            expected is None or result == expected,
+            "Accounting namespace changed during verification",
+        )
+        return result
+    if expected is not None:
+        context["cleanup_custody"] = expected
+    return validate_namespace(
+        ReadOnlyManaged(kube),
+        context,
+        accounting_only=str(root.project_id) in prepared.accounting_only_project_ids,
+    )
+
+
+def _custody_root(root, pins, module):
+    import json
+
+    root = deepcopy(root)
+    root["metadata"].setdefault("annotations", {})[module.ANNOTATION] = json.dumps(
+        {
+            "version": 1,
+            "mode": "stopped",
+            "requestId": "custody-preflight",
+            "allocationGeneration": "custody-preflight",
+            "cleanupCustody": pins,
+        }
+    )
+    return root
+
+
+def _accounting_runtime_guard(root, rows, module):
+    status = root.get("status", {})
+    module.require(
+        status.get("phase") in {"Running", "Error"}
+        or (
+            status.get("phase") == "CaptureComplete"
+            and status.get("captureProgress") == "Done"
+        ),
+        "managed_project_not_settled",
+    )
+    module.require(
+        not any(status.get(k) for k in ("recertConfig", "capture", "filePull"))
+        and not any(
+            "capture" in k or "file-pull" in k
+            for k in root["metadata"].get("annotations", {})
+        ),
+        "managed_active_work_unsupported",
+    )
+    topology = root["spec"].get("topology", {})
+    module.require(not topology.get("projectCephCapture"), "managed_ceph_unsupported")
+    module.validate_profile_nodes(topology, True)
+    for kind in ("StatefulSet", "DaemonSet", "CronJob"):
+        module.require(not rows[kind], "managed_controller_unsupported")
+    for vm in rows["TroshkaVM"]:
+        module.require(
+            vm.get("status", {}).get("observedGeneration")
+            == vm["metadata"]["generation"],
+            "managed_child_not_settled",
+        )
+        module.require(not vm["spec"].get("recertEnabled"))
+
+
+def _retained_helper(value, support):
+    if support is None:
+        return False
+    refs = value["metadata"].get("ownerReferences", [])
+    return (not refs and value["metadata"]["name"].startswith("bmc-")) or (
+        len(refs) == 1 and refs[0]["uid"] in support.missing_object_uids
+    )
+
+
+def _accounting_profile(root, rows, by_uid, api, module, support=None):
+    """Keep runtime/storage guards, allowing absent VMs in a failed deployment."""
+    from helpers.native_custody import verify_ceph
+
+    _accounting_runtime_guard(root, rows, module)
+    verify_ceph(root, rows, by_uid)
+    module.verify_storage(rows, by_uid, api, custody=True)
+    vm_owners = {module.parent_kind(v, by_uid) for v in rows["VirtualMachine"]}
+    module.require(vm_owners <= {"TroshkaVM"})
+    parent_uids = {
+        v["metadata"]["ownerReferences"][0]["uid"] for v in rows["VirtualMachine"]
+    }
+    present = dict(
+        rows,
+        TroshkaVM=[v for v in rows["TroshkaVM"] if v["metadata"]["uid"] in parent_uids],
+    )
+    module.verify_virtual_machines(present, by_uid)
+    for value in rows["Deployment"]:
+        module.require(
+            not value["metadata"].get("deletionTimestamp"), "managed_helper_deleting"
+        )
+        replicas = value["spec"].get("replicas")
+        module.require(type(replicas) is int and replicas >= 0)
+    # Exact retained helpers may outlive selected network parents. Keep them in
+    # storage/mount checks and runtime ownership maps; only reconstruction skips.
+    helpers = dict(
+        rows,
+        Deployment=[v for v in rows["Deployment"] if not _retained_helper(v, support)],
+    )
+    module.verify_helpers(helpers, by_uid)
+    module.verify_pods(root, rows, by_uid)
 
 
 def _legacy(db, project, *, accounting_only=False):
@@ -165,7 +397,7 @@ class ReadOnlyManaged:
         return self._reader.get(kind, namespace, name)
 
 
-def validate_namespace(api, context):
+def validate_namespace(api, context, *, accounting_only=False):
     """Reject unsupported or foreign namespace occupants before managed stop."""
     from app.services import native_managed_power as power
 
@@ -210,7 +442,10 @@ def validate_namespace(api, context):
         }
     )
     rows, by_uid = module.inventory(api, root)
-    module.profile(root, rows, by_uid, api)
+    if accounting_only:
+        _accounting_profile(root, rows, by_uid, api, module)
+    else:
+        module.profile(root, rows, by_uid, api)
     values = [root] + [value for entries in full.values() for value in entries]
     module.require(len(values) <= 1000, "custody_inventory_limit")
     by_uid = {value["metadata"]["uid"]: value for value in values}
@@ -270,8 +505,8 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
         review = attestation.topology_reviews.get(str(root.project_id))
         runtime = _root(kube, root, topology, review)
         runtime_topologies[str(root.project_id)] = runtime
-        object_identities[str(root.project_id)] = validate_namespace(
-            ReadOnlyManaged(kube), {"root": root.model_dump(mode="json")}
+        object_identities[str(root.project_id)] = _verify_namespace(
+            kube, root, prepared
         )
         first = _bindings(kube, root, pools)
         _require(
@@ -313,13 +548,7 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
             and _bindings(kube, root, pools) == [b for b in bindings if b.root == root],
             "Custody root or storage binding changed during ancestry verification",
         )
-        validate_namespace(
-            ReadOnlyManaged(kube),
-            {
-                "root": root.model_dump(mode="json"),
-                "cleanup_custody": object_identities[str(root.project_id)],
-            },
-        )
+        _verify_namespace(kube, root, prepared, object_identities[str(root.project_id)])
     # Revalidate independently selected identities at completion. A bounded
     # read-only ancestry scan can exceed the short verify-to-apply freshness gate.
     manifest = enrollment.verify_native_enrollment(
@@ -417,6 +646,10 @@ def _validate_coverage(receipt):
 def apply(db, verified, *, expected_target_id, preserve_existing=False):
     _disabled()
     receipt = _validated(verified)
+    _require(
+        not receipt.prepared.retained_accounting_support or preserve_existing,
+        "Retained accounting support requires preserving existing custody",
+    )
     prepared = db.get(NativeCustodyRequest, str(receipt.prepared.request.request_id))
     _require(
         prepared is not None and prepared.digest == enrollment.digest(receipt.prepared),
@@ -476,12 +709,26 @@ def _project_evidence(receipt, project_id):
 
 def _preserved_custody(db, project, receipt):
     previous = retained(db, project)
+    support = receipt.prepared.retained_accounting_support.get(project.id)
+    if support is not None:
+        _require(previous is not None, "Prepared retained custody disappeared")
     if previous is None:
         return
     row, original, _ = previous
+    before = _project_evidence(original, project.id)
+    after = _project_evidence(receipt, project.id)
+    if support is not None:
+        _require(
+            row.id == support.receipt_id
+            and row.digest == support.receipt_digest
+            and before["objects"] == support.objects,
+            "Prepared retained custody changed",
+        )
+        _retained_support_subset(after["objects"], support)
+        before.pop("objects")
+        after.pop("objects")
     _require(
-        _project_evidence(original, project.id)
-        == _project_evidence(receipt, project.id),
+        before == after,
         "Existing custody evidence changed; explicit reconciliation required",
     )
     return row.id
