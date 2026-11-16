@@ -797,6 +797,7 @@ def test_supported_deploy_through_actual_worker_and_provider_observation(
     def queue(function, *args, **kwargs):
         kwargs.pop("project_id", None)
         kwargs.pop("host_id", None)
+        kwargs.pop("job_timeout", None)
         return function(*args, **kwargs)
 
     monkeypatch.setattr(troshkad_client, "troshkad_request", provider)

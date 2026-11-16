@@ -10,7 +10,7 @@ Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags
 
 | Tag | Date (UTC) | Source commit |
 | --- | --- | --- |
-| v2026.11.16-152042 | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-152042) (includes [fe7a5cb5](https://github.com/rhpds/troshka/commit/fe7a5cb5de93ddbea482aa62132fc42e8a25b5f8)) |
+| v2026.11.16-152948 | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-152948) (includes [fe7a5cb5](https://github.com/rhpds/troshka/commit/fe7a5cb5de93ddbea482aa62132fc42e8a25b5f8)) |
 | v2026.11.14-214005 | 2026-11-14 | [43513205](https://github.com/rhpds/troshka/commit/43513205fa50a2afe6b7807742931ec9c9490bdd) |
 | v2026.11.14-211118 | 2026-11-14 | [eed8dc2a](https://github.com/rhpds/troshka/commit/eed8dc2ac693196e3d4bc6ae52f5cd8c058505b7) |
 | v2026.11.14-204655 | 2026-11-14 | [38fef0e3](https://github.com/rhpds/troshka/commit/38fef0e322c32a46801f0b81cab79fd2c476a000) |

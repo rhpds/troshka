@@ -2821,7 +2821,7 @@ class TestDeployProjectEndpoint:
         return_value=["dup name"],
     )
     def test_deploy_topology_errors(self, mock_vn, mock_vi, mock_reqs, mock_lib):
-        topo = {"nodes": [{"type": "vmNode", "data": {}}], "edges": []}
+        topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}], "edges": []}
         project = _ep_project(state="draft", topology=topo)
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.return_value = project
@@ -2839,7 +2839,7 @@ class TestDeployProjectEndpoint:
     def test_deploy_non_admin_cannot_select_pool(
         self, mock_vn, mock_vi, mock_reqs, mock_lib
     ):
-        topo = {"nodes": [{"type": "vmNode", "data": {}}], "edges": []}
+        topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}], "edges": []}
         project = _ep_project(state="draft", topology=topo)
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.return_value = project
@@ -2859,7 +2859,7 @@ class TestDeployProjectEndpoint:
     def test_deploy_success(
         self, mock_vn, mock_vi, mock_reqs, mock_lib, mock_place, mock_disk, mock_enqueue
     ):
-        topo = {"nodes": [{"type": "vmNode", "data": {}}], "edges": []}
+        topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}], "edges": []}
         project = _ep_project(state="draft", topology=topo)
         host = _ep_host()
         mock_place.return_value = {
@@ -2891,7 +2891,7 @@ class TestDeployProjectEndpoint:
     def test_deploy_placement_error(
         self, mock_vn, mock_vi, mock_reqs, mock_lib, mock_place
     ):
-        topo = {"nodes": [{"type": "vmNode", "data": {}}], "edges": []}
+        topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}], "edges": []}
         project = _ep_project(state="draft", topology=topo)
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.return_value = project
@@ -2911,7 +2911,10 @@ class TestDeployProjectEndpoint:
             "type": "networkNode",
             "data": {"networkType": "bmc"},
         }
-        topo = {"nodes": [{"type": "vmNode", "data": {}}, bmc_net], "edges": []}
+        topo = {
+            "nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}, bmc_net],
+            "edges": [],
+        }
         project = _ep_project(state="draft", topology=topo)
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.return_value = project

@@ -3562,7 +3562,7 @@ class TestDestroyTroshkadResources:
     @patch(f"{SVC}._get_host_pool", return_value=None)
     @patch(f"{SVC}._extract_containers", return_value=[])
     @patch(f"{SVC}._extract_vms")
-    def test_vm_destroy_failure_nonfatal(
+    def test_vm_destroy_failure_stops_cleanup(
         self,
         mock_vms,
         mock_ctrs,
@@ -3574,7 +3574,7 @@ class TestDestroyTroshkadResources:
         mock_sync,
         _mock_states,
     ):
-        """VM destroy failure is non-fatal; continues with cleanup."""
+        """Failed VM deletion must preserve its network and remaining resources."""
         from app.services.deploy_service import (
             TroshkadError,
             _destroy_troshkad_resources,
@@ -3588,11 +3588,10 @@ class TestDestroyTroshkadResources:
         host = _make_host()
         session = MagicMock()
 
-        # Should not raise
-        _destroy_troshkad_resources(host, PROJECT_ID, {}, {"net1": 100}, session)
+        with pytest.raises(TroshkadError, match="domain not found"):
+            _destroy_troshkad_resources(host, PROJECT_ID, {}, {"net1": 100}, session)
 
-        # Teardown still called
-        mock_teardown.assert_called_once()
+        mock_teardown.assert_not_called()
 
 
 # Native deletion is exercised with real persisted ownership and settlement in
