@@ -345,6 +345,17 @@ def collect_configured(
             from app.services.native_managed_verification import lineage_inputs
 
             references, lineages = lineage_inputs(sessions, manifest)
+            # Resolve only protected sources needed by this project. Full domain
+            # scans still discover every cache PVC. Keep all sibling lineage
+            # proofs below so source-edge validation remains complete.
+            if project_id is not None:
+                kube.project_cache_bindings = list(
+                    {
+                        proof.source
+                        for proof in lineages
+                        if str(proof.binding.root.project_id) == project_id
+                    }
+                )
 
             def discover():
                 inventory = discover_inventory(kube, retained, roots)

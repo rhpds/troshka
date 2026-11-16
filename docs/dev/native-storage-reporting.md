@@ -12,6 +12,29 @@ is trusted to submit collector evidence. Operator-owned files and collector IDs
 are not cryptographic signatures; there is no public report ingestion endpoint.
 Do not build an enrollment manifest from an uploaded collector report.
 
+## Project scan scope and performance
+
+Scheduled project collection derives its required shared sources from validated
+clone lineage proofs. It resolves those cache bindings before and after image
+measurement, checking the complete live PVC/PV/CSI/image identity. It does not
+resolve unrelated cache PVCs. Full-domain collection continues discovering all
+cache volumes; a project report is not a complete cache namespace audit.
+In particular, an unrelated PVC with entirely different Kubernetes identities
+and CSI handle is outside a project scan, even if that handle aliases a required
+image. Full-domain discovery remains responsible for detecting such aliases.
+
+Source selection does not reuse measurements or authorize cleanup. Missing
+sources require independently persisted retained bindings; lineage alone cannot
+manufacture an observed binding. Existing absence checks, all sibling lineage
+proofs, and fresh source graph validation are retained. Scan scheduling and
+evidence age limits are unchanged.
+
+A read-only comparison on ocpv06 on November 16, 2026 measured the same 19 images
+without collection errors: full cache discovery took 794 seconds and 756 remote
+commands; scoped discovery took 235 seconds and 308 commands. The two inventory
+passes fell from 537 seconds to 86 seconds. These are individual observations,
+not a latency guarantee: remote command latency also differed between runs.
+
 ## Explicit target and independent enrollment
 
 Apply the reporting Alembic migration through the normal reviewed release process

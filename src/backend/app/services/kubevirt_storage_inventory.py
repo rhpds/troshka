@@ -298,7 +298,10 @@ def _retiring_pvs(root, intent, pvs):
 def _retained_cache(kube, enrolled, cache):
     result = []
     current = {b.pvc_uid for b in cache}
+    scope = getattr(kube, "project_cache_bindings", None)
     for previous in getattr(kube, "retained_cache_bindings", []):
+        if scope is not None and previous not in scope:
+            continue
         identity = {
             n: getattr(previous, n)
             for n in ("cluster_key", "namespace", "namespace_uid")
@@ -329,7 +332,11 @@ def _cache_objects_absent(previous, pvs, contents):
 
 def _cache_discovery(kube, cluster, pvs, contents):
     cache, blockers, absent = [], [], []
-    for enrolled in getattr(kube, "cache_roots", []):
+    try:
+        roots = _scoped_cache_roots(kube)
+    except BindingError:
+        return [], [Blocker(code="cache_discovery_unavailable")], []
+    for enrolled in roots:
         if _expired(kube):
             blockers.append(Blocker(code="scan_limit"))
             break
@@ -355,13 +362,56 @@ def _cache_discovery(kube, cluster, pvs, contents):
     return cache, blockers, absent
 
 
+def _cache_root(binding):
+    return {
+        name: getattr(binding, name)
+        for name in ("cluster_key", "namespace", "namespace_uid")
+    }
+
+
+def _scoped_cache_roots(kube):
+    roots = getattr(kube, "cache_roots", [])
+    scope = getattr(kube, "project_cache_bindings", None)
+    if scope is None:
+        return roots
+    selected = [_cache_root(binding) for binding in scope]
+    if any(root not in roots for root in selected):
+        raise BindingError("cache_source_outside_enrollment")
+    return [root for root in roots if root in selected]
+
+
+def _cache_candidate(pvc, pvs, selected):
+    """Include rebinding conflicts as well as the expected claim itself."""
+    pv = pvs.get(pvc.get("spec", {}).get("volumeName"), {})
+    pvc_uid = pvc.get("metadata", {}).get("uid")
+    pv_uid = pv.get("metadata", {}).get("uid")
+    handle = pv.get("spec", {}).get("csi", {}).get("volumeHandle")
+    return any(
+        pvc_uid == b.pvc_uid or pv_uid == b.pv_uid or handle == b.volume_handle
+        for b in selected
+    )
+
+
 def _cache_pvcs(kube, enrolled, pvs):
     records = []
+    scope = getattr(kube, "project_cache_bindings", None)
+    selected = (
+        None if scope is None else [b for b in scope if _cache_root(b) == enrolled]
+    )
     for pvc in kube.pvcs(enrolled["namespace"]):
         if _expired(kube):
             raise TimeoutError("scan limit")
+        if selected is not None and not _cache_candidate(pvc, pvs, selected):
+            continue
         fields, _ = _pvc_binding(kube, pvc, pvs, enrolled["namespace"])
-        records.append(CacheBinding(**enrolled, **fields))
+        binding = CacheBinding(**enrolled, **fields)
+        if selected is not None and binding not in selected:
+            raise BindingError("cache_identity_changed")
+        records.append(binding)
+    if selected is not None:
+        retained = getattr(kube, "retained_cache_bindings", [])
+        if any(b not in records and b not in retained for b in selected):
+            raise BindingError("cache_source_missing")
     return records
 
 

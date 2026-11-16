@@ -34,9 +34,9 @@ def test_readiness_budget_allows_slow_identity_checks_but_bounds_evidence_age(
         runtime,
         "config",
         SimpleNamespace(
-            get=lambda key, default=None: [profile]
-            if key.endswith("profiles")
-            else settings
+            get=lambda key, default=None: (
+                [profile] if key.endswith("profiles") else settings
+            )
         ),
     )
     args = runtime.profile_for(domain, readiness=True)
@@ -396,7 +396,8 @@ def test_runtime_scoped_inventory_authorizes_shared_clone_graph(monkeypatch):
     monkeypatch.setattr(
         runtime, "read_static_kubeconfig", lambda path: protected_transport
     )
-    monkeypatch.setattr(runtime, "KubernetesReader", lambda *args, **kw: MagicMock())
+    kube_reader = MagicMock()
+    monkeypatch.setattr(runtime, "KubernetesReader", lambda *args, **kw: kube_reader)
     monkeypatch.setattr(
         inventory_service,
         "discover_inventory",
@@ -431,3 +432,8 @@ def test_runtime_scoped_inventory_authorizes_shared_clone_graph(monkeypatch):
     assert not result.projects[0].blockers
     assert factory.call_args.args[0] == provider_id
     assert factory.call_args.args[1] is protected_transport
+    assert set(kube_reader.project_cache_bindings) == {
+        proof.source
+        for proof in proofs
+        if proof.binding.root.project_id == inventory.project_scope
+    }
