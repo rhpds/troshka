@@ -1,5 +1,7 @@
 """Resolve/retire existing debt, including after cancellation; never authorize POST."""
 
+import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -157,6 +159,39 @@ def _observe(prepared, kube, backend, root):
     )
 
 
+def _retry_bookkeeping(value):
+    if (
+        isinstance(value, dict)
+        and value.get("success") is False
+        and value.get("failure") is False
+    ):
+        return {k: v for k, v in value.items() if k not in {"delayed", "retries"}}
+    return value
+
+
+def _comparison_root(root):
+    """Ignore only retry bookkeeping; producer and writer state remain pinned."""
+    if root is None:
+        return None
+    value = deepcopy(root)
+    meta = value["metadata"]
+    meta.pop("resourceVersion", None)
+    meta.pop("managedFields", None)
+    annotations = meta.get("annotations", {})
+    status = value.get("status", {})
+    progress = status.get("kopf", {}).get("progress", {})
+    for handler in ("project_update", "project_managed_power_resume"):
+        key = "kopf.zalando.org/" + handler
+        if key in annotations:
+            annotations[key] = _retry_bookkeeping(json.loads(annotations[key]))
+        if handler in progress:
+            progress[handler] = _retry_bookkeeping(progress[handler])
+    for execution in status.get("originExecutions", {}).values():
+        if execution.get("state") == "complete":
+            execution.pop("executionId", None)
+    return value
+
+
 def verify(request, kube, backend):
     from app.services.native_snapshot_retirement import observe
 
@@ -177,7 +212,10 @@ def verify(request, kube, backend):
     from app.services.native_snapshot_observation import verify_graph
 
     verify_graph(facts, kube, backend)
-    custody.require(root == _root(kube, prepared), "Snapshot root changed during read")
+    custody.require(
+        _comparison_root(root) == _comparison_root(_root(kube, prepared)),
+        "Snapshot root changed during read",
+    )
     value = VerifiedSnapshotReconciliation(
         **facts.model_dump(),
         prepared=prepared,

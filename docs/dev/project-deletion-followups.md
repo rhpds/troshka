@@ -135,6 +135,11 @@ while the configured collection budget remains. A narrow correction passes the
 existing absolute scan deadline to snapshot reads while retaining the five-second
 per-request cap and ordinary inventory default. Live accounting recovery and
 the full release gate still require verification; this is not a deployment claim.
+The first read-only replay then reached the final root consistency check for both
+fixtures: storage identity and graph verification passed, but controller retry
+counters and completed execution IDs changed during the scan. A reviewed
+comparison correction excludes only that bookkeeping, retaining active execution
+IDs, operator/outcome identity, all producer/checkpoint fields and project spec.
 Read-only evidence is retained in
 `/private/tmp/troshka-v16-dev-health-details.json` and the native-deployment-origin
 task ledger.

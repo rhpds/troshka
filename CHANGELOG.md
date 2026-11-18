@@ -26,7 +26,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   restart, preserving submission ambiguity and original producer identity fences.
   Snapshot custody reads share the collection scan deadline across Ceph checks,
   retaining bounded individual API requests instead of expiring early under the
-  shorter ordinary inventory deadline.
+  shorter ordinary inventory deadline. Snapshot accounting verification tolerates
+  completed controller retry bookkeeping while preserving checks on active
+  executions, operator identity, checkpoints and storage producer identities.
 
 - Native project cleanup fences late producers, waits for VM/VMI absence and
   Troshka finalizers, then deletes the namespace normally. An exact terminating

@@ -351,6 +351,52 @@ def test_original_uid_retry_and_ambiguous_lost_post_remain_distinct(
     assert not raw.method_calls
 
 
+def test_snapshot_reconciliation_survives_completed_controller_retries(
+    checkpoint_case, monkeypatch
+):
+    from helpers.patterns import build_volume_snapshot
+
+    from app.services import native_snapshot_reconciliation as reconciliation
+
+    h = SnapshotHarness(checkpoint_case, monkeypatch, "capture")
+    body = build_volume_snapshot(
+        "operation-snapshot", h.q.root.namespace, h.source["metadata"]["name"]
+    )
+    body["spec"]["volumeSnapshotClassName"] = "fixture-class"
+    h.create(body)
+    h.ready_snapshot("operation-snapshot")
+    with h.q.sessions() as db:
+        request = reconciliation.prepare(db, str(h.q.intent.id))
+        db.commit()
+    original = h.q.reader.projects
+    reads = 0
+
+    def projects(namespace):
+        nonlocal reads
+        reads += 1
+        rows = deepcopy(original(namespace))
+        for row in rows:
+            row["metadata"]["resourceVersion"] = str(reads)
+            row.setdefault("status", {})["originExecutions"] = {
+                "operator": {
+                    "state": "complete",
+                    "outcome": "failed",
+                    "operator": {"uid": "operator"},
+                    "executionId": str(reads),
+                }
+            }
+        return rows
+
+    monkeypatch.setattr(h.q.reader, "projects", projects)
+    value = reconciliation.verify(request, h.q.reader, h.q.backend)
+    with h.q.sessions() as db:
+        row = reconciliation.apply(db, value)
+        db.commit()
+        assert len(custody._receipt(row).snapshots) == 1
+    assert reads >= 2
+    assert not h.deleted
+
+
 def test_resolved_snapshot_only_failure_can_cleanup_through_signed_protocol(
     checkpoint_case, monkeypatch
 ):
