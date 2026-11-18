@@ -14,6 +14,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Shared storage accounting accepts removed historical clone links when a full
+  cache scan confirms their absence, while rejecting unknown or incomplete edges.
+
 - Networking: reserve lab/BMC host `.6` for ops pods, avoiding bastion `.50`
   collisions. Showroom uses only `.9` and reports conflicts instead of choosing
   another low address. Infrastructure transit addresses remain unchanged.

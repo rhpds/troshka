@@ -1,7 +1,6 @@
 """Coordinated platform bytes, without traversing private clone descendants."""
 
 import time
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
 from app.models.kubevirt_storage import (
@@ -77,16 +76,32 @@ def _inputs(db, manifest, inventory=None):
     return bindings, proofs
 
 
+def _expected_source_edges(image, proofs):
+    # Only a full snapshot inventory proves a historical cache edge is gone.
+    # Selected-source evidence retains the original exact ancestry requirement.
+    selected = [
+        p
+        for p in proofs
+        if p.source.image_key == image.key
+        and (
+            image.source_snapshot_children is not None
+            or p.intermediate_parent in image.snapshots
+        )
+    ]
+    return (
+        {p.intermediate_parent for p in selected},
+        {p.intermediate for p in selected},
+    )
+
+
 def _validate_images(images, bindings, proofs, started, completed, absent_keys=()):
     from app.services.native_clone_graph import _current_subject_matches
 
     if started > completed:
         raise AccountingUnavailable("Shared observation starts after completion")
-    snapshots, children, verified = defaultdict(set), defaultdict(set), {}
+    verified = {}
     for proof in proofs:
         key = proof.source.image_key
-        snapshots[key].add(proof.intermediate_parent)
-        children[key].add(proof.intermediate)
         verified[key] = max(verified.get(key, proof.verified_at), proof.verified_at)
     expected = {b.image_key for b in bindings}
     if len(images) != len(expected) or {i.key for i in images} != expected:
@@ -98,11 +113,12 @@ def _validate_images(images, bindings, proofs, started, completed, absent_keys=(
             if not started <= image.collected_at <= completed:
                 raise AccountingUnavailable("Shared source absence is stale")
             continue
+        snapshots, children = _expected_source_edges(image, proofs)
         if not _current_subject_matches(
             image,
             None,
-            snapshots[image.key],
-            children[image.key],
+            snapshots,
+            children,
             verified.get(image.key, started),
         ):
             raise AccountingUnavailable("Shared source has unverified graph edges")

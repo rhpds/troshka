@@ -57,7 +57,10 @@ def test_first_shared_scan_rejects_missing_or_changed_source(fault):
         shared._source_bindings([], proofs, inventory)
 
 
-def test_bootstrap_discovery_survives_publication_and_reuse(native_case, monkeypatch):
+@pytest.mark.parametrize("detached", [False, True])
+def test_bootstrap_discovery_survives_publication_and_reuse(
+    native_case, monkeypatch, detached
+):
     from app.models.kubevirt_storage import NativeRetainedBinding
     from app.services import native_clone_lineage
     from app.services.kubevirt_storage_reports import report_inventory
@@ -65,6 +68,10 @@ def test_bootstrap_discovery_survives_publication_and_reuse(native_case, monkeyp
 
     case = native_case
     report, images, proofs = chain()
+    if detached:
+        images[-1] = images[-1].model_copy(
+            update={"snapshots": [], "children": [], "source_snapshot_children": None}
+        )
     inventory = report_inventory(report)
     monkeypatch.setattr(native_clone_lineage, "resolve_lineages", lambda *args: proofs)
     monkeypatch.setattr(shared, "_scan", lambda *args: [images[-1]])
@@ -267,6 +274,82 @@ def test_shared_sources_validate_all_sibling_edges_without_private_reads():
             proofs,
             source.collected_at,
             source.collected_at,
+        )
+
+
+@pytest.mark.parametrize("remaining", [0, 1])
+def test_full_shared_scan_accepts_removed_clone_edges(remaining):
+    from tests.test_native_clone_lineage import chain
+
+    report, images, proofs = chain()
+    source = images[-1].model_copy(
+        update={
+            "snapshots": [p.intermediate_parent for p in proofs[:remaining]],
+            "children": [p.intermediate for p in proofs[:remaining]],
+            "source_snapshot_children": None,
+        }
+    )
+    shared._validate_images(
+        [source],
+        report.cache_bindings,
+        proofs,
+        source.collected_at,
+        source.collected_at,
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unknown_snapshot",
+        "unknown_child",
+        "detached_child",
+        "missing_child",
+        "duplicate_snapshot",
+        "incomplete",
+        "stale",
+        "partial",
+    ],
+)
+def test_removed_shared_edges_do_not_authorize_uncertain_graphs(fault):
+    from tests.test_native_clone_lineage import chain
+
+    report, images, proofs = chain()
+    original = images[-1]
+    source = original.model_copy(
+        update={
+            "snapshots": [proofs[0].intermediate_parent],
+            "children": [proofs[0].intermediate],
+            "source_snapshot_children": None,
+        }
+    )
+    updates = {
+        "unknown_snapshot": {
+            "snapshots": [
+                proofs[0].intermediate_parent.model_copy(
+                    update={"snapshot_id": "99999"}
+                )
+            ]
+        },
+        "unknown_child": {
+            "children": [
+                proofs[0].intermediate.model_copy(update={"image_id": "unknown"})
+            ]
+        },
+        "detached_child": {"children": [p.intermediate for p in proofs]},
+        "missing_child": {"children": []},
+        "duplicate_snapshot": {"snapshots": source.snapshots * 2},
+        "incomplete": {"measurement_status": "unavailable"},
+        "stale": {"collected_at": original.collected_at - timedelta(days=1)},
+        "partial": {"source_snapshot_children": original.source_snapshot_children[:1]},
+    }
+    with pytest.raises(AccountingUnavailable):
+        shared._validate_images(
+            [source.model_copy(update=updates[fault])],
+            report.cache_bindings,
+            proofs,
+            original.collected_at,
+            original.collected_at,
         )
 
 
