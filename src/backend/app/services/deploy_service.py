@@ -2959,11 +2959,9 @@ def _kubevirt_ops_pod_net_ips(topology):
     network — the address the sushy BMC pod fetches the agent ISO from for the CDI
     CDROM import. It must be BMC-net-reachable: the KubeVirt BMC pod attaches only to
     the BMC NAD (+ default pod net), NOT the cluster net, so a cluster-net serving IP
-    would be unroutable (the ISO import times out -> 502 -> empty CDROM). Uses ``.50``
-    in each lab subnet — the address the now-removed bastion used, so it's outside the
-    node/VIP range.
+    would be unroutable (the ISO import times out -> 502 -> empty CDROM). Uses the
+    reserved ops address ``.6`` in each lab subnet, below the default DHCP range.
     """
-    import ipaddress
 
     cluster_cidrs = []
     bmc_cidr = None
@@ -2981,24 +2979,19 @@ def _kubevirt_ops_pod_net_ips(topology):
         else:
             cluster_cidrs.append(cidr)
 
-    def _ops_ip(cidr):
-        net = ipaddress.ip_network(cidr, strict=False)
-        host = net.network_address + 50
-        if host not in net or host == net.network_address:
-            host = list(net.hosts())[-2]
-        return str(host), net.prefixlen
+    from app.services.ocp.ops_pod_scaffold import _ops_lab_host_ip
 
     assignments: list[tuple[str, str]] = []
     idx = 1
     for cidr in cluster_cidrs:
-        ip, prefix = _ops_ip(cidr)
+        ip, prefix = _ops_lab_host_ip(cidr, topology)
         assignments.append((f"net{idx}", f"{ip}/{prefix}"))
         idx += 1
     # serving_ip must be BMC-net-reachable: the sushy BMC pod fetches the agent ISO
     # from it for the CDI CDROM import, and that pod is only on the BMC net.
     serving_ip = None
     if bmc_cidr:
-        ip, prefix = _ops_ip(bmc_cidr)
+        ip, prefix = _ops_lab_host_ip(bmc_cidr, topology)
         assignments.append((f"net{idx}", f"{ip}/{prefix}"))
         serving_ip = ip
     return assignments, serving_ip

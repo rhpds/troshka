@@ -289,7 +289,7 @@ def validate_topology_ips(topology: dict) -> list[str]:
 
 def _network_infra_ips(topology: dict) -> dict[str, str]:
     """Map every network's reserved infra IPs -> label (gateway ``.1``,
-    dnsmasq ``.2``, exec ``.3``, showroom ``.9``). Mirrors
+    dnsmasq ``.2``, exec ``.3``, ops ``.6``, showroom ``.9``). Mirrors
     :func:`vxlan._infra_ip_reservations` so the import warning checks the
     same addresses Troshka reserves at deploy time. (``.4`` ceph-mon is
     handled separately via ceph lab-IP validation when present.)"""
@@ -309,6 +309,7 @@ def _network_infra_ips(topology: dict) -> dict[str, str]:
         infra[str(net.network_address + 1)] = "gateway"
         infra[str(net.network_address + 2)] = "dnsmasq"
         infra[str(net.network_address + 3)] = "exec"
+        infra[str(net.network_address + 6)] = "ops"
         infra[str(net.network_address + 9)] = "showroom"
     return infra
 

@@ -112,12 +112,27 @@ def runner_pod_infra_network(
     return [net]
 
 
-def _ops_lab_host_ip(cidr: str) -> tuple[str, int]:
-    """Pick ``.50`` (or last usable) in ``cidr`` — same convention as KubeVirt ops."""
+def _configured_address_values(value):
+    """Collect explicit topology addresses, including NICs, VIPs and forwards."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"ip", "apiVip", "ingressVip", "labIp", "intIp", "gateway"}:
+                yield child
+            elif isinstance(child, (dict, list)):
+                yield from _configured_address_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _configured_address_values(child)
+
+
+def _ops_lab_host_ip(cidr: str, topology: dict | None = None) -> tuple[str, int]:
+    """Use reserved host offset six; never fall back into guest addresses."""
     net = ipaddress.ip_network(cidr, strict=False)
-    host = net.network_address + 50
-    if host not in net or host == net.network_address:
-        host = list(net.hosts())[-2]
+    host = net.network_address + 6
+    if net.version != 4 or host not in net or int(host) >= int(net.broadcast_address):
+        raise ValueError(f"Network {cidr} cannot contain the reserved ops address")
+    if str(host) in _configured_address_values(topology or {}):
+        raise ValueError(f"Ops reserved address {host} is already in use")
     return str(host), net.prefixlen
 
 
@@ -127,7 +142,7 @@ def ops_pod_bmc_serving_network(
     """BMC-bridge attachment + serving IP for troshkad ops-pod VirtualMedia.
 
     Sushy-emulator runs in the project netns on ``br-bmc-<pid>``. The agent ISO
-    HTTP URL must be on that L2 (``.50``); the infra-transit ``172.30.x.4`` from
+    HTTP URL must be on that L2 (``.6``); the infra-transit ``172.30.x.4`` from
     ``hostname -I`` is not reachable for the InsertMedia fetch.
     """
     bmc_cidr = None
@@ -142,7 +157,7 @@ def ops_pod_bmc_serving_network(
             break
     if not bmc_cidr:
         return None, None
-    ip, _prefix = _ops_lab_host_ip(bmc_cidr)
+    ip, _prefix = _ops_lab_host_ip(bmc_cidr, topology)
     pid = str(project_id)[:8]
     return (
         {

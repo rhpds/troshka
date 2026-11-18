@@ -14,6 +14,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Networking: reserve lab/BMC host `.6` for ops pods, avoiding bastion `.50`
+  collisions. Showroom uses only `.9` and reports conflicts instead of choosing
+  another low address. Infrastructure transit addresses remain unchanged.
+
 - Native deployment recovery retains fresh creation proof and a deployment
   attempt before dispatch. Failures proven to precede project resource submission
   can use Undeploy to return to draft or Delete locally. Historical and ambiguous

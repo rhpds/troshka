@@ -12,7 +12,8 @@ On every project lab CIDR (e.g. `10.0.0.0/24`), low host addresses are reserved.
 | `.2` | Dnsmasq (DHCP+DNS) | Always reserved — never Multus showroom |
 | `.3` | Exec pod | Always reserved |
 | `.4` | Ceph mon bridge (`labIp`) | When Ceph present (`_ceph_reservations`) |
-| `.9` | Showroom Multus | Always reserved; picker falls back `.8`→`.5` if taken |
+| `.6` | Ops pod lab/BMC interface | Always reserved; separate transit IP remains `.4` |
+| `.9` | Showroom Multus | Always reserved; conflicts fail without a fallback |
 
 Code: `vxlan._infra_ip_reservations`, `kubevirt_reconfigure._showroom_ip_for_cidr` / operator `helpers.topology` (`SHOWROOM_LAB_HOST_OCTET = 9`), `deploy_topology._network_infra_ips`.
 

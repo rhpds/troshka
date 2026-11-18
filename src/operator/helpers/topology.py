@@ -330,12 +330,10 @@ def _showroom_ip_for_cidr(cidr, used_ips):
     octets = base.split(".")
     if len(octets) != 4:
         return ""
-    # Prefer .9; if taken, walk down through .5 (still clear of .1–.4 infra).
-    for last in (SHOWROOM_LAB_HOST_OCTET, 8, 7, 6, 5):
-        ip = f"{octets[0]}.{octets[1]}.{octets[2]}.{last}"
-        if ip not in used_ips:
-            return ip
-    return ""
+    ip = f"{octets[0]}.{octets[1]}.{octets[2]}.{SHOWROOM_LAB_HOST_OCTET}"
+    if ip in used_ips:
+        raise ValueError(f"Showroom reserved address {ip} is already in use")
+    return ip
 
 
 def _collect_used_ips(topology):

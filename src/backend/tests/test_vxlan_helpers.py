@@ -741,7 +741,7 @@ def test_infra_ip_reservations_skips_already_reserved():
 
     res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, {"10.0.0.2"})
     ips = {r["ip"] for r in res}
-    assert ips == {"10.0.0.1", "10.0.0.3", "10.0.0.9"}
+    assert ips == {"10.0.0.1", "10.0.0.3", "10.0.0.6", "10.0.0.9"}
 
 
 def test_build_host_network_config_includes_mtu():

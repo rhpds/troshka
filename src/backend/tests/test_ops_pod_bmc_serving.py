@@ -33,9 +33,9 @@ def test_ops_pod_bmc_serving_network_returns_bridge_and_ip():
     net, serving = ops_pod_bmc_serving_network(
         _topo_with_bmc(), "2d7a8b32-d452-4eaa-a4fe-e09d5d72f10c"
     )
-    assert serving == "192.168.100.50"
+    assert serving == "192.168.100.6"
     assert net["bridge"] == "br-bmc-2d7a8b32"
-    assert net["ip"] == "192.168.100.50"
+    assert net["ip"] == "192.168.100.6"
     assert net["cidr"] == "192.168.100.0/24"
     assert net.get("infra_transit") is not True
 
@@ -68,7 +68,7 @@ def test_troshkad_ops_pod_networks_appends_bmc_and_serving_ip():
         vni_map={1001: 1001},
         dns_nameserver="10.0.0.1",
     )
-    assert serving == "192.168.100.50"
+    assert serving == "192.168.100.6"
     assert nets[0].get("infra_transit") is True
     assert any(n.get("bridge") == "br-bmc-2d7a8b32" for n in nets)
 

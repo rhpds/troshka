@@ -1750,11 +1750,11 @@ def test_kubevirt_ops_pod_net_ips_computes_cluster_then_bmc():
         ]
     }
     assignments, serving = _kubevirt_ops_pod_net_ips(topo)
-    # cluster net1 first, bmc net2 (gateway excluded); .50 host in each /24.
-    assert assignments == [("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")]
+    # cluster net1 first, bmc net2 (gateway excluded); reserved .6 in each /24.
+    assert assignments == [("net1", "10.0.0.6/24"), ("net2", "192.168.100.6/24")]
     # serving_ip is the BMC-net IP (the sushy BMC pod fetches the ISO from it and
     # is not on the cluster net), not the cluster-net IP.
-    assert serving == "192.168.100.50"
+    assert serving == "192.168.100.6"
 
 
 def test_recert_script_is_valid_bash():

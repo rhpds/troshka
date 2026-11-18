@@ -835,11 +835,10 @@ def _showroom_ip_for_cidr(cidr: str, used_ips: set[str]) -> str:
     parts = base.split(".")
     if len(parts) != 4:
         return ""
-    for last in (SHOWROOM_LAB_HOST_OCTET, 8, 7, 6, 5):
-        ip = f"{parts[0]}.{parts[1]}.{parts[2]}.{last}"
-        if ip not in used_ips:
-            return ip
-    return ""
+    ip = f"{parts[0]}.{parts[1]}.{parts[2]}.{SHOWROOM_LAB_HOST_OCTET}"
+    if ip in used_ips:
+        raise ValueError(f"Showroom reserved address {ip} is already in use")
+    return ip
 
 
 def _collect_used_nic_ips(topology: dict) -> set[str]:
