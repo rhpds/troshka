@@ -1,6 +1,18 @@
 # Project deletion release gate
 
 Scope clarification: the user directed this release back to project deletion.
+On November 18 the user authorized installing the candidate and permanently
+deleting projects with definitive prior failed deletion requests. The retained
+incident evidence identifies mytest, httpserver, surendra, bastion, Innovation Hub,
+ocp multinode and Bastion Builder. A current production read confirmed all seven
+still exist and report stopped; the candidate successor schema is not installed.
+Unrelated projects remain outside deletion scope. Acceptance is normal deletion
+with VM/VMI, namespace and private-storage removal and shared-storage survival;
+broader workload permutations and capture qualification are deferred. Existing
+runtime ownership checks remain enforced. This authorization is not evidence
+that any of the seven has been deleted or that production has been upgraded.
+Source 8507ceca completed the normal backend-test fallback with 10,002 passed
+and 1,152 skipped; Sonar analysis did not run because SONAR_TOKEN was absent.
 Successful capture/export/restore qualification is deferred and is not a release
 gate. Completed capture fixes remain documented; failed test attempts remain
 preserved. Deletion's own ownership, VM/VMI, namespace, private-storage and
@@ -34,7 +46,15 @@ alone is not successful recovery. No anchor guard was weakened. The user approve
 the bounded correction and existing verified enrollment workflow. The successor
 `2bf74c06-274d-45d1-b5c9-92737bcf8af7` was independently verified and published;
 both unchanged receipts passed retained-authority checks before commit. Fresh
-normal-worker accounting is running again. The forward fix preserves current
+normal-worker accounting failed again: both project reports were accepted but
+had partial coverage, including a timeout measuring each retained snapshot image.
+The shared scan also failed validation. A separate read-only diagnostic returned
+unsupported or unavailable shared-image measurements and could not confirm one
+source's expected snapshot and child sets. Incomplete reads do not establish
+missing storage or authorize graph repair. Enrollment authority now resolves;
+fresh complete accounting remains unverified. No storage mutations, limit changes,
+new captures or original-project deletes were performed. Further accounting
+diagnosis/remediation awaits scope review. The forward fix preserves current
 enrolled pins and prepares only the snapshot project's identity, including when
 an unrelated historical project has been deleted. Production remains held until
 fresh accounting passes. These source fixes have not yet been installed in
