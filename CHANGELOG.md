@@ -19,6 +19,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   Manually deleted projects can reconcile retained accounting through an explicit
   operator verification of namespace and private-storage absence, preserving
   shared storage and the original cleanup audit history.
+  Older roots without cleanup records use separate retrospective receipts tied to
+  the original operator audit and complete preserved PVC inventory, including
+  temporary VM disks; these receipts do not grant deletion authority.
 
 - Networking: reserve lab/BMC host `.6` for ops pods, avoiding bastion `.50`
   collisions. Showroom uses only `.9` and reports conflicts instead of choosing

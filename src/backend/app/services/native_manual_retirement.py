@@ -242,8 +242,8 @@ def observe(scope, kube, backend, limits):
     return inventory, images
 
 
-def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
-    """Explicit operator entry point; credentials come only from protected config."""
+def observe_configured(scope):
+    """Read protected provider evidence without changing accounting records."""
     import time
     from contextlib import ExitStack
 
@@ -262,11 +262,6 @@ def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
     from app.services.native_managed_collector import anchored
 
     with SessionLocal() as db:
-        work = cleanup.load(db.get(State, str(cleanup_id)))
-        manual = _manual_evidence(db, work)
-        scope = _scope(work, manual.payload)
-        if root_key(scope.root) in settled_keys(db):
-            return {"root_key": root_key(scope.root), "status": "already_verified"}
         args = profile_for(scope.domain_id)
         pins, config, backend_config = _managed_inputs(args)
         domain, manifest = anchored(db, pins)
@@ -297,6 +292,21 @@ def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
         )
         stack.callback(kube.api.close)
         inventory, images = observe(scope, kube, backend, limits)
+    return inventory, images, pins, enrollment_id
+
+
+def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
+    """Explicit operator entry point; credentials come only from protected config."""
+    from app.core.database import SessionLocal
+    from app.services.native_managed_collector import anchored
+
+    with SessionLocal() as db:
+        work = cleanup.load(db.get(State, str(cleanup_id)))
+        manual = _manual_evidence(db, work)
+        scope = _scope(work, manual.payload)
+        if root_key(scope.root) in settled_keys(db):
+            return {"root_key": root_key(scope.root), "status": "already_verified"}
+    inventory, images, pins, enrollment_id = observe_configured(scope)
     with SessionLocal() as db:
         domain, _ = anchored(db, pins)
         require(
