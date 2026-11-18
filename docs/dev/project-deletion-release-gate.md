@@ -14,7 +14,36 @@ validation. The consolidated runtime fix passed independent re-review. Task5b
 disposable end-to-end qualification remains required before a full release with
 `--fresh-accounting`.
 
-November 18 continuation: candidate v16 is installed in dev at backend digest
+November 18 latest qualification: committed source `b904f060` passed all normal
+commit hooks and the normal pre-push test fallback: **9,980 passed, 1,149 skipped**.
+Sonar analysis did not run because its token was absent. Candidate v17 is installed
+in dev at backend digest
+`2f41de4260968c601805311bfb1fe2cbc6200249684eabdc6663435926c6d63a`.
+All five deployment rollouts passed; all six backend pods verified 306 application
+Python files, the exact image digest, protected files and effective 900/870/15
+budgets. Operator, frontend, configuration and paused Argo settings were preserved.
+
+The final mixed fixture `7a97003e-05be-42bf-bcd7-9d019c7798ff` passed the expected
+pre-resource failure, normal Undeploy recovery to draft, and successful retry with
+a ready VM/VMI, network helper and container. One normal Delete finalized cleanup
+`3ec8b287-5483-4632-a8a2-07fabdde8ae7`. Independent observation proved VM/VMI absence
+while the namespace was still Active and not terminating; namespace, PV and VSC
+absence followed. Both private images are absent from active storage and trash,
+and the shared cache survives. Accepted report
+`4b72b6b8-23d0-4854-b65b-48f7f8670c3e` has complete coverage and zero allocation.
+The authenticated API returns 404. The temporary test key was revoked with HTTP
+204 and its local secret removed. Readiness evidence covers controllers and Pods,
+not guest application connectivity.
+
+The preceding disposable Delete also finalized, on a later v16 scan before the
+v17 rollout, using report `6053af32-de79-44bf-a6d4-de90505d150b`; do not attribute
+that success to v17. All seven original reported projects were refreshed through
+their enrolled provider transports and retain their namespace and VM/root UIDs.
+No original project DELETE, production rollout, release tag or push was performed.
+Full release still requires resolution of the separately reported failed-capture
+accounting gate and the user's scope decision.
+
+Earlier November 18 checkpoint: candidate v16 was installed in dev at backend digest
 `18e5aaea212eea9c1879cf59d7fd84481d3b65465b90c473d29dba368019afb9`.
 All five backend deployment rollouts completed, and all six backend pods passed
 source, digest and protected-runtime verification. The committed source
@@ -29,16 +58,16 @@ trash; the shared source survives. This is not completed Delete qualification.
 The subsequent dependency-verification correction passed independent scoped
 review, 152 focused tests, eight SQLite settlement cases and eight isolated
 PostgreSQL settlement cases. It preserves unknown allocation after a usage
-timeout and requires a separate fresh final dependency verification. Candidate
-installation and live settlement qualification remain pending.
+timeout and requires a separate fresh final dependency verification. Its subsequent
+installation and live qualification are recorded above.
 
 The full dev health gate also fails on unresolved snapshot accounting for the
 two preserved failed capture tests. That separate recovery requires the requested
 scope decision; no capture work or gate exception has been started. Production
 remains unchanged. A read-only refresh at 07:24:45 UTC confirmed all seven original
 project namespaces active and not terminating, with their root and VM objects
-present. The final mixed recovery/delete fixture, temporary-key revocation and
-full dev/production release remain pending.
+present. At that checkpoint the final mixed recovery/delete fixture, temporary-key
+revocation and full dev/production release remained pending.
 
 Latest retained dev qualification, November 18 at 06:22:30 UTC: the v15 normal
 Delete of the redeployed disposable project reached VM/VMI and namespace absence.
