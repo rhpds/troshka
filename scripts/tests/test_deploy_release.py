@@ -349,12 +349,12 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     assert len([c for c in calls if c[0] == "python3" and "cluster" in c]) == 14
     promote = next(i for i, c in enumerate(calls) if c[0] == "python3" and "promote" in c)
     dev_image = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
-    dev_accounting = next(i for i, c in enumerate(calls) if "scripts/collector_release_check.py" in c)
-    assert dev_image < dev_accounting < promote
+    assert dev_image < promote
     hosts = [i for i, c in enumerate(calls) if "cluster" in c and "--image-tag" in c and "vtest" in c]
-    fleet = next(i for i, c in enumerate(calls) if "scripts/collector_fleet_preflight.py" in c and "troshka" in c)
     assert len(hosts) == 7
-    assert dev_accounting < min(hosts) <= max(hosts) < fleet < promote
+    assert dev_image < min(hosts) <= max(hosts) < promote
+    assert not any("scripts/collector_release_check.py" in c or
+                   "scripts/collector_fleet_preflight.py" in c for c in calls)
     assert all("--skip-project-pods" in calls[i] for i in hosts)
 
 
@@ -380,7 +380,7 @@ def test_full_deploy_aligns_dev_after_main_build_and_pins_prod_git(shell_command
 def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_commands):
     env, log = shell_commands
     result = subprocess.run(
-        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest", "--verify-storage"],
         env={**env, "FAIL_FLEET": "1"}, capture_output=True, check=False,
     )
     assert result.returncode != 0
@@ -392,7 +392,7 @@ def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_command
 def test_failed_dev_accounting_never_promotes(shell_commands):
     env, log = shell_commands
     result = subprocess.run(
-        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest", "--verify-storage"],
         env={**env, "FAIL_DEV_ACCOUNTING": "1"}, capture_output=True, check=False,
     )
     assert result.returncode != 0
@@ -401,7 +401,7 @@ def test_failed_dev_accounting_never_promotes(shell_commands):
     assert not any("promote" in c for c in calls)
 
 
-@pytest.mark.parametrize("flags,mode", [([], "health"), (["--fresh-accounting"], "fresh"),
+@pytest.mark.parametrize("flags,mode", [(["--verify-storage"], "health"), (["--fresh-accounting"], "fresh"),
     (["--accounting-project", "project-one"], "fresh")])
 def test_accounting_scans_only_after_promotion_when_requested(shell_commands, flags, mode):
     env, log = shell_commands

@@ -12,8 +12,8 @@ images; adoption preserves active overlays until the first rollout is reviewed.
 
 From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a
 UTC release tag (`vYYYY.MM.DD-HHMMSS`), atomically pushes HEAD to `main` and the
-tag, waits for the tag's full image build, upgrades host prerequisites, verifies
-collector readiness, and promotes that release to the existing `production`
+tag, waits for the tag's full image build, upgrades host prerequisites, and
+promotes that release to the existing `production`
 image tags. It also advances the production Argo application's Git revision to
 that named release, preserving its Helm settings. `main` remains the integration
 branch; Argo CD Image Updater still deploys `production` digests.
@@ -21,13 +21,14 @@ branch; Argo CD Image Updater still deploys `production` digests.
 Before promotion, the script waits for any image build for the same commit on
 `main`, then aligns backend/frontend `latest` with the named release by digest.
 This prevents concurrent main/tag builds from leaving dev on different images.
-It requires dev Argo to run those exact release digests, checks every active app
-worker deployment, and checks existing
-dev readiness and shared/project accounting evidence without enqueueing scans. A failed
-dev check exits before changing production image tags. Dev collector setup must
-already be ready for this gate, including when a setup plan is supplied for other
-hosts. This health check reports original observation timestamps; it does not
-renew evidence freshness or make old evidence eligible for quota enforcement.
+It requires dev Argo to run those exact release digests and checks every active
+app worker deployment. A failed dev check exits before changing production image
+tags. Storage verification is optional; selecting `--verify-storage`,
+`--fresh-accounting`, or `--accounting-project UUID` also checks existing dev
+readiness and shared/project accounting evidence before promotion. With those
+options, dev collector setup must already be ready, including when a setup plan
+is supplied for other hosts. Existing-evidence checks report original observation
+timestamps; they do not renew freshness or make old evidence eligible for quotas.
 
 Use `--tag vNAME` to choose a release name. To resume a failed or interrupted
 deployment, check out that release and run
@@ -41,7 +42,8 @@ promotion. An operator failure stops the release before production tags change;
 operators already updated remain on the named release and can be verified on
 resume. This stage does not request VM stops or changes to Ceph.
 
-After host prerequisites, full deployment runs `collector_fleet_preflight.py`
+When storage verification is selected, deployment runs `collector_fleet_preflight.py`
+after host prerequisites
 against both the production and permanent dev applications. It reads configured
 native hosts from each application's database, including hosts with no projects,
 and requires exactly one protected profile with an existing enrollment anchor for
@@ -50,13 +52,15 @@ missing host profile blocks the release and produces a retained JSON report.
 The probe runs read-only in the collection worker; no credentials are returned.
 This is a configuration gate, not a fresh accounting or capacity acceptance test.
 With `--collector-setup-plan /absolute/path/to/approved.json`, a read-only setup
-validation and application run before the fleet gate. The plan must cover both applications and
+validation and application run before promotion (and before the fleet gate when
+storage verification is selected). The plan must cover both applications and
 every configured native host. Existing profiles cannot be overwritten. Deployment
 installs immutable protected configuration, rotates
 seven-day collector-only tokens, waits for both collector worker deployments,
 and enrolls explicitly authorized empty domains. Existing enrollment anchors are
-validated and preserved. Existing accounting health must then pass before production
-app promotion. Neither scheduling nor quota enablement is changed. If profiles or
+validated and preserved. With storage verification selected, existing accounting
+health must then pass before production app promotion. Neither scheduling nor
+quota enablement is changed. If that verification finds profiles or
 accepted storage-version evidence are still missing, host upgrades remain applied
 and app promotion stops; deployment does not manufacture acceptance evidence.
 
@@ -74,22 +78,28 @@ capture is disabled so retained custody and cleanup can still be verified.
 Readiness workers retain their separate overrides of the shared worker settings.
 Default installations with native collection disabled need no protected inputs.
 
-Routine releases use `collector_release_check.py --mode health` before and after
-promotion. This reads the latest accepted evidence and blocks on missing or failed
-observations, changed enrollment, conflicts, active cleanup, or changing inventory.
-It does not launch storage jobs. Application health, exact image digests, schema,
-collector configuration, and helper network prerequisites are still checked.
+Routine releases skip collector configuration and storage accounting verification.
+Application health, exact image digests, schema, operator rollouts, and helper
+network prerequisites remain required. This does not disable runtime accounting,
+change quota enforcement, or weaken storage deletion checks.
 
-For changes to accounting, inventory discovery, lineage, or collector permissions,
-the release operator **must select fresh validation**. Use `--fresh-accounting`
-for changes affecting all projects. For a narrowly scoped fix, repeat
+Use `--verify-storage` to run collector configuration checks and
+`collector_release_check.py --mode health` before and after promotion.
+This reads the latest accepted evidence and blocks on missing or failed
+observations, changed enrollment, conflicts, active cleanup, or changing inventory.
+It does not launch storage jobs.
+
+For an optional fresh audit of accounting, inventory discovery, lineage, or
+collector permissions, use `--fresh-accounting` for all projects. For a narrowly
+scoped check, repeat
 `--accounting-project UUID` for each affected production project. Fresh checks run
 once after promotion, using the new collector; dev is also freshly checked.
 Selected production projects include readiness and shared storage for their
 domains. Unknown project IDs fail closed. Before promotion, the existing accepted
 evidence provides the health baseline; this is not a byte-for-byte usage comparison
 (VM writes can legitimately change usage). Mode selection is explicit, not inferred
-from changed filenames. Do not use routine mode for accounting changes.
+from changed filenames. Both fresh options also enable the existing-evidence
+baseline and collector configuration checks.
 
 The standalone checker defaults to fresh fleet validation for independent audits:
 `python3 scripts/collector_release_check.py --application KUBECONFIG NAMESPACE

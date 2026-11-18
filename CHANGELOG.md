@@ -14,6 +14,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Deployment: storage verification is opt-in. Use `--verify-storage` for existing
+  evidence, `--fresh-accounting` for a fresh fleet audit, or `--accounting-project`
+  for selected projects. Image and application health checks remain required.
+
 - Shared storage accounting accepts removed historical clone links when a full
   cache scan confirms their absence, while rejecting unknown or incomplete edges.
   Manually deleted projects can reconcile retained accounting through an explicit
