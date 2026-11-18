@@ -14,7 +14,23 @@ validation. The consolidated runtime fix passed independent re-review. Task5b
 disposable end-to-end qualification remains required before a full release with
 `--fresh-accounting`.
 
-November 18 latest qualification: committed source `b904f060` passed all normal
+November 18 accounting recovery: the user approved bounded accounting recovery
+for the two existing failed captures, preserving their data and failed records
+and running no new captures. Source `53311803` passed the normal pre-push test
+fallback: **10,000 passed, 1,150 skipped**; Sonar analysis was skipped because its
+token was absent. The correction shares the configured scan deadline with
+snapshot metadata reads and ignores only controller retry bookkeeping during
+final root comparison. Writer state, outcomes and resource identities remain
+protected. Both read-only snapshot verifications passed. Both accounting receipts
+were published and independently confirmed, preserving both failed Pattern
+records. The second required fresh verification after an execution changed state;
+the safety check held before publication, and the bounded retry passed after
+both executions reported complete. Fresh dev accounting through normal workers
+is still required. Production remains held until accounting and full deployment
+verification pass. These
+source fixes have not yet been installed in running services.
+
+Earlier November 18 qualification: committed source `b904f060` passed all normal
 commit hooks and the normal pre-push test fallback: **9,980 passed, 1,149 skipped**.
 Sonar analysis did not run because its token was absent. Candidate v17 is installed
 in dev at backend digest
@@ -41,7 +57,7 @@ that success to v17. All seven original reported projects were refreshed through
 their enrolled provider transports and retain their namespace and VM/root UIDs.
 No original project DELETE, production rollout, release tag or push was performed.
 Full release still requires resolution of the separately reported failed-capture
-accounting gate and the user's scope decision.
+accounting gate. The user subsequently approved the bounded recovery above.
 
 Earlier November 18 checkpoint: candidate v16 was installed in dev at backend digest
 `18e5aaea212eea9c1879cf59d7fd84481d3b65465b90c473d29dba368019afb9`.
@@ -62,8 +78,8 @@ timeout and requires a separate fresh final dependency verification. Its subsequ
 installation and live qualification are recorded above.
 
 The full dev health gate also fails on unresolved snapshot accounting for the
-two preserved failed capture tests. That separate recovery requires the requested
-scope decision; no capture work or gate exception has been started. Production
+two preserved failed capture tests. The subsequently approved bounded recovery
+is recorded above; no accounting gate exception is permitted. Production
 remains unchanged. A read-only refresh at 07:24:45 UTC confirmed all seven original
 project namespaces active and not terminating, with their root and VM objects
 present. At that checkpoint the final mixed recovery/delete fixture, temporary-key
