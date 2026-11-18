@@ -10,6 +10,8 @@ Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags
 
 | Tag | Date (UTC) | Source commit |
 | --- | --- | --- |
+| v2026.11.18-shared-cache-edges | 2026-11-18 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.18-shared-cache-edges) |
+| v2026.11.18-ops-addresses | 2026-11-18 | [7ae326ec](https://github.com/rhpds/troshka/commit/7ae326ec) |
 | v2026.11.18-project-deletion-r2 | 2026-11-18 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.18-project-deletion-r2) |
 | v2026.11.18-project-deletion | 2026-11-18 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.18-project-deletion) |
 | v2026.11.16-network-dependencies | 2026-11-16 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.16-network-dependencies) |
