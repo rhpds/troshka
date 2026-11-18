@@ -2874,10 +2874,16 @@ class TestDeployProjectEndpoint:
             host,
             host,
         ]
-        with _override_deps(db=db) as client:
+        with patch(
+            "app.services.native_deployment_preflight.prepare_dispatch",
+            return_value="attempt-1",
+        ) as mock_preflight, _override_deps(db=db) as client:
             resp = client.post("/api/v1/projects/proj-1/deploy")
         assert resp.status_code == 200
         assert resp.json()["status"] == "deploying"
+        mock_preflight.assert_called_once_with(db, project)
+        mock_enqueue.assert_called_once()
+        assert mock_enqueue.call_args.kwargs["native_attempt_id"] == "attempt-1"
 
     @patch(
         "app.api.projects.place_project", return_value={"error": "No hosts available"}

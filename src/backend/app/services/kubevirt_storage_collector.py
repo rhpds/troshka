@@ -329,16 +329,22 @@ def _trash_ids(reader, key, errors):
 
 
 def _cleanup_snapshot_sources(snapshot_facts, project_cleanup_scopes):
+    from app.services.native_clone_graph import binding_identity
     from app.services.native_snapshot_graph import unresolved_producers
 
     if not project_cleanup_scopes:
         return []
     # The ordinary bounded parent walker and final metadata recheck apply.
-    return [
-        (p.source_binding.image_key, 0)
-        for _, p in unresolved_producers(snapshot_facts)
-        if p.source_binding is not None
-    ]
+    keys = set()
+    for facts, producer in unresolved_producers(snapshot_facts):
+        source = producer.source_binding
+        if source is None:
+            continue
+        keys.add(source.image_key)
+        for lineage in facts.ancestry:
+            if binding_identity(lineage.binding) == binding_identity(source):
+                keys.update((lineage.intermediate, lineage.source.image_key))
+    return [(key, 0) for key in keys]
 
 
 def _collect_images(
@@ -356,7 +362,7 @@ def _collect_images(
     snapshot_facts=(),
     project_cleanup_scopes=(),
 ):
-    images, seen = [], set()
+    images, seen, expanded = {}, set(), set()
     queue = [
         (b.image_key, 0)
         for b in inventory.volume_bindings
@@ -385,68 +391,129 @@ def _collect_images(
         if inventory.project_scope in (None, p.source.root.project_id)
     )
     # Terminal accounting needs current ancestry for unresolved source heads.
-    queue.extend(_cleanup_snapshot_sources(snapshot_facts, project_cleanup_scopes))
+    cleanup_sources = _cleanup_snapshot_sources(snapshot_facts, project_cleanup_scopes)
+    isolating = {key for key, _ in cleanup_sources}
+    cache = {b.image_key for b in inventory.cache_bindings}
+    queue.extend(cleanup_sources)
     checked_pools = {}
-    selected_sources = {}
-    for proof in clone_lineages:
-        if inventory.project_scope in (None, proof.binding.root.project_id):
-            selected_sources.setdefault(proof.source.image_key, set()).add(
-                proof.intermediate_parent
-            )
+    selected_sources = _selected_cleanup_sources(inventory, clone_lineages)
+    for key in cache & isolating:
+        selected_sources.setdefault(key, set())
     while queue:
         key, depth = queue.pop(0)
-        if key in seen:
+        if key in seen and (key not in isolating or key in expanded):
             continue
-        if len(seen) >= limits.max_objects or time.monotonic() >= deadline:
+        if (
+            key not in seen and len(seen) >= limits.max_objects
+        ) or time.monotonic() >= deadline:
             errors.append(Blocker(code="scan_limit"))
             break
         seen.add(key)
         if depth > limits.max_parent_depth:
             errors.append(Blocker(code="parent_depth_limit", image_key=key))
             continue
-        pool_key = (key.ceph_fsid, key.pool_id, key.rbd_namespace)
-        if pool_key not in checked_pools:
-            checked_pools[pool_key] = _trash_ids(rbd_reader, key, errors)
-        image = (
-            _observe_source(
-                rbd_reader,
-                key,
-                selected_sources[key],
-                pools,
-                capability_ok,
-                version,
-                clock,
-                limits,
-            )
-            if key in selected_sources
-            else _collect_image(
-                rbd_reader,
-                key,
-                retiring_keys,
-                pools,
-                capability_ok,
-                version,
-                clock,
-                limits,
-            )
+        image = _queued_image(
+            rbd_reader,
+            key,
+            selected_sources,
+            isolating - cache,
+            retiring_keys,
+            checked_pools,
+            pools,
+            capability_ok,
+            version,
+            clock,
+            limits,
+            errors,
         )
-        if key.image_id in checked_pools[pool_key]:
-            image = image.model_copy(
-                update={
-                    "measurement_status": "unsupported",
-                    "allocated_bytes": None,
-                    "measurement_semantics_version": None,
-                }
+        images[key] = image
+        _queue_image_edges(
+            queue,
+            image,
+            depth,
+            isolating,
+            expanded,
+            cache,
+            inventory.project_scope is None and key not in selected_sources,
+        )
+    from app.services.native_dependency_collection import cache_boundaries
+
+    cache_boundaries(
+        rbd_reader,
+        images,
+        cache & isolating,
+        selected_sources,
+        pools,
+        capability_ok,
+        version,
+        clock,
+        limits,
+    )
+    return list(images.values())
+
+
+def _selected_cleanup_sources(inventory, clone_lineages):
+    selected = {}
+    for proof in clone_lineages:
+        if inventory.project_scope in (None, proof.binding.root.project_id):
+            selected.setdefault(proof.source.image_key, set()).add(
+                proof.intermediate_parent
             )
-        images.append(image)
-        if image.parent:
-            queue.append((image.parent.image_key, depth + 1))
-        # Scoped jobs inspect exact child metadata but never follow descendants.
-        # Private descendants must already be reachable from enrolled bindings;
-        # graph authorization rejects unknown consumers without measuring them.
-        if inventory.project_scope is None and key not in selected_sources:
-            queue.extend((child, depth + 1) for child in image.children)
-    return images
+    return selected
+
+
+def _queued_image(
+    reader,
+    key,
+    selected,
+    isolating,
+    retiring,
+    checked_pools,
+    pools,
+    capability_ok,
+    version,
+    clock,
+    limits,
+    errors,
+):
+    from app.services.native_dependency_collection import enrich
+
+    pool_key = (key.ceph_fsid, key.pool_id, key.rbd_namespace)
+    if pool_key not in checked_pools:
+        checked_pools[pool_key] = _trash_ids(reader, key, errors)
+    if key in selected:
+        image = _observe_source(
+            reader, key, selected[key], pools, capability_ok, version, clock, limits
+        )
+    else:
+        image = _collect_image(
+            reader, key, retiring, pools, capability_ok, version, clock, limits
+        )
+    if key.image_id in checked_pools[pool_key]:
+        return image.model_copy(
+            update={
+                "measurement_status": "unsupported",
+                "allocated_bytes": None,
+                "measurement_semantics_version": None,
+            }
+        )
+    return enrich(reader, image, pools, limits) if key in isolating else image
+
+
+def _queue_image_edges(queue, image, depth, isolating, expanded, cache, full):
+    from app.services.native_dependency_collection import related
+
+    if image.key in isolating:
+        expanded.add(image.key)
+        edges = related(image) if image.key not in cache else set()
+        isolating.update(edges)
+        queue.extend((child, depth + 1) for child in edges)
+    if image.parent:
+        queue.append((image.parent.image_key, depth + 1))
+    # Ordinary scoped accounting still never follows descendants. Terminal
+    # isolation expands only its explicit component above, stopping at cache.
+    if full:
+        queue.extend((child, depth + 1) for child in image.children)
 
 
 def _collect_image(
@@ -581,6 +648,7 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
             image.source_snapshot_children,
         ):
             raise _ReadFailure("identity_changed")
+        _verify_dependencies(reader, image, pools, limits)
         return
     observed = _graph_metadata(reader, image, pools, limits)
     expected = (
@@ -591,6 +659,18 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
     )
     if observed != expected:
         raise _ReadFailure("identity_changed")
+    _verify_dependencies(reader, image, pools, limits)
+
+
+def _verify_dependencies(reader, image, pools, limits):
+    if image.current_dependencies is not None:
+        from app.services.native_dependency_collection import metadata
+
+        current, _ = metadata(
+            reader, image, pools, limits, image.current_dependencies.cache_boundary
+        )
+        if current != image.current_dependencies:
+            raise _ReadFailure("identity_changed")
 
 
 def collect_report(

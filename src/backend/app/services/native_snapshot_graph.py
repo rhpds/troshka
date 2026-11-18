@@ -204,6 +204,22 @@ def _independent_terminal(
     ):
         return False
     cutoff = max(terminal.observed_at, lineage.verified_at)
+    from app.services.native_snapshot_isolation import isolated
+
+    if isolated(
+        observations,
+        keys,
+        lineage.source.image_key,
+        set(terminal.private_images),
+        cutoff,
+        bindings=bindings,
+    ):
+        return True
+    if any(
+        getattr(observations.get(key), "current_dependencies", None) is not None
+        for key in keys
+    ):
+        return False
     if not _current_subject_matches(
         observations.get(source.image_key), lineage.head_parent, set(), set(), cutoff
     ):

@@ -14,7 +14,31 @@ validation. The consolidated runtime fix passed independent re-review. Task5b
 disposable end-to-end qualification remains required before a full release with
 `--fresh-accounting`.
 
-Latest dev qualification: backend v13 and operator v14b are installed and healthy, with database head
+Latest retained dev qualification, November 18 at 06:22:30 UTC: the v15 normal
+Delete of the redeployed disposable project reached VM/VMI and namespace absence.
+Independent two-round storage observations at 06:17:13 UTC prove both retained
+private images absent from the active directory and trash, while the exact shared
+cache survives. The approved dev-only collection budget increase was verified
+in all five replacement application pods: 900-second job timeout, 870-second scan
+budget and unchanged 15-second command limit. Durable teardown evidence records
+the guarded namespace DELETE at 06:14:24 UTC; an observer gap prevents claiming a
+complete independent watch-event chronology. Report
+`d0c591af-1d85-4415-87f2-a6f8606ab523`, completed at 06:21:01 UTC, still has partial
+coverage and `origin_snapshot_authority_unverified`: current snapshot/child edges
+and changed ancestry on preserved other-project sources fall outside the installed
+isolation proof. No dependency on this attempt's private images was demonstrated,
+but the additional edges' dependency boundary remains unproved. The project remains
+`cleanup_pending`, with no durable settlement or finalization. The approved narrow
+current-ancestry correction is in progress and is not yet qualified. Retained
+evidence is in
+`/private/tmp/troshka-native-delete-acceptance-20261117/v7-deletion-only-v15/`:
+`durable-teardown-evidence.json`, `storage-after-20261118T061725Z.json`, and
+`fresh-accounting-blocker.md`. These observations do not complete normal Delete
+qualification or any remaining release gate. The seven original projects and
+production were unchanged by this dev attempt, according to the retained execution
+record; this documentation update performs no fresh live verification.
+
+Earlier dev qualification: backend v13 and operator v14b are installed and healthy, with database head
 `28bc37e61a90`; production is unchanged. The LIST-response, storage-retention,
 bounded post-verification observation and inventory-comparison corrections are
 installed together. The comparison correction passed independent review and

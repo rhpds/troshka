@@ -116,7 +116,7 @@ def test_retry_rejects_running():
 def test_on_job_failure_marks_workload_run():
     from app.core.redis import _on_job_failure
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.id = "job-12345678"
     job.func_name = "app.workers.jobs.job_run_workload"
     job.args = ("run-abc",)
@@ -143,7 +143,7 @@ def test_on_job_failure_abandoned_marks_interrupted():
     class AbandonedJobError(Exception):
         pass
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.id = "job-abcd1234"
     job.func_name = "app.workers.jobs.job_run_workload"
     job.args = ("run-xyz",)

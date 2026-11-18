@@ -444,11 +444,11 @@ def test_rootful_required_storage_list_denial_holds(namespace_case, monkeypatch,
     monkeypatch.setattr(
         q.api,
         "rows",
-        lambda selected, ns: (_ for _ in ()).throw(
-            AccountingUnavailable("403 required storage")
-        )
-        if selected == kind
-        else rows(selected, ns),
+        lambda selected, ns: (
+            (_ for _ in ()).throw(AccountingUnavailable("403 required storage"))
+            if selected == kind
+            else rows(selected, ns)
+        ),
     )
     q.request()
     q.advance()
@@ -497,9 +497,9 @@ def test_completed_operator_replacement_resumes_same_cleanup(
         monkeypatch.setattr(
             q.api,
             "delete",
-            lambda kind, *a, **kw: None
-            if kind in OWN_KINDS
-            else delete(kind, *a, **kw),
+            lambda kind, *a, **kw: (
+                None if kind in OWN_KINDS else delete(kind, *a, **kw)
+            ),
         )
         assert q.advance().phase == "vm_delete_requested"
         monkeypatch.setattr(q.api, "delete", delete)
@@ -747,8 +747,9 @@ def test_real_collector_import_and_no_reservation_settlement(namespace_case, mod
 
 
 @pytest.mark.parametrize("missing_source_chain", [False, True])
+@pytest.mark.parametrize("current_shape", [False, True])
 def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_pending(
-    namespace_case, monkeypatch, missing_source_chain
+    namespace_case, monkeypatch, missing_source_chain, current_shape
 ):
     from types import SimpleNamespace
     from uuid import uuid4
@@ -826,6 +827,33 @@ def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_
                 "children": [source.image_key],
             }
         )
+    if current_shape:
+        from tests.test_native_snapshot_scope import with_dependencies
+
+        child = source.image_key.model_copy(
+            update={"image_id": "current-snapshot-child"}
+        )
+        snapshot = SnapshotKey(image_key=source.image_key, snapshot_id="113025")
+        images[source.image_key] = images[source.image_key].model_copy(
+            update={"snapshots": [snapshot], "children": [child]}
+        )
+        images[child] = images[source.image_key].model_copy(
+            update={
+                "key": child,
+                "parent": snapshot,
+                "children": [],
+                "snapshots": [SnapshotKey(image_key=child, snapshot_id="113026")],
+            }
+        )
+        if middle in images:
+            images[middle] = images[middle].model_copy(update={"parent": None})
+        images[cache.image_key] = images[cache.image_key].model_copy(
+            update={"snapshots": [], "children": []}
+        )
+        images = {
+            key: with_dependencies(image) if image.absence is None else image
+            for key, image in images.items()
+        }
     report = report.model_copy(
         update={
             "images": list(images.values()),

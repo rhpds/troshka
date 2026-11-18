@@ -1,5 +1,7 @@
 """Unit tests for projects.py helpers extracted for Sonar S3776."""
 
+from unittest.mock import Mock
+
 import pytest
 from fastapi import HTTPException
 
@@ -294,11 +296,15 @@ class TestPersistPlacement:
         monkeypatch.setattr(
             "app.api.projects._check_single_host_disk", lambda *a, **k: None
         )
+        enqueue = Mock()
+        monkeypatch.setattr("app.core.redis.enqueue_job", enqueue)
+        preflight = Mock(return_value="attempt-1")
         monkeypatch.setattr(
-            "app.core.redis.enqueue_job", lambda *a, **k: calls.setdefault("enq", True)
+            "app.services.native_deployment_preflight.prepare_dispatch", preflight
         )
+        project, db = Proj(), Db()
         out = _persist_placement_and_enqueue(
-            Proj(),
+            project,
             {
                 "host_id": "h1",
                 "host_ip": "10.0.0.1",
@@ -306,8 +312,11 @@ class TestPersistPlacement:
                 "vni_map": {"n": 1},
             },
             "p1",
-            Db(),
+            db,
         )
+        preflight.assert_called_once_with(db, project)
+        enqueue.assert_called_once()
+        assert enqueue.call_args.kwargs["native_attempt_id"] == "attempt-1"
         assert out["status"] == "deploying"
         assert out["host_id"] == "h1"
-        assert calls.get("enq") and calls.get("commit")
+        assert calls.get("commit")

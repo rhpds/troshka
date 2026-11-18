@@ -438,7 +438,7 @@ def test_on_job_success_with_host_id():
     """With host_id in meta, calls record_deploy_end."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {"host_id": "host-abc"}
     connection = MagicMock()
 
@@ -451,7 +451,7 @@ def test_on_job_success_with_project_id():
     """With project_id in meta, deletes the job:project key from Redis."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {"project_id": "proj-xyz"}
     connection = MagicMock()
 
@@ -464,7 +464,7 @@ def test_on_job_success_with_both():
     """With both host_id and project_id, does both cleanup actions."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {"host_id": "host-111", "project_id": "proj-222"}
     connection = MagicMock()
 
@@ -479,7 +479,7 @@ def test_on_job_success_with_neither():
     """With empty meta, does nothing and does not crash."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {}
     connection = MagicMock()
 
@@ -492,7 +492,7 @@ def test_on_job_success_swallows_deploy_end_error():
     """Exception in record_deploy_end is swallowed."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {"host_id": "host-err"}
     connection = MagicMock()
 
@@ -508,7 +508,7 @@ def test_on_job_success_swallows_delete_error():
     """Exception in connection.delete is swallowed."""
     from app.core.redis import _on_job_success
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.meta = {"project_id": "proj-err"}
     connection = MagicMock()
     connection.delete.side_effect = Exception("redis error")
@@ -527,7 +527,7 @@ def test_on_job_failure_non_abandoned(mock_cleanup, mock_del_progress, mock_set_
     """Non-abandoned failure cleans up progress, deletes job key, sets error state."""
     from app.core.redis import _on_job_failure
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.id = "job-12345678"
     job.meta = {"project_id": "proj-fail", "host_id": "host-fail"}
     connection = MagicMock()
@@ -552,7 +552,7 @@ def test_on_job_failure_abandoned(mock_cleanup, mock_del_progress, mock_set_erro
     class AbandonedJobError(Exception):
         pass
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.id = "job-abcd1234"
     job.meta = {"project_id": "proj-abandon", "host_id": "host-ab"}
     connection = MagicMock()
@@ -575,7 +575,7 @@ def test_on_job_failure_no_project_id(mock_cleanup, mock_del_progress, mock_set_
     """Without project_id, cleans up host locks but skips project-level cleanup."""
     from app.core.redis import _on_job_failure
 
-    job = MagicMock()
+    job = MagicMock(kwargs={})
     job.id = "job-noproj00"
     job.meta = {"host_id": "host-only"}
     connection = MagicMock()

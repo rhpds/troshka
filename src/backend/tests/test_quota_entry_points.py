@@ -486,7 +486,9 @@ def test_disabled_quota_preserves_worker_path(environment, monkeypatch):
     provider = Mock()
     monkeypatch.setattr(deploy_service, "_deploy_project_inner", provider)
     deploy_service.deploy_project_async(environment[1].id)
-    provider.assert_called_once_with(environment[1].id, True, None)
+    provider.assert_called_once_with(
+        environment[1].id, True, None, native_attempt_id=None
+    )
 
 
 def test_thread_fallback_keeps_operation_and_delivery_metadata(

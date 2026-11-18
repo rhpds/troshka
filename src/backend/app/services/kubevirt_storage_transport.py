@@ -13,6 +13,7 @@ import signal
 import subprocess
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 from pydantic import Field, model_serializer
@@ -90,7 +91,21 @@ def command_argv(
     journal_key=None,
     instance_id=None,
     request_name=None,
+    ceph_fsid=None,
+    pool_id=None,
+    max_objects=None,
+    dependency_snapshots=None,
 ):
+    if operation == "dependencies":
+        return _dependency_argv(
+            pool,
+            namespace,
+            image,
+            ceph_fsid,
+            pool_id,
+            max_objects,
+            dependency_snapshots,
+        )
     if operation == "fsid":
         return ["ceph", "fsid"]
     if operation == "pools":
@@ -141,6 +156,38 @@ def command_argv(
         argv += ["--snap", _token(snapshot)]
     argv += _snapshot_id_args(operation, snapshot, snapshot_id)
     return [*argv, "--format", "json"]
+
+
+def _dependency_argv(pool, namespace, image, fsid, pool_id, limit, snapshots):
+    if (
+        type(pool_id) is not int
+        or pool_id < 0
+        or type(limit) is not int
+        or not 1 <= limit <= 100000
+    ):
+        raise ValueError("invalid dependency bounds")
+    if snapshots is not None:
+        if not isinstance(snapshots, list) or len(snapshots) > limit:
+            raise ValueError("invalid dependency snapshots")
+        for sid in snapshots:
+            _snapshot_id_args("children", None, sid)
+        if len(set(snapshots)) != len(snapshots):
+            raise ValueError("duplicate dependency snapshots")
+    program = Path(__file__).with_name("native_dependency_reader.py").read_text()
+    return [
+        "python3",
+        "-c",
+        program,
+        str(UUID(str(fsid))),
+        _token(pool),
+        str(pool_id),
+        _token(namespace, empty=True),
+        _token(image),
+        str(limit),
+        json.dumps(snapshots),
+        "",
+        "",
+    ]
 
 
 def _read_events(selector, proc, output, count, cap, wait):
@@ -277,6 +324,13 @@ class DirectTransport:
 
     def run(self, operation, **identities):
         argv = command_argv(operation, **identities)
+        if operation == "dependencies":
+            credentials = dict(zip(self.credentials[::2], self.credentials[1::2]))
+            argv[-2:] = [
+                credentials.get("--conf", ""),
+                credentials.get("--keyring", ""),
+            ]
+            return self.process.run(argv)
         return self.process.run([argv[0], *self.credentials, *argv[1:]])
 
 
@@ -599,6 +653,19 @@ class RbdReader:
 
     def image_info(self, key):
         return self._image("info", key)
+
+    def image_dependencies(self, key, max_objects, snapshots=None):
+        pool = self._pool(key)
+        return self._read(
+            "dependencies",
+            pool=pool.name,
+            namespace=key.rbd_namespace,
+            image=key.image_id,
+            ceph_fsid=key.ceph_fsid,
+            pool_id=key.pool_id,
+            max_objects=max_objects,
+            dependency_snapshots=snapshots,
+        )
 
     def image_usage(self, key):
         return self._image("du", key)

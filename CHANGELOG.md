@@ -40,7 +40,7 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   no longer strand deployment completion, and successful support work can settle
   through its exact namespace and storage boundary. Unknown outcomes remain held.
   Verified terminal storage retirement can settle alongside another project's
-  unresolved snapshot only after fresh retained source ancestry proves private
+  unresolved snapshot only after fresh head and snapshot dependency evidence proves private
   storage independence; shared cache survival and unresolved ownership stay checked.
   Successor storage custody excludes exactly settled historical roots, preserving
   their receipts and rechecking settlement authority before publication.

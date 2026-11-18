@@ -416,6 +416,34 @@ class SourceSnapshotChildren(Evidence):
     children: list[ImageKey] = Field(default_factory=list, max_length=10000)
 
 
+class CurrentDependency(Evidence):
+    """Successful librbd overlap read; zero does not assert metadata absence."""
+
+    overlap_bytes: Bytes
+    parent: SnapshotKey | None
+
+    @model_validator(mode="after")
+    def positive_overlap_requires_parent(self):
+        if (self.overlap_bytes > 0) != (self.parent is not None):
+            raise ValueError("Positive dependency requires immutable parent identity")
+        return self
+
+
+class SnapshotDependency(Evidence):
+    snapshot: SnapshotKey
+    dependency: CurrentDependency
+    children: list[ImageKey] = Field(default_factory=list, max_length=10000)
+
+
+class CurrentImageDependencies(Evidence):
+    profile: Literal[
+        "librbd-current-dependencies-v1"
+    ] = "librbd-current-dependencies-v1"
+    head: CurrentDependency
+    snapshots: list[SnapshotDependency] = Field(default_factory=list, max_length=10000)
+    cache_boundary: list[SnapshotKey] | None = Field(default=None, max_length=10000)
+
+
 class ImageObservation(Evidence):
     key: ImageKey
     parent: SnapshotKey | None = None
@@ -428,6 +456,7 @@ class ImageObservation(Evidence):
     command_version: Annotated[str, Field(max_length=256)]
     measurement_semantics_version: Annotated[str, Field(max_length=256)] | None
     absence: BackendImageInventory | BackendImageState | None = None
+    current_dependencies: CurrentImageDependencies | None = None
     source_snapshot_children: list[SourceSnapshotChildren] | None = Field(
         default=None, max_length=10000
     )
@@ -439,6 +468,8 @@ class ImageObservation(Evidence):
             data.pop("absence", None)
         if data.get("source_snapshot_children") is None:
             data.pop("source_snapshot_children", None)
+        if data.get("current_dependencies") is None:
+            data.pop("current_dependencies", None)
         return data
 
     @model_validator(mode="after")
@@ -457,6 +488,7 @@ class ImageObservation(Evidence):
                 or self.parent
                 or self.snapshots
                 or self.children
+                or self.current_dependencies is not None
             ):
                 raise ValueError("invalid immutable image absence proof")
             return self
