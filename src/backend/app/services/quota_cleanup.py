@@ -30,9 +30,10 @@ def native_intent(db, project_id):
 
 def settled_root_keys(db):
     from app.services.kubevirt_storage_enrollment import root_key
+    from app.services.native_manual_retirement import settled_keys
     from app.services.native_project_namespace_cleanup import storage_scopes
 
-    return {
+    return settled_keys(db) | {
         root_key(v.root)
         for v in [*native_intents(db), *storage_scopes(db, settled_only=True)]
         if v.phase in {"settled", "finalized"}
