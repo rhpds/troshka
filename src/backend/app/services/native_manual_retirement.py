@@ -61,6 +61,7 @@ def _scope(work, manual):
         authority.root is not None and authority.domain_id is not None,
         "Original storage authority unavailable",
     )
+    assert authority.root is not None and authority.domain_id is not None
     require(
         set(liabilities.unresolved) <= {"storage_coverage_incomplete"},
         "Unresolved storage identities require investigation",
