@@ -26,12 +26,12 @@ ocp:
     control_plane_disks:
       - size_gb: 250
         bootable: true
-      - size_gb: 250
+      - size_gb: 500
         ocp_mount: /var/lib/containers
     worker_disks:
       - size_gb: 250
         bootable: true
-      - size_gb: 250
+      - size_gb: 500
         ocp_mount: /var/lib/containers
     vm_defaults:
       firmware: uefi
@@ -72,7 +72,7 @@ ocp:
     control_plane_disks:
       - size_gb: 250
         bootable: true
-      - size_gb: 250
+      - size_gb: 500
         ocp_mount: /var/lib/containers
     vm_defaults:
       firmware: uefi
@@ -129,7 +129,7 @@ cephCluster:
   name: Ceph Storage
   network: cluster
   labIp: 10.0.0.4
-  capacityGi: 300
+  capacityGi: 500
   osdCount: 3
   clusters: [source, destination]
 
