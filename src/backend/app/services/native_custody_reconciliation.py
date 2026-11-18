@@ -236,7 +236,11 @@ def _planned_enrollment(db, predecessor, before, after):
         and extension.previous_enrollment_digest == current.digest,
         "Custody extension predecessor changed",
     )
-    online.enrollment.validate_domain_extension(manifest, after.enrollment)
+    from app.services.quota_cleanup import settled_root_keys
+
+    online.enrollment.validate_domain_extension(
+        manifest, after.enrollment, retired=settled_root_keys(db)
+    )
 
 
 def _historical_enrollment(db, predecessor, before, successor, after):

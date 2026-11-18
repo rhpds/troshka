@@ -22,6 +22,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   Older roots without cleanup records use separate retrospective receipts tied to
   the original operator audit and complete preserved PVC inventory, including
   temporary VM disks; these receipts do not grant deletion authority.
+  Custody reconciliation honors verified retired sibling roots when extending
+  accounting enrollment for surviving projects.
 
 - Networking: reserve lab/BMC host `.6` for ops pods, avoiding bastion `.50`
   collisions. Showroom uses only `.9` and reports conflicts instead of choosing

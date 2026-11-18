@@ -88,6 +88,65 @@ def test_explicit_promotion_is_append_only_and_read_only(online_case):
     assert all(not api.calls for api in q.apis.values())
 
 
+@pytest.mark.parametrize("retired", [False, True])
+def test_planned_enrollment_can_drop_only_verified_retired_siblings(
+    online_case, monkeypatch, retired
+):
+    from app.models.kubevirt_storage import NativeCollectionDomain, NativeEnrollment
+    from app.schemas.kubevirt_storage_enrollment import DomainExtension
+    from app.services import quota_cleanup
+
+    q = online_case
+    reconcile, selected, _, fresh, _ = prepared_transition(q)
+    before = online._validated(fresh)
+    sibling = next(
+        r
+        for r in before.enrollment.pins.project_roots
+        if str(r.project_id) != selected[0]
+    )
+    retired_keys = {online.enrollment.root_key(sibling)} if retired else set()
+    monkeypatch.setattr(quota_cleanup, "settled_root_keys", lambda db: retired_keys)
+    with q.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+        current = db.get(NativeEnrollment, domain.enrollment_id)
+        predecessor = (
+            db.query(NativeCustodyReceipt).filter_by(project_id=selected[0]).one()
+        )
+        pins = before.enrollment.pins.model_copy(
+            update={
+                "project_roots": [
+                    r for r in before.enrollment.pins.project_roots if r != sibling
+                ],
+                "domain_extension": DomainExtension(
+                    version="native-domain-extension-v1",
+                    previous_enrollment_id=current.id,
+                    previous_enrollment_digest=current.digest,
+                ),
+            }
+        )
+        request = before.enrollment.request.model_copy(
+            update={
+                "projects": [
+                    p
+                    for p in before.enrollment.request.projects
+                    if p.project_id != sibling.project_id
+                ],
+            }
+        )
+        after = before.model_copy(
+            update={
+                "enrollment": before.enrollment.model_copy(
+                    update={"pins": pins, "request": request}
+                )
+            }
+        )
+        if retired:
+            reconcile._planned_enrollment(db, predecessor, before, after)
+        else:
+            with pytest.raises(ValueError, match="retain every exact old root"):
+                reconcile._planned_enrollment(db, predecessor, before, after)
+
+
 @pytest.mark.parametrize("failure", ["implicit", "digest", "stale", "anchor"])
 def test_reconciliation_rejects_unreviewed_or_unsafe_apply(
     online_case, monkeypatch, failure
