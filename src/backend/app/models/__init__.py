@@ -36,8 +36,53 @@ from app.models.metering import (
     MonthlyStatement,
     ProjectInvoice,
 )
+from app.models.native_binding_retirement import (
+    NativeBindingRetirementReceipt,
+    NativeBindingRetirementRequest,
+)
 from app.models.native_clone_lineage import NativeCloneLineage
-from app.models.native_custody import NativeCustodyReceipt, NativeCustodyRequest
+from app.models.native_custody import (
+    NativeCustodyReceipt,
+    NativeCustodyReconciliationRequest,
+    NativeCustodyRequest,
+    NativeCustodySuccessor,
+)
+from app.models.native_deployment_origin import (
+    NativeDeploymentNamespaceReceipt,
+    NativeDeploymentOriginActive,
+    NativeDeploymentOriginIntent,
+    NativeDeploymentOriginLaunch,
+    NativeDeploymentRootReceipt,
+)
+from app.models.native_origin_checkpoint import (
+    NativeOriginCheckpointKey,
+    NativeOriginProducerReceipt,
+)
+from app.models.native_origin_cleanup import (  # noqa: F401
+    NativeOriginRootSubmission,
+    NativeOriginWriter,
+    NativeOriginWriterHold,
+    NativeOriginWriterTerminal,
+)
+from app.models.native_origin_custody import (
+    NativeOriginCustodyCurrent,
+    NativeOriginCustodyReceipt,
+    NativeOriginCustodyRequest,
+)
+from app.models.native_origin_namespace import (
+    NativeOriginNamespaceCleanup,
+    NativeOriginNamespaceEvidence,
+    NativeOriginSupportHandoff,
+    NativeOriginSupportReceipt,
+)
+from app.models.native_origin_ops import (  # noqa: F401
+    NativeOriginOpsFact,
+    NativeOriginOpsOperation,
+)
+from app.models.native_project_cleanup import (  # noqa: F401
+    NativeProjectNamespaceCleanup,
+    NativeProjectNamespaceEvidence,
+)
 from app.models.network import Network, SecurityRule
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.pattern_location import PatternLocation
@@ -61,10 +106,28 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "NativeOriginNamespaceCleanup",
+    "NativeOriginNamespaceEvidence",
+    "NativeOriginSupportHandoff",
+    "NativeOriginSupportReceipt",
+    "NativeOriginCheckpointKey",
+    "NativeOriginProducerReceipt",
+    "NativeOriginCustodyCurrent",
+    "NativeOriginCustodyReceipt",
+    "NativeOriginCustodyRequest",
+    "NativeDeploymentNamespaceReceipt",
+    "NativeDeploymentOriginActive",
+    "NativeDeploymentOriginIntent",
+    "NativeDeploymentOriginLaunch",
+    "NativeDeploymentRootReceipt",
+    "NativeBindingRetirementReceipt",
+    "NativeBindingRetirementRequest",
     "NativeCacheBirth",
     "NativeCloneLineage",
     "NativeCustodyRequest",
     "NativeCustodyReceipt",
+    "NativeCustodySuccessor",
+    "NativeCustodyReconciliationRequest",
     "NativeReportingTarget",
     "NativeEnrollmentRequest",
     "NativeEnrollment",
@@ -122,3 +185,17 @@ __all__ = [
     "PatternLocation",
     "WorkloadRun",
 ]
+from app.models.native_deployment_preflight import (  # noqa: F401
+    NativeDeploymentCleanBaseline,
+    NativeDeploymentPreflight,
+    NativeDeploymentPreflightActive,
+    NativeDeploymentPreflightDecision,
+)
+from app.models.native_origin_descendants import (  # noqa: F401
+    NativeOriginDescendantClaim,
+    NativeOriginDescendantHandoff,
+    NativeOriginDispatchClosure,
+    NativeOriginHoldResolution,
+    NativeOriginRemoteHold,
+    NativeOriginWriterClosure,
+)

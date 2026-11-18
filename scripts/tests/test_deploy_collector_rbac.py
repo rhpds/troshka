@@ -81,6 +81,9 @@ def test_scope_and_project_ownership(monkeypatch, domain):
             else:
                 assert set(rule["verbs"]) <= {"get", "list"}
     ns_rule = next(x for x in manifest if x["kind"] == "ClusterRole")["rules"][0]
+    inventory_role = next(x for x in manifest if x["kind"] == "ClusterRole")
+    assert [r for r in inventory_role["rules"] if "volumesnapshotclasses" in r["resources"]] == [
+        {"apiGroups": ["snapshot.storage.k8s.io"], "resources": ["volumesnapshotclasses"], "verbs": ["get"]}]
     assert set(ns_rule["resourceNames"]) == {
         "project-a",
         "cache",

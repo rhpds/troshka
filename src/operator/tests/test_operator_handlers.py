@@ -1600,9 +1600,9 @@ class TestStopAllVms:
         asyncio.run(_stop_all_vms(custom_api, "test-ns"))
 
         assert custom_api.patch_namespaced_custom_object.call_count == 2
-        # Verify it patched with running: False
+        # Remove deprecated power intent atomically when setting runStrategy.
         first_call = custom_api.patch_namespaced_custom_object.call_args_list[0]
-        assert first_call[1]["body"] == {"spec": {"running": False}}
+        assert first_call[1]["body"] == {"spec": {"running": None, "runStrategy": "Halted"}}
         assert first_call[1]["group"] == "kubevirt.io"
 
     def test_uses_fallback_name_when_no_status(self):
@@ -1623,7 +1623,7 @@ class TestStopAllVms:
         call_kwargs = custom_api.patch_namespaced_custom_object.call_args[1]
         assert call_kwargs["name"] == "troshka-vm-1"
 
-    def test_handles_patch_failure_gracefully(self):
+    def test_propagates_patch_failure(self):
         from handlers.project import _stop_all_vms
 
         custom_api = MagicMock()
@@ -1642,8 +1642,8 @@ class TestStopAllVms:
             "VM not found"
         )
 
-        # Should not raise — patches are wrapped in try/except
-        asyncio.run(_stop_all_vms(custom_api, "test-ns"))
+        with pytest.raises(Exception, match="VM not found"):
+            asyncio.run(_stop_all_vms(custom_api, "test-ns"))
 
 
 # ---------------------------------------------------------------------------
@@ -6404,7 +6404,7 @@ class TestRecreateKubevirtVm:
 
 
 class TestStopKubevirtVm:
-    def test_patches_running_false(self):
+    def test_patches_halted_strategy(self):
         from handlers.vm import _stop_kubevirt_vm
         from kubernetes.client import ApiException
 
@@ -6416,9 +6416,9 @@ class TestStopKubevirtVm:
 
         custom_api.patch_namespaced_custom_object.assert_called_once()
         body = custom_api.patch_namespaced_custom_object.call_args[1]["body"]
-        assert body == {"spec": {"running": False}}
+        assert body == {"spec": {"running": None, "runStrategy": "Halted"}}
 
-    def test_patch_failure_swallowed(self):
+    def test_patch_failure_propagated(self):
         from handlers.vm import _stop_kubevirt_vm
         from kubernetes.client import ApiException
 
@@ -6426,7 +6426,8 @@ class TestStopKubevirtVm:
         custom_api.patch_namespaced_custom_object.side_effect = Exception("fail")
         custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
+        with pytest.raises(Exception, match="fail"):
+            asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
 
 class TestDeleteRemovedDisksVm:
@@ -7197,6 +7198,16 @@ class TestVmDeleteHandler:
     decorator wraps the function in a MagicMock.  We extract the original
     async function from the mock's call_args to test it directly.
     """
+
+    @pytest.fixture(autouse=True)
+    def legacy_finalizer_context(self, monkeypatch):
+        # Exercise the real finalizer boundary against an unmarked legacy
+        # namespace; these old fixtures have no parent owner reference.
+        from helpers import managed_power
+
+        api = MagicMock()
+        api.get.return_value = {"metadata": {"name": "ns1", "annotations": {}}}
+        monkeypatch.setattr(managed_power, "PowerClient", lambda: api)
 
     @staticmethod
     def _get_vm_delete_fn():
@@ -8020,7 +8031,7 @@ class TestStopKubevirtVmExtended:
         asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
         custom_api.patch_namespaced_custom_object.assert_called_once()
 
-    def test_patch_exception_swallowed(self):
+    def test_patch_exception_propagated(self):
         from handlers.vm import _stop_kubevirt_vm
         from kubernetes.client import ApiException
 
@@ -8028,7 +8039,8 @@ class TestStopKubevirtVmExtended:
         custom_api.patch_namespaced_custom_object.side_effect = Exception("VM gone")
         custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
+        with pytest.raises(Exception, match="VM gone"):
+            asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
 
 class TestDeleteAndWaitForKubevirtVmExtended:
@@ -8409,7 +8421,7 @@ class TestStartKubevirtVmsExtended:
         assert count == 1
         custom_api.patch_namespaced_custom_object.assert_called_once()
         assert custom_api.patch_namespaced_custom_object.call_args[1]["body"] == {
-            "spec": {"runStrategy": "Always"}
+            "spec": {"running": None, "runStrategy": "Always"}
         }
 
     def test_skips_power_off_vm(self):
@@ -11171,9 +11183,13 @@ class TestConfigureStartup:
     """Tests for the @kopf.on.startup() handler in main.py."""
 
     @pytest.fixture(autouse=True)
-    def isolate_import_mocks(self):
+    def isolate_import_mocks(self, monkeypatch):
         # _load_configure replaces the Kubernetes module hierarchy. Keep those
         # replacements scoped to this test, including the call to configure().
+        from tests.test_managed_power import FakeAPI, resource
+
+        namespace_api = FakeAPI([resource("Namespace", "test-ns")])
+        monkeypatch.setattr("helpers.managed_power.PowerClient", lambda: namespace_api)
         with patch.dict(sys.modules):
             yield
 

@@ -194,6 +194,26 @@ def _project_allocation(
     )
 
 
+def _binding_retirement_ownership(
+    retirements, observations, nodes, ownership, failures
+):
+    for retirement in retirements:
+        project_id = retirement.root.project_id
+        if project_id not in nodes:
+            continue
+        for key in retirement.private_images:
+            nodes[project_id].add(key)
+            ownership[key].add(project_id)
+            image = observations.get(key)
+            if (
+                image is None
+                or image.absence is None
+                or image.measurement_status != "complete"
+                or image.collected_at < retirement.verified_at
+            ):
+                failures[project_id].add("binding_retirement_absence_unverified")
+
+
 def _pool_allocation(pool_key, keys, observations, blockers, authorized):
     applicable = [
         b
@@ -231,23 +251,67 @@ def _platform_pools(cache, observations, blockers, authorized):
     ]
 
 
-def attribute_graph(inventory, images, *, max_parent_depth=32, clone_lineages=()):
+def attribute_graph(
+    inventory,
+    images,
+    *,
+    max_parent_depth=32,
+    clone_lineages=(),
+    binding_retirements=(),
+    snapshot_facts=(),
+    project_cleanup_scopes=(),
+):
+    from app.services import native_snapshot_graph as snapshot_graph
     from app.services.native_clone_graph import authorize_graph
+    from app.services.native_project_retirement import verified_retirements
 
     observations, duplicates = _index_images(images)
+    terminal, terminal_errors = verified_retirements(
+        project_cleanup_scopes, inventory, images
+    )
+    live_snapshot_facts = snapshot_graph.live_facts(snapshot_facts, terminal)
     authorized, private, blockers = authorize_graph(
         inventory,
         {k: v for k, v in observations.items() if k not in duplicates},
         clone_lineages,
+        binding_retirements,
+        snapshot_edges=snapshot_graph.extra_edges(live_snapshot_facts),
     )
+    snapshot_authorized, snapshot_errors = snapshot_graph.authorize(
+        inventory,
+        {k: v for k, v in observations.items() if k not in duplicates},
+        snapshot_facts,
+        binding_retirements,
+        terminal,
+    )
+    authorized |= snapshot_authorized
+    blockers += snapshot_errors + terminal_errors
     inventory = inventory.model_copy(update={"blockers": inventory.blockers + blockers})
     cache = {b.image_key for b in inventory.cache_bindings} - private
     ownership, project_nodes, failures = _ownership(
         inventory, observations, cache, max_parent_depth, authorized
     )
+    _binding_retirement_ownership(
+        binding_retirements, observations, project_nodes, ownership, failures
+    )
+    snapshot_graph.add_ownership(
+        inventory,
+        observations,
+        live_snapshot_facts,
+        ownership,
+        project_nodes,
+        failures,
+        cache,
+        max_parent_depth,
+        authorized,
+    )
     authorized_absence = {
         key for root in inventory.retiring_roots for key in root.owned_images
     }
+    authorized_absence.update(
+        key for r in binding_retirements for key in r.private_images
+    )
+    authorized_absence.update(snapshot_graph.retired_images(snapshot_facts))
     authorized_absence.update(
         b.image_key
         for b in inventory.absent_cache_bindings

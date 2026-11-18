@@ -12,6 +12,23 @@ CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
 
 
+def set_kubevirt_vm_power(custom_api, namespace, name, *, running):
+    """Set modern power intent atomically, removing deprecated legacy intent.
+
+    A merge patch must remove ``running`` in the same update that sets
+    ``runStrategy``: KubeVirt rejects objects containing both fields.
+    Keep the caller's guarded client and propagate API/checkpoint failures.
+    """
+    return custom_api.patch_namespaced_custom_object(
+        group="kubevirt.io",
+        version="v1",
+        namespace=namespace,
+        plural="virtualmachines",
+        name=name,
+        body={"spec": {"running": None, "runStrategy": "Always" if running else "Halted"}},
+    )
+
+
 def storage_quantity_gi(quantity: str) -> int:
     """Parse a Kubernetes storage quantity into whole gibibytes."""
     if not quantity:

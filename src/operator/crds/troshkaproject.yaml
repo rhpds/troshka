@@ -15,7 +15,27 @@ spec:
             spec:
               type: object
               required: [projectId, topology, s3Config]
+              x-kubernetes-validations:
+                - rule: "has(self.originCheckpoint) == has(oldSelf.originCheckpoint)"
+                  message: "originCheckpoint must be supplied at creation and cannot be added or removed later"
               properties:
+                originCheckpoint:
+                  type: object
+                  required: [version, intentId, publicKey]
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: "originCheckpoint is immutable"
+                  properties:
+                    version:
+                      type: integer
+                      enum: [1]
+                    intentId:
+                      type: string
+                      format: uuid
+                    publicKey:
+                      type: string
+                      minLength: 44
+                      maxLength: 44
                 projectId:
                   type: string
                 topology:

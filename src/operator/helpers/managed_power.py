@@ -57,6 +57,10 @@ CLEANUP_KINDS = {
     "VolumeSnapshot": ("snapshot.storage.k8s.io/v1", "volumesnapshots"),
 }
 CLEANUP_ANNOTATION = GROUP + "/managed-cleanup"
+SNAPSHOT_READ_KINDS = {
+    "VolumeSnapshotContent": ("snapshot.storage.k8s.io/v1", "volumesnapshotcontents"),
+    "VolumeSnapshotClass": ("snapshot.storage.k8s.io/v1", "volumesnapshotclasses"),
+}
 INVENTORY = tuple(
     k
     for k in KINDS
@@ -66,6 +70,7 @@ _locks = {}
 _context: ContextVar[tuple[dict, str, Any] | None] = ContextVar(
     "managed_power_producer", default=None
 )
+_producer_body: ContextVar[dict | None] = ContextVar("origin_producer_body", default=None)
 
 
 class ManagedPowerError(ValueError):
@@ -268,6 +273,7 @@ def cleanup_grant_body(name, namespace):
     accounts = {
         "troshka-provider-namespaced": ("troshka", "troshka", "troshka-provider-namespaced"),
         "troshka-operator-namespaced": ("troshka-operator", "troshka-operator", "troshka-operator-namespaced"),
+        "troshka-origin-inventory": ("troshka", "troshka", "troshka-origin-inventory"),
         "troshka-storage-collector-namespaced": ("troshka-storage-collector", "troshka", "troshka-storage-collector-namespaced"),
         "system:deployers": ("deployer", namespace, "system:deployer"),
         "system:image-builders": ("builder", namespace, "system:image-builder"),
@@ -391,7 +397,8 @@ class PowerClient:
         return min(5, remaining)
 
     def request(self, method, kind, namespace, name=None, body=None, status=False, allow_absent=False):
-        version, plural = (KINDS | CLEANUP_KINDS)[kind]
+        require(kind not in SNAPSHOT_READ_KINDS or method == "GET", "snapshot_controller_resource_read_only")
+        version, plural = (KINDS | CLEANUP_KINDS | SNAPSHOT_READ_KINDS)[kind]
         prefix = "/api/" if version == "v1" else "/apis/"
         path = prefix + version
         if namespace is not None:
@@ -441,7 +448,7 @@ class PowerClient:
         return self.request("GET", kind, namespace, name, allow_absent=True)
 
     def rows(self, kind, namespace):
-        cluster_scoped = kind in {"Namespace", "PersistentVolume"}
+        cluster_scoped = kind in {"Namespace", "PersistentVolume"} or kind in SNAPSHOT_READ_KINDS
         require(
             namespace is None if cluster_scoped else isinstance(namespace, str) and bool(namespace),
             "managed_inventory_scope_invalid",
@@ -472,7 +479,7 @@ class PowerClient:
         return self.request(
             "PATCH",
             value["kind"],
-            meta["namespace"],
+            None if value["kind"] == "Namespace" else meta["namespace"],
             meta["name"],
             tests + changes,
             status=status,
@@ -504,13 +511,22 @@ def assert_running(namespace, owner_uid):
         "managed_producer_context_required",
     )
     root, _, api = context
+    from helpers.native_namespace_cleanup import assert_project_open
+
+    assert_project_open(api, namespace)
     current = root_for(root, namespace, api)
     require(intent(current) is None, "managed_producer_stopped")
+    if "originCheckpoint" in current.get("spec", {}):
+        from helpers.native_origin_drain import assert_open
+
+        assert_open(api, current, namespace)
 
 
 async def checked_await(awaitable):
     """Recheck external annotation changes after yielding during provisioning."""
-    result = await awaitable
+    from helpers.native_origin_drain import tracked_await
+
+    result = await tracked_await(awaitable)
     context = _context.get()
     if context is None:
         raise ManagedPowerError("managed_producer_context_required")
@@ -537,25 +553,43 @@ def producer(*, project=False, reconcile=False):
                     "metadata": bound["meta"],
                 }
             api = PowerClient()
+            from helpers.native_namespace_cleanup import assert_project_open
+
+            assert_project_open(api, namespace)
             root = root_for(body, namespace, api)
             key = root["metadata"]["uid"]
             async with _locks.setdefault(key, asyncio.Lock()):
+                assert_project_open(api, namespace)
                 root = root_for(body, namespace, api)
                 token = _context.set((root, namespace, api))
+                producer_token = _producer_body.set(body)
+                from helpers.native_origin_checkpoint import _held
+
+                hold_token = _held.set(None)
                 try:
-                    if (
-                        root.get("metadata", {}).get("annotations", {}).get(ANNOTATION)
-                        is not None
-                    ):
-                        reconcile_intent(api, root, reconcile)
-                        return None
-                    return await function(*args, **kwargs)
+                    return await _producer_dispatch(api, root, namespace, reconcile, function, args, kwargs)
                 finally:
+                    hold = _held.get()
+                    _held.reset(hold_token)
+                    _producer_body.reset(producer_token)
                     _context.reset(token)
+                    if hold is not None:
+                        raise hold
 
         return wrapped
 
     return decorate
+
+
+async def _producer_dispatch(api, root, namespace, reconcile, function, args, kwargs):
+    from helpers import native_origin_drain as drain
+
+    if drain.reconcile(api, root, namespace):
+        return None
+    if root.get("metadata", {}).get("annotations", {}).get(ANNOTATION) is not None:
+        reconcile_intent(api, root, reconcile)
+        return None
+    return await drain.execute(api, root, namespace, function, args, kwargs)
 
 
 def reconcile_intent(api, root, reconcile):

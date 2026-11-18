@@ -156,11 +156,18 @@ def test_ensure_repairs_each_node_database(monkeypatch, unavailable):
 
 def test_periodic_heal_does_not_block_operator_event_loop(monkeypatch):
     from handlers import network
+    from helpers import managed_power as power
+
+    from tests.test_managed_power import FakeAPI, resource
 
     monkeypatch.setattr(
         network.kopf.timer, "side_effect", lambda *a, **kw: lambda fn: fn
     )
     importlib.reload(network)
+    root = resource("TroshkaProject", "project")
+    child = resource("TroshkaNetwork", "net-abc", root)
+    monkeypatch.setattr(power, "PowerClient", lambda: FakeAPI([root, child, resource("Namespace", "troshka-x")]))
+    monkeypatch.setattr(power, "_locks", {})
     event_thread = threading.get_ident()
     worker_threads = []
 
@@ -171,7 +178,7 @@ def test_periodic_heal_does_not_block_operator_event_loop(monkeypatch):
     monkeypatch.setattr(network.client, "CoreV1Api", lambda: object())
     asyncio.run(
         network.network_nested_mac_ovn_timer(
-            spec={"allowNestedMacs": True}, name="net-abc", namespace="troshka-x"
+            spec={"allowNestedMacs": True}, name="net-abc", namespace="troshka-x", body=child
         )
     )
     assert len(worker_threads) == 1

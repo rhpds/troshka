@@ -479,6 +479,103 @@ def test_operator_upgrade_uses_release_tag_before_promotion(release, monkeypatch
     assert change[-1] == "operator=" + release.REGISTRY + "operator:vtest"
 
 
+def test_operator_identity_sync_preserves_unrelated_configuration(release, monkeypatch):
+    dep = deployment()
+    dep["spec"]["strategy"] = {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 1}}
+    dep["spec"]["template"]["spec"]["containers"][0] = {"name": "operator", "image": release.REGISTRY + "operator:production",
+        "env": [{"name": "EXISTING", "value": "keep"}], "resources": {"limits": {"cpu": "2"}}}
+    dep["spec"]["template"]["spec"]["containers"].append({"name": "sidecar", "image": "example.test/sidecar:latest"})
+    calls = []
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args))
+    assert release.sync_operator_identity("kc", dep)
+    patch = json.loads(calls[0][-1])
+    assert patch["spec"]["replicas"] == 1
+    assert patch["spec"]["strategy"] == {"type": "Recreate", "rollingUpdate": None}
+    assert set(patch["spec"]) == {"replicas", "strategy", "template"}
+    assert len(patch["spec"]["template"]["spec"]["containers"]) == 1
+    container = patch["spec"]["template"]["spec"]["containers"][0]
+    assert container["name"] == "operator" and "resources" not in container
+    assert {e["name"]: e["valueFrom"]["fieldRef"]["fieldPath"] for e in container["env"]} == {
+        "POD_NAME": "metadata.name", "POD_NAMESPACE": "metadata.namespace", "POD_UID": "metadata.uid"}
+    dep["spec"]["template"]["spec"]["containers"][0]["env"] += [
+        {k: v for k, v in entry.items() if k != "value"} for entry in container["env"]]
+    dep["spec"].update(replicas=1, strategy={"type": "Recreate"})
+    calls.clear()
+    assert not release.sync_operator_identity("kc", dep)
+    assert not calls
+
+
+def test_api_defaulted_identity_does_not_restart_current_operator(release, monkeypatch):
+    dep = deployment()
+    dep["spec"].update(replicas=1, strategy={"type": "Recreate"})
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    container["image"] = release.REGISTRY + "operator:production"
+    container["env"] = [{"name": key, "valueFrom": {"fieldRef": {"apiVersion": "v1", "fieldPath": path}}}
+                        for key, path in (("POD_NAME", "metadata.name"), ("POD_NAMESPACE", "metadata.namespace"),
+                                          ("POD_UID", "metadata.uid"))]
+    monkeypatch.setattr(release, "read_deployment", lambda *args: dep)
+    monkeypatch.setattr(release, "preflight_networks", lambda *args: None)
+    monkeypatch.setattr(release, "verify_live", lambda *args: None)
+    monkeypatch.setattr(release, "wait_rollout", lambda *args: pytest.fail("unexpected rollout"))
+    calls = []
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args))
+    release.update_deployment("kc", dep, {})
+    assert not calls
+
+
+@pytest.mark.parametrize("change", ["replicas", "strategy", "rollingUpdate"])
+def test_operator_rollout_contract_is_repaired_even_when_identity_and_image_are_current(release, monkeypatch, change):
+    dep = deployment()
+    dep["spec"].update(replicas=1, strategy={"type": "Recreate"})
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    container["image"] = release.REGISTRY + "operator:production"
+    container["env"] = [{"name": key, "valueFrom": {"fieldRef": {"apiVersion": "v1", "fieldPath": path}}}
+                        for key, path in (("POD_NAME", "metadata.name"), ("POD_NAMESPACE", "metadata.namespace"),
+                                          ("POD_UID", "metadata.uid"))]
+    if change == "replicas":
+        dep["spec"]["replicas"] = 2
+    elif change == "strategy":
+        dep["spec"].pop("strategy")  # API default is RollingUpdate.
+    else:
+        dep["spec"]["strategy"]["rollingUpdate"] = {"maxSurge": 1}
+    calls, waited = [], []
+    monkeypatch.setattr(release, "read_deployment", lambda *args: dep)
+    monkeypatch.setattr(release, "preflight_networks", lambda *args: None)
+    monkeypatch.setattr(release, "verify_live", lambda *args: None)
+    monkeypatch.setattr(release, "wait_rollout", lambda *args: waited.append(args))
+    monkeypatch.setattr(release, "oc", lambda *args: calls.append(args))
+    release.update_deployment("kc", dep, {"operator": "digest"})
+    patch = json.loads(next(call for call in calls if call[1] == "patch")[-1])
+    expected = {"replicas": 1} if change == "replicas" else {"strategy": {"type": "Recreate", "rollingUpdate": None}}
+    assert patch == {"spec": expected}
+    assert waited == [("kc", "troshka", "workers")]
+
+
+def test_non_operator_rollout_configuration_is_untouched(release, monkeypatch):
+    dep = deployment()
+    dep["spec"]["strategy"] = {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 1}}
+    monkeypatch.setattr(release, "oc", lambda *args: pytest.fail("unexpected patch"))
+    assert not release.sync_operator_identity("kc", dep)
+
+
+def test_operator_contract_patch_failure_aborts_before_image_update(release, monkeypatch):
+    dep = deployment()
+    dep["spec"]["template"]["spec"]["containers"][0]["image"] = release.REGISTRY + "operator:production"
+    monkeypatch.setattr(release, "read_deployment", lambda *args: dep)
+    monkeypatch.setattr(release, "preflight_networks", lambda *args: None)
+    calls = []
+
+    def denied(*args):
+        calls.append(args)
+        raise subprocess.CalledProcessError(1, "oc patch", stderr="Forbidden")
+
+    monkeypatch.setattr(release, "oc", denied)
+    monkeypatch.setattr(release, "verify_live", lambda *args: pytest.fail("patch failure was swallowed"))
+    with pytest.raises(subprocess.CalledProcessError):
+        release.update_deployment("kc", dep, {})
+    assert len(calls) == 1 and calls[0][1] == "patch"
+
+
 def helper_deployment(annotation=None, name="bmc"):
     dep = deployment()
     dep["metadata"].update(namespace="troshka-project", name=name)

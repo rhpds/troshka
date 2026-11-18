@@ -548,7 +548,10 @@ def extension(q, original_id, original, suffix):
         },
         projects=lambda name: [
             {
-                "metadata": {"uid": root.project_cr_uid},
+                "metadata": {
+                    "uid": root.project_cr_uid,
+                    "generation": root.deployment_generation,
+                },
                 "spec": {"projectId": str(root.project_id)},
             }
         ],
@@ -595,7 +598,10 @@ def test_managed_collector_first_extension_removes_only_bootstrap_marker(empty_c
         },
         projects=lambda name: [
             {
-                "metadata": {"uid": root.project_cr_uid},
+                "metadata": {
+                    "uid": root.project_cr_uid,
+                    "generation": root.deployment_generation,
+                },
                 "spec": {"projectId": str(root.project_id)},
             }
         ],

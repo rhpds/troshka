@@ -32,22 +32,29 @@ def test_fqdn_empty_when_no_dns_and_no_eip():
 
 def test_ensure_tls_letsencrypt_path():
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j"), patch.object(
-        ds,
-        "wait_for_job",
-        side_effect=[
-            {
-                "status": "completed",
-                "result": {"cert_path": "/f", "key_path": "/k", "mode": "letsencrypt"},
-            },
-            {"status": "completed", "result": {"pid": 1}},
-        ],
-    ), patch(
-        "app.services.dns_service.create_dns_records", return_value=[]
-    ) as mk_dns, patch.object(
-        ds,
-        "_resolve_showroom_dns_provider",
-        return_value=("route53", {"access_key_id": "AK"}),
+    with (
+        patch.object(ds, "start_job", return_value="j"),
+        patch.object(
+            ds,
+            "wait_for_job",
+            side_effect=[
+                {
+                    "status": "completed",
+                    "result": {
+                        "cert_path": "/f",
+                        "key_path": "/k",
+                        "mode": "letsencrypt",
+                    },
+                },
+                {"status": "completed", "result": {"pid": 1}},
+            ],
+        ),
+        patch("app.services.dns_service.create_dns_records", return_value=[]) as mk_dns,
+        patch.object(
+            ds,
+            "_resolve_showroom_dns_provider",
+            return_value=("route53", {"access_key_id": "AK"}),
+        ),
     ):
         url = ds._ensure_showroom_tls(
             MagicMock(), host, _proj(), {"nodes": []}, "1.2.3.4", 5, "troshka-abcdef12"
@@ -59,17 +66,25 @@ def test_ensure_tls_letsencrypt_path():
 def test_ensure_tls_sslip_letsencrypt_when_no_dns():
     """No project DNS zone → showroom.<eip>.sslip.io via HTTP-01 LE."""
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
-        ds,
-        "wait_for_job",
-        side_effect=[
-            {
-                "status": "completed",
-                "result": {"cert_path": "/f", "key_path": "/k", "mode": "letsencrypt"},
-            },
-            {"status": "completed", "result": {"pid": 1}},
-        ],
-    ), patch("app.services.dns_service.create_dns_records") as mk_dns:
+    with (
+        patch.object(ds, "start_job", return_value="j") as mk_start,
+        patch.object(
+            ds,
+            "wait_for_job",
+            side_effect=[
+                {
+                    "status": "completed",
+                    "result": {
+                        "cert_path": "/f",
+                        "key_path": "/k",
+                        "mode": "letsencrypt",
+                    },
+                },
+                {"status": "completed", "result": {"pid": 1}},
+            ],
+        ),
+        patch("app.services.dns_service.create_dns_records") as mk_dns,
+    ):
         url = ds._ensure_showroom_tls(
             MagicMock(),
             host,
@@ -113,20 +128,29 @@ def test_ensure_tls_passes_app_proxy_sans_for_iframes():
             }
         ]
     }
-    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
-        ds,
-        "wait_for_job",
-        side_effect=[
-            {
-                "status": "completed",
-                "result": {"cert_path": "/f", "key_path": "/k", "mode": "letsencrypt"},
-            },
-            {"status": "completed", "result": {"pid": 1}},
-        ],
-    ), patch("app.services.dns_service.create_dns_records"), patch.object(
-        ds,
-        "_resolve_showroom_dns_provider",
-        return_value=(None, {}),
+    with (
+        patch.object(ds, "start_job", return_value="j") as mk_start,
+        patch.object(
+            ds,
+            "wait_for_job",
+            side_effect=[
+                {
+                    "status": "completed",
+                    "result": {
+                        "cert_path": "/f",
+                        "key_path": "/k",
+                        "mode": "letsencrypt",
+                    },
+                },
+                {"status": "completed", "result": {"pid": 1}},
+            ],
+        ),
+        patch("app.services.dns_service.create_dns_records"),
+        patch.object(
+            ds,
+            "_resolve_showroom_dns_provider",
+            return_value=(None, {}),
+        ),
     ):
         ds._ensure_showroom_tls(
             MagicMock(), host, _proj(dns=False), topo, "1.2.3.4", 5, "troshka-abcdef12"
@@ -139,17 +163,25 @@ def test_ensure_tls_passes_app_proxy_sans_for_iframes():
 
 def test_ensure_tls_self_signed_fallback_url_is_eip():
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j"), patch.object(
-        ds,
-        "wait_for_job",
-        side_effect=[
-            {
-                "status": "completed",
-                "result": {"cert_path": "/f", "key_path": "/k", "mode": "self-signed"},
-            },
-            {"status": "completed", "result": {"pid": 1}},
-        ],
-    ), patch("app.services.dns_service.create_dns_records") as mk_dns:
+    with (
+        patch.object(ds, "start_job", return_value="j"),
+        patch.object(
+            ds,
+            "wait_for_job",
+            side_effect=[
+                {
+                    "status": "completed",
+                    "result": {
+                        "cert_path": "/f",
+                        "key_path": "/k",
+                        "mode": "self-signed",
+                    },
+                },
+                {"status": "completed", "result": {"pid": 1}},
+            ],
+        ),
+        patch("app.services.dns_service.create_dns_records") as mk_dns,
+    ):
         url = ds._ensure_showroom_tls(
             MagicMock(),
             host,
@@ -165,14 +197,17 @@ def test_ensure_tls_self_signed_fallback_url_is_eip():
 
 def test_teardown_stops_proxy_and_deletes_dns():
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j"), patch.object(
-        ds,
-        "wait_for_job",
-        return_value={"status": "completed", "result": {"stopped": True}},
-    ), patch(
-        "app.services.dns_service.delete_dns_records", return_value=[]
-    ) as mk_del, patch.object(
-        ds, "_resolve_showroom_dns_provider", return_value=("route53", {"x": 1})
+    with (
+        patch.object(ds, "start_job", return_value="j"),
+        patch.object(
+            ds,
+            "wait_for_job",
+            return_value={"status": "completed", "result": {"stopped": True}},
+        ),
+        patch("app.services.dns_service.delete_dns_records", return_value=[]) as mk_del,
+        patch.object(
+            ds, "_resolve_showroom_dns_provider", return_value=("route53", {"x": 1})
+        ),
     ):
         ds._teardown_showroom_tls(MagicMock(), host, _proj(), "1.2.3.4")
     mk_del.assert_called_once()
@@ -180,16 +215,20 @@ def test_teardown_stops_proxy_and_deletes_dns():
 
 def test_teardown_skips_dns_when_none():
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j"), patch.object(
-        ds, "wait_for_job", return_value={"status": "completed", "result": {}}
-    ), patch("app.services.dns_service.delete_dns_records") as mk_del, patch.object(
-        ds, "_resolve_showroom_dns_provider", return_value=(None, {})
+    with (
+        patch.object(ds, "start_job", return_value="j"),
+        patch.object(
+            ds, "wait_for_job", return_value={"status": "completed", "result": {}}
+        ),
+        patch("app.services.dns_service.delete_dns_records") as mk_del,
+        patch.object(ds, "_resolve_showroom_dns_provider", return_value=(None, {})),
     ):
         ds._teardown_showroom_tls(MagicMock(), host, _proj(dns=False), "1.2.3.4")
     mk_del.assert_not_called()
 
 
 def test_native_cr_creation_persists_showroom_token_before_launch(monkeypatch):
+    monkeypatch.setattr("app.services.native_deployment_origin.active", lambda *_: None)
     project = SimpleNamespace(deployed_topology={}, topology={}, vni_map={})
     topology = {"nodes": []}
     driver = MagicMock()
@@ -242,9 +281,10 @@ def test_maybe_setup_runs_for_cloud_with_showroom():
     sess = MagicMock()
     sess.get.return_value = prov
     topo = {"nodes": [{"type": "containerNode", "data": {"name": "showroom"}}]}
-    with patch(
-        "app.services.vxlan._topology_has_showroom", return_value=True
-    ), patch.object(ds, "_ensure_showroom_tls", return_value="https://x") as mk:
+    with (
+        patch("app.services.vxlan._topology_has_showroom", return_value=True),
+        patch.object(ds, "_ensure_showroom_tls", return_value="https://x") as mk,
+    ):
         ds._maybe_setup_showroom_tls(
             sess, host, topo, proj, [{"ip": "1.2.3.4"}], {"net": 5}
         )
@@ -267,9 +307,10 @@ def test_maybe_setup_does_not_leak_url_into_editable_topology():
     proj.deployed_topology = shared  # aliased to topology
     sess = MagicMock()
     sess.get.return_value = prov
-    with patch(
-        "app.services.vxlan._topology_has_showroom", return_value=True
-    ), patch.object(ds, "_ensure_showroom_tls", return_value="https://x"):
+    with (
+        patch("app.services.vxlan._topology_has_showroom", return_value=True),
+        patch.object(ds, "_ensure_showroom_tls", return_value="https://x"),
+    ):
         ds._maybe_setup_showroom_tls(
             sess, host, shared, proj, [{"ip": "1.2.3.4"}], {"net": 5}
         )
@@ -289,9 +330,10 @@ def test_maybe_setup_is_non_fatal_on_error():
     proj.deployed_topology = None
     sess = MagicMock()
     sess.get.return_value = prov
-    with patch(
-        "app.services.vxlan._topology_has_showroom", return_value=True
-    ), patch.object(ds, "_ensure_showroom_tls", side_effect=RuntimeError("boom")):
+    with (
+        patch("app.services.vxlan._topology_has_showroom", return_value=True),
+        patch.object(ds, "_ensure_showroom_tls", side_effect=RuntimeError("boom")),
+    ):
         # Must not raise.
         ds._maybe_setup_showroom_tls(
             sess,
@@ -307,8 +349,9 @@ def test_patch_live_showroom_ui_config_uses_containers_exec():
     """troshkad handler is containers/exec (plural) — singular 404s and leaves
     __TROSHKA_APP_PROXY__ unfilled in the iframe."""
     host = MagicMock()
-    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
-        ds, "wait_for_job", return_value={"status": "completed"}
+    with (
+        patch.object(ds, "start_job", return_value="j") as mk_start,
+        patch.object(ds, "wait_for_job", return_value={"status": "completed"}),
     ):
         ds._patch_live_showroom_ui_config(
             host, "d0969e66-4b50-45a7-be2b-d094ff48e2d6", "tabs: []\n"

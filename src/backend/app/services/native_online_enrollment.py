@@ -8,10 +8,14 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.models.native_custody import NativeCustodyReceipt, NativeCustodyRequest
+from app.models.native_custody import (
+    NativeCustodyReceipt,
+    NativeCustodyRequest,
+    NativeCustodySuccessor,
+)
 from app.models.project import Project
 from app.models.quota import QuotaAllocation, QuotaReservation
-from app.schemas.kubevirt_storage import VolumeBinding
+from app.schemas.kubevirt_storage import ProjectRoot, VolumeBinding
 from app.schemas.native_online_enrollment import (
     CustodyAttestation,
     PreparedCustody,
@@ -38,6 +42,7 @@ def prepare(
     *,
     accounting_only_project_ids=(),
     accounting_only_missing_object_uids=None,
+    binding_retirements=(),
 ):
     _disabled()
     request = enrollment.prepare_native_enrollment(db, project_ids)
@@ -66,6 +71,7 @@ def prepare(
         topologies=topologies,
         accounting_only_project_ids=accounting_only,
         retained_accounting_support=retained_support,
+        binding_retirements=list(binding_retirements),
     )
     db.add(
         NativeCustodyRequest(
@@ -126,11 +132,11 @@ def _retained_support_subset(current, support):
 
 
 def _accounting_owner_chain(value, root, by_uid, expected, module):
-    from helpers.native_custody import identity, stable
+    from helpers.native_custody import identity_matches, stable
 
     seen = set()
     while value["metadata"]["uid"] != root["metadata"]["uid"]:
-        if stable(value) and identity(value) in expected:
+        if stable(value) and any(identity_matches(value, pin) for pin in expected):
             return
         uid = value["metadata"]["uid"]
         module.require(uid not in seen, "managed_owner_cycle")
@@ -157,18 +163,13 @@ def _validate_retained_accounting(api, context, support):
     from app.services.quota_cleanup import _namespace_rows
 
     module = power.helpers()
-    from helpers.native_custody import identity, stable
-
     root = power._live_root(api, context, "custody-preflight")
     full = _namespace_rows(api, context["root"]["namespace"])
     values = [root] + [v for entries in full.values() for v in entries]
     module.require(len(values) <= 1000, "custody_inventory_limit")
     by_uid = {v["metadata"]["uid"]: v for v in values}
     module.require(len(by_uid) == len(values), "custody_duplicate_object_identity")
-    pins = sorted(
-        [identity(v) for v in values[1:] if stable(v)],
-        key=lambda v: (v["kind"], v["name"]),
-    )
+    pins = _cleanup_custody_pins(values[1:], support.objects)
     _retained_support_subset(pins, support)
     for value in values[1:]:
         module.require(
@@ -194,13 +195,55 @@ def _verify_namespace(kube, root, prepared, expected=None):
             "Accounting namespace changed during verification",
         )
         return result
+    return verify_namespace(
+        kube,
+        root,
+        expected=expected,
+        accounting_only=str(root.project_id) in prepared.accounting_only_project_ids,
+    )
+
+
+def verify_namespace(kube, root, *, expected=None, accounting_only=False):
+    """Read-only full custody verification without administrator identity input."""
+    context = {"root": root.model_dump(mode="json")}
     if expected is not None:
         context["cleanup_custody"] = expected
     return validate_namespace(
-        ReadOnlyManaged(kube),
-        context,
-        accounting_only=str(root.project_id) in prepared.accounting_only_project_ids,
+        ReadOnlyManaged(kube), context, accounting_only=accounting_only
     )
+
+
+def verify_namespace_ownership(kube, root, *, producers=()):
+    """Scoped retention checks ownership, without claiming settled runtime custody."""
+    from app.services.native_managed_power import helpers
+    from app.services.quota_cleanup import _namespace_rows
+
+    module = helpers()
+    api = ReadOnlyManaged(kube)
+    roots = kube.projects(root.namespace)
+    _require(len(roots) == 1, "Origin root inventory changed")
+    full = _namespace_rows(api, root.namespace)
+    children = [v for entries in full.values() for v in entries]
+    pins = _cleanup_custody_pins(children, [])
+    live = _custody_root(roots[0], pins, module)
+    values = [live, *children]
+    _require(len(values) <= 1000, "Origin inventory limit")
+    by_uid = {v["metadata"]["uid"]: v for v in values}
+    _require(len(by_uid) == len(values), "Origin duplicate object identity")
+    for value in children:
+        module.require(
+            value["kind"] != "VolumeSnapshot"
+            or any(
+                p.kind == "VolumeSnapshot"
+                and p.name == value["metadata"]["name"]
+                and p.uid == value["metadata"]["uid"]
+                for p in producers
+            ),
+            "custody_snapshot_unsupported",
+        )
+        if module.cleanup_bootstrap(value, by_uid) is None:
+            module.verify_chain(value, live, by_uid)
+    return pins
 
 
 def _custody_root(root, pins, module):
@@ -397,6 +440,22 @@ class ReadOnlyManaged:
         return self._reader.get(kind, namespace, name)
 
 
+def _cleanup_custody_pins(values, expected):
+    """Preserve receipt pins only for exact identities or verified restart drift."""
+    from helpers.native_custody import custody_identity, identity_matches, stable
+
+    by_name = {(pin["kind"], pin["name"]): pin for pin in expected}
+    pins = []
+    for value in values:
+        if not stable(value):
+            continue
+        pin = by_name.get((value["kind"], value["metadata"]["name"]))
+        pins.append(
+            pin if pin and identity_matches(value, pin) else custody_identity(value)
+        )
+    return sorted(pins, key=lambda pin: (pin["kind"], pin["name"]))
+
+
 def validate_namespace(api, context, *, accounting_only=False):
     """Reject unsupported or foreign namespace occupants before managed stop."""
     from app.services import native_managed_power as power
@@ -405,14 +464,12 @@ def validate_namespace(api, context, *, accounting_only=False):
     root = power._live_root(api, context, "custody-preflight")
     import json
 
-    from helpers.native_custody import identity, stable
-
     from app.services.quota_cleanup import _namespace_rows
 
     full = _namespace_rows(api, context["root"]["namespace"])
-    pins = sorted(
-        [identity(v) for entries in full.values() for v in entries if stable(v)],
-        key=lambda v: (v["kind"], v["name"]),
+    pins = _cleanup_custody_pins(
+        [v for entries in full.values() for v in entries],
+        context.get("cleanup_custody", []),
     )
     if "cleanup_custody" in context:
         expected = context["cleanup_custody"]
@@ -478,6 +535,33 @@ def preflight_cleanup(provider, rows, intent):
     power.with_client(provider, validate_namespace, context)
 
 
+def _storage_descriptors(kube, root):
+    """Seal selected Kubernetes storage without reusing CSI journal evidence."""
+    pvcs = kube.pvcs(root.namespace)
+    pvs = kube.pvs()
+    by_name = {v["metadata"]["name"]: v for v in pvs}
+    _require(len(by_name) == len(pvs), "Duplicate persistent volume identity")
+    names = [p.get("spec", {}).get("volumeName") for p in pvcs]
+    _require(all(name in by_name for name in names), "Custody selected PV missing")
+    rows = {"pvcs": pvcs, "pvs": [by_name[name] for name in names]}
+    descriptors = {}
+    for kind, values in rows.items():
+        sealed = []
+        for value in values:
+            metadata = deepcopy(value.get("metadata", {}))
+            metadata.pop("resourceVersion", None)
+            metadata.pop("managedFields", None)
+            sealed.append(
+                {
+                    "metadata": metadata,
+                    "spec": deepcopy(value.get("spec", {})),
+                    "phase": value.get("status", {}).get("phase"),
+                }
+            )
+        descriptors[kind] = sorted(sealed, key=enrollment.digest)
+    return descriptors
+
+
 def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation):
     prepared = PreparedCustody.model_validate(prepared)
     attestation = CustodyAttestation.model_validate(attestation)
@@ -535,8 +619,24 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
     ancestry = observe(
         bindings, next(iter(kube_readers.values())), backend, pins, manifest.verified_at
     )
+    descriptors = {}
+    if prepared.binding_retirements:
+        descriptors = {
+            str(root.project_id): _storage_descriptors(
+                kube_readers[providers[str(root.project_id)]], root
+            )
+            for root in pins.project_roots
+        }
+    retirement_observations = _verify_binding_retirements(
+        prepared, kube_readers, backend
+    )
     for root in pins.project_roots:
         kube = kube_readers[providers[str(root.project_id)]]
+        if prepared.binding_retirements:
+            _require(
+                _storage_descriptors(kube, root) == descriptors[str(root.project_id)],
+                "Custody storage descriptors changed during retirement verification",
+            )
         _require(
             _root(
                 kube,
@@ -549,6 +649,11 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
             "Custody root or storage binding changed during ancestry verification",
         )
         _verify_namespace(kube, root, prepared, object_identities[str(root.project_id)])
+        if prepared.binding_retirements:
+            _require(
+                _storage_descriptors(kube, root) == descriptors[str(root.project_id)],
+                "Custody storage descriptors changed during CSI verification",
+            )
     # Revalidate independently selected identities at completion. A bounded
     # read-only ancestry scan can exceed the short verify-to-apply freshness gate.
     manifest = enrollment.verify_native_enrollment(
@@ -560,15 +665,18 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
     ancestry = [
         p.model_copy(update={"verified_at": manifest.verified_at}) for p in ancestry
     ]
-    receipt = VerifiedCustody(
-        prepared=prepared,
-        enrollment=manifest,
-        attestation=attestation,
-        runtime_topologies=runtime_topologies,
-        object_identities=object_identities,
-        bindings=bindings,
-        ancestry=ancestry,
-        digest="0" * 64,
+    receipt = VerifiedCustody.model_validate(
+        dict(
+            prepared=prepared,
+            enrollment=manifest,
+            attestation=attestation,
+            runtime_topologies=runtime_topologies,
+            object_identities=object_identities,
+            bindings=bindings,
+            ancestry=ancestry,
+            binding_retirements=retirement_observations,
+            digest="0" * 64,
+        )
     )
     _validate_coverage(receipt)
     return receipt.model_copy(
@@ -578,6 +686,41 @@ def verify(prepared, kube_readers, backend_identity_reader, *, pins, attestation
             )
         }
     ).model_dump(mode="json")
+
+
+def _verify_binding_retirements(prepared, kube_readers, backend):
+    if not prepared.binding_retirements:
+        return []
+    from app.schemas.native_binding_retirement import PreparedBindingRetirement
+    from app.services.native_binding_retirement import verify_many
+
+    providers = {
+        str(p.project_id): str(p.provider_id) for p in prepared.request.projects
+    }
+    requests, selected_readers = [], {}
+    for item in prepared.binding_retirements:
+        retirement = PreparedBindingRetirement.model_validate(item["prepared"])
+        _require(
+            retirement.target_id == prepared.request.target_id,
+            "Binding retirement target changed",
+        )
+        provider_id = providers.get(str(retirement.binding.root.project_id))
+        _require(provider_id in kube_readers, "Binding retirement project changed")
+        requests.append(retirement)
+        selected_readers[provider_id] = kube_readers[provider_id]
+    _require(
+        len(selected_readers) == 1,
+        "Retirement verification requires one provider domain",
+    )
+    results = verify_many(requests, next(iter(selected_readers.values())), backend)
+    _require(len(results) == len(requests), "Retirement verification coverage changed")
+    return [
+        {
+            "reference": item["reference"],
+            "observation": result.observation.model_dump(mode="json"),
+        }
+        for item, result in zip(prepared.binding_retirements, results)
+    ]
 
 
 def _validated(value):
@@ -646,6 +789,10 @@ def _validate_coverage(receipt):
 def apply(db, verified, *, expected_target_id, preserve_existing=False):
     _disabled()
     receipt = _validated(verified)
+    _require(
+        not receipt.prepared.binding_retirements and not receipt.binding_retirements,
+        "Binding retirements require explicit custody reconciliation",
+    )
     _require(
         not receipt.prepared.retained_accounting_support or preserve_existing,
         "Retained accounting support requires preserving existing custody",
@@ -759,10 +906,16 @@ def _storage_enrollment(db, manifest, target_id):
 
 
 def _save(db, receipt, project_id, enrollment_id):
-    previous = (
-        db.query(NativeCustodyReceipt).filter_by(project_id=project_id).one_or_none()
-    )
-    if previous is not None:
+    from app.services.native_custody_reconciliation import effective
+
+    try:
+        current = effective(db, project_id)
+    except AccountingUnavailable as exc:
+        raise AccountingUnavailable(
+            "Existing custody differs; explicit reconciliation required"
+        ) from exc
+    if current is not None:
+        previous, _ = current
         _require(
             previous.digest == receipt.digest,
             "Existing custody differs; explicit reconciliation required",
@@ -781,12 +934,18 @@ def _save(db, receipt, project_id, enrollment_id):
     return row.id
 
 
-def retained(db, project):
-    row = db.query(NativeCustodyReceipt).filter_by(project_id=project.id).one_or_none()
-    if row is None:
+RetainedCustody = tuple[
+    NativeCustodyReceipt | NativeCustodySuccessor, VerifiedCustody, ProjectRoot
+]
+
+
+def retained(db, project, *, require_topology=True):
+    from app.services.native_custody_reconciliation import effective
+
+    current_receipt = effective(db, project.id)
+    if current_receipt is None:
         return None
-    receipt = _validated(row.payload["receipt"])
-    _require(receipt.digest == row.digest, "Stored custody digest changed")
+    row, receipt = current_receipt
     identities = [
         p for p in receipt.prepared.request.projects if str(p.project_id) == project.id
     ]
@@ -802,11 +961,15 @@ def retained(db, project):
         == identities[0].model_dump(exclude={"updated_at"}),
         "Custody owner/provider identity changed",
     )
-    _require(
-        operations.retained_topology(project)
-        == receipt.prepared.topologies[project.id],
-        "Custody retained topology changed",
-    )
+    # Cleanup targets the receipt's original root and storage identities, never
+    # the editable canvas. Live namespace custody is checked again before stop
+    # and deletion. Enrollment/reconciliation still require exact DB topology.
+    if require_topology:
+        _require(
+            operations.retained_topology(project)
+            == receipt.prepared.topologies[project.id],
+            "Custody retained topology changed",
+        )
     return row, receipt, roots[0]
 
 
@@ -814,7 +977,7 @@ def cleanup_anchor(db, project, rows):
     """Create a cleanup-only identity anchor, never observed zero compute usage."""
     if rows:
         return rows
-    custody = retained(db, project)
+    custody = retained(db, project, require_topology=False)
     if custody is None:
         return rows
     _disabled()
@@ -872,7 +1035,7 @@ def cleanup_anchor(db, project, rows):
 
 
 def namespace_authority(db, project, row):
-    custody = retained(db, project)
+    custody = retained(db, project, require_topology=False)
     if custody is None:
         raise AccountingUnavailable("Native custody receipt unavailable")
     receipt_row, receipt, root = custody
@@ -889,7 +1052,7 @@ def namespace_authority(db, project, row):
 def validate_cleanup_bindings(db, project, rows, bindings):
     if not any(row.dispatch_metadata.get("native_custody_id") for row in rows):
         return
-    custody = retained(db, project)
+    custody = retained(db, project, require_topology=False)
     if custody is None:
         raise AccountingUnavailable("Native custody receipt unavailable")
     _, receipt, root = custody

@@ -176,7 +176,7 @@ describe("environment lifecycle", () => {
     const denial = response({ detail: { reason: "resource_limit", scope: "organization", dimension: "ram_bytes", used: "8", reserved: "2", requested: "4", limit: "10" } }, 409);
     routes[`${base}/${state === "draft" ? "deploy" : "reconfigure"}`] = denial;
     await loaded(state); click(state === "draft" ? /Deploy$/ : "Apply Changes");
-    expect(await screen.findByText(/organization RAM bytes limit: used 8 \+ reserved 2, requested 4, limit 10/)).toBeVisible();
+    await waitFor(() => expect(screen.getByText(/organization RAM bytes limit: used 8 \+ reserved 2, requested 4, limit 10/)).toBeVisible());
     expect(screen.queryByText("reconfiguring")).not.toBeInTheDocument();
   });
   it("confirms stopping an active environment", async () => {
@@ -221,6 +221,7 @@ describe("environment lifecycle", () => {
     expect(calls).toHaveBeenCalledWith(`${base}/start`, { method: "POST" });
   });
   it("undeploys back to editable draft", async () => {
+    routes[`${base}/undeploy`] = response({ status: "draft" });
     await loaded("stopped"); click("Undeploy");
     expect(await screen.findByRole("button", { name: /Deploy$/ })).toBeInTheDocument();
     expect(calls).toHaveBeenCalledWith(`${base}/undeploy`, { method: "POST" });
@@ -499,13 +500,24 @@ describe("reconfiguration and budget", () => {
     await waitFor(() => expect(calls).toHaveBeenCalledWith(`${base}/vms/paused/unpause`, { method: "POST" }));
     expect(calls).toHaveBeenCalledWith(`${base}/vms/sleeping/start`, { method: "POST" });
   });
-  it("deletes after confirmation and clears the deletion marker", async () => {
+  it("keeps the canvas and shows rejected deletion", async () => {
+    await loaded();
+    routes[`DELETE ${base}`] = response({ detail: { message: "Ownership check failed" } }, 409);
+    localStorage.setItem("troshka-canvas-project-1", "saved");
+    click("Delete");
+    const buttons = screen.getAllByRole("button", { name: "Delete" });
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(await screen.findByText("Ownership check failed")).toBeInTheDocument();
+    expect(harness.push).not.toHaveBeenCalledWith("/projects");
+    expect(localStorage.getItem("troshka-canvas-project-1")).toBe("saved");
+  });
+  it("navigates after accepted deletion without leaving a deletion marker", async () => {
     await loaded(); click("Delete");
     const buttons = screen.getAllByRole("button", { name: "Delete" });
     fireEvent.click(buttons[buttons.length - 1]);
     await waitFor(() => expect(calls).toHaveBeenCalledWith(base, { method: "DELETE" }));
-    await waitFor(() => expect(localStorage.getItem("troshka-deleting-projects")).toBe("[]"));
-    expect(harness.push).toHaveBeenCalledWith("/projects");
+    await waitFor(() => expect(harness.push).toHaveBeenCalledWith("/projects"));
+    expect(localStorage.getItem("troshka-deleting-projects")).toBeNull();
   });
 });
 

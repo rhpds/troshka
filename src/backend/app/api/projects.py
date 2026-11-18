@@ -619,6 +619,9 @@ def create_project(
         poweroff_mode=body.poweroff_mode,
     )
     db.add(project)
+    from app.services.native_deployment_preflight import record_fresh_project
+
+    record_fresh_project(db, project)
     db.commit()
     db.refresh(project)
     return project
@@ -1057,6 +1060,9 @@ def create_project_from_template(
         project.clock_target = ct
 
     db.add(project)
+    from app.services.native_deployment_preflight import record_fresh_project
+
+    record_fresh_project(db, project)
     db.commit()
     db.refresh(project)
     return {"id": project.id, "name": project.name, "warnings": warnings}
@@ -2302,12 +2308,16 @@ def _persist_placement_and_enqueue(
         {"quota_operation_id": quota_operation_id} if quota_operation_id else {}
     )
     from app.core.redis import DEPLOY_JOB_TIMEOUT
+    from app.services.native_deployment_preflight import prepare_dispatch
+
+    attempt_id = prepare_dispatch(db, project)
 
     enqueue_job(
         deploy_project_async,
         project.id,
         project_id=project.id,
         job_timeout=DEPLOY_JOB_TIMEOUT,
+        native_attempt_id=attempt_id,
         **quota_kwargs,
     )
 
@@ -4535,6 +4545,9 @@ def _deploy_added_vms_kubevirt(
         vm_cr = _build_kubevirt_troshkavm_cr(
             cr_name, ns, p_id, vm_spec, owner_refs, labels
         )
+        from app.services.native_origin_checkpoints import protocol
+
+        protocol().mark_child(project_cr, vm_cr)
         try:
             _create_troshkavm_cr(custom_api, ns, vm_cr)
             logger.info("Reconfigure %s: created TroshkaVM %s", p_id[:8], cr_name)
@@ -4672,6 +4685,12 @@ def _poll_kubevirt_vms_once(custom_api, ns, pending: set, proj, s, p_id: str):
         return False, None
 
 
+def _origin_wait_options(project_cr):
+    if (project_cr or {}).get("spec", {}).get("originCheckpoint"):
+        return {"deadline_secs": 1800, "require_settled": True}
+    return {}
+
+
 def _wait_kubevirt_vms_ready(
     custom_api,
     ns,
@@ -4680,6 +4699,7 @@ def _wait_kubevirt_vms_ready(
     s,
     changed_cr_names=None,
     deadline_secs=300,
+    require_settled=False,
 ):
     """Poll TroshkaVM CRs until all are ready. Returns error string or None."""
     import time
@@ -4694,8 +4714,12 @@ def _wait_kubevirt_vms_ready(
         if err:
             return err
         if all_ready:
-            break
+            return None
         time.sleep(5)
+    if require_settled:
+        raise RuntimeError(
+            "Native origin checkpoint or VM reconciliation remains pending"
+        )
     return None
 
 
@@ -4713,6 +4737,10 @@ def _apply_kubevirt_vm_changes(
     for node in diff.get("removed_vms", []):
         vm_id = node["id"]
         cr_name = f"vm-{vm_id[:8]}"
+        from app.services.native_origin_checkpoints import remove_child
+
+        if remove_child(custom_api, ns, cr_name, p_id):
+            continue
         try:
             custom_api.delete_namespaced_custom_object(
                 group=_TROSHKA_DOMAIN,
@@ -4744,6 +4772,11 @@ def _apply_kubevirt_vm_changes(
             prev_cpu = (existing.get("spec") or {}).get("cpuHostModel")  # type: ignore[union-attr]
             if prev_cpu and not vm_spec.get("cpuHostModel"):
                 vm_spec["cpuHostModel"] = prev_cpu
+            from app.services.native_origin_checkpoints import (
+                preserve_child_participation,
+            )
+
+            preserve_child_participation(existing, vm_spec)
             existing["spec"] = vm_spec  # type: ignore[index]
             custom_api.replace_namespaced_custom_object(
                 group=_TROSHKA_DOMAIN,
@@ -5167,6 +5200,8 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             custom_api, ns, p_id, current, deployed, diff, project_cr, errors
         )
 
+        # Origin verification runs outside this producer's database transaction.
+        s.commit()
         _apply_kubevirt_vm_changes(
             custom_api, ns, p_id, diff, changed_vm_ids, current_vms, current
         )
@@ -5184,7 +5219,13 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             )
         wait_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids] + added_cr_names
         if _wait_kubevirt_vms_ready(
-            custom_api, ns, p_id, proj, s, changed_cr_names=wait_cr_names
+            custom_api,
+            ns,
+            p_id,
+            proj,
+            s,
+            changed_cr_names=wait_cr_names,
+            **_origin_wait_options(project_cr),
         ):
             return
 
@@ -6625,9 +6666,14 @@ def _kubevirt_vm_was_running(
         return True
 
 
-def _delete_troshkavm_cr(custom_api, ns: str, cr_name: str) -> None:
+def _delete_troshkavm_cr(custom_api, ns: str, cr_name: str) -> bool:
     """Delete a TroshkaVM CR so the operator tears down disks and the KubeVirt VM."""
     from kubernetes.client.exceptions import ApiException
+
+    from app.services.native_origin_checkpoints import remove_child
+
+    if remove_child(custom_api, ns, cr_name):
+        return True
 
     try:
         custom_api.delete_namespaced_custom_object(
@@ -6640,6 +6686,7 @@ def _delete_troshkavm_cr(custom_api, ns: str, cr_name: str) -> None:
     except ApiException as e:
         if e.status != 404:
             raise
+    return False
 
 
 def _wait_troshkavm_deleted(
@@ -6877,8 +6924,11 @@ def _execute_kubevirt_vm_redeploy(
     labels = existing_meta.get("labels")
     pvc_names = _kubevirt_redeploy_pvc_names(cr_name, vm_spec)
 
-    _delete_troshkavm_cr(custom_api, ns, cr_name)
-    _wait_troshkavm_deleted(custom_api, ns, cr_name)
+    s.commit()
+    origin_removal = _delete_troshkavm_cr(custom_api, ns, cr_name)
+    _wait_troshkavm_deleted(
+        custom_api, ns, cr_name, timeout=1800 if origin_removal else 120
+    )
     _redeploy_progress[dom] = {
         "step": "preparing",
         "detail": "waiting for disk cleanup",
@@ -6887,6 +6937,10 @@ def _execute_kubevirt_vm_redeploy(
 
     _redeploy_progress[dom] = {"step": "creating", "detail": "provisioning disks"}
     vm_cr = _build_kubevirt_troshkavm_cr(cr_name, ns, p_id, vm_spec, owner_refs, labels)
+    from app.services.native_origin_checkpoints import mark_replacement_child
+
+    if origin_removal:
+        mark_replacement_child(custom_api, ns, vm_cr)
     _create_troshkavm_cr(custom_api, ns, vm_cr)
 
     final_state = _wait_troshkavm_redeploy_ready(custom_api, ns, cr_name, dom)

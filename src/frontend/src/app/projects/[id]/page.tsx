@@ -43,6 +43,7 @@ import {
   type OcpRedeployMode,
 } from "@/lib/redeployOcp";
 import { formatApiDetail } from "@/lib/apiError";
+import { requestProjectDeletion } from "@/lib/projectDeletion";
 import { decimalCompare, fetchUsage, formatQuotaError, isQuotaRevocation, QuotaUsageData, saveLimits } from "@/lib/quotas";
 import QuotaScope from "@/components/quotas/QuotaScope";
 import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
@@ -2643,18 +2644,16 @@ showWorkloadModal && (
           confirmLabel="Delete"
           variant="danger"
           onCancel={() => setShowDeleteModal(false)}
-          onConfirm={() => {
+          onConfirm={async () => {
             setShowDeleteModal(false);
-            setProjectState("deleting");
-            localStorage.removeItem(`troshka-canvas-${projectId}`);
-            const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
-            deleting.push(projectId);
-            localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
-            router.push("/projects");
-            fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
-              const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
-              localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
-            });
+            try {
+              const status = await requestProjectDeletion(`/api/v1/projects/${projectId}`);
+              setProjectState(status === "cleanup_pending" ? status : "deleting");
+              localStorage.removeItem(`troshka-canvas-${projectId}`);
+              router.push("/projects");
+            } catch (error) {
+              setAlertMsg(error instanceof Error ? error.message : "Delete request failed");
+            }
           }}
         />
       )}

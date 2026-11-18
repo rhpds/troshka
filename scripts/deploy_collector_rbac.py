@@ -128,6 +128,11 @@ def render(domain, owners):
             "resources": ["volumesnapshotcontents"],
             "verbs": ["get", "list"],
         },
+        {
+            "apiGroups": ["snapshot.storage.k8s.io"],
+            "resources": ["volumesnapshotclasses"],
+            "verbs": ["get"],
+        },
     ]
     objects.extend(
         [

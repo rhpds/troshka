@@ -7,11 +7,20 @@ The normal graph checks remain responsible for current mutable edge validation.
 from collections import defaultdict
 from functools import partial
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 from app.schemas.kubevirt_storage import CollectionLimits
 from app.schemas.native_online_enrollment import CurrentAncestryCustody
-from app.services.kubevirt_storage_collector import _call, _graph_metadata
+from app.services.kubevirt_storage_collector import (
+    _call,
+    _graph_metadata,
+    _source_metadata,
+)
 from app.services.kubevirt_storage_enrollment import root_key
+
+if TYPE_CHECKING:
+    from app.services.native_custody_reconciliation import EffectiveCustody
+    from app.services.native_online_enrollment import RetainedCustody
 
 
 def verify_csi_intermediate(backend, binding, intermediate, pv):
@@ -136,7 +145,7 @@ def _sources(kube, pins):
     return result
 
 
-def observe(bindings, kube, backend, pins, verified_at):
+def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
     """Pin supported exact source -> intermediate -> bound-head current chains."""
     pools = _call(backend.pool_identity).value
     _require(
@@ -148,8 +157,10 @@ def observe(bindings, kube, backend, pins, verified_at):
         head = binding.image_key
         observed[head] = _metadata(backend, head, pools)
         _, parent, snaps, children = observed[head]
+        edges = (snapshot_edges or {}).get(head, {})
         _require(
-            not snaps and not children, "Custody head has foreign snapshots or children"
+            snaps == set(edges) and children == set(edges.values()),
+            "Custody head has foreign snapshots or children",
         )
         if parent is None:
             continue
@@ -191,40 +202,51 @@ def observe(bindings, kube, backend, pins, verified_at):
                 verified_at=verified_at,
             )
         )
-    _validate_sources(proofs, backend, pools, observed)
+    sources = _validate_sources(proofs, backend, pools)
     _require(
         all(_metadata(backend, key, pools) == value for key, value in observed.items()),
         "Custody ancestry changed during verification",
+    )
+    _require(
+        sources == _validate_sources(proofs, backend, pools),
+        "Custody source ancestry changed during verification",
     )
     if caches is not None:
         _require(caches == _sources(kube, pins), "Custody source binding changed")
     return proofs
 
 
-def _validate_sources(proofs, backend, pools, observed):
-    snapshots, children = defaultdict(set), defaultdict(set)
+def _validate_sources(proofs, backend, pools):
+    snapshots, expected = defaultdict(set), {}
     for proof in proofs:
         snapshots[proof.source.image_key].add(proof.intermediate_parent)
-        children[proof.source.image_key].add(proof.intermediate)
+        _require(proof.intermediate_parent not in expected, "Shared source snapshot")
+        expected[proof.intermediate_parent] = proof.intermediate
     _require(
         len({p.intermediate for p in proofs}) == len(proofs),
         "Shared private intermediate",
     )
-    for key in snapshots:
-        observed[key] = _metadata(backend, key, pools)
-        _, parent, current_snaps, current_children = observed[key]
+    observed = {}
+    for key, selected in snapshots.items():
+        observed[key] = _source_metadata(
+            backend, key, selected, pools, CollectionLimits()
+        )
+        _, parent, entries = observed[key]
         _require(
             parent is None
-            and current_snaps == snapshots[key]
-            and current_children == children[key],
+            and all(
+                e.present and set(e.children) == {expected[e.snapshot]} for e in entries
+            ),
             "Custody source has unverified edges",
         )
+    return observed
 
 
 def resolve(db, manifest, retired):
     """Load only protected DB custody, never caller-supplied collector proof data."""
     from app.models.native_custody import NativeCustodyReceipt
     from app.models.project import Project
+    from app.services.native_custody_reconciliation import effective
     from app.services.native_online_enrollment import retained
 
     result = []
@@ -234,10 +256,9 @@ def resolve(db, manifest, retired):
         if raw["pins"]["domain_id"] != str(manifest.pins.domain_id):
             continue
         project = db.get(Project, row.project_id)
-        # Settled projects may have been removed; never revive their authority.
-        from app.schemas.native_online_enrollment import VerifiedCustody
-
-        receipt = VerifiedCustody.model_validate(row.payload["receipt"])
+        # A successor can introduce the first ancestry proof. Resolve it before
+        # deciding that the project has nothing to account for.
+        _, receipt = cast("EffectiveCustody", effective(db, row.project_id))
         own = [
             p
             for p in receipt.ancestry
@@ -247,7 +268,20 @@ def resolve(db, manifest, retired):
         if not own:
             continue
         _require(project is not None, "Custody project missing before settlement")
-        retained(db, project)
+        if TYPE_CHECKING:
+            assert project is not None
+        # Proven disk ancestry belongs to the attested root and immutable image
+        # identities, not the editable canvas. Keep receipt/owner/provider checks;
+        # current storage graph validation still checks the original bindings.
+        _, receipt, _ = cast(
+            "RetainedCustody", retained(db, project, require_topology=False)
+        )
+        own = [
+            p
+            for p in receipt.ancestry
+            if str(p.binding.root.project_id) == row.project_id
+            and root_key(p.binding.root) not in retired
+        ]
         _require(
             receipt.enrollment.request.target_id == manifest.request.target_id,
             "Custody target changed",
@@ -264,4 +298,6 @@ def resolve(db, manifest, retired):
                 "Custody ancestry scope changed",
             )
             result.append(proof)
-    return result
+    from app.services.native_origin_custody import resolve_ancestry
+
+    return result + resolve_ancestry(db, manifest, retired)

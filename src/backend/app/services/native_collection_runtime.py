@@ -5,13 +5,17 @@ from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from app.core.config import config
 from app.core.database import SessionLocal
 from app.models.provider import Provider
-from app.schemas.kubevirt_storage import BackendScope, CollectionLimits
+from app.schemas.kubevirt_storage import (
+    BackendScope,
+    BindingRetirementEvidence,
+    CollectionLimits,
+)
 from app.services.kubevirt_storage_inventory import (
     KubernetesReader,
     read_static_kubeconfig,
@@ -60,11 +64,13 @@ def profile_for(domain_id, *, readiness=False):
     )
 
 
-def run_collection(domain_id, project_id=None):
+def run_collection(domain_id, project_id=None, *, observation_only=False):
     """IDs only; credentials and authority come from administrator configuration."""
     domain_id = str(UUID(str(domain_id)))
     if project_id is not None:
         project_id = str(UUID(str(project_id)))
+    if observation_only and project_id is None:
+        raise ValueError("Observation refresh requires one project")
     started = datetime.now(UTC)
     try:
         args = profile_for(domain_id)
@@ -73,7 +79,11 @@ def run_collection(domain_id, project_id=None):
             raise ValueError("protected collection domain mismatch")
         with SessionLocal() as db:
             report = collect_configured(
-                db, args, project_id=project_id, coordinate_only=project_id is None
+                db,
+                args,
+                project_id=project_id,
+                coordinate_only=project_id is None,
+                **({"observation_only": True} if observation_only else {}),
             )
             if report is None:
                 return "shared observation published"
@@ -238,8 +248,16 @@ def coordinate(
 
 
 def collect_configured(
-    db, args, *, project_id=None, coordinate_only=False, readiness_only=False
+    db,
+    args,
+    *,
+    project_id=None,
+    coordinate_only=False,
+    readiness_only=False,
+    observation_only=False,
 ):
+    if observation_only and (project_id is None or coordinate_only or readiness_only):
+        raise ValueError("Observation refresh requires one project")
     from sqlalchemy.orm import sessionmaker
 
     from app.services.kubevirt_storage_collector import collect_report
@@ -345,6 +363,27 @@ def collect_configured(
             from app.services.native_managed_verification import lineage_inputs
 
             references, lineages = lineage_inputs(sessions, manifest)
+            from app.services.native_binding_retirement_collection import (
+                protected_inputs,
+                scan_evidence,
+            )
+
+            with sessions() as db:
+                retirement_values = protected_inputs(
+                    db, manifest, project_id=project_id, lineages=lineages
+                )
+                from app.services.native_snapshot_graph import (
+                    resolve as resolve_snapshots,
+                )
+
+                snapshot_facts = resolve_snapshots(db, manifest, retired=retired)
+            kube.snapshot_facts = snapshot_facts
+            lineages += [
+                v.prepared.ancestry
+                for _, v in retirement_values
+                if v.prepared.ancestry is not None
+            ]
+            retirement_evidence: list[BindingRetirementEvidence] | None = None
             # Resolve only protected sources needed by this project. Full domain
             # scans still discover every cache PVC. Keep all sibling lineage
             # proofs below so source-edge validation remains complete.
@@ -358,7 +397,23 @@ def collect_configured(
                 )
 
             def discover():
+                nonlocal retirement_evidence
                 inventory = discover_inventory(kube, retained, roots)
+                fresh_retirements = scan_evidence(
+                    retirement_values,
+                    inventory,
+                    kube,
+                    backend,
+                    manifest.pins.project_roots,
+                )
+                if retirement_evidence is None:
+                    retirement_evidence = fresh_retirements
+                elif [e.reference for e in retirement_evidence] != [
+                    e.reference for e in fresh_retirements
+                ]:
+                    raise ValueError(
+                        "Binding retirement scope changed during collection"
+                    )
                 if project_id is not None:
                     sources = {
                         p.source.image_key
@@ -391,6 +446,7 @@ def collect_configured(
                             pool_keys=manifest.pins.pool_keys,
                         ),
                         "clone_references": references,
+                        "binding_retirements": retirement_evidence,
                     }
                 )
 
@@ -402,6 +458,14 @@ def collect_configured(
                 limits=limits,
                 clock=lambda: datetime.now(UTC),
                 clone_lineages=lineages,
+                binding_retirements=[
+                    e.observation
+                    for e in cast(list[BindingRetirementEvidence], retirement_evidence)
+                ],
+                snapshot_facts=snapshot_facts,
+                project_cleanup_scopes=[
+                    r for r in retiring if r.version == "native-project-namespace-v1"
+                ],
             )
 
         report = cycle(
@@ -413,5 +477,6 @@ def collect_configured(
             backend,
             collect,
             project_id=project_id,
+            **({"observation_only": True} if observation_only else {}),
         )
         return report

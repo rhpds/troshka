@@ -133,7 +133,12 @@ def test_redeploy_falls_back_to_operator_power_state(monkeypatch, result, expect
 
 
 @pytest.mark.parametrize("operation,ignored", [("delete", 404), ("create", 409)])
-def test_cr_mutations_are_idempotent_only_for_expected_status(operation, ignored):
+def test_cr_mutations_are_idempotent_only_for_expected_status(
+    operation, ignored, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.services.native_origin_checkpoints.remove_child", lambda *args: False
+    )
     client = Mock()
     method = getattr(client, f"{operation}_namespaced_custom_object")
     fn = api._delete_troshkavm_cr if operation == "delete" else api._create_troshkavm_cr
@@ -214,3 +219,74 @@ def test_redeploy_ready_surfaces_operator_error_and_timeout(fake_clock, monkeypa
     client.get_namespaced_custom_object.return_value = {}
     with pytest.raises(TimeoutError, match="not ready"):
         api._wait_troshkavm_redeploy_ready(client, "ns", "cr", "domain", timeout=4)
+
+
+def test_origin_reconfigure_timeout_does_not_report_settled(monkeypatch):
+    import time
+
+    from app.api import projects
+    from app.services import deploy_service
+
+    clock = iter([0, 2000, 2000, 2000])
+    monkeypatch.setattr(time, "time", lambda: next(clock))
+    monkeypatch.setattr(deploy_service, "_set_deploy_progress", lambda *args: None)
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        projects._wait_kubevirt_vms_ready(
+            None, "ns", "project", None, None, deadline_secs=1800, require_settled=True
+        )
+
+
+def test_added_origin_child_marked_before_post(monkeypatch):
+    root = {
+        "apiVersion": "troshka.redhat.com/v1alpha1",
+        "kind": "TroshkaProject",
+        "metadata": {"name": "project", "uid": "root-uid"},
+        "spec": {"originCheckpoint": {"intentId": "original-intent"}},
+    }
+    monkeypatch.setattr(api, "_build_kubevirt_vm_spec", lambda *args: {"disks": []})
+    custom = Mock()
+
+    def post(**kwargs):
+        body = kwargs["body"]
+        assert body["spec"]["originCheckpointIntent"] == "original-intent"
+        assert body["metadata"]["ownerReferences"][0]["uid"] == "root-uid"
+        assert body["spec"] == {
+            "disks": [],
+            "originCheckpointIntent": "original-intent",
+        }
+
+    custom.create_namespaced_custom_object.side_effect = post
+    assert api._deploy_added_vms_kubevirt(
+        custom,
+        "external-ns",
+        "project-id",
+        {},
+        [{"id": "vm-id"}],
+        {"vm-id": {"name": "vm"}},
+        root,
+        [],
+    ) == ["vm-vm-id"]
+    custom.create_namespaced_custom_object.assert_called_once()
+
+
+@pytest.mark.parametrize("origin", [True, False])
+def test_vm_reconfigure_preserves_original_participation(monkeypatch, origin):
+    custom = Mock()
+    spec = {"cpus": 2}
+    if origin:
+        spec["originCheckpointIntent"] = "original-intent"
+    custom.get_namespaced_custom_object.return_value = {
+        "metadata": {"uid": "child"},
+        "spec": spec,
+    }
+    monkeypatch.setattr(api, "_build_kubevirt_vm_spec", lambda *args: {"cpus": 4})
+    api._apply_kubevirt_vm_changes(
+        custom, "ns", "project", {}, ["vm-id"], {"vm-id": {"name": "vm"}}, {}
+    )
+    updated = custom.replace_namespaced_custom_object.call_args.kwargs["body"]["spec"]
+    expected = (
+        {"cpus": 4, "originCheckpointIntent": "original-intent"}
+        if origin
+        else {"cpus": 4}
+    )
+    assert updated == expected

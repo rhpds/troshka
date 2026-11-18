@@ -15,7 +15,16 @@ spec:
             spec:
               type: object
               required: [vmId, name, cpus, memory]
+              x-kubernetes-validations:
+                - rule: "has(self.originCheckpointIntent) == has(oldSelf.originCheckpointIntent)"
+                  message: "originCheckpointIntent must be supplied at creation and cannot be added or removed later"
               properties:
+                originCheckpointIntent:
+                  type: string
+                  format: uuid
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: "originCheckpointIntent is immutable"
                 vmId:
                   type: string
                 name:

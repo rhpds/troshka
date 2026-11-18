@@ -22,7 +22,9 @@ def legacy_producer_context(monkeypatch):
     from helpers import managed_power
 
     root = {"kind": "TroshkaProject", "metadata": {"name": "legacy", "uid": "legacy-uid"}}
-    monkeypatch.setattr(managed_power, "PowerClient", lambda: object())
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(managed_power, "PowerClient", lambda: SimpleNamespace(get=lambda *args: {"metadata": {}}))
     monkeypatch.setattr(managed_power, "root_for", lambda *args: root)
 
 

@@ -9,6 +9,8 @@ metadata:
     app.kubernetes.io/component: backend
 data:
   config.yaml: |
+    native_origin:
+      capture_enabled: {{ .Values.nativeOrigin.captureEnabled }}
     native_collection:
       enabled: {{ .Values.nativeCollection.enabled }}
       interval_seconds: {{ .Values.nativeCollection.intervalSeconds }}

@@ -31,6 +31,7 @@ from helpers.ceph_appliance import (
 )
 from helpers.k8s import CRD_GROUP, CRD_VERSION
 from helpers.managed_power import producer as managed_producer
+from helpers.native_origin_drain import FenceClient
 from helpers.rook_ceph import (
     discover_ceph_image,
     normalize_ceph_counts,
@@ -159,7 +160,7 @@ def _update_ceph_ready_phase(patch, apps_api, core_api, body, namespace, osd_cou
         patch.status["phase"] = "Progressing"
         patch.status["message"] = "Waiting for Ceph mon/OSD pods"
         return
-    batch_api = client.BatchV1Api()
+    batch_api = FenceClient(client.BatchV1Api())
     ensure_ceph_export_job(batch_api, body, namespace)
     if ceph_external_details_exported(core_api, namespace):
         nested_mon = nested_mon_host_from_secret(core_api, namespace)
@@ -189,10 +190,10 @@ def _reconcile_ceph(body, patch, namespace: str) -> None:
     if restore["enabled"]:
         _log_restore_mode(restore, spec, patch, namespace)
 
-    core_api = client.CoreV1Api()
-    apps_api = client.AppsV1Api()
-    custom_api = client.CustomObjectsApi()
-    rbac_api = client.RbacAuthorizationV1Api()
+    core_api = FenceClient(client.CoreV1Api())
+    apps_api = FenceClient(client.AppsV1Api())
+    custom_api = FenceClient(client.CustomObjectsApi())
+    rbac_api = FenceClient(client.RbacAuthorizationV1Api())
 
     _bind_scc(custom_api, namespace)
     _ensure_service_account(core_api, namespace)
@@ -251,15 +252,18 @@ async def ceph_poll(body, patch, namespace, name, status, **_):
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkancephs")
 async def ceph_delete(namespace, name, body=None, **_):
     from helpers.managed_power import PowerClient, cleanup_child
+    from helpers.native_namespace_cleanup import finish_external
 
+    if finish_external(PowerClient(), namespace, "TroshkaCeph"):
+        return
     if body and cleanup_child(PowerClient(), body["metadata"], namespace):
         return
     logger.info("Deleting TroshkaCeph %s in %s", name, namespace)
-    apps_api = client.AppsV1Api()
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
-    rbac_api = client.RbacAuthorizationV1Api()
-    batch_api = client.BatchV1Api()
+    apps_api = FenceClient(client.AppsV1Api())
+    custom_api = FenceClient(client.CustomObjectsApi())
+    core_api = FenceClient(client.CoreV1Api())
+    rbac_api = FenceClient(client.RbacAuthorizationV1Api())
+    batch_api = FenceClient(client.BatchV1Api())
 
     _unbind_scc(custom_api, namespace)
 

@@ -25,6 +25,14 @@ MEASUREMENT_VERSION = "native-rbd-measurement-v1"
 CONFIGURED_PROFILE = "configured-workloads-v1"
 
 
+class NativeObservationRefreshRequired(AccountingUnavailable):
+    """Validated collection identity lacks a current observation."""
+
+
+class NativeObservationStale(NativeObservationRefreshRequired):
+    """An otherwise validated report needs a new storage observation."""
+
+
 @dataclass(frozen=True)
 class NativeStorageMeasurement:
     """Exact attributed allocation, never a provisioned size or known subtotal."""
@@ -144,6 +152,129 @@ def _measurement_binding(db, project, root, domain, identity):
     return host, provider, pinned, manifest
 
 
+def _transient_collection_failure(source):
+    """Retry read failures only after normal report identity checks have passed."""
+    codes = {
+        b.code for b in source.collection_errors + (source.inventory_blockers or [])
+    }
+    statuses = {image.measurement_status for image in source.images}
+    retryable = {
+        "project_discovery_unavailable",
+        "kubernetes_discovery_unavailable",
+        "cache_discovery_unavailable",
+        "inventory_recheck_unavailable",
+        "trash_inventory_unavailable",
+        "backend_graph_recheck_unavailable",
+    }
+    return (
+        bool(codes or statuses - {"complete"})
+        and codes <= retryable
+        and statuses <= {"complete", "timeout", "unavailable"}
+    )
+
+
+def _failed_report_identity(
+    report, source, expected, domain, cursor, manifest, project_id, now
+):
+    from app.services.kubevirt_storage_enrollment import digest, root_key, utc
+
+    roots = [
+        r for r in manifest.pins.project_roots if str(r.project_id) == str(project_id)
+    ]
+    return (
+        report.domain_id == domain.id
+        and report.enrollment_id == domain.enrollment_id == cursor.enrollment_id
+        and str(source.report_id) == report.id
+        and digest(source) == report.digest == digest(expected)
+        and source.collector_id in manifest.pins.collector_ids
+        and len(roots) == 1
+        and cursor.root_key == root_key(roots[0])
+        and utc(cursor.latest_started_at)
+        == utc(report.started_at)
+        == utc(source.started_at)
+        and utc(report.completed_at) == utc(source.completed_at)
+        and utc(source.started_at)
+        <= utc(source.completed_at)
+        <= utc(report.imported_at)
+        <= utc(now)
+    )
+
+
+def _failed_retirement_refresh(db, domain, cursor, manifest, project_id, now):
+    """Recognize only the runtime's empty failed scan; never grant deletion authority."""
+    from app.models.kubevirt_storage import NativeStorageSnapshot
+    from app.schemas.kubevirt_storage import NativeStorageReport
+    from app.services.native_binding_retirement_collection import protected_inputs
+    from app.services.native_clone_lineage import resolve_lineages
+    from app.services.native_managed_collector import failed_report
+
+    if (
+        project_id is None
+        or domain.conflicted
+        or cursor.conflicted
+        or not cursor.latest_report_id
+    ):
+        return False
+    report = db.get(NativeStorageSnapshot, cursor.latest_report_id)
+    if (
+        report is None
+        or report.accepted
+        or set(report.reason_codes) != {"binding_retirement_authority_unverified"}
+    ):
+        return False
+    try:
+        source = NativeStorageReport.model_validate(report.payload)
+        expected = failed_report(
+            manifest, source.collector_id, source.started_at, project_id
+        )
+        expected = expected.model_copy(
+            update={"report_id": source.report_id, "completed_at": source.completed_at}
+        )
+        identity_valid = _failed_report_identity(
+            report, source, expected, domain, cursor, manifest, project_id, now
+        )
+        return identity_valid and bool(
+            protected_inputs(
+                db,
+                manifest,
+                project_id=project_id,
+                lineages=resolve_lineages(db, source.clone_references, manifest),
+            )
+        )
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return False
+
+
+def _invalidated_cursor_refresh(domain, cursor, manifest, project_id, now):
+    """An explicit past cutoff requests a scan, never storage authority."""
+    from app.services.kubevirt_storage_enrollment import root_key, utc
+
+    if (
+        domain.conflicted
+        or cursor.conflicted
+        or cursor.latest_report_id is not None
+        or cursor.latest_started_at is None
+        or str(manifest.pins.domain_id) != domain.id
+        or cursor.enrollment_id != domain.enrollment_id
+        or utc(cursor.latest_started_at) > utc(now)
+    ):
+        return False
+    if project_id is None:
+        return cursor is domain
+    roots = [
+        root
+        for root in manifest.pins.project_roots
+        if str(root.project_id) == str(project_id)
+    ]
+    if len(roots) != 1:
+        return False
+    return cursor is domain or (
+        cursor.domain_id == domain.id
+        and str(cursor.project_id) == str(project_id)
+        and cursor.root_key == root_key(roots[0])
+    )
+
+
 def _measurement_report(db, domain, roots, manifest, now, project_id=None):
     from app.models.kubevirt_storage import NativeStorageSnapshot
     from app.services.kubevirt_storage_enrollment import digest, root_key, utc
@@ -155,6 +286,23 @@ def _measurement_report(db, domain, roots, manifest, now, project_id=None):
     from app.services.kubevirt_storage_reports import report_cursor
 
     cursor = report_cursor(db, domain, project_id)
+    if _invalidated_cursor_refresh(domain, cursor, manifest, project_id, now):
+        raise NativeObservationRefreshRequired(
+            "Native storage authority changed; observation refresh required"
+        )
+    if _failed_retirement_refresh(db, domain, cursor, manifest, project_id, now):
+        raise NativeObservationRefreshRequired(
+            "Native storage retirement observation failed; refresh required"
+        )
+    if (
+        not domain.conflicted
+        and not cursor.conflicted
+        and cursor.latest_report_id is None
+        and cursor.latest_started_at is None
+    ):
+        raise NativeObservationRefreshRequired(
+            "Native storage observation has not been collected"
+        )
     graph, source, failures = domain_evidence(db, domain, roots, project_id=project_id)
     report = db.get(NativeStorageSnapshot, cursor.latest_report_id) if source else None
     if failures or graph is None or source is None or report is None:
@@ -180,13 +328,24 @@ def _measurement_report(db, domain, roots, manifest, now, project_id=None):
         raise AccountingUnavailable("Native report identity changed")
     times = [utc(source.started_at), *[utc(i.collected_at) for i in source.images]]
     if not (
-        min(times) >= utc(now) - MAX_REPORT_AGE
-        and utc(source.started_at) <= min(times)
+        utc(source.started_at) <= min(times)
         and min(times) <= max(times) <= utc(source.completed_at)
         and utc(source.completed_at) <= utc(report.imported_at) <= utc(now)
     ):
         raise AccountingUnavailable(
             "Native source observation is stale or future-dated"
+        )
+    if min(times) < utc(now) - MAX_REPORT_AGE:
+        raise NativeObservationStale("Native source observation is stale")
+    if (
+        any(
+            "shared_source_snapshot_evidence_missing" in p.blockers
+            for p in graph.projects
+        )
+        and not source.collection_errors
+    ):
+        raise NativeObservationRefreshRequired(
+            "Native shared-source snapshot observation requires refresh"
         )
     # Platform totals may be unknown without invalidating complete tenant graphs.
     # Reachable cache ancestors still participate in each project's coverage.
@@ -197,6 +356,10 @@ def _measurement_report(db, domain, roots, manifest, now, project_id=None):
         )
         or source.collection_errors
     ):
+        if _transient_collection_failure(source):
+            raise NativeObservationRefreshRequired(
+                "Native storage observation failed temporarily; refresh required"
+            )
         raise AccountingUnavailable("Native graph coverage is incomplete")
     return graph, source, report, min(times)
 

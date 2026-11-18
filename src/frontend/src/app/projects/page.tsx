@@ -9,6 +9,7 @@ import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
 import { formatApiDetail } from "@/lib/apiError";
+import { requestProjectDeletion } from "@/lib/projectDeletion";
 import { generateImportPassword } from "@/lib/importPassword";
 import { TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { summarizeDeployProgress } from "@/lib/deployProgress";
@@ -1236,6 +1237,29 @@ export default function ProjectsPage() {
     return () => clearInterval(id);
   }, [spendById]);
 
+  async function deleteProjects(targets: Project[]) {
+    setDeletingProjects(prev => new Set([...prev, ...targets.map(p => p.id)]));
+    const errors = await Promise.all(targets.map(async p => {
+      try {
+        const status = await requestProjectDeletion(`${API_BASE}/api/v1/projects/${p.id}`);
+        if (status === "deleting" || status === "cleanup_pending") {
+          updateProjectState(p.id, status);
+        } else {
+          removeProject(p.id);
+          localStorage.removeItem(`troshka-canvas-${p.id}`);
+        }
+        setSelectedProjects(prev => { const next = new Set(prev); next.delete(p.id); return next; });
+        return null;
+      } catch (error) {
+        return `${p.name}: ${error instanceof Error ? error.message : "Delete request failed"}`;
+      } finally {
+        setDeletingProjects(prev => { const next = new Set(prev); next.delete(p.id); return next; });
+      }
+    }));
+    const failures = errors.filter(Boolean);
+    if (failures.length) setAlertMsg(failures.join("\n"));
+  }
+
           const q = search.toLowerCase();
           const isAdmin = userRole === "admin";
           const filteredProjects = projects.filter((p) => {
@@ -1682,22 +1706,7 @@ export default function ProjectsPage() {
           onConfirm={() => {
             const p = deleteTarget;
             setDeleteTarget(null);
-            setDeletingProjects(prev => new Set(prev).add(p.id));
-            fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
-              if (r.ok) {
-                r.json().then((data) => {
-                  if (data.status === "deleting" || data.status === "cleanup_pending") {
-                    updateProjectState(p.id, data.status);
-                  } else {
-                    removeProject(p.id);
-                    localStorage.removeItem(`troshka-canvas-${p.id}`);
-                  }
-                }).catch(() => {
-                  removeProject(p.id);
-                });
-              }
-              setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
-            });
+            void deleteProjects([p]);
           }}
         />
       )}
@@ -1711,11 +1720,7 @@ export default function ProjectsPage() {
           onConfirm={() => {
             const toDelete = projects.filter((pr) => selectedProjects.has(pr.id));
             setBulkDeletePending(false);
-            for (const p of toDelete) {
-              fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" });
-            }
-            setSelectedProjects(new Set());
-            setTimeout(fetchProjects, 1000);
+            void deleteProjects(toDelete);
           }}
         />
       )}

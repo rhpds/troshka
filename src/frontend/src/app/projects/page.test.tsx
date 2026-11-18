@@ -150,6 +150,17 @@ describe("new project creation", () => {
 
 describe("projects listing", () => {
   async function loaded() { render(<ProjectsPage />); await screen.findByText("Alpha"); }
+  it.each(["single", "bulk"])("shows rejected %s deletion and keeps the project", async (mode) => {
+    routes["/api/v1/projects/"] = response([row("Alpha", "stopped")]);
+    routes["DELETE /api/v1/projects/Alpha"] = response({ detail: { message: "Ownership check failed" } }, 409);
+    await loaded();
+    if (mode === "bulk") { fireEvent.click(screen.getByLabelText("Select all")); click("Delete (1)"); }
+    else { click("Delete"); }
+    const buttons = screen.getAllByRole("button", { name: "Delete" });
+    fireEvent.click(buttons[buttons.length - 1]);
+    expect(await screen.findByText(/Ownership check failed/)).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+  });
   it.each(["api", "network", "non-json"])("bulk deployment reports %s failures and still submits other projects", async (failure) => {
     routes["/api/v1/projects/"] = response([row("Alpha"), row("Beta")]);
     routes["/api/v1/projects/Alpha/deploy"] = failure === "network"

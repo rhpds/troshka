@@ -1410,6 +1410,7 @@ def _mock_deploy_session(project, host=None):
             else:
                 fb.first.return_value = None
             fb.all.return_value = []
+            fb.populate_existing.return_value = fb
             return fb
 
         q.filter_by = _filter_by
@@ -1417,7 +1418,7 @@ def _mock_deploy_session(project, host=None):
         return q
 
     mock_session.query.side_effect = _query_side_effect
-    mock_session.get.return_value = project
+    mock_session.get.side_effect = lambda model, object_id: _lookup.get(object_id)
     return mock_session
 
 
@@ -3198,6 +3199,10 @@ class TestDestroyProjectInner:
 
         def mock_query(model):
             mock_q = MagicMock()
+            mock_q.filter_by.return_value.first.return_value = None
+            mock_q.filter_by.return_value.populate_existing.return_value = (
+                mock_q.filter_by.return_value
+            )
             if model == Project:
                 mock_q.filter_by.return_value.first.return_value = project
             elif model == Host:
@@ -3240,6 +3245,10 @@ class TestDestroyProjectInner:
 
         def mock_query(model):
             mock_q = MagicMock()
+            mock_q.filter_by.return_value.first.return_value = None
+            mock_q.filter_by.return_value.populate_existing.return_value = (
+                mock_q.filter_by.return_value
+            )
             if model == Project:
                 mock_q.filter_by.return_value.first.return_value = project
             elif model == Host:
@@ -3349,11 +3358,7 @@ class TestDestroyProjectInner:
         from app.services.deploy_service import _destroy_project_inner
 
         host = _make_host(ip=None)
-        mock_session = MagicMock()
-        mock_session.query.return_value.filter_by.return_value.first.side_effect = [
-            _make_project(),
-            host,
-        ]
+        mock_session = _mock_deploy_session(_make_project(), host)
 
         ctx = {"project_id": PROJECT_ID, "host_id": HOST_ID}
 
@@ -3391,6 +3396,10 @@ class TestDestroyProjectInner:
 
         def mock_query(model):
             mock_q = MagicMock()
+            mock_q.filter_by.return_value.first.return_value = None
+            mock_q.filter_by.return_value.populate_existing.return_value = (
+                mock_q.filter_by.return_value
+            )
             if model == Project:
                 mock_q.filter_by.return_value.first.return_value = project
             elif model == Host:
@@ -3425,6 +3434,10 @@ class TestDestroyProjectInner:
 
         def mock_query(model):
             mock_q = MagicMock()
+            mock_q.filter_by.return_value.first.return_value = None
+            mock_q.filter_by.return_value.populate_existing.return_value = (
+                mock_q.filter_by.return_value
+            )
             if model == Project:
                 mock_q.filter_by.return_value.first.return_value = project
             elif model == Host:
@@ -3466,6 +3479,7 @@ class TestDestroyProjectInner:
 
         def mock_filter_by(**kwargs):
             result = MagicMock()
+            result.populate_existing.return_value = result
             if kwargs.get("id") == PROJECT_ID:
                 result.first.return_value = _make_project()
             elif "id" in kwargs and kwargs["id"] == HOST_ID:
@@ -3473,7 +3487,7 @@ class TestDestroyProjectInner:
             elif "id" in kwargs and kwargs["id"] == "dns-prov-1":
                 result.first.return_value = dns_provider
             else:
-                result.first.return_value = host
+                result.first.return_value = None
             result.all.return_value = []  # No EIPs
             return result
 

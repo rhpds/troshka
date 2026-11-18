@@ -11,7 +11,7 @@ from app.services import native_ancestry_custody as custody
 from app.services.kubevirt_storage_graph import attribute_graph
 from app.services.kubevirt_storage_reports import report_inventory
 from app.services.native_clone_graph import cleanup_owned_images
-from tests.test_native_clone_lineage import chain
+from tests.test_native_clone_lineage import chain, source_evidence
 
 
 def fixture(monkeypatch):
@@ -47,6 +47,26 @@ def fixture(monkeypatch):
             return ReadResult(status="complete", collected_at=now, value=True)
 
     monkeypatch.setattr(custody, "_metadata", lambda backend, key, pools: values[key])
+
+    def source_metadata(backend, key, selected, pools, limits):
+        from app.schemas.kubevirt_storage import SourceSnapshotChildren
+
+        identity, parent, snapshots, children = values[key]
+        edges = [
+            SourceSnapshotChildren(
+                snapshot=p.intermediate_parent,
+                present=p.intermediate_parent in snapshots,
+                children=[p.intermediate] if p.intermediate in children else [],
+            )
+            for p in proofs
+            if p.intermediate_parent in selected
+        ]
+        foreign = children - {p.intermediate for p in proofs}
+        if foreign or snapshots - {p.intermediate_parent for p in proofs}:
+            raise ValueError("fixture foreign source metadata")
+        return identity, parent, edges
+
+    monkeypatch.setattr(custody, "_source_metadata", source_metadata)
     monkeypatch.setattr(custody, "_pv", lambda kube, binding: {})
     monkeypatch.setattr(custody, "_sources", lambda kube, pins: [proofs[0].source])
     return SimpleNamespace(
@@ -162,6 +182,7 @@ def test_current_custody_requires_exact_private_settlement(monkeypatch, fault):
                     "snapshots": [sibling.intermediate_parent],
                 }
             )
+            value = source_evidence(value, q.proofs)
             if fault == "source_snapshot":
                 value = value.model_copy(
                     update={

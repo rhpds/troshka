@@ -20,3 +20,22 @@ class NativeCustodyReceipt(Base):
     project_id: Mapped[str] = mapped_column(UUID(as_uuid=False), unique=True)
     digest: Mapped[str] = mapped_column(String(64))
     payload: Mapped[dict] = mapped_column(JSONB)
+
+
+class NativeCustodyReconciliationRequest(Base):
+    __tablename__ = "native_custody_reconciliation_requests"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    digest: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB)
+
+
+class NativeCustodySuccessor(Base):
+    """Append-only transition; one successor per original or successor receipt."""
+
+    __tablename__ = "native_custody_successors"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True)
+    project_id: Mapped[str] = mapped_column(UUID(as_uuid=False), index=True)
+    predecessor_id: Mapped[str] = mapped_column(UUID(as_uuid=False), unique=True)
+    predecessor_digest: Mapped[str] = mapped_column(String(64))
+    digest: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSONB)

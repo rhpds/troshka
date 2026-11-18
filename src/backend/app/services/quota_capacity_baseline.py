@@ -33,7 +33,11 @@ from app.services import quota_baseline as legacy
 from app.services import quota_native as native
 from app.services import quota_operations as operations
 from app.services import quota_storage as storage
-from app.services.quota_cleanup import active_roots, native_intents, settled_root_keys
+from app.services.quota_cleanup import (
+    active_roots,
+    cleanup_storage_scopes,
+    settled_root_keys,
+)
 from app.services.quota_locks import lock_rows
 from app.services.quota_policy import get_limits
 from app.services.quota_resources import topology_resources
@@ -277,7 +281,7 @@ def _binding_inventory(db, roots):
     # covered by a durable zero-storage settlement are no longer live capacity.
     settled = {
         (str(intent.domain_id), binding_key(binding)): _binding_identity(binding)
-        for intent in native_intents(db)
+        for intent in cleanup_storage_scopes(db)
         if intent.phase in {"settled", "finalized"}
         and intent.settlement_report_id
         and intent.settled_at

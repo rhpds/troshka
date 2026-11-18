@@ -78,6 +78,9 @@ def deploy_template(
         state="draft",
     )
     db.add(project)
+    from app.services.native_deployment_preflight import record_fresh_project
+
+    record_fresh_project(db, project)
     db.commit()
     db.refresh(project)
 

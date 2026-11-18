@@ -45,6 +45,18 @@ class TestNotify:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def legacy_delete_session():
+    session = MagicMock()
+    filtered = session.query.return_value.filter_by.return_value
+    filtered.populate_existing.return_value = filtered
+    filtered.first.return_value = (
+        None  # No native origin/custody in these legacy timer cases.
+    )
+    filtered.one_or_none.return_value = None
+    session.get.return_value = None
+    return session
+
+
 class TestDeleteProject:
     @pytest.fixture(autouse=True)
     def mock_retention(self):
@@ -59,7 +71,7 @@ class TestDeleteProject:
     def test_active_project_stops_first(
         self, mock_stop, mock_enqueue, mock_notify, mock_retention
     ):
-        s = MagicMock()
+        s = legacy_delete_session()
         project = MagicMock()
         project.id = "proj-del-active"
         project.state = "active"
@@ -88,7 +100,7 @@ class TestDeleteProject:
     def test_stopped_project_enqueues_destroy(
         self, mock_enqueue, mock_notify, mock_retention
     ):
-        s = MagicMock()
+        s = legacy_delete_session()
         project = MagicMock()
         project.id = "proj-del-stopped"
         project.state = "stopped"
@@ -108,11 +120,13 @@ class TestDeleteProject:
     @patch("app.services.project_timer._notify")
     @patch("app.services.eip_service.release_eip")
     def test_releases_eips(self, mock_release, mock_notify, mock_retention):
-        s = MagicMock()
+        s = legacy_delete_session()
         project = MagicMock()
         project.id = "proj-del-eip"
         project.state = "draft"
         project.host_id = None
+        project.provider_id = None
+        project.topology = {}
         eip = MagicMock()
         eip.public_ip = "1.2.3.4"
         s.query.return_value.filter_by.return_value.all.return_value = [eip]
@@ -126,11 +140,13 @@ class TestDeleteProject:
     def test_eip_release_failure_handled(
         self, mock_release, mock_notify, mock_retention
     ):
-        s = MagicMock()
+        s = legacy_delete_session()
         project = MagicMock()
         project.id = "proj-del-eip2"
         project.state = "draft"
         project.host_id = None
+        project.provider_id = None
+        project.topology = {}
         eip = MagicMock()
         eip.public_ip = "5.6.7.8"
         s.query.return_value.filter_by.return_value.all.return_value = [eip]

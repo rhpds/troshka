@@ -12,6 +12,89 @@ from helpers.vnc import build_vnc_rbac
 from tests.test_managed_power import FakeAPI, resource
 
 
+@pytest.mark.parametrize("annotations", [None, {}, {"k8s.v1.cni.cncf.io/networks": "net"}])
+def test_restart_matches_original_receipt_without_changing_identity(annotations):
+    root = resource("TroshkaProject", "project")
+    value = resource("Deployment", "helper", root, {"template": {"metadata": {}, "spec": {"containers": [{"name": "helper", "image": "original"}]}}})
+    if annotations is not None:
+        value["spec"]["template"]["metadata"]["annotations"] = annotations
+    pin = custody.identity(value)
+    attest(root, [value])
+    value["spec"]["template"]["metadata"].setdefault("annotations", {})["kubectl.kubernetes.io/restartedAt"] = "2026-11-17T00:00:00Z"
+    before, original_pin = deepcopy(value), deepcopy(pin)
+    assert custody.identity_matches(value, pin)
+    assert custody.matches(value, root)
+    assert custody.identity(value) != pin
+    assert value == before and pin == original_pin
+
+
+@pytest.mark.parametrize("change", ["image", "mount", "owner", "uid", "network", "unknown"])
+def test_restart_does_not_hide_other_custody_changes(change):
+    value = resource("Deployment", "helper", spec={"template": {"metadata": {"annotations": {}}, "spec": {"containers": [{"name": "helper", "image": "original"}]}}})
+    pin = custody.identity(value)
+    template = value["spec"]["template"]
+    template["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = "2026-11-17T00:00:00Z"
+    if change == "image":
+        template["spec"]["containers"][0]["image"] = "foreign"
+    elif change == "mount":
+        template["spec"]["containers"][0]["volumeMounts"] = [{"name": "foreign", "mountPath": "/foreign"}]
+    elif change == "owner":
+        value["metadata"]["ownerReferences"] = [{"uid": "foreign"}]
+    elif change == "uid":
+        value["metadata"]["uid"] = "replacement"
+    elif change == "network":
+        template["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"] = "foreign"
+    else:
+        template["spec"]["unknownField"] = "foreign"
+    assert not custody.identity_matches(value, pin)
+
+
+def test_receipt_with_original_restart_timestamp_remains_exact_only():
+    value = resource("Deployment", "helper", spec={"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": "original"}}}})
+    pin = custody.identity(value)
+    assert custody.identity_matches(value, pin)
+    value["spec"]["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = "changed"
+    assert not custody.identity_matches(value, pin)
+
+
+def test_restart_compatibility_does_not_apply_to_other_kinds():
+    value = resource("VirtualMachine", "vm", spec={"template": {"metadata": {"annotations": {}}}})
+    pin = custody.identity(value)
+    value["spec"]["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = "changed"
+    assert not custody.identity_matches(value, pin)
+
+
+@pytest.mark.parametrize("change", [None, "image", "owner", "network"])
+def test_fresh_custody_pin_survives_repeated_restarts_only(change):
+    value = resource("Deployment", "helper", spec={"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": "restart1"}}, "spec": {"containers": [{"name": "helper", "image": "original"}]}}})
+    before = deepcopy(value)
+    raw = custody.identity(value)
+    pin = custody.custody_identity(value)
+    assert value == before and custody.identity(value) == raw
+    assert raw != pin
+    value["spec"]["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = "restart2"
+    if change == "image":
+        value["spec"]["template"]["spec"]["containers"][0]["image"] = "foreign"
+    elif change == "owner":
+        value["metadata"]["ownerReferences"] = [{"uid": "foreign"}]
+    elif change == "network":
+        value["spec"]["template"]["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"] = "foreign"
+    assert custody.identity_matches(value, pin) is (change is None)
+
+
+def test_fresh_custody_identity_only_normalizes_deployment_restart_annotation():
+    value = resource("VirtualMachine", "vm", spec={"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": "restart1"}}}})
+    assert custody.custody_identity(value) == custody.identity(value)
+
+
+def test_fresh_custody_pin_matches_empty_annotations_before_first_restart():
+    value = resource("Deployment", "helper", spec={"template": {"metadata": {"annotations": {}}}})
+    pin = custody.custody_identity(value)
+    assert custody.identity_matches(value, pin)
+    value["spec"]["template"]["metadata"]["annotations"]["kubectl.kubernetes.io/restartedAt"] = "restart1"
+    assert custody.identity_matches(value, pin)
+
+
 @pytest.mark.parametrize("change", [None, "uid", "spec", "labels", "foreign"])
 def test_sealed_custody_survives_staged_dependency_deletion(change):
     root = resource("TroshkaProject", "project", spec={"projectId": "project-id"})
@@ -284,6 +367,104 @@ def test_route_pair_requires_project_gateway_forward_and_exact_service():
     assert not custody.eip_service(eip, root, index)
     service["spec"]["selector"]["app"] = "foreign"
     assert not custody.route_access(route, root, index)
+
+
+@pytest.mark.parametrize("node_port", [None, 30157])
+def test_allocated_eip_placeholder_requires_original_cleanup_receipt_without_gateway(node_port):
+    root = resource("TroshkaProject", "project", spec={"projectId": "c7d797e2-project"})
+    service = resource("Service", "troshka-eip-32a039a0", spec={"type": "LoadBalancer", "selector": {"app": "troshka-gateway-c7d797e2"}, "ports": [{"port": 443, "targetPort": 443, "protocol": "TCP"}]})
+    service["metadata"]["labels"] = {"app": "troshka-eip", "troshka-eip-id": "32a039a0"}
+    if node_port is not None:
+        service["spec"]["ports"][0]["nodePort"] = node_port
+    index = {root["metadata"]["uid"]: root, service["metadata"]["uid"]: service}
+    assert not custody.support(service, index)
+    attest(root, [service])
+    assert custody.support(service, index)
+    service["metadata"]["uid"] = "replacement"
+    assert not custody.support(service, index)
+
+
+@pytest.mark.parametrize("change", ["target", "extra_port", "protocol", "selector", "label", "type", "namespace", "owner", "port_name", "node_port", "external_ip"])
+def test_allocated_eip_placeholder_rejects_foreign_shapes_even_with_receipt(change):
+    root = resource("TroshkaProject", "project", spec={"projectId": "c7d797e2-project"})
+    service = resource("Service", "troshka-eip-32a039a0", spec={"type": "LoadBalancer", "selector": {"app": "troshka-gateway-c7d797e2"}, "ports": [{"port": 443, "targetPort": 443, "protocol": "TCP", "nodePort": 30157}]})
+    service["metadata"]["labels"] = {"app": "troshka-eip", "troshka-eip-id": "32a039a0"}
+    spec, meta = service["spec"], service["metadata"]
+    if change == "target":
+        spec["ports"][0]["targetPort"] = 9999
+    elif change == "extra_port":
+        spec["ports"].append({"port": 6443, "targetPort": 6443, "protocol": "TCP"})
+    elif change == "protocol":
+        spec["ports"][0]["protocol"] = "UDP"
+    elif change == "selector":
+        spec["selector"]["app"] = "foreign"
+    elif change == "label":
+        meta["labels"]["app"] = "foreign"
+    elif change == "type":
+        spec["type"] = "ClusterIP"
+    elif change == "namespace":
+        meta["namespace"] = "foreign"
+    elif change == "owner":
+        meta["ownerReferences"] = [{"uid": "foreign"}]
+    elif change == "port_name":
+        spec["ports"][0]["name"] = "foreign"
+    elif change == "node_port":
+        spec["ports"][0]["nodePort"] = "30157"
+    else:
+        spec["externalIPs"] = ["10.0.0.5"]
+    attest(root, [service])
+    index = {root["metadata"]["uid"]: root, service["metadata"]["uid"]: service}
+    assert not custody.support(service, index)
+
+
+@pytest.mark.parametrize("change", [None, "port", "ip", "selector", "duplicate_gateway", "udp", "live_wrong_forward", "no_receipt", "replacement"])
+def test_route_retains_topology_custody_when_gateway_is_absent(change):
+    gateway = {"id": "gw", "type": "networkNode", "data": {"subtype": "gateway", "portForwards": [{"extPort": "6443", "intIp": "10.0.0.4", "intPort": "6443", "proto": "tcp"}]}}
+    root = resource("TroshkaProject", "project", spec={"projectId": "12345678-project", "topology": {"nodes": [gateway]}})
+    service = resource("Service", "rt-10-0-0-4-6443", spec={"type": "ClusterIP", "selector": {"app": "troshka-gateway-12345678"}, "ports": [{"port": 6443, "targetPort": 6443, "protocol": "TCP"}]})
+    route = resource("Route", service["metadata"]["name"], spec={"to": {"kind": "Service", "name": service["metadata"]["name"]}, "port": {"targetPort": 6443}, "tls": {"termination": "passthrough"}})
+    route["metadata"]["uid"] += "-route"
+    for value in (service, route):
+        value["metadata"]["labels"] = {"app": "troshka-route-access", "troshka-project": "12345678"}
+    if change == "port":
+        gateway["data"]["portForwards"][0]["extPort"] = "9999"
+    elif change == "ip":
+        gateway["data"]["portForwards"][0]["intIp"] = "10.0.0.5"
+    elif change == "selector":
+        service["spec"]["selector"]["app"] = "foreign"
+    elif change == "duplicate_gateway":
+        root["spec"]["topology"]["nodes"].append(deepcopy(gateway))
+    elif change == "udp":
+        gateway["data"]["portForwards"][0]["proto"] = "udp"
+    index = {v["metadata"]["uid"]: v for v in [root, service, route]}
+    if change == "live_wrong_forward":
+        live = resource("Deployment", "gateway", root, spec={"selector": {"matchLabels": {"app": "troshka-gateway-12345678"}}, "template": {"spec": {"containers": [{"env": [{"name": "PORT_FORWARDS", "value": "9999:10.0.0.4:6443:tcp"}]}]}}})
+        index[live["metadata"]["uid"]] = live
+    if change != "no_receipt":
+        attest(root, [service, route])
+    if change == "replacement":
+        route["metadata"]["uid"] = "replacement"
+    assert bool(custody.support(route, index)) == (change is None)
+
+
+@pytest.mark.parametrize("change", [None, "wrong_target", "udp", "unmapped", "live_wrong_forward"])
+def test_configured_eip_uses_retained_forwards_only_when_gateway_absent(change):
+    root = resource("TroshkaProject", "project", spec={"projectId": "12345678-project", "topology": {"nodes": [{"type": "networkNode", "data": {"subtype": "gateway", "portForwards": [{"extPort": "2222", "intIp": "10.0.0.4", "intPort": "22", "proto": "tcp"}, {"extPort": "6443", "intIp": "10.0.0.4", "intPort": "6443", "proto": "tcp"}]}}]}})
+    service = resource("Service", "troshka-eip-2e6b9ff9", spec={"type": "LoadBalancer", "selector": {"app": "troshka-gateway-12345678"}, "ports": [{"name": "pf-0", "port": 2222, "targetPort": 2222, "protocol": "TCP", "nodePort": 30157}, {"name": "pf-1", "port": 6443, "targetPort": 6443, "protocol": "TCP", "nodePort": 30158}]})
+    service["metadata"]["labels"] = {"app": "troshka-eip", "troshka-eip-id": "2e6b9ff9"}
+    if change == "wrong_target":
+        service["spec"]["ports"][0]["targetPort"] = 22
+    elif change == "udp":
+        root["spec"]["topology"]["nodes"][0]["data"]["portForwards"][0]["proto"] = "udp"
+    elif change == "unmapped":
+        service["spec"]["ports"][0].update(port=9999, targetPort=9999)
+    index = {root["metadata"]["uid"]: root, service["metadata"]["uid"]: service}
+    if change == "live_wrong_forward":
+        live = resource("Deployment", "gateway", root, spec={"selector": {"matchLabels": {"app": "troshka-gateway-12345678"}}, "template": {"spec": {"containers": [{"env": [{"name": "PORT_FORWARDS", "value": "9999:10.0.0.4:9999:tcp"}]}]}}})
+        index[live["metadata"]["uid"]] = live
+    assert not custody.support(service, index)
+    attest(root, [service])
+    assert bool(custody.support(service, index)) == (change is None)
 
 
 def attest(root, values):

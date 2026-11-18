@@ -812,7 +812,11 @@ class TestProjectDelete:
             empty
         )
 
-        asyncio.run(project_delete(namespace="troshka-abc", name="abc"))
+        from tests.test_managed_power import FakeAPI, resource
+
+        namespace_api = FakeAPI([resource("Namespace", "troshka-abc")])
+        with patch("helpers.managed_power.PowerClient", return_value=namespace_api):
+            asyncio.run(project_delete(namespace="troshka-abc", name="abc"))
         mock_abort.assert_called_once()
         # VMI, VM, DV, TroshkaVM, TroshkaNetwork, NAD, Routes, TroshkaCeph
         assert mock_del.call_count == 8

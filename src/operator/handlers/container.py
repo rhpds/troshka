@@ -1,5 +1,6 @@
 import logging
 from helpers.managed_power import assert_running
+from helpers.native_origin_drain import FenceClient
 
 # Preserve existing handler imports for callers while rendering stays pure.
 from helpers.containers import (  # noqa: F401
@@ -25,7 +26,7 @@ def create_container_pods(
     namespace, containers, nad_refs, owner_reference, disk_pvcs=None
 ):
     assert_running(namespace, owner_reference.get("uid"))
-    core_api = client.CoreV1Api()
+    core_api = FenceClient(client.CoreV1Api())
     disk_pvcs = disk_pvcs or {}
 
     for ctr in containers:

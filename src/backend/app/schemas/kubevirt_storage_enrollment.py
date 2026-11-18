@@ -70,6 +70,7 @@ class DomainExtension(Evidence):
     cache_authorization_digest: str | None = Field(
         default=None, pattern=r"^[a-f0-9]{64}$"
     )
+    root_transition_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @model_serializer(mode="wrap")
     def serialize_authorization(self, handler):
@@ -78,6 +79,8 @@ class DomainExtension(Evidence):
             data.pop("initialization_authorization_digest", None)
         if data.get("cache_authorization_digest") is None:
             data.pop("cache_authorization_digest", None)
+        if data.get("root_transition_digest") is None:
+            data.pop("root_transition_digest", None)
         return data
 
 

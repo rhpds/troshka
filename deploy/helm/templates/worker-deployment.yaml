@@ -22,12 +22,19 @@ spec:
     spec:
       terminationGracePeriodSeconds: 7200
       serviceAccountName: troshka-backend
+      {{- if .Values.nativeCollection.enabled }}
+      initContainers:
+        {{- include "troshka.nativeRuntime.initContainers" (dict "root" . "worker" .Values.nativeCollection.worker) | nindent 8 }}
+      {{- end }}
       containers:
         - name: worker
           image: {{ include "troshka.backendImage" . }}
           imagePullPolicy: Always
           command: ["python3", "-m", "app.workers.deploy_worker"]
           env:
+            {{- if .Values.nativeCollection.enabled }}
+            {{- include "troshka.nativeRuntime.env" (dict "worker" .Values.nativeCollection.worker) | nindent 12 }}
+            {{- end }}
             - name: TROSHKA_DATABASE__URL
               valueFrom:
                 secretKeyRef:
@@ -76,13 +83,21 @@ spec:
                   key: s3-secret-key
                   optional: true
           volumeMounts:
+            {{- if .Values.nativeCollection.enabled }}
+            {{- include "troshka.nativeRuntime.volumeMounts" (dict "worker" .Values.nativeCollection.worker) | nindent 12 }}
+            {{- else }}
             - name: config
               mountPath: /opt/app-root/src/config/config.yaml
               subPath: config.yaml
+            {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
       volumes:
+        {{- if .Values.nativeCollection.enabled }}
+        {{- include "troshka.nativeRuntime.volumes" (dict "worker" .Values.nativeCollection.worker) | nindent 8 }}
+        {{- else }}
         - name: config
           configMap:
             name: troshka-config
+        {{- end }}
 {{- end }}

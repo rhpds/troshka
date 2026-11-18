@@ -215,6 +215,28 @@ class VolumeBinding(Evidence):
     owner_reference_uids: list[Text] = Field(default_factory=list, max_length=128)
 
 
+class BindingRetirementReference(Evidence):
+    receipt_id: UUID
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class BindingRetirementObservation(Evidence):
+    request_id: UUID
+    root: ProjectRoot
+    binding: VolumeBinding
+    private_images: list[ImageKey] = Field(min_length=1, max_length=2)
+    objects_absent: Literal[True]
+    image_absence: list[BackendImageState] = Field(min_length=1, max_length=2)
+    kubernetes_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    kubernetes_final_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    verified_at: datetime
+
+
+class BindingRetirementEvidence(Evidence):
+    reference: BindingRetirementReference
+    observation: BindingRetirementObservation
+
+
 class CleanupObject(Evidence):
     kind: Text
     name: Text
@@ -345,6 +367,9 @@ class CSISnapshotEvidence(Evidence):
 
 
 class NativeInventory(Evidence):
+    binding_retirements: list[BindingRetirementEvidence] = Field(
+        default_factory=list, max_length=10000
+    )
     project_scope: UUID | None = None
     absent_cache_bindings: list[CacheBinding] = Field(
         default_factory=list, max_length=10000
@@ -357,6 +382,8 @@ class NativeInventory(Evidence):
     @model_serializer(mode="wrap")
     def serialize_clone_references(self, handler):
         data = handler(self)
+        if not data.get("binding_retirements"):
+            data.pop("binding_retirements", None)
         if data.get("project_scope") is None:
             data.pop("project_scope", None)
         if not data.get("absent_cache_bindings"):
@@ -383,6 +410,12 @@ class NativeInventory(Evidence):
     retiring_roots: list[RetiringRoot] = Field(default_factory=list, max_length=10000)
 
 
+class SourceSnapshotChildren(Evidence):
+    snapshot: SnapshotKey
+    present: Annotated[bool, Field(strict=True)]
+    children: list[ImageKey] = Field(default_factory=list, max_length=10000)
+
+
 class ImageObservation(Evidence):
     key: ImageKey
     parent: SnapshotKey | None = None
@@ -395,12 +428,17 @@ class ImageObservation(Evidence):
     command_version: Annotated[str, Field(max_length=256)]
     measurement_semantics_version: Annotated[str, Field(max_length=256)] | None
     absence: BackendImageInventory | BackendImageState | None = None
+    source_snapshot_children: list[SourceSnapshotChildren] | None = Field(
+        default=None, max_length=10000
+    )
 
     @model_serializer(mode="wrap")
     def serialize_absence(self, handler):
         data = handler(self)
         if data.get("absence") is None:
             data.pop("absence", None)
+        if data.get("source_snapshot_children") is None:
+            data.pop("source_snapshot_children", None)
         return data
 
     @model_validator(mode="after")
@@ -458,6 +496,9 @@ class AttributionResult(Evidence):
 
 
 class NativeStorageReport(AttributionResult):
+    binding_retirements: list[BindingRetirementEvidence] = Field(
+        default_factory=list, max_length=10000
+    )
     project_scope: UUID | None = None
     absent_cache_bindings: list[CacheBinding] = Field(
         default_factory=list, max_length=10000
@@ -492,6 +533,8 @@ class NativeStorageReport(AttributionResult):
     @model_serializer(mode="wrap")
     def serialize_initialization(self, handler):
         data = handler(self)
+        if not data.get("binding_retirements"):
+            data.pop("binding_retirements", None)
         if data.get("project_scope") is None:
             data.pop("project_scope", None)
         if not data.get("absent_cache_bindings"):

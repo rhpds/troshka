@@ -4,6 +4,7 @@ import kopf
 import logging
 from helpers.managed_power import checked_await as managed_await
 from helpers.managed_power import producer as managed_producer
+from helpers.native_origin_drain import FenceClient
 from kubernetes import client
 from helpers.k8s import (
     CRD_GROUP,
@@ -123,8 +124,8 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
 async def network_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"Creating network {name} in {namespace}")
 
-    api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
+    api = FenceClient(client.CoreV1Api())
+    custom_api = FenceClient(client.CustomObjectsApi())
 
     try:
         api.create_namespaced_service_account(
@@ -174,7 +175,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
         if e.status != 409:
             raise
 
-    apps_api = client.AppsV1Api()
+    apps_api = FenceClient(client.AppsV1Api())
     dep_name = f"dnsmasq-{name}"
     _cleanup_legacy_pod(api, namespace, dep_name)
 
@@ -210,8 +211,8 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
 async def network_update(spec, meta, namespace, name, body, patch, **_):
     """Reconcile dnsmasq config when network spec changes (e.g. DNS records added)."""
     logger.info(f"Updating network {name} in {namespace}")
-    api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
+    api = FenceClient(client.CoreV1Api())
+    custom_api = FenceClient(client.CustomObjectsApi())
 
     nad = build_nad(body)
     nad_name = nad["metadata"]["name"]
@@ -251,7 +252,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
             raise
 
     # Trigger rollout restart via annotation
-    apps_api = client.AppsV1Api()
+    apps_api = FenceClient(client.AppsV1Api())
     dep_name = f"dnsmasq-{name}"
     apps_api.patch_namespaced_deployment(
         name=dep_name,
@@ -290,18 +291,19 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkanetworks", interval=30.0, idle=15.0)
+@managed_producer()
 async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
     """Heal every OVN zone without blocking other operator handlers."""
     if not network_allow_nested_macs(spec):
         return
-    api = client.CoreV1Api()
+    api = FenceClient(client.CoreV1Api())
     try:
-        await asyncio.to_thread(
+        await managed_await(asyncio.to_thread(
             ensure_nested_mac_port_security,
             api,
             nad_name=f"{name}-nad",
             namespace=namespace,
-        )
+        ))
     except Exception as e:
         logger.warning("Nested-MAC OVN timer failed for %s/%s: %s", namespace, name, e)
 
@@ -309,7 +311,10 @@ async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkanetworks")
 async def network_delete(spec, meta, namespace, name, **_):
     from helpers.managed_power import PowerClient, cleanup_child
+    from helpers.native_namespace_cleanup import finish_external
 
+    if finish_external(PowerClient(), namespace, "TroshkaNetwork"):
+        return
     if cleanup_child(PowerClient(), meta, namespace):
         return
     return await _network_delete_legacy(spec, meta, namespace, name)
@@ -317,9 +322,9 @@ async def network_delete(spec, meta, namespace, name, **_):
 
 async def _network_delete_legacy(spec, meta, namespace, name):
     logger.info(f"Deleting network {name} in {namespace} — cleaning up resources")
-    api = client.CoreV1Api()
-    apps_api = client.AppsV1Api()
-    custom_api = client.CustomObjectsApi()
+    api = FenceClient(client.CoreV1Api())
+    apps_api = FenceClient(client.AppsV1Api())
+    custom_api = FenceClient(client.CustomObjectsApi())
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
     await _patch_scc_users(

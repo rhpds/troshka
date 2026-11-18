@@ -1298,6 +1298,7 @@ def _start_auto_deploy(
     from app.core.redis import DEPLOY_JOB_TIMEOUT, enqueue_job
     from app.services import quota_accounting, quota_operations
     from app.services.deploy_service import deploy_project_async
+    from app.services.native_deployment_preflight import prepare_dispatch
     from app.services.ocp.pull_through_registry import (
         check_pull_through_registry_for_project,
     )
@@ -1330,6 +1331,7 @@ def _start_auto_deploy(
             job_timeout=DEPLOY_JOB_TIMEOUT,
             project_id=project.id,
             quota_operation_id=operation_id,
+            native_attempt_id=prepare_dispatch(db, project),
         )
         return
 
@@ -1344,6 +1346,7 @@ def _start_auto_deploy(
         body.auto_start,
         project_id=project.id,
         job_timeout=DEPLOY_JOB_TIMEOUT,
+        native_attempt_id=prepare_dispatch(db, project),
     )
 
 
@@ -1403,6 +1406,9 @@ def deploy_pattern(
     _apply_optional_fields(project, pattern, body)
 
     db.add(project)
+    from app.services.native_deployment_preflight import record_fresh_project
+
+    record_fresh_project(db, project)
     db.commit()
     db.refresh(project)
 
@@ -1430,9 +1436,11 @@ def _bulk_deploy_projects(project_ids: list[str]):
         return
     from app.core.database import SessionLocal
     from app.services.deploy_service import deploy_project_async
+    from app.services.native_deployment_preflight import prepare_dispatch
     from app.services.placement import calculate_project_requirements, place_project
 
     ready_ids = []
+    attempts = {}
     s = SessionLocal()
     try:
         for project_id in project_ids:
@@ -1457,6 +1465,8 @@ def _bulk_deploy_projects(project_ids: list[str]):
             project.deploy_started_at = datetime.datetime.now(datetime.UTC)
             ready_ids.append(project_id)
         s.commit()
+        for project_id in ready_ids:
+            attempts[project_id] = prepare_dispatch(s, s.get(Project, project_id))
     except Exception:
         logger.exception("Bulk deploy: placement phase failed")
         return
@@ -1467,7 +1477,11 @@ def _bulk_deploy_projects(project_ids: list[str]):
 
     for pid in ready_ids:
         enqueue_job(
-            deploy_project_async, pid, project_id=pid, job_timeout=DEPLOY_JOB_TIMEOUT
+            deploy_project_async,
+            pid,
+            project_id=pid,
+            job_timeout=DEPLOY_JOB_TIMEOUT,
+            native_attempt_id=attempts[pid],
         )
 
 
@@ -1560,6 +1574,9 @@ def bulk_deploy_pattern(
     for i in range(1, body.count + 1):
         project = _create_bulk_project(pattern, body, user, i)
         db.add(project)
+        from app.services.native_deployment_preflight import record_fresh_project
+
+        record_fresh_project(db, project)
         projects.append(project)
 
     db.commit()

@@ -11,6 +11,7 @@ import logging
 import shlex
 import threading
 import time as _time
+from typing import cast
 
 import boto3  # noqa: F401 — eager import to prevent thread race
 import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
@@ -142,6 +143,10 @@ _CONTAINERS_EXEC_PATH = "/containers/exec"
 
 
 def _set_deploy_progress(project_id: str, data: dict):
+    from app.services.native_deployment_preflight import progress, worker_attempt
+
+    if worker_attempt.get():
+        return progress(project_id, data)
     set_progress(f"deploy:{project_id}", data)
 
 
@@ -150,6 +155,10 @@ def _get_deploy_progress_data(project_id: str) -> dict | None:
 
 
 def _delete_deploy_progress(project_id: str):
+    from app.services.native_deployment_preflight import progress, worker_attempt
+
+    if worker_attempt.get():
+        return progress(project_id, None)
     delete_progress(f"deploy:{project_id}")
 
 
@@ -168,9 +177,14 @@ def _clear_deploy_cancelled(project_id: str):
 def _update_deploy_progress(
     project_id: str, step: str, detail: str = "", items: list | None = None
 ):
+    from app.services.native_deployment_preflight import progress as fenced_progress
+    from app.services.native_deployment_preflight import worker_attempt
+
     progress: dict = {"step": step, "detail": detail}
     if items is not None:
         progress["items"] = items
+    if worker_attempt.get():
+        return fenced_progress(project_id, progress, notify=True)
     _set_deploy_progress(project_id, progress)
     notify_project(project_id, {"type": "deploy-progress", "progress": progress})
     try:
@@ -2869,6 +2883,10 @@ def _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map) -> No
     (``_should_use_ops_pod`` returns False).
     """
     if _should_use_ops_pod(topology):
+        if host.host_type == "kubevirt-cluster":
+            from app.services.native_origin_descendants import mark_support
+
+            mark_support(s, project_id)
         _deploy_ops_pod(s, host, project_id, project, topology, vni_map)
 
 
@@ -3546,16 +3564,40 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
             project_id[:8],
         )
         return
+    from app.core.database import SessionLocal as OriginSession
+    from app.services.native_origin_descendants import prepare as prepare_descendant
+
+    with OriginSession() as db:
+        handoff = prepare_descendant(
+            db, project_id, "monitor", {"host_id": str(host.id), "clusters": clusters}
+        )
     enqueue_job(
         _ops_pod_install_monitor_job,
         project_id,
         host.id,
         clusters,
+        origin_handoff_id=handoff,
         job_timeout=14400,
     )
 
 
-def _ops_pod_install_monitor_job(project_id: str, host_id: str, clusters: list) -> None:
+def _ops_pod_install_monitor_job(
+    project_id: str, host_id: str, clusters: list, origin_handoff_id=None
+) -> None:
+    from app.services.native_origin_descendants import invoke
+
+    return invoke(
+        origin_handoff_id,
+        project_id,
+        "monitor",
+        {"host_id": str(host_id), "clusters": clusters},
+        lambda: _ops_pod_install_monitor_body(project_id, host_id, clusters),
+    )
+
+
+def _ops_pod_install_monitor_body(
+    project_id: str, host_id: str, clusters: list
+) -> None:
     """RQ job body for the ops-pod install monitor (see
     :func:`_start_ops_pod_install_monitor`).
 
@@ -3564,7 +3606,12 @@ def _ops_pod_install_monitor_job(project_id: str, host_id: str, clusters: list) 
     The monitor lock was acquired by the enqueuer; the loop refreshes it and
     releases it when done.
     """
+    from app.core.database import SessionLocal
+    from app.services.native_origin_descendants import mark_support
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    with SessionLocal() as db:
+        mark_support(db, project_id)
 
     # Session-detached host copy so the monitor never shares a Session across the
     # worker (see _detached_host_copy).
@@ -3580,17 +3627,23 @@ def _ops_pod_install_monitor_job(project_id: str, host_id: str, clusters: list) 
     # Recert (pattern) deploys: deliver each cluster's live lb-ext.kubeconfig into
     # the ops pod (snapshot+guestfish) so the recert block authenticates without
     # oauth. Runs alongside the monitor; fail-closed if it can't deliver.
+    child = None
     try:
-        _maybe_start_recert_delivery(host, project_id, clusters)
+        child = _maybe_start_recert_delivery(host, project_id, clusters)
     except Exception:
         logger.exception("recert delivery launch failed for %s", project_id[:8])
-    _monitor_ops_pod_install(
-        project_id,
-        host,
-        clusters,
-        container_name=_ops_pod_container_name(project_id),
-        workdir=OPS_POD_WORKDIR,
-    )
+    try:
+        _monitor_ops_pod_install(
+            project_id,
+            host,
+            clusters,
+            container_name=_ops_pod_container_name(project_id),
+            workdir=OPS_POD_WORKDIR,
+        )
+    finally:
+        from app.services.native_origin_descendants import join
+
+        join(child)
 
 
 # ── Ops-pod install progress monitor (Plan 4, Task 7) ──────────────────────
@@ -4120,6 +4173,19 @@ def _ops_pod_exec(host, project_id: str, container_name: str, argv, timeout=60) 
         if not ctx:
             return ""
         core_v1, namespace, pod_name = ctx
+        from app.services import native_origin_ops, native_origin_remote
+
+        if native_origin_ops.participates(project_id):
+            return native_origin_remote.exec_command(
+                project_id,
+                native_origin_ops.for_core(core_v1),
+                argv,
+                lambda command: native_origin_remote.exec_result(
+                    core_v1, namespace, pod_name, command, timeout
+                ),
+                target_namespace=namespace,
+                target_name=pod_name,
+            )
         return _ops_pod_exec_kubevirt(
             core_v1, namespace, pod_name, argv, timeout=timeout
         )
@@ -4432,8 +4498,10 @@ def _deliver_recert_kubeconfigs(host, project_id, topology, clusters, deadline) 
         )
 
 
-def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
-    """Launch the recert kubeconfig-delivery thread for a pattern (recert) deploy."""
+def _maybe_start_recert_delivery(
+    host, project_id: str, clusters: list
+) -> threading.Thread | None:
+    """Launch delivery; return the tracked native child handle for its parent join."""
     import time as _t
 
     from app.core.database import SessionLocal
@@ -4451,6 +4519,22 @@ def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
     if not recert_clusters:
         return
     deadline = _t.time() + 1800  # matches the recert block's ~30-min wait
+    from app.services.native_origin_descendants import start_joined
+
+    child = start_joined(
+        project_id,
+        {
+            "host_id": str(host.id),
+            "clusters": recert_clusters,
+            "topology": topo,
+            "deadline": deadline,
+        },
+        lambda: _deliver_recert_kubeconfigs(
+            host, project_id, topo, recert_clusters, deadline
+        ),
+    )
+    if child is not None:
+        return child
     threading.Thread(
         target=_deliver_recert_kubeconfigs,
         args=(host, project_id, topo, recert_clusters, deadline),
@@ -4922,6 +5006,13 @@ def _cancel_ops_pod_install_kubevirt(host, project_id: str) -> None:
     if not ctx:
         return
     core_v1, namespace, pod_name = ctx
+    from app.services import native_origin_ops
+
+    if native_origin_ops.participates(project_id):
+        native_origin_ops.remove(
+            project_id, native_origin_ops.for_core(core_v1), "Pod", pod_name
+        )
+        return
     try:
         core_v1.delete_namespaced_pod(
             name=pod_name, namespace=namespace, grace_period_seconds=0
@@ -7329,6 +7420,9 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
     _notify_client_topology_update(project_id, project, db)
     notify_project(project_id, {"type": "project-state", "state": "active"})
     logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
+    from app.services.native_origin_checkpoints import schedule
+
+    schedule(project_id)
 
 
 def _find_gateway_port_forwards(topology, canvas_id, provider_type=None):
@@ -7599,6 +7693,9 @@ def _handle_kubevirt_deploy_error(project_id, project, status, db, notify_projec
     project.state = "error"
     project.deploy_error = error_msg
     db.commit()
+    from app.services.native_origin_checkpoints import schedule
+
+    schedule(project_id)
     _delete_deploy_progress(project_id)
     notify_project(
         project_id,
@@ -7902,12 +7999,36 @@ def _kubevirt_create_or_resume_cr(
     exec_privkey_pem,
 ) -> str | None:
     """Create TroshkaProject CR (or resume). Returns cr_name, or None on hard failure."""
+    from app.services import native_deployment_origin as origin
+
+    origin_intent = origin.active(db, project_id)
+    if origin_intent is not None:
+        try:
+            if _recover_kubevirt_origin(provider, db, origin_intent):
+                return origin_intent.root_name
+        except Exception as exc:
+            return _kubevirt_creation_failed(project, db, project_id, exc)
     existing_cr = None
     cr_name = f"project-{project_id[:8]}"
-    try:
-        existing_cr = driver.get_project_status(provider, project_id)
-    except Exception:
-        pass
+    if origin_intent is None:
+        try:
+            existing_cr = driver.get_project_status(provider, project_id)
+        except Exception:
+            pass
+    from app.services.native_deployment_preflight import worker_attempt
+
+    participating = worker_attempt.get() is not None
+    if existing_cr and (origin.capture_enabled() or participating):
+        from app.schemas.quota import AccountingUnavailable
+
+        return _kubevirt_creation_failed(
+            project,
+            db,
+            project_id,
+            AccountingUnavailable(
+                "Historical native root requires explicit custody recovery"
+            ),
+        )
 
     resume_poll = bool(existing_cr and existing_cr.get("phase") == "Deploying")
     if resume_poll:
@@ -7961,14 +8082,34 @@ def _kubevirt_create_or_resume_cr(
             mtu_map=mtu_map,
         )
     except Exception as e:
-        if "AlreadyExists" in str(e):
+        if (
+            "AlreadyExists" in str(e)
+            and not participating
+            and not origin.capture_enabled()
+            and origin.active(db, project_id) is None
+        ):
             logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
             return cr_name
-        project.state = "error"
-        project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
-        db.commit()
-        logger.exception("Deploy %s: CR creation failed", project_id[:8])
-        return None
+        return _kubevirt_creation_failed(project, db, project_id, e)
+
+
+def _recover_kubevirt_origin(provider, db, intent):
+    from app.services.providers.kubevirt import (
+        _get_k8s_clients,
+        _origin_api,
+        _origin_resume,
+    )
+
+    custom_api, core_api, client = _get_k8s_clients(provider)
+    return _origin_resume(db, _origin_api(custom_api, core_api, client), intent)
+
+
+def _kubevirt_creation_failed(project, db, project_id, error):
+    project.state = "error"
+    project.deploy_error = f"Failed to create TroshkaProject CR: {error}"
+    db.commit()
+    logger.error("Deploy %s: CR creation failed: %s", project_id[:8], error)
+    return None
 
 
 def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
@@ -9901,9 +10042,23 @@ from app.services.quota_operations import guarded_job
 
 @guarded_job("deploy")
 def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
-    project_id: str, auto_start: bool = True, resume_from: str | None = None
+    project_id: str,
+    auto_start: bool = True,
+    resume_from: str | None = None,
+    native_attempt_id: str | None = None,
 ):
     """Background thread: deploy a project's topology to a host."""
+    from app.services.native_deployment_preflight import enter_worker, worker_attempt
+
+    attempt_id = enter_worker(project_id, native_attempt_id)
+    token = worker_attempt.set(attempt_id)
+    try:
+        return _deploy_project_guarded(project_id, auto_start, resume_from, attempt_id)
+    finally:
+        worker_attempt.reset(token)
+
+
+def _deploy_project_guarded(project_id, auto_start, resume_from, attempt_id):
     acquired = _deploy_semaphore.acquire(timeout=1800)
     if not acquired:
         from app.core.database import SessionLocal
@@ -9911,6 +10066,12 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
 
         s = SessionLocal()
         try:
+            if attempt_id:
+                from app.services.native_deployment_preflight import (
+                    guard_worker_session,
+                )
+
+                guard_worker_session(s, project_id, attempt_id)
             p = s.get(Project, project_id)
             if p:
                 p.state = "error"
@@ -9921,7 +10082,9 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
             s.close()
         return
     try:
-        _deploy_project_inner(project_id, auto_start, resume_from)
+        _deploy_project_inner(
+            project_id, auto_start, resume_from, native_attempt_id=attempt_id
+        )
     finally:
         _deploy_semaphore.release()
 
@@ -10477,6 +10640,11 @@ def _emit_deploy_complete_notifications(project_id, project, vms, external_ips) 
 
 def _deploy_handle_failure(s, project_id, exception):
     """Handle unexpected exception during deploy."""
+    from app.services.native_deployment_preflight import worker_allowed
+
+    if not worker_allowed(project_id):
+        s.rollback()
+        return
     logger.exception("Deploy %s failed unexpectedly", project_id[:8])
     _delete_deploy_progress(project_id)
     try:
@@ -10552,7 +10720,10 @@ def _deploying_project(db, project_id):
 
 
 def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
-    project_id: str, auto_start: bool = True, resume_from: str | None = None
+    project_id: str,
+    auto_start: bool = True,
+    resume_from: str | None = None,
+    native_attempt_id: str | None = None,
 ):
     from app.core.database import SessionLocal
     from app.services.placement import record_deploy_end, record_deploy_start
@@ -10561,7 +10732,30 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
     _host_id_for_inflight: str | None = None
     s = SessionLocal()
+    from app.services.native_deployment_preflight import worker_session
+
+    session_token = worker_session.set(s)
     try:
+        from app.services.native_deployment_preflight import (
+            check,
+            current,
+            guard_worker_session,
+        )
+
+        if native_attempt_id:
+            check(s, project_id, native_attempt_id)
+            guard_worker_session(s, project_id, native_attempt_id)
+        elif current(s, project_id):
+            from app.models.native_deployment_preflight import NativeDeploymentPreflight
+
+            pointer = current(s, project_id)
+            if (
+                cast(
+                    NativeDeploymentPreflight, s.get(NativeDeploymentPreflight, pointer)
+                ).payload["mode"]
+                == "origin"
+            ):
+                return
         project = _deploying_project(s, project_id)
         if project is None:
             return
@@ -10649,6 +10843,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     finally:
         if _host_id_for_inflight:
             record_deploy_end(_host_id_for_inflight)
+        worker_session.reset(session_token)
         s.close()
 
 

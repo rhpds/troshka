@@ -433,7 +433,11 @@ def heal_stuck_ops_pod(
     now=None,
     threshold_s=_STUCK_OPS_THRESHOLD_S,
 ) -> dict[str, Any]:
+    from app.services import native_origin_ops
     from app.services.providers.kubevirt import ops_writer_guard
+
+    if native_origin_ops.participates(project_id):
+        return _heal_native(core_api, namespace, pod_name, project_id, now, threshold_s)
 
     with ops_writer_guard(project_id):
         return _heal_stuck_ops_pod_locked(
@@ -441,8 +445,35 @@ def heal_stuck_ops_pod(
         )
 
 
+def _heal_native(core_api, namespace, pod_name, project_id, now, threshold_s):
+    from app.schemas.quota import AccountingUnavailable
+    from app.services import native_origin_ops as ops
+
+    api = ops.for_core(core_api)
+    try:
+        resumed = ops.resume_replacement(project_id, api)
+        if resumed is not None:
+            return resumed
+        return _heal_stuck_ops_pod_locked(
+            core_api,
+            namespace,
+            pod_name,
+            now=now,
+            threshold_s=threshold_s,
+            replace=lambda body: ops.replacement(project_id, api, body),
+        )
+    except AccountingUnavailable as exc:
+        return {"action": "error", "message": str(exc)}
+
+
 def _heal_stuck_ops_pod_locked(
-    core_api, namespace, pod_name, *, now=None, threshold_s=_STUCK_OPS_THRESHOLD_S
+    core_api,
+    namespace,
+    pod_name,
+    *,
+    now=None,
+    threshold_s=_STUCK_OPS_THRESHOLD_S,
+    replace=None,
 ):
     """Delete+recreate a stuck or OVN-misplaced ops pod, or report exhausted.
 
@@ -483,6 +514,8 @@ def _heal_stuck_ops_pod_locked(
         pod, annotations=plan["annotations"], affinity=affinity
     )
     try:
+        if replace is not None:
+            return replace(body)
         core_api.delete_namespaced_pod(
             name=pod_name, namespace=namespace, grace_period_seconds=0
         )

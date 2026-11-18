@@ -30,8 +30,28 @@ def clone_case(request, native_case):
     return make_native_case(sessions)
 
 
+def source_evidence(image, proofs):
+    from app.schemas.kubevirt_storage import SourceSnapshotChildren
+
+    return image.model_copy(
+        update={
+            "source_snapshot_children": [
+                SourceSnapshotChildren(
+                    snapshot=p.intermediate_parent,
+                    present=p.intermediate_parent in image.snapshots,
+                    children=[p.intermediate]
+                    if p.intermediate in image.children
+                    else [],
+                )
+                for p in proofs
+                if p.source.image_key == image.key
+            ]
+        }
+    )
+
+
 def chain():
-    from app.schemas.kubevirt_storage import SnapshotKey
+    from app.schemas.kubevirt_storage import SnapshotKey, SourceSnapshotChildren
     from app.schemas.native_clone_lineage import CloneLineage
 
     report = report_fixture("zero-private-parent.json")
@@ -74,7 +94,15 @@ def chain():
                 "snapshots": [
                     SnapshotKey(image_key=source.image_key, snapshot_id=str(index + 1))
                     for index in range(2)
-                ]
+                ],
+                "source_snapshot_children": [
+                    SourceSnapshotChildren(
+                        snapshot=p.intermediate_parent,
+                        present=True,
+                        children=[p.intermediate],
+                    )
+                    for p in proofs
+                ],
             }
         )
     )
@@ -344,6 +372,7 @@ def clone_report(case, refs, proofs):
         )
         for image in images
     ]
+    images = [source_evidence(i, proofs) if i.key == new else i for i in images]
     now = datetime.now(UTC)
     report = report.model_copy(
         update={
@@ -783,6 +812,10 @@ def test_proven_settlement_retires_only_its_clone_snapshot_requirement(native_ca
         )
         for i in report.images
         if i.key not in gone
+    ]
+    images = [
+        source_evidence(i, [remaining]) if i.key == remaining.source.image_key else i
+        for i in images
     ]
     now = datetime.now(UTC)
     report = report.model_copy(

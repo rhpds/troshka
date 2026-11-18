@@ -9,6 +9,218 @@ from uuid import uuid4
 import pytest
 
 
+def test_reconciliation_cli_requires_review_and_explicit_authority(
+    cli, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from app import services
+
+    calls = []
+    prepared = {"request": {"request_id": str(uuid4())}}
+    review = {"review_digest": "a" * 64}
+    service = SimpleNamespace(
+        prepare=lambda db, ids, **kw: calls.append(("prepare", ids, kw)) or prepared,
+        review=lambda db, value: calls.append(("review", value)) or review,
+        apply=lambda db, value, **kw: calls.append(("apply", value, kw))
+        or ["successor"],
+    )
+    monkeypatch.setattr(
+        services, "native_custody_reconciliation", service, raising=False
+    )
+    target, project = str(uuid4()), str(uuid4())
+    output = tmp_path / "prepared.json"
+    parser = cli._parser()
+    args = parser.parse_args(
+        [
+            "--target-id",
+            target,
+            "prepare-reconciliation",
+            "--project-id",
+            project,
+            "--cleanup-authority-project-id",
+            project,
+            "--reason",
+            "Reviewed ownership",
+            "--output",
+            str(output),
+        ]
+    )
+    cli._reconciliation_dispatch(None, args)
+    assert json.loads(output.read_text()) == prepared
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert calls[-1] == (
+        "prepare",
+        [project],
+        {
+            "cleanup_authority_project_ids": [project],
+            "reason": "Reviewed ownership",
+        },
+    )
+    reviewed = tmp_path / "review.json"
+    args = parser.parse_args(
+        [
+            "--target-id",
+            target,
+            "review-reconciliation",
+            "--enrollment",
+            str(output),
+            "--output",
+            str(reviewed),
+        ]
+    )
+    cli._reconciliation_dispatch(None, args)
+    assert json.loads(reviewed.read_text()) == review
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--target-id",
+                target,
+                "apply-reconciliation",
+                "--enrollment",
+                str(output),
+            ]
+        )
+    args = parser.parse_args(
+        [
+            "--target-id",
+            target,
+            "apply-reconciliation",
+            "--enrollment",
+            str(output),
+            "--review-digest",
+            "a" * 64,
+            "--cleanup-authority-project-id",
+            project,
+        ]
+    )
+    assert cli._reconciliation_dispatch(None, args) == ["successor"]
+    assert calls[-1] == (
+        "apply",
+        prepared,
+        {
+            "expected_target_id": target,
+            "cleanup_authority_project_ids": [project],
+            "review_digest": "a" * 64,
+        },
+    )
+
+
+@pytest.mark.parametrize("command", ["prepare-reconciliation", "apply-reconciliation"])
+def test_reconciliation_cli_passes_only_explicit_retirement_selection(
+    cli, monkeypatch, tmp_path, command
+):
+    from types import SimpleNamespace
+
+    from app import services
+
+    calls = []
+    prepared = {"request": {"request_id": str(uuid4())}}
+    service = SimpleNamespace(
+        prepare=lambda db, ids, **kw: calls.append(kw) or prepared,
+        apply=lambda db, value, **kw: calls.append(kw) or [],
+    )
+    monkeypatch.setattr(
+        services, "native_custody_reconciliation", service, raising=False
+    )
+    selection = [{"receipt_id": str(uuid4()), "digest": "b" * 64}]
+    refs = tmp_path / "retirements.json"
+    refs.write_text(json.dumps(selection))
+    refs.chmod(0o600)
+    manifest = tmp_path / "verified.json"
+    manifest.write_text(json.dumps(prepared))
+    manifest.chmod(0o600)
+    argv = ["--target-id", str(uuid4()), command, "--binding-retirements", str(refs)]
+    if command == "prepare-reconciliation":
+        argv += [
+            "--project-id",
+            str(uuid4()),
+            "--reason",
+            "Reviewed absent old disks",
+            "--output",
+            str(tmp_path / "out.json"),
+        ]
+    else:
+        argv += ["--enrollment", str(manifest), "--review-digest", "a" * 64]
+    cli._reconciliation_dispatch(None, cli._parser().parse_args(argv))
+    assert calls[-1]["binding_retirements"] == selection
+
+
+def test_binding_retirement_prepare_writes_private_request(cli, monkeypatch, tmp_path):
+    import native_binding_retirement_cli as retirement_cli
+
+    calls = []
+    prepared = {"request_id": str(uuid4())}
+    monkeypatch.setattr(
+        retirement_cli.retirement,
+        "prepare",
+        lambda *args, **kw: calls.append((args, kw)) or prepared,
+    )
+    output = tmp_path / "retirement.json"
+    target, project = str(uuid4()), str(uuid4())
+    args = cli._parser().parse_args(
+        [
+            "--target-id",
+            target,
+            "prepare-binding-retirement",
+            "--project-id",
+            project,
+            "--pvc-uid",
+            "old-pvc",
+            "--administrator",
+            "operator",
+            "--reason",
+            "Old disk absent",
+            "--output",
+            str(output),
+        ]
+    )
+    assert retirement_cli.dispatch(None, args) == prepared["request_id"]
+    assert calls == [
+        (
+            (None, project, "old-pvc"),
+            {"administrator": "operator", "reason": "Old disk absent", "root": None},
+        )
+    ]
+    assert json.loads(output.read_text()) == prepared
+    assert output.stat().st_mode & 0o777 == 0o600
+
+
+def test_binding_retirement_wrong_target_never_reaches_provider_or_apply(
+    cli, monkeypatch
+):
+    from types import SimpleNamespace
+
+    import native_binding_retirement_cli as retirement_cli
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retirement must not run against an unselected target")
+
+    monkeypatch.setattr(retirement_cli, "dispatch", forbidden)
+    for command in retirement_cli.COMMANDS:
+        args = SimpleNamespace(command=command, target_id=str(uuid4()))
+        with pytest.raises(ValueError, match="target UUID"):
+            cli._dispatch(
+                SimpleNamespace(get=lambda *a: SimpleNamespace(target_id=str(uuid4()))),
+                args,
+            )
+
+
+def test_binding_retirement_apply_requires_exact_review_digest(cli):
+    with pytest.raises(SystemExit):
+        cli._parser().parse_args(
+            [
+                "--target-id",
+                str(uuid4()),
+                "apply-binding-retirement",
+                "--evidence",
+                "proof.json",
+                "--output",
+                "reference.json",
+            ]
+        )
+
+
 @pytest.fixture
 def cli(monkeypatch):
     directory = Path(__file__).resolve().parents[3] / "scripts"
@@ -377,7 +589,10 @@ def verification_case(cli, native_case, monkeypatch, tmp_path):
             return {
                 "items": [
                     {
-                        "metadata": {"uid": root.project_cr_uid},
+                        "metadata": {
+                            "uid": root.project_cr_uid,
+                            "generation": root.deployment_generation,
+                        },
                         "spec": {"projectId": str(root.project_id)},
                     }
                 ]

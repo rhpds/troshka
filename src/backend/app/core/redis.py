@@ -110,6 +110,12 @@ def _release_stale_lock(key: str):
 def _on_job_success(job, connection, result, *args, **kwargs):
     """Called by RQ when a job completes successfully."""
     project_id = job.meta.get("project_id")
+    attempt_id = (getattr(job, "kwargs", None) or {}).get("native_attempt_id")
+    if attempt_id:
+        from app.services.native_deployment_preflight import finish_job
+
+        finish_job(project_id, attempt_id, connection, host_id=job.meta.get("host_id"))
+        return
     host_id = job.meta.get("host_id")
     if host_id:
         try:
@@ -212,6 +218,19 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
     """Called by RQ when a job fails (exception, timeout, or worker crash)."""
     project_id = job.meta.get("project_id")
     host_id = job.meta.get("host_id")
+    attempt_id = (getattr(job, "kwargs", None) or {}).get("native_attempt_id")
+    if attempt_id:
+        from app.services.native_deployment_preflight import fail_job
+
+        fail_job(
+            project_id,
+            attempt_id,
+            exc_value,
+            connection,
+            host_id=host_id,
+            abandoned=bool(exc_type and exc_type.__name__ == "AbandonedJobError"),
+        )
+        return
     logger.error(
         "Job %s failed: %s: %s",
         job.id[:8],

@@ -941,6 +941,22 @@ def _deliver_warning(db, identity):
     db.commit()
 
 
+def _origin_candidates_after_cleanup(project_ids):
+    from app.core.database import SessionLocal
+
+    origin_candidates = []
+    for project_id in project_ids:
+        from app.services.quota_cleanup import native_intent, reconcile_native
+
+        with SessionLocal() as cleanup_db:
+            cleanup = native_intent(cleanup_db, project_id)
+        if cleanup and cleanup.phase != "finalized":
+            reconcile_native(project_id, str(cleanup.intent_id))
+            continue
+        origin_candidates.append(project_id)
+    return origin_candidates
+
+
 def run_once():
     from app.core.database import SessionLocal
     from app.services import quota_storage
@@ -952,14 +968,11 @@ def run_once():
                 Project.host_id.isnot(None)
             )
         ]
-    for project_id in project_ids:
-        from app.services.quota_cleanup import native_intent, reconcile_native
+    origin_candidates = _origin_candidates_after_cleanup(project_ids)
+    from app.services.native_origin_checkpoints import schedule_many
 
-        with SessionLocal() as cleanup_db:
-            cleanup = native_intent(cleanup_db, project_id)
-        if cleanup and cleanup.phase != "finalized":
-            reconcile_native(project_id, str(cleanup.intent_id))
-            continue
+    schedule_many(origin_candidates)
+    for project_id in origin_candidates:
         if not accounting.quotas_enabled():
             continue
         try:

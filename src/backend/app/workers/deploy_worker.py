@@ -11,6 +11,14 @@ import logging
 import os
 import platform
 import sys
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+
+    class _WorkerInvocation(Protocol):
+        def perform_job(self, job: Any, queue: Any) -> bool:
+            ...
+
 
 _backend_dir = os.path.join(os.path.dirname(__file__), "..", "..")
 if _backend_dir not in sys.path:
@@ -59,6 +67,16 @@ def worker_queues(profile):
     raise ValueError("Unknown RQ worker queue profile")
 
 
+class NativeOriginWorkerMixin:
+    """Retain completion of the exact RQ invocation, independently of job status."""
+
+    def perform_job(self, job, queue):
+        from app.services.native_origin_writers import run_execution
+
+        invoke = cast("_WorkerInvocation", super()).perform_job
+        return run_execution(self, job, lambda: invoke(job, queue))
+
+
 def run_worker():
     """Start an RQ worker that listens on deploy, provision, and default queues."""
     from redis import Redis
@@ -84,7 +102,7 @@ def run_worker():
     if platform.system() == "Darwin":
         _logger.info("macOS detected — using SimpleWorker (no fork)")
 
-        class _TroshkaSimpleWorker(SimpleWorker):
+        class _TroshkaSimpleWorker(NativeOriginWorkerMixin, SimpleWorker):
             def perform_job(self, job, queue):
                 _log_job_context(">> START", job, self.name)
                 _save_worker_meta(job)
@@ -95,7 +113,7 @@ def run_worker():
         worker_class = _TroshkaSimpleWorker
     else:
 
-        class _TroshkaWorker(Worker):
+        class _TroshkaWorker(NativeOriginWorkerMixin, Worker):
             def perform_job(self, job, queue):
                 _log_job_context(">> START", job, self.name)
                 _save_worker_meta(job)

@@ -19,6 +19,7 @@ COPY src/backend/ .
 COPY scripts/backfill_quotas.py /opt/app-root/src/scripts/backfill_quotas.py
 COPY scripts/migrate_groups.py /opt/app-root/src/scripts/migrate_groups.py
 COPY scripts/import_kubevirt_storage.py /opt/app-root/src/scripts/import_kubevirt_storage.py
+COPY scripts/native_binding_retirement_cli.py /opt/app-root/src/scripts/native_binding_retirement_cli.py
 COPY scripts/collect_kubevirt_storage.py /opt/app-root/src/scripts/collect_kubevirt_storage.py
 COPY schemas/ /opt/app-root/src/schemas/
 # The backend imports the shared troshka_serial package (serial/headless VM exec)

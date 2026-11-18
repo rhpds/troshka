@@ -14,6 +14,74 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native deployment recovery retains fresh creation proof and a deployment
+  attempt before dispatch. Failures proven to precede project resource submission
+  can use Undeploy to return to draft or Delete locally. Historical and ambiguous
+  failures remain held; retries and delayed workers retain their original identity.
+
+- VM capture and disk reconfiguration use compatible KubeVirt power intent for
+  modern and legacy VMs, and require verified VM shutdown before continuing.
+  Failed stop requests, unavailable observations, and shutdown timeouts hold work.
+  Origin captures resume retained checkpoints after acknowledgement or operator
+  restart, preserving submission ambiguity and original producer identity fences.
+
+- Native project cleanup fences late producers, waits for VM/VMI absence and
+  Troshka finalizers, then deletes the namespace normally. An exact terminating
+  CR with only Kubernetes' orphan finalizer can proceed after retained inventory
+  proves Troshka finalization and the completion transition is recorded.
+  Retained cleanup state
+  resumes retries and keeps storage or external cleanup blockers visible until
+  independent settlement completes.
+  Verified storage identities and complete coverage are retained before deletion;
+  cancelled cleanup with missing custody can recover it while original resources
+  remain, preserving the original request and requiring a renewed producer fence.
+  Existing namespaces need only required storage and producer inventory access.
+  Completed operator replacements resume retained cleanup, checkpoint observers
+  no longer strand deployment completion, and successful support work can settle
+  through its exact namespace and storage boundary. Unknown outcomes remain held.
+  Verified terminal storage retirement can settle alongside another project's
+  unresolved snapshot only after fresh retained source ancestry proves private
+  storage independence; shared cache survival and unresolved ownership stay checked.
+  Successor storage custody excludes exactly settled historical roots, preserving
+  their receipts and rechecking settlement authority before publication.
+  Snapshot journal configuration accepts the explicitly pinned downstream
+  ODF 4.20 build pair alongside the upstream fixture profile; mixed pairs reject.
+  Schema acceptance requires separate installed snapshot/restore and retirement
+  qualification before enablement.
+  Helm exposes an explicit native origin capture opt-in after qualification,
+  disabled by default and independent of domain admission and quota enforcement.
+  Enabled native collection also supplies protected profiles, transport, and the
+  configured CLI to API, tunnel, and lifecycle workers for custody verification
+  and retained cleanup when capture is disabled.
+  Unverified discovered snapshots hold their pinned project's storage accounting;
+  conflicting protected evidence and unknown root identities keep global holds.
+  Fresh native deployments and namespace-only recovery read the exact project root
+  through existing list access before namespace grants exist; incomplete reads hold.
+  Origin storage custody follows authenticated cache enrollment history while
+  preserving protected configuration, exact predecessors, and live cache checks.
+
+- Project deletion and undeploy use verified original resource custody even after
+  canvas or installation metadata changes, preserving live ownership and storage
+  settlement checks. Single and bulk deletion now display rejected requests;
+  failed deletion keeps the project and its saved canvas available. Retained disk
+  ancestry no longer depends on editable canvas metadata. Cleanup tolerates a
+  rollout restart timestamp when every other attested helper identity matches.
+  Stale or missing storage observations can request a scoped evidence refresh
+  even when periodic collection is disabled; users retry cleanup after collection.
+  The refresh does not run trash cleanup or allocation reconciliation.
+  Administrator-reviewed custody successors preserve original receipts and
+  require explicit cleanup-authority selection, fresh verification, and an exact
+  review digest before application. Replaced disks require explicit retirement
+  evidence for their original identities; collection continues checking their
+  absence before cleanup can settle storage. Failed observation refreshes can
+  be retried without enabling periodic collection. Shared-cache verification
+  checks each selected snapshot's exact children so unrelated projects can use
+  the same cache without blocking cleanup. Disk-retirement verification preserves
+  its freshness limit and rechecks Kubernetes identities and CSI mappings before
+  accepting the evidence. Retirement reconciliation requires a subsequent storage
+  scan and preserves conflict markers across enrollment changes; older in-flight
+  reports remain audit history without restoring outdated cleanup evidence.
+
 - Routine releases check existing storage-accounting health without launching
   fleet scans. Accounting changes can request fresh validation once after promotion,
   across the fleet or selected production projects and their shared-storage domains.
@@ -30,6 +98,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 - Release builds run the eight operator and helper images in parallel, while
   keeping production promotion gated on the complete image build.
+  Native host builds transfer registry credentials into private temporary files,
+  remove them after pushing, and report push failures instead of false success.
+  Build archives exclude macOS metadata files so migration scripts remain loadable.
   Release accounting checks run at most two project scans concurrently, retaining
   freshness and final inventory checks and stopping new scans after a failure.
   Native storage readiness allows 50 seconds for sequential identity checks,

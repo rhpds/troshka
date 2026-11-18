@@ -456,6 +456,16 @@ def test_ops_launch_holds_cleanup_lock_until_provider_writes_finish(
     class Session:
         held = False
 
+        def query(self, model):
+            from app.models.native_deployment_origin import NativeDeploymentOriginActive
+
+            assert model is NativeDeploymentOriginActive
+            query = MagicMock()
+            query.filter_by.return_value.populate_existing.return_value.first.return_value = (
+                None
+            )
+            return query
+
         def __enter__(self):
             return self
 

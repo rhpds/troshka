@@ -8,7 +8,7 @@ import pytest
 from app.schemas.kubevirt_storage import BackendImageState, RetiringRoot, SnapshotKey
 from app.services.kubevirt_storage_graph import attribute_graph
 from app.services.kubevirt_storage_reports import report_inventory
-from tests.test_native_clone_lineage import chain
+from tests.test_native_clone_lineage import chain, source_evidence
 
 
 def absent(image, now):
@@ -74,6 +74,7 @@ def test_retiring_clone_requires_both_private_absences(keep_snapshot, fault):
                     + ([retired.intermediate_parent] if keep_snapshot else []),
                 }
             )
+            value = source_evidence(value, proofs)
         if (fault == "head_live" and image.key == retired.binding.image_key) or (
             fault == "middle_live" and image.key == retired.intermediate
         ):

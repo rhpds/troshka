@@ -11,6 +11,7 @@ from app.schemas.kubevirt_storage import (
     PoolKey,
     ReadResult,
     SnapshotKey,
+    SourceSnapshotChildren,
 )
 from app.services.kubevirt_storage_graph import attribute_graph
 from app.services.kubevirt_storage_inventory import inventory_digest
@@ -110,6 +111,82 @@ def _children(reader, key, snapshots, pools, timestamps, object_limit):
             raise _ReadFailure("scan_limit")
         timestamps.append(result.collected_at)
     return children
+
+
+def _source_metadata(reader, key, selected, pools, limits, timestamps=None):
+    """Read complete child sets only for the immutable selected source snapshots."""
+    timestamps = [] if timestamps is None else timestamps
+    info = _call(reader.image_info, key)
+    if not isinstance(info.value, dict) or info.value.get("id") != key.image_id:
+        raise _ReadFailure("identity_changed")
+    parent = _parent(info.value, key, pools, reader)
+    result = _call(reader.image_snapshots, key)
+    snapshots, _ = _snapshot_rows(result.value, key)
+    if len(snapshots) > limits.max_objects:
+        raise _ReadFailure("scan_limit")
+    timestamps.extend([info.collected_at, result.collected_at])
+    edges, child_count = [], 0
+    for snapshot in sorted(selected, key=lambda s: s.snapshot_id):
+        children = (
+            _children(reader, key, [snapshot], pools, timestamps, limits.max_objects)
+            if snapshot in snapshots
+            else []
+        )
+        if len(children) != len(set(children)):
+            raise ValueError("duplicate source snapshot child")
+        child_count += len(children)
+        if len(snapshots) + child_count > limits.max_objects:
+            raise _ReadFailure("scan_limit")
+        edges.append(
+            SourceSnapshotChildren(
+                snapshot=snapshot,
+                present=snapshot in snapshots,
+                children=sorted(children, key=lambda c: c.model_dump_json()),
+            )
+        )
+    return info.value["id"], parent, edges
+
+
+def _observe_source(
+    reader, key, selected, pools, capability_ok, version, clock, limits
+):
+    timestamps = []
+    try:
+        before = _source_metadata(reader, key, selected, pools, limits, timestamps)
+        if not capability_ok:
+            raise _ReadFailure("unsupported")
+        usage = _call(reader.image_usage, key)
+        timestamps.append(usage.collected_at)
+        allocated, provisioned = parse_usage(usage.value, key.image_id)
+        after = _source_metadata(reader, key, selected, pools, limits, timestamps)
+        if before != after:
+            raise _ReadFailure("identity_changed")
+        _, parent, edges = before
+        return ImageObservation(
+            key=key,
+            parent=parent,
+            source_snapshot_children=edges,
+            snapshots=[e.snapshot for e in edges if e.present],
+            children=list(dict.fromkeys(c for e in edges for c in e.children)),
+            collected_at=min(timestamps),
+            allocated_bytes=allocated,
+            provisioned_bytes=provisioned,
+            measurement_status="complete",
+            command_version=version,
+            measurement_semantics_version="kubevirt-rbd-allocated-v1",
+        )
+    except (_ReadFailure, ValueError, KeyError, TypeError, AttributeError) as error:
+        return ImageObservation(
+            key=key,
+            collected_at=min(timestamps, default=clock()),
+            allocated_bytes=None,
+            provisioned_bytes=None,
+            measurement_status=error.status
+            if isinstance(error, _ReadFailure)
+            else "invalid_output",
+            command_version=version,
+            measurement_semantics_version=None,
+        )
 
 
 def _observe(reader, key, pools, capability_ok, version, clock, limits):
@@ -251,6 +328,19 @@ def _trash_ids(reader, key, errors):
         return set()
 
 
+def _cleanup_snapshot_sources(snapshot_facts, project_cleanup_scopes):
+    from app.services.native_snapshot_graph import unresolved_producers
+
+    if not project_cleanup_scopes:
+        return []
+    # The ordinary bounded parent walker and final metadata recheck apply.
+    return [
+        (p.source_binding.image_key, 0)
+        for _, p in unresolved_producers(snapshot_facts)
+        if p.source_binding is not None
+    ]
+
+
 def _collect_images(
     inventory,
     rbd_reader,
@@ -261,6 +351,10 @@ def _collect_images(
     clock,
     errors,
     deadline,
+    binding_retirements=(),
+    clone_lineages=(),
+    snapshot_facts=(),
+    project_cleanup_scopes=(),
 ):
     images, seen = [], set()
     queue = [
@@ -272,10 +366,33 @@ def _collect_images(
     retiring_keys = {
         key for root in inventory.retiring_roots for key in root.owned_images
     }
+    retiring_keys.update(
+        key
+        for r in binding_retirements
+        if inventory.project_scope in (None, r.root.project_id)
+        for key in r.private_images
+    )
+    from app.services.native_snapshot_graph import retired_images
+
+    retiring_keys.update(retired_images(snapshot_facts))
     # Project teardown needs physical absence proof. Unrelated platform cache
     # uncertainty stays nullable; measured tenant quotas do not require its retirement.
     queue.extend((key, 0) for key in retiring_keys)
+    queue.extend(
+        (p.image, 0)
+        for facts in snapshot_facts
+        for p in facts.snapshots
+        if inventory.project_scope in (None, p.source.root.project_id)
+    )
+    # Terminal accounting needs current ancestry for unresolved source heads.
+    queue.extend(_cleanup_snapshot_sources(snapshot_facts, project_cleanup_scopes))
     checked_pools = {}
+    selected_sources = {}
+    for proof in clone_lineages:
+        if inventory.project_scope in (None, proof.binding.root.project_id):
+            selected_sources.setdefault(proof.source.image_key, set()).add(
+                proof.intermediate_parent
+            )
     while queue:
         key, depth = queue.pop(0)
         if key in seen:
@@ -290,8 +407,28 @@ def _collect_images(
         pool_key = (key.ceph_fsid, key.pool_id, key.rbd_namespace)
         if pool_key not in checked_pools:
             checked_pools[pool_key] = _trash_ids(rbd_reader, key, errors)
-        image = _collect_image(
-            rbd_reader, key, retiring_keys, pools, capability_ok, version, clock, limits
+        image = (
+            _observe_source(
+                rbd_reader,
+                key,
+                selected_sources[key],
+                pools,
+                capability_ok,
+                version,
+                clock,
+                limits,
+            )
+            if key in selected_sources
+            else _collect_image(
+                rbd_reader,
+                key,
+                retiring_keys,
+                pools,
+                capability_ok,
+                version,
+                clock,
+                limits,
+            )
         )
         if key.image_id in checked_pools[pool_key]:
             image = image.model_copy(
@@ -307,7 +444,7 @@ def _collect_images(
         # Scoped jobs inspect exact child metadata but never follow descendants.
         # Private descendants must already be reachable from enrolled bindings;
         # graph authorization rejects unknown consumers without measuring them.
-        if inventory.project_scope is None:
+        if inventory.project_scope is None and key not in selected_sources:
             queue.extend((child, depth + 1) for child in image.children)
     return images
 
@@ -430,6 +567,21 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
         ):
             raise _ReadFailure("identity_changed")
         return
+    if image.source_snapshot_children is not None:
+        observed = _source_metadata(
+            reader,
+            image.key,
+            {e.snapshot for e in image.source_snapshot_children},
+            pools,
+            limits,
+        )
+        if observed != (
+            image.key.image_id,
+            image.parent,
+            image.source_snapshot_children,
+        ):
+            raise _ReadFailure("identity_changed")
+        return
     observed = _graph_metadata(reader, image, pools, limits)
     expected = (
         image.key.image_id,
@@ -441,7 +593,17 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
         raise _ReadFailure("identity_changed")
 
 
-def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
+def collect_report(
+    inventory,
+    rbd_reader,
+    *,
+    limits,
+    clock,
+    clone_lineages=(),
+    binding_retirements=(),
+    snapshot_facts=(),
+    project_cleanup_scopes=(),
+):
     started = getattr(rbd_reader, "scan_started_at", clock())
     deadline = time.monotonic() + limits.scan_timeout_seconds
     errors = list(inventory.blockers)
@@ -456,6 +618,10 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         clock,
         errors,
         deadline,
+        binding_retirements,
+        clone_lineages,
+        snapshot_facts,
+        project_cleanup_scopes,
     )
     _final_checks(inventory, rbd_reader, errors)
     images = _final_graph_check(
@@ -467,6 +633,9 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         images,
         max_parent_depth=limits.max_parent_depth,
         clone_lineages=clone_lineages,
+        binding_retirements=binding_retirements,
+        snapshot_facts=snapshot_facts,
+        project_cleanup_scopes=project_cleanup_scopes,
     )
     # Inventory was acquired before any image; include its age in every total.
     projects = [
@@ -518,6 +687,7 @@ def collect_report(inventory, rbd_reader, *, limits, clock, clone_lineages=()):
         snapshot_evidence=inventory.snapshot_evidence,
         retiring_roots=inventory.retiring_roots,
         clone_references=inventory.clone_references,
+        binding_retirements=inventory.binding_retirements,
         inventory_blockers=inventory.blockers,
         images=images,
         collection_errors=errors,

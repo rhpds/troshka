@@ -29,6 +29,203 @@ native_ledger = native_ledger_fixture
 
 
 @pytest.mark.parametrize(
+    "condition",
+    [
+        "transient",
+        "conflict",
+        "digest",
+        "rejected",
+        "malformed",
+        "unknown",
+        "identity",
+        "retirement",
+        "retirement_conflict",
+        "retirement_digest",
+        "retirement_rejected",
+        "retirement_malformed",
+        "retirement_unknown",
+        "retirement_identity",
+        "retirement_unselected",
+    ],
+)
+def test_cleanup_can_retry_failed_observation_without_bypassing_evidence_guards(
+    cleanup_case, monkeypatch, condition
+):
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.models.kubevirt_storage import (
+        NativeCollectionDomain,
+        NativeEnrollment,
+        NativeStorageSnapshot,
+    )
+    from app.models.project import Project
+    from app.schemas.kubevirt_storage import Blocker
+    from app.services import (
+        native_collection_jobs,
+        native_managed_collector,
+        quota_cleanup,
+    )
+    from app.services.kubevirt_storage_enrollment import validated_enrollment
+    from app.services.kubevirt_storage_reports import import_report, report_cursor
+
+    q = cleanup_case
+    retirement_failure = condition.startswith("retirement")
+    fault = condition.removeprefix("retirement_") if retirement_failure else condition
+    if retirement_failure:
+        from app.services import native_binding_retirement_collection
+
+        def unavailable_retirement(*args, **kwargs):
+            raise ValueError("Selected binding retirement evidence missing or changed")
+
+        monkeypatch.setattr(
+            native_binding_retirement_collection,
+            "report_authority",
+            unavailable_retirement,
+        )
+        monkeypatch.setattr(
+            native_binding_retirement_collection,
+            "protected_inputs",
+            lambda *a, **kw: [] if fault == "unselected" else [object()],
+        )
+    FixedDatetime.current += timedelta(seconds=1)
+    monkeypatch.setattr(native_managed_collector, "datetime", FixedDatetime)
+    monkeypatch.setattr(native_collection_jobs, "settings", lambda: {"enabled": False})
+    enqueue = MagicMock(return_value=True)
+    monkeypatch.setattr(native_collection_jobs, "enqueue_collection", enqueue)
+    with q.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+        manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
+        source = native_managed_collector.failed_report(
+            manifest, q.report.collector_id, FixedDatetime.current, q.project_ids[0]
+        )
+        if fault in {"unknown", "identity"}:
+            source = source.model_copy(
+                update={
+                    "collection_errors": [
+                        Blocker(
+                            code="inventory_changed"
+                            if fault == "identity"
+                            else "unrecognized_failure"
+                        )
+                    ]
+                }
+            )
+        report_id = import_report(
+            db,
+            source,
+            enrollment_id=domain.enrollment_id,
+            expected_enrollment_digest=manifest.digest,
+            now=FixedDatetime.current,
+        )
+        report = db.get(NativeStorageSnapshot, report_id)
+        assert report.accepted is not retirement_failure
+        if retirement_failure:
+            assert report.reason_codes == ["binding_retirement_authority_unverified"]
+        cursor = report_cursor(db, domain, q.project_ids[0])
+        if fault == "conflict":
+            cursor.conflicted = True
+        elif fault == "digest":
+            report.digest = "0" * 64
+        elif fault == "rejected":
+            report.accepted = False
+            report.reason_codes = ["current_project_provider_mismatch"]
+        elif fault == "malformed":
+            report.payload = {**report.payload, "project_roots": "malformed"}
+        db.commit()
+        with pytest.raises((HTTPException, ValueError)):
+            quota_cleanup.request_native(
+                db, db.get(Project, q.project_ids[0]), "delete"
+            )
+        if condition in {"transient", "retirement"}:
+            enqueue.assert_called_once_with(
+                str(q.pins.domain_id), q.project_ids[0], observation_only=True
+            )
+        else:
+            enqueue.assert_not_called()
+        assert quota_cleanup.native_intent(db, q.project_ids[0]) is None
+        if retirement_failure:
+            assert not db.get(NativeStorageSnapshot, report_id).accepted
+        assert not q.queued
+
+
+@pytest.mark.parametrize("condition", ["missing", "conflict", "cutoff"])
+def test_cleanup_refreshes_only_clean_missing_cursor(
+    cleanup_case, monkeypatch, condition
+):
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.models.kubevirt_storage import NativeCollectionDomain
+    from app.models.project import Project
+    from app.services import native_collection_jobs, quota_cleanup
+    from app.services.kubevirt_storage_reports import report_cursor
+
+    q = cleanup_case
+    enqueue = MagicMock(return_value=True)
+    monkeypatch.setattr(native_collection_jobs, "enqueue_collection", enqueue)
+    with q.sessions() as db:
+        domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
+        cursor = report_cursor(db, domain, q.project_ids[0])
+        cursor.latest_report_id = None
+        if condition != "cutoff":
+            cursor.latest_started_at = None
+        cursor.conflicted = condition == "conflict"
+        db.commit()
+        with pytest.raises(HTTPException) as raised:
+            quota_cleanup.request_native(
+                db, db.get(Project, q.project_ids[0]), "delete"
+            )
+        assert raised.value.status_code == 409
+        if condition in {"missing", "cutoff"}:
+            enqueue.assert_called_once_with(
+                str(q.pins.domain_id), q.project_ids[0], observation_only=True
+            )
+        else:
+            enqueue.assert_not_called()
+        assert quota_cleanup.native_intent(db, q.project_ids[0]) is None
+        assert not q.queued
+
+
+@pytest.mark.parametrize("mode", ["delete", "undeploy"])
+@pytest.mark.parametrize("queued", [False, True])
+def test_stale_cleanup_requests_only_observation_refresh(
+    cleanup_case, monkeypatch, mode, queued
+):
+    from fastapi import HTTPException
+
+    from app.models.project import Project
+    from app.services import native_collection_jobs, quota_cleanup
+
+    q = cleanup_case
+    FixedDatetime.current += timedelta(minutes=16)
+    calls = []
+    monkeypatch.setattr(native_collection_jobs, "settings", lambda: {"enabled": False})
+    with q.sessions() as db:
+        project = db.get(Project, q.project_ids[0])
+        original_state = project.state
+
+        def enqueue(domain_id, project_id, **kwargs):
+            assert not db.in_transaction(), "Release database locks before queueing"
+            calls.append((domain_id, project_id, kwargs))
+            return queued
+
+        monkeypatch.setattr(native_collection_jobs, "enqueue_collection", enqueue)
+        with pytest.raises(HTTPException) as raised:
+            quota_cleanup.request_native(db, project, mode)
+        assert raised.value.status_code == 409
+        assert "refresh" in raised.value.detail["message"]
+        assert calls == [
+            (str(q.pins.domain_id), q.project_ids[0], {"observation_only": True})
+        ]
+        assert db.get(Project, q.project_ids[0]).state == original_state
+        assert quota_cleanup.native_intent(db, q.project_ids[0]) is None
+        assert not q.queued
+
+
+@pytest.mark.parametrize(
     "change", [None, "uid", "spec", "namespace", "foreign", "root"]
 )
 @pytest.mark.parametrize("collector", [False, True])
@@ -1118,6 +1315,8 @@ def enroll_successor(q, receipt, mode):
         if mode == "delete":
             db.add(project)
         project.host_id = str(receipt.host_id)
+        db.flush()
+        project.updated_at = FixedDatetime.current
         db.commit()
         successor = receipt.root.model_copy(
             update={

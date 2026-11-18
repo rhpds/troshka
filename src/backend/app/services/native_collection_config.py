@@ -7,10 +7,17 @@ from collections.abc import Mapping
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from app.schemas.kubevirt_storage import Evidence, ProjectRoot
 from app.schemas.kubevirt_storage_enrollment import VerificationPins
+from app.schemas.native_snapshot_custody import SnapshotJournalProfile
 from app.services.kubevirt_storage_inventory import KubernetesReader
 from app.services.kubevirt_storage_transport import (
     CapabilityProfile,
@@ -60,6 +67,16 @@ def read_operator_file(path, limit=64 * 1024 * 1024):
 class BackendConfig(Evidence):
     ceph_fsid: UUID
     pools: list[PoolConfig] = Field(min_length=1, max_length=100)
+    snapshot_profiles: list[SnapshotJournalProfile] = Field(
+        default_factory=list, max_length=100
+    )
+
+    @model_serializer(mode="wrap")
+    def legacy(self, handler):
+        value = handler(self)
+        if not self.snapshot_profiles:
+            value.pop("snapshot_profiles", None)
+        return value
 
 
 class DirectBackendConfig(BackendConfig):
@@ -170,12 +187,14 @@ def _backend_reader(config, limits, deadline, cleanup, kubeconfig_data):
             limits, ceph_conf=config.ceph_conf, ceph_keyring=config.ceph_keyring
         )
         transport.process.scan_deadline = deadline
-    return RbdReader(
+    reader = RbdReader(
         transport,
         str(config.ceph_fsid),
         config.pools,
         CapabilityProfile(command_version="enrollment-identity-only"),
     )
+    reader.snapshot_profiles = config.snapshot_profiles
+    return reader
 
 
 def _managed_inventory(value, pins):

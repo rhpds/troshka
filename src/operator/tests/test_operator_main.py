@@ -40,21 +40,14 @@ def _get_configure():
         "logger": logging.getLogger("troshka-operator"),
     }
 
-    # Extract the configure function body (skip the decorator line)
-    lines = source.splitlines()
-    func_lines = []
-    in_func = False
-    for line in lines:
-        if line.startswith("def configure("):
-            in_func = True
-            func_lines.append(line)
-            continue
-        if in_func:
-            if line and not line[0].isspace() and not line.startswith("#"):
-                break
-            func_lines.append(line)
+    # Include configure's real recovery predicate; missing it hides startup errors.
+    import ast
 
-    exec("\n".join(func_lines), ns)
+    functions = [node for node in ast.parse(source).body
+                 if isinstance(node, ast.FunctionDef) and node.name in {"configure", "_requires_serialized_recovery"}]
+    for node in functions:
+        node.decorator_list = []
+    exec(compile(ast.Module(body=functions, type_ignores=[]), op_path, "exec"), ns)
     return ns["configure"]
 
 
@@ -66,6 +59,10 @@ class TestConfigureStartup:
 
     @pytest.fixture(autouse=True)
     def _isolate_cluster_access(self, monkeypatch):
+        from tests.test_managed_power import FakeAPI, resource
+
+        namespace_api = FakeAPI([resource("Namespace", "ns1")])
+        monkeypatch.setattr("helpers.managed_power.PowerClient", lambda: namespace_api)
         monkeypatch.setattr("kubernetes.config.load_incluster_config", MagicMock())
         monkeypatch.setattr("kubernetes.config.load_kube_config", MagicMock())
         core = MagicMock()

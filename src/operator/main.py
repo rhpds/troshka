@@ -13,6 +13,7 @@ import handlers.vm  # noqa: F401,E402
 import handlers.container  # noqa: F401,E402
 import handlers.capabilities  # noqa: F401,E402
 import handlers.ceph  # noqa: F401,E402
+import handlers.namespace_cleanup  # noqa: F401,E402
 
 
 @kopf.on.startup()
@@ -53,9 +54,7 @@ def configure(settings: kopf.OperatorSettings, **_):
             group=CRD_GROUP, version=CRD_VERSION, plural="troshkaprojects"
         )
         for proj in dict(projects).get("items", []):  # type: ignore[call-overload]
-            from helpers.managed_power import ANNOTATION
-
-            if ANNOTATION in proj.get("metadata", {}).get("annotations", {}):
+            if _requires_serialized_recovery(proj):
                 continue
             status = proj.get("status", {})
             ns = proj.get("metadata", {}).get("namespace", "")
@@ -89,3 +88,13 @@ def configure(settings: kopf.OperatorSettings, **_):
             logger.info("Startup: retrying failed recert for %s/%s", ns, cr_name)
     except Exception:
         logger.exception("Startup: failed to check recert recovery")
+
+
+def _requires_serialized_recovery(project):
+    from helpers.managed_power import ANNOTATION, PowerClient
+    from helpers.native_namespace_cleanup import namespace_cleanup
+
+    # Origin retries require the serialized producer/checkpoint boundary.
+    return ("originCheckpoint" in project.get("spec", {})
+            or ANNOTATION in project.get("metadata", {}).get("annotations", {})
+            or namespace_cleanup(PowerClient(), project["metadata"]["namespace"]) is not None)

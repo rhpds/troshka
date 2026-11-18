@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_serializer, model_validator
 
 from app.schemas.kubevirt_storage import (
+    BindingRetirementEvidence,
     CacheBinding,
     Evidence,
     ImageKey,
@@ -91,6 +92,7 @@ class PreparedCustody(Evidence):
     retained_accounting_support: dict[str, RetainedAccountingSupport] = Field(
         default_factory=dict, max_length=10000
     )
+    binding_retirements: list[dict] = Field(default_factory=list, max_length=10000)
 
     @model_validator(mode="after")
     def accounting_scope(self):
@@ -110,6 +112,8 @@ class PreparedCustody(Evidence):
             value.pop("accounting_only_project_ids", None)
         if not self.retained_accounting_support:
             value.pop("retained_accounting_support", None)
+        if not self.binding_retirements:
+            value.pop("binding_retirements", None)
         return value
 
 
@@ -125,3 +129,13 @@ class VerifiedCustody(Evidence):
         default_factory=list, max_length=10000
     )
     digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    binding_retirements: list[BindingRetirementEvidence] = Field(
+        default_factory=list, max_length=10000
+    )
+
+    @model_serializer(mode="wrap")
+    def preserve_retirement_digest(self, handler):
+        value = handler(self)
+        if not self.binding_retirements:
+            value.pop("binding_retirements", None)
+        return value

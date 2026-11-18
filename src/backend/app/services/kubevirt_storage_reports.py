@@ -45,6 +45,7 @@ def report_inventory(report):
         snapshot_evidence=report.snapshot_evidence,
         retiring_roots=report.retiring_roots,
         clone_references=report.clone_references,
+        binding_retirements=report.binding_retirements,
         backend_scope=report.backend_scope,
     )
 
@@ -341,6 +342,28 @@ def _persist_bindings(db, report, domain_id, clone_lineages=(), cache_receipts=(
         db.flush()
 
 
+def retain_verified_bindings(db, bindings, domain_id):
+    """Retain independently verified project bindings, rejecting immutable remaps."""
+    for binding in bindings:
+        if not hasattr(binding, "root"):
+            raise ValueError("Origin retention cannot enroll shared cache bindings")
+        key, payload = binding_key(binding), _binding_identity(binding)
+        existing = db.get(NativeRetainedBinding, key)
+        if existing is not None:
+            if existing.domain_id != domain_id or existing.payload != payload:
+                raise ValueError("Retained binding immutable identity changed")
+            continue
+        db.add(
+            NativeRetainedBinding(
+                key=key,
+                root_key=root_key(binding.root),
+                domain_id=domain_id,
+                payload=payload,
+            )
+        )
+        db.flush()
+
+
 def report_cursor(db, domain, project_id=None):
     """Select a durable project attempt, with fallback only before its first scan."""
     if project_id is None:
@@ -365,6 +388,15 @@ def _project_cursor(db, domain, root):
 
 
 def _advance_attempt(db, domain, snapshot):
+    # A missing report with a timestamp is an authority invalidation cutoff.
+    # Persist late evidence as history, but never let it resurrect that cursor
+    # or clear a conflict without a strictly newer observation.
+    if (
+        domain.latest_report_id is None
+        and domain.latest_started_at is not None
+        and utc(snapshot.started_at) <= utc(domain.latest_started_at)
+    ):
+        return
     if domain.latest_started_at is None or utc(snapshot.started_at) > utc(
         domain.latest_started_at
     ):
@@ -388,6 +420,15 @@ def _attempt_digest(payload):
         "unattributed_images",
     }
     return digest({key: value for key, value in payload.items() if key not in metadata})
+
+
+def _snapshot_authority(db, manifest, retired):
+    from app.services.native_snapshot_graph import resolve
+
+    try:
+        return resolve(db, manifest, retired=retired), set()
+    except ValueError:
+        return [], {"origin_snapshot_authority_unverified"}
 
 
 def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now):
@@ -453,8 +494,34 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
         clone_errors = set()
     except ValueError:
         clone_lineages, clone_errors = [], {"managed_clone_authority_unverified"}
+    try:
+        from app.services.native_binding_retirement_collection import report_authority
+
+        binding_retirements, retired_lineages = report_authority(
+            db, manifest, report, lineages=clone_lineages
+        )
+        clone_lineages += retired_lineages
+    except ValueError:
+        binding_retirements = []
+        clone_errors.add("binding_retirement_authority_unverified")
     # Validate the recomputed graph's exact quantities before accepting evidence.
-    graph = attribute_graph(inventory, report.images, clone_lineages=clone_lineages)
+    snapshot_facts, snapshot_errors = _snapshot_authority(db, manifest, retired)
+    clone_errors |= snapshot_errors
+    from app.services.native_project_namespace_cleanup import storage_scopes
+
+    cleanup_scopes = [
+        s
+        for s in storage_scopes(db, domain.id)
+        if s.phase in {"namespace_delete_requested", "namespace_absent"}
+    ]
+    graph = attribute_graph(
+        inventory,
+        report.images,
+        clone_lineages=clone_lineages,
+        binding_retirements=binding_retirements,
+        snapshot_facts=snapshot_facts,
+        project_cleanup_scopes=cleanup_scopes,
+    )
     errors = _domain_errors(report, manifest, roots) | _live_identity_errors(
         db, roots, manifest
     )
@@ -507,12 +574,14 @@ def import_report(db, report, *, enrollment_id, expected_enrollment_digest, now)
 
 
 def _retiring_errors(db, report, domain):
-    from app.services.quota_cleanup import native_intents
+    from app.services.quota_cleanup import cleanup_storage_scopes
 
     intents = {
         v.intent_id: v
-        for v in native_intents(db)
-        if str(v.domain_id) == domain.id and v.phase in {"teardown", "pending"}
+        for v in cleanup_storage_scopes(db)
+        if str(v.domain_id) == domain.id
+        and v.phase
+        in {"teardown", "pending", "namespace_delete_requested", "namespace_absent"}
     }
     errors = set()
     for proof in report.retiring_roots:

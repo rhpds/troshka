@@ -224,6 +224,11 @@ def _verify_project(kube, root):
     if len(projects) != 1:
         raise ValueError("ambiguous TroshkaProject identity")
     project = projects[0]
+    generation = project.get("metadata", {}).get("generation")
+    if root.deployment_generation is not None and (
+        type(generation) is not int or generation != root.deployment_generation
+    ):
+        raise ValueError("TroshkaProject generation mismatch")
     if project.get("metadata", {}).get("uid") != root.project_cr_uid or project.get(
         "spec", {}
     ).get("projectId") != str(root.project_id):
@@ -362,9 +367,62 @@ def validated_enrollment(row):
     return manifest
 
 
+def root_transitions(old, new):
+    """Exact changed roots, in deterministic project order; never drops or adoption."""
+    before = {str(r.project_id): r for r in old.project_roots}
+    after = {str(r.project_id): r for r in new.project_roots}
+    if (
+        len(before) != len(old.project_roots)
+        or len(after) != len(new.project_roots)
+        or not before.keys() <= after.keys()
+    ):
+        raise ValueError("root transition cannot drop or duplicate roots")
+    changes = []
+    for project_id in sorted(before):
+        first, last = before[project_id], after[project_id]
+        if first == last:
+            continue
+        if (
+            root_identity(first) != root_identity(last)
+            or first.deployment_generation is None
+            or last.deployment_generation is None
+            or last.deployment_generation <= first.deployment_generation
+        ):
+            raise ValueError(
+                "root transition requires the same identity and increasing generation"
+            )
+        changes.append(
+            {
+                "before": first.model_dump(mode="json"),
+                "after": last.model_dump(mode="json"),
+            }
+        )
+    return changes
+
+
+def root_transition_digest(old, new):
+    """Review token for exact before/after roots, not permission to change identity."""
+    changes = root_transitions(old, new)
+    if not changes:
+        raise ValueError("root transition requires changed generations")
+    return digest(changes)
+
+
+def _validate_root_transition(old, new):
+    authorization = (
+        new.domain_extension.root_transition_digest if new.domain_extension else None
+    )
+    if authorization is None:
+        return set()
+    if authorization != root_transition_digest(old, new):
+        raise ValueError("explicit reviewed root transition digest mismatch")
+    return {c["before"]["project_id"] for c in root_transitions(old, new)}
+
+
 def validate_domain_extension(previous, current, *, retired=()):
     """Preserve measurement identity; initialization authority is separately explicit."""
     old, new = previous.pins, current.pins
+    transitioned = _validate_root_transition(old, new)
     old_roots = {
         str(r.project_id): r for r in old.project_roots if root_key(r) not in retired
     }
@@ -375,7 +433,11 @@ def validate_domain_extension(previous, current, *, retired=()):
         or len({str(r.project_id) for r in old.project_roots}) != len(old.project_roots)
         or len(new_roots) != len(new.project_roots)
         or not set(old_roots) <= set(new_roots)
-        or any(new_roots.get(key) != value for key, value in old_roots.items())
+        or any(
+            new_roots.get(key) != value
+            for key, value in old_roots.items()
+            if key not in transitioned
+        )
         or {str(p.project_id) for p in current.request.projects} != set(new_roots)
     ):
         raise ValueError("domain extension must retain every exact old root")
@@ -497,6 +559,8 @@ def _extension_predecessor(db, manifest, domain):
     if previous is None or previous.digest != extension.previous_enrollment_digest:
         raise ValueError("domain extension predecessor digest mismatch")
     original = validated_enrollment(previous)
+    if extension.root_transition_digest is not None:
+        _guard_root_transitions(db, root_transitions(original.pins, manifest.pins))
     from app.services.quota_cleanup import settled_root_keys
 
     retired = settled_root_keys(db)
@@ -508,6 +572,60 @@ def _extension_predecessor(db, manifest, domain):
         root_key(r) for r in original.pins.project_roots if root_key(r) not in retired
     }:
         raise ValueError("domain extension does not cover retained domain roots")
+
+
+def _guard_root_transitions(db, changes):
+    """Current-work fence applies only to enrollment, never historical validation."""
+    from app.models.quota import QuotaAction, QuotaAllocation, QuotaReservation
+    from app.models.workload_run import WorkloadRun
+
+    for change in changes:
+        project_id = change["before"]["project_id"]
+        project = db.get(Project, project_id)
+        if project is None or project.state not in {"active", "stopped", "error"}:
+            raise ValueError("root transition requires a settled project")
+        # Cleanup intents are stored on reservations; even released history must
+        # remain on its original enrollment, rather than migrate to a new root.
+        if any(
+            db.query(model).filter_by(project_id=project_id).first()
+            for model in (QuotaReservation, QuotaAllocation)
+        ):
+            raise ValueError(
+                "root transition requires no reservations, allocations or cleanup intents"
+            )
+        if (
+            db.query(QuotaAction)
+            .filter(
+                QuotaAction.project_id == project_id,
+                QuotaAction.state.in_(["pending", "issued"]),
+            )
+            .first()
+        ):
+            raise ValueError("root transition has an in-flight action")
+        if (
+            db.query(WorkloadRun)
+            .filter(
+                WorkloadRun.project_id == project_id,
+                WorkloadRun.status.in_(["pending", "running"]),
+            )
+            .first()
+        ):
+            raise ValueError("root transition has an in-flight workload")
+        _root_transition_queue_idle(project_id)
+
+
+def _root_transition_queue_idle(project_id):
+    """Read tracking without get_job_info's mutating zombie recovery."""
+    from app.core import redis
+
+    try:
+        if not redis.is_redis_available():
+            raise ValueError("root transition job tracking unavailable")
+        reference = redis.get_redis().get(f"job:project:{project_id}")
+    except Exception as exc:
+        raise ValueError("root transition job tracking unavailable") from exc
+    if reference:
+        raise ValueError("root transition has an in-flight job reference")
 
 
 def _enrollment_chain(db, domain, enrollment_id, *, maximum=64):
@@ -572,6 +690,7 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
     )
     _fresh_bootstrap_domain(db, manifest, domain)
     _extension_predecessor(db, manifest, domain)
+    _reset_transition_cursors(db, manifest, enrollment_id)
     _enroll_pool_claims(db, manifest)
     _enroll_roots(db, manifest, enrollment_id)
     db.add(
@@ -592,6 +711,28 @@ def enroll_native_roots(db, manifest, *, expected_target_id):
         domain.conflicted = False
     db.flush()
     return enrollment_id
+
+
+def _reset_transition_cursors(db, manifest, enrollment_id):
+    """Only an authorized generation change invalidates its scoped cursor."""
+    from app.models.kubevirt_storage import NativeProjectAttempt
+
+    extension = manifest.pins.domain_extension
+    if extension is None or extension.root_transition_digest is None:
+        return
+    previous = validated_enrollment(
+        db.get(NativeEnrollment, str(extension.previous_enrollment_id))
+    )
+    for change in root_transitions(previous.pins, manifest.pins):
+        attempt = db.get(
+            NativeProjectAttempt,
+            (str(manifest.pins.domain_id), change["before"]["project_id"]),
+        )
+        if attempt is not None:
+            attempt.enrollment_id = enrollment_id
+            attempt.latest_report_id = None
+            attempt.latest_started_at = None
+            attempt.conflicted = False
 
 
 def _fresh_bootstrap_domain(db, manifest, domain):

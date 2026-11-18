@@ -45,6 +45,7 @@ TAR_EXCLUDES=(
     --exclude='./node_modules' --exclude='*/node_modules'
     --exclude='*/.next' --exclude='*/venv' --exclude='*/.venv'
     --exclude='*/__pycache__' --exclude='*.pyc'
+    --exclude='./._*' --exclude='*/._*'
     --exclude='./.claude' --exclude='./.superpowers' --exclude='./.playwright-mcp'
 )
 
@@ -91,7 +92,10 @@ fi
 
 RDIR="/tmp/troshka-build-$(date +%s)-$$"
 echo ">> Streaming build context ($CONTEXT) to host $HOST:$RDIR"
-tar czf - "${TAR_EXCLUDES[@]}" -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"
+# macOS tar synthesizes AppleDouble entries for xattrs/resource forks. Disable
+# copyfile metadata as well as excluding existing ._* files; the environment
+# setting is harmless to GNU tar and avoids platform-specific tar flags.
+COPYFILE_DISABLE=1 tar czf - "${TAR_EXCLUDES[@]}" -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"
 
 # shellcheck disable=SC2016 - $RDIR/$TAG are expanded locally into the remote cmd on purpose
 BUILD_ARG_STR=""
@@ -110,9 +114,14 @@ if [[ "$PUSH" == "true" ]]; then
         exit 1
     fi
     echo ">> Pushing $TAG (auth streamed from $AUTHFILE, removed after)"
-    # Stream auth over stdin so the token never appears in argv/process list.
-    base64 < "$AUTHFILE" | "$HOST_SSH" "$HOST" \
-        "cat > '$RDIR/.auth.b64' && base64 -d '$RDIR/.auth.b64' > '$RDIR/.auth.json' && rm -f '$RDIR/.auth.b64' && sudo podman push --authfile '$RDIR/.auth.json' '$TAG'; rm -f '$RDIR/.auth.json'"
+    # SSH carries raw bytes safely; keep auth out of argv and private on disk.
+    # The exit trap must retain write/push failures after removing credentials.
+    "$HOST_SSH" "$HOST" \
+        "umask 077 &&
+        trap 'push_status=\$?; rm -f \"$RDIR/.auth.json\"; exit \"\$push_status\"' EXIT &&
+        trap 'exit 1' HUP INT TERM &&
+        cat > '$RDIR/.auth.json' &&
+        sudo podman push --authfile '$RDIR/.auth.json' '$TAG'" < "$AUTHFILE"
 fi
 
 echo ">> Cleaning up $HOST:$RDIR"

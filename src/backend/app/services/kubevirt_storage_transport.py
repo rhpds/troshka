@@ -1,5 +1,10 @@
 """Constrained Ceph reads and single-ID trash removal; never expose raw failures."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.schemas.native_snapshot_custody import SnapshotJournalProfile
+
 import json
 import os
 import re
@@ -51,6 +56,28 @@ def _snapshot_id_args(operation, snapshot, snapshot_id):
     return ["--snap-id", snapshot_id]
 
 
+def _journal_argv(operation, opts, object_uuid, journal_key, instance_id, request_name):
+    if operation == "snapshot_lookup":
+        return [
+            "rados",
+            *opts,
+            "getomapval",
+            "csi.snaps." + _token(instance_id),
+            "csi.snap." + _token(request_name),
+            "-",
+        ]
+    object_uuid = str(UUID(object_uuid))
+    allowed = (
+        {"csi.imageid", "csi.imagename", "csi.volname"}
+        if operation == "journal"
+        else {"csi.imageid", "csi.imagename", "csi.snapname", "csi.source"}
+    )
+    if journal_key not in allowed:
+        raise ValueError("unsupported journal key")
+    prefix = "csi.volume." if operation == "journal" else "csi.snap."
+    return ["rados", *opts, "getomapval", prefix + object_uuid, journal_key, "-"]
+
+
 def command_argv(
     operation,
     *,
@@ -61,6 +88,8 @@ def command_argv(
     snapshot_id=None,
     object_uuid=None,
     journal_key=None,
+    instance_id=None,
+    request_name=None,
 ):
     if operation == "fsid":
         return ["ceph", "fsid"]
@@ -85,21 +114,10 @@ def command_argv(
     }
     if operation in directories:
         return ["rbd", *directories[operation], *opts, "--format", "json"]
-    if operation == "journal":
-        object_uuid = str(UUID(object_uuid))
-        if journal_key not in {"csi.imageid", "csi.imagename", "csi.volname"}:
-            raise ValueError("unsupported journal key")
-        return [
-            "rados",
-            "--pool",
-            pool,
-            "--namespace",
-            namespace,
-            "getomapval",
-            "csi.volume." + object_uuid,
-            journal_key,
-            "-",
-        ]
+    if operation in {"journal", "snapshot_journal", "snapshot_lookup"}:
+        return _journal_argv(
+            operation, opts, object_uuid, journal_key, instance_id, request_name
+        )
     if operation not in {"info", "info_id", "du", "snapshots", "children"}:
         raise ValueError("unsupported read operation")
     image = _token(image)
@@ -388,6 +406,8 @@ def _directory_ids(value, max_objects):
 class RbdReader:
     """Explicit reader interface with configured pool and CSI journal ownership."""
 
+    snapshot_profiles: list["SnapshotJournalProfile"]
+
     def __init__(self, transport, ceph_fsid, pools, capability):
         self.transport, self.ceph_fsid, self.pools, self.capability = (
             transport,
@@ -554,6 +574,11 @@ class RbdReader:
         except (ValueError, KeyError):
             return ReadResult(status="unsupported", collected_at=utcnow())
 
+    def resolve_csi_snapshot(self, profile, handle, **kwargs):
+        from app.services.native_snapshot_journal import resolve
+
+        return resolve(self, profile, handle, **kwargs)
+
     def _read_id(self, op, pool, key, **kwargs):
         # rbd supports --image-id for info; info supplies the verified current name.
         result = self.transport.run(
@@ -623,6 +648,10 @@ class RbdReader:
         return result.value
 
     def _inventory_round(self, pool, key, timestamps, max_objects):
+        active, trash = self._inventory_ids_round(pool, timestamps, max_objects)
+        return key.image_id in active, key.image_id in trash
+
+    def _inventory_ids_round(self, pool, timestamps, max_objects):
         args = {"pool": pool.name, "namespace": pool.rbd_namespace}
         directory = self._inventory_value(
             "directory_keys", timestamps, json_output=False, **args
@@ -634,7 +663,56 @@ class RbdReader:
         ids = [_token(row["id"]) for row in trash]
         if len(set(ids)) != len(ids):
             raise ValueError("duplicate trash identity")
-        return key.image_id in active, key.image_id in ids
+        return set(active), set(ids)
+
+    def images_inventory(self, keys, *, max_objects):
+        """Batch exact image IDs using two complete identity-bound pool reads."""
+        try:
+            if not keys or len(keys) > max_objects or len(set(keys)) != len(keys):
+                raise ValueError("invalid image inventory selection")
+            groups = {}
+            for key in keys:
+                pool = self._pool(key)
+                scope = (key.ceph_fsid, key.pool_id, key.rbd_namespace)
+                groups.setdefault(scope, (pool, []))[1].append(key)
+            states = {}
+            for pool, selected in groups.values():
+                states.update(self._pool_image_states(pool, selected, max_objects))
+            values = [states[k] for k in keys]
+            return ReadResult(
+                status="complete",
+                value=values,
+                collected_at=min(p.collected_at for p in values),
+            )
+        except (ValueError, KeyError, TypeError):
+            return ReadResult(status="unavailable", collected_at=utcnow())
+
+    def _pool_image_states(self, pool, keys, max_objects):
+        timestamps = []
+        if self._verify_binding_target().status != "complete":
+            raise ValueError("backend identity changed")
+        if pool.rbd_namespace:
+            namespaces = self._inventory_value("namespaces", timestamps, pool=pool.name)
+            if pool.rbd_namespace not in namespaces:
+                raise ValueError("backend namespace changed")
+        before = self._inventory_ids_round(pool, timestamps, max_objects)
+        after = self._inventory_ids_round(pool, timestamps, max_objects)
+        selected = {key.image_id for key in keys}
+        if (
+            tuple(ids & selected for ids in before)
+            != tuple(ids & selected for ids in after)
+            or self._verify_binding_target().status != "complete"
+        ):
+            raise ValueError("backend inventory changed")
+        return {
+            key: BackendImageState(
+                **key.model_dump(),
+                active=key.image_id in before[0],
+                trash=key.image_id in before[1],
+                collected_at=min(timestamps),
+            )
+            for key in keys
+        }
 
     def image_inventory(self, key, *, max_objects):
         """Read immutable directory IDs without opening unrelated image headers.

@@ -211,6 +211,8 @@ def test_failed_project_accounting_preserves_failure_without_cleanup_authority(
     with q.sessions() as db:
         project = db.get(Project, project_id)
         project.state, project.deploy_error = "error", "VM deployment timed out"
+        db.flush()
+        project.updated_at = FixedDatetime.current
         db.commit()
         with pytest.raises(AccountingUnavailable):
             online.prepare(db, q.project_ids)
@@ -271,7 +273,10 @@ def test_preserving_accounting_only_receipt_cannot_upgrade_authority(online_case
 def test_accounting_only_does_not_adopt_transitional_projects(online_case, state):
     q = online_case
     with q.sessions() as db:
-        db.get(Project, q.project_ids[0]).state = state
+        project = db.get(Project, q.project_ids[0])
+        project.state = state
+        db.flush()
+        project.updated_at = FixedDatetime.current
         db.commit()
         with pytest.raises(AccountingUnavailable):
             online.prepare(
@@ -381,7 +386,10 @@ def test_failed_partial_runtime_can_record_only_retained_storage(online_case):
         if key[0] in {"VirtualMachine", "VirtualMachineInstance"}:
             api.values.pop(key)
     with q.sessions() as db:
-        db.get(Project, pid).state = "error"
+        project = db.get(Project, pid)
+        project.state = "error"
+        db.flush()
+        project.updated_at = FixedDatetime.current
         q.prepared = online.prepare(
             db, q.project_ids, accounting_only_project_ids=[pid]
         )
@@ -394,8 +402,10 @@ def test_failed_partial_runtime_can_record_only_retained_storage(online_case):
     assert not api.calls
 
 
+@pytest.mark.parametrize("restart", ["none", "empty", "unchanged", "repeated"])
 def test_retained_ownerless_bmc_survives_selected_network_loss_for_accounting(
     online_case,
+    restart,
 ):
     from app.services.native_managed_power import helpers
 
@@ -415,8 +425,18 @@ def test_retained_ownerless_bmc_survives_selected_network_loss_for_accounting(
     deployment = bmc_manifest(root, by_uid)
     assert deployment is not None
     deployment["metadata"].update(uid="retained-bmc", resourceVersion="1")
+    if restart != "none":
+        annotations = (
+            deployment["spec"]["template"]
+            .setdefault("metadata", {})
+            .setdefault("annotations", {})
+        )
+        if restart != "empty":
+            annotations["kubectl.kubernetes.io/restartedAt"] = "2026-11-16T12:00:00Z"
     api.values["Deployment", deployment["metadata"]["name"]] = deployment
     apply_receipt(q)
+    if restart == "repeated":
+        annotations["kubectl.kubernetes.io/restartedAt"] = "2026-11-17T12:00:00Z"
     api.values.pop(("TroshkaNetwork", "net-basic"))
     by_uid = {v["metadata"]["uid"]: v for v in api.values.values()}
     assert not bmc_shape(deployment, root, by_uid)
@@ -493,7 +513,15 @@ def test_retained_accounting_rejects_new_dynamic_hostpath_pod(online_case):
 )
 def test_retained_accounting_rejects_unreviewed_inventory_changes(online_case, change):
     q = online_case
+    deployment = q.apis[q.project_ids[0]].rows("Deployment", None)[0]
+    annotations = (
+        deployment["spec"]["template"]
+        .setdefault("metadata", {})
+        .setdefault("annotations", {})
+    )
+    annotations["kubectl.kubernetes.io/restartedAt"] = "2026-11-16T12:00:00Z"
     apply_receipt(q)
+    annotations["kubectl.kubernetes.io/restartedAt"] = "2026-11-17T12:00:00Z"
     pid = q.project_ids[0]
     api = q.apis[pid]
     network = api.values.pop(("TroshkaNetwork", "net-basic"))
@@ -798,15 +826,102 @@ def test_helper_replacement_during_ancestry_scan_rejects_receipt(
         assert db.query(NativeCustodyReceipt).count() == 0
 
 
+@pytest.mark.parametrize("field", ["owner_id", "host_id", "provider_id"])
+def test_cleanup_after_canvas_edit_still_rejects_changed_identity(online_case, field):
+    from app.models.provider import Provider
+
+    q = online_case
+    apply_receipt(q)
+    with q.sessions() as db:
+        project = db.get(Project, q.project_ids[0])
+        project.deployed_topology = {"nodes": []}
+        if field == "provider_id":
+            provider = Provider(name="replacement", type="kubevirt")
+            db.add(provider)
+            db.flush()
+            project.provider_id = provider.id
+        else:
+            setattr(project, field, q.admin_id if field == "owner_id" else None)
+        db.flush()
+        with pytest.raises((AccountingUnavailable, ValueError)):
+            online.retained(db, project, require_topology=False)
+
+
+@pytest.mark.parametrize("changed_owner", [False, True])
+def test_retained_ancestry_survives_canvas_edits_but_not_owner_changes(
+    online_case, changed_owner
+):
+    from app.schemas.native_online_enrollment import (
+        CurrentAncestryCustody,
+        VerifiedCustody,
+    )
+    from app.services.native_ancestry_custody import resolve
+
+    q = online_case
+    receipt = VerifiedCustody.model_validate(verified(q))
+    binding = receipt.bindings[0]
+    source = q.report.cache_bindings[0]
+    middle = binding.image_key.model_copy(update={"image_id": "private-intermediate"})
+    proof = CurrentAncestryCustody(
+        binding=binding,
+        source=source,
+        intermediate=middle,
+        head_parent={"image_key": middle, "snapshot_id": "head-parent"},
+        intermediate_parent={
+            "image_key": source.image_key,
+            "snapshot_id": "source-parent",
+        },
+        verified_at=receipt.enrollment.verified_at,
+    )
+    receipt = receipt.model_copy(update={"ancestry": [proof]})
+    receipt = receipt.model_copy(
+        update={
+            "digest": online.enrollment.digest(
+                receipt.model_dump(mode="json", exclude={"digest"})
+            )
+        }
+    )
+    with q.sessions() as db:
+        online.apply(
+            db, receipt.model_dump(mode="json"), expected_target_id=q.target_id
+        )
+        project = db.get(Project, str(binding.root.project_id))
+        project.deployed_topology = {"nodes": []}
+        if changed_owner:
+            project.owner_id = q.admin_id
+        db.flush()
+        if changed_owner:
+            with pytest.raises(AccountingUnavailable, match="owner/provider"):
+                resolve(db, receipt.enrollment, set())
+        else:
+            assert resolve(db, receipt.enrollment, set()) == [proof]
+
+
 @pytest.mark.parametrize("reviewed", [False, True])
-def test_legacy_cleanup_uses_real_stop_and_exact_storage_graph(online_case, reviewed):
+@pytest.mark.parametrize("edited", [False, True])
+@pytest.mark.parametrize("restarted", ["none", "first", "repeat"])
+def test_legacy_cleanup_uses_real_stop_and_exact_storage_graph(
+    online_case, reviewed, edited, restarted
+):
     from app.services.kubevirt_storage_reports import import_report
     from tests.test_quota_native_storage import revised
 
     q = online_case
     if reviewed:
         reviewed_topology_case(q)
+    if restarted == "repeat":
+        for (kind, _), value in q.apis[q.project_ids[0]].values.items():
+            if kind == "Deployment":
+                value["spec"]["template"].setdefault("metadata", {}).setdefault(
+                    "annotations", {}
+                )["kubectl.kubernetes.io/restartedAt"] = "2026-11-16T12:00:00Z"
     apply_receipt(q)
+    if restarted != "none":
+        for (kind, _), value in q.apis[q.project_ids[0]].values.items():
+            if kind == "Deployment":
+                value["spec"]["template"].setdefault("metadata", {}).setdefault(
+                    "annotations", {}
+                )["kubectl.kubernetes.io/restartedAt"] = "2026-11-17T12:00:00Z"
     with q.sessions() as db:
         import_report(
             db,
@@ -819,7 +934,20 @@ def test_legacy_cleanup_uses_real_stop_and_exact_storage_graph(online_case, revi
         project = db.get(Project, q.project_ids[0])
         # Ordinary quota-off lifecycle does not change the root CR/topology.
         project.updated_at = FixedDatetime.current + timedelta(seconds=1)
+        if edited:
+            # The canvas and install monitor can change DB metadata after custody
+            # enrollment. Cleanup must still target the original live resources.
+            project.deployed_topology = {
+                "nodes": [],
+                "clusters": [{"ocpInstallStatus": "complete"}],
+            }
+            project.topology = {"nodes": [], "externalIps": []}
         db.commit()
+        if edited:
+            with pytest.raises(
+                AccountingUnavailable, match="Custody retained topology changed"
+            ):
+                online.retained(db, project)
         intent = quota_cleanup.prepare_native(db, project, "undeploy")
         assert intent.phase == "stopping"
         rows = online.operations._rows(db, project.id)
@@ -860,6 +988,13 @@ def test_legacy_owner_cleanup_requires_exact_final_settlement(
 
     q = online_case
     apply_receipt(q)
+    with q.sessions.begin() as db:
+        # Exercise resumption of a real already-started v1 cleanup. Fresh legacy
+        # requests now select the namespace adapter, covered in its own suite.
+        intent = quota_cleanup.prepare_native(
+            db, db.get(Project, q.project_ids[0]), mode
+        )
+        assert intent.version == "native-cleanup-v1"
     test_cleanup_worker_waits_for_original_resource_and_physical_settlement(
         q, monkeypatch, mode, "quotas_disabled"
     )

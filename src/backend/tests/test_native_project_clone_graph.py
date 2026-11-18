@@ -11,7 +11,7 @@ from app.services.kubevirt_storage_graph import attribute_graph
 from app.services.kubevirt_storage_reports import report_inventory
 from app.services.native_clone_graph import cleanup_owned_images
 from tests.test_native_clone_cleanup import absent
-from tests.test_native_clone_lineage import chain
+from tests.test_native_clone_lineage import chain, source_evidence
 
 
 def scoped_chain():
@@ -127,6 +127,7 @@ def test_scoped_cleanup_requires_own_absence_and_preserves_sibling_edges():
         )
         for i in images
     ]
+    images[-1] = source_evidence(images[-1], proofs)
     result = attribute_graph(inventory, images, clone_lineages=proofs)
     assert result.projects[0].allocated_bytes == 0
     assert (
@@ -148,6 +149,7 @@ def test_scoped_collection_does_not_measure_shared_source_children(monkeypatch):
         return by_key[key]  # A sibling traversal fails the test.
 
     monkeypatch.setattr(collector, "_collect_image", observe)
+    monkeypatch.setattr(collector, "_observe_source", observe)
     monkeypatch.setattr(collector, "_backend_profile", lambda *a: ([], "test", True))
     monkeypatch.setattr(collector, "_final_checks", lambda *a: None)
     monkeypatch.setattr(

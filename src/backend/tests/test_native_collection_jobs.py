@@ -6,12 +6,72 @@ import pytest
 from app.services import native_collection_jobs as jobs
 
 
+def test_explicit_refresh_runs_with_scheduler_disabled_and_preserves_leases(
+    monkeypatch,
+):
+    redis = RedisMemory()
+    queued = MagicMock()
+    monkeypatch.setattr(jobs, "settings", lambda: {"enabled": False})
+    monkeypatch.setattr(jobs, "get_redis_raw", lambda: redis)
+    monkeypatch.setattr(jobs, "Queue", lambda *args, **kwargs: queued)
+    assert jobs.enqueue_collection("domain", "project", observation_only=True)
+    assert not jobs.enqueue_collection("domain", "project", observation_only=True)
+    call = queued.enqueue.call_args
+    assert call.args == (jobs.run_project_refresh, "domain", "project")
+    monkeypatch.setattr(
+        jobs,
+        "get_current_job",
+        lambda: SimpleNamespace(id=call.kwargs["job_id"], origin="native_collection"),
+    )
+    monkeypatch.setattr(jobs, "_identities", lambda *args: (["provider"], ["fsid"]))
+    runtime = MagicMock(return_value="report")
+    monkeypatch.setattr(
+        "app.services.native_collection_runtime.run_collection", runtime
+    )
+    assert jobs.run_project_refresh("domain", "project") == "report"
+    runtime.assert_called_once_with("domain", "project", observation_only=True)
+    assert redis.values == {}
+
+
+def test_observation_refresh_rejects_domain_and_cleanup():
+    with pytest.raises(ValueError):
+        jobs.enqueue_collection("domain", observation_only=True)
+    with pytest.raises(ValueError):
+        jobs.enqueue_collection(
+            "domain", "project", cleanup=True, observation_only=True
+        )
+
+
+def test_refresh_with_cleanup_intent_stays_observation_only(monkeypatch):
+    redis = RedisMemory()
+    redis.set(jobs._key("domain", "project") + ":pending", "refresh", ex=300)
+    monkeypatch.setattr(jobs, "get_redis_raw", lambda: redis)
+    monkeypatch.setattr(
+        jobs,
+        "get_current_job",
+        lambda: SimpleNamespace(id="refresh", origin="native_collection"),
+    )
+    monkeypatch.setattr(jobs, "_identities", lambda *args: (["provider"], ["fsid"]))
+    monkeypatch.setattr(jobs, "_cleanup_due", lambda project: True)
+    enqueue = MagicMock()
+    monkeypatch.setattr(jobs, "enqueue_collection", enqueue)
+    runtime = MagicMock(return_value="report")
+    monkeypatch.setattr(
+        "app.services.native_collection_runtime.run_collection", runtime
+    )
+    assert jobs.run_project_refresh("domain", "project") == "report"
+    runtime.assert_called_once_with("domain", "project", observation_only=True)
+    enqueue.assert_not_called()
+    assert redis.values == {}
+
+
 def test_redis_failure_never_enqueues():
     redis = MagicMock()
     redis.ping.side_effect = ConnectionError()
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         assert jobs.enqueue_collection("domain", "project") is False
         queue.assert_not_called()
 
@@ -19,18 +79,20 @@ def test_redis_failure_never_enqueues():
 def test_duplicate_does_not_enqueue():
     redis = MagicMock()
     redis.set.return_value = False
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         assert jobs.enqueue_collection("domain", "project") is False
         queue.assert_not_called()
 
 
 def test_identifier_payload_and_cleanup_priority():
     redis = MagicMock()
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         assert jobs.enqueue_collection("domain", "project", cleanup=True)
         assert queue.call_args.args == ("native_cleanup",)
         call = queue.return_value.enqueue.call_args
@@ -215,9 +277,10 @@ def test_500_projects_two_dispatchers_have_no_duplicate_pending_jobs():
 
 def test_cleanup_promotes_queued_project_past_500_routine_jobs():
     redis = RedisMemory()
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         for project in range(500):
             assert jobs.enqueue_collection("domain", str(project))
         key = jobs._key("domain", "499") + ":pending"
@@ -236,9 +299,10 @@ def test_cleanup_promotes_queued_project_past_500_routine_jobs():
 
 def test_cleanup_cannot_supersede_running_project():
     redis = RedisMemory()
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         assert jobs.enqueue_collection("domain", "project")
         base = jobs._key("domain", "project")
         token = redis.get(base + ":pending")
@@ -331,9 +395,10 @@ def test_readiness_dispatch_interval_preserves_shared_freshness_headroom():
 def test_readiness_queue_and_slots_are_independent_of_storage_backlog():
     redis = RedisMemory()
     runtime = SimpleNamespace(run_readiness=MagicMock(return_value="fresh"))
-    with patch.object(jobs, "get_redis_raw", return_value=redis), patch.object(
-        jobs, "Queue"
-    ) as queue:
+    with (
+        patch.object(jobs, "get_redis_raw", return_value=redis),
+        patch.object(jobs, "Queue") as queue,
+    ):
         for project in range(500):
             assert jobs.enqueue_collection("domain", str(project))
         assert jobs.enqueue_collection("domain")

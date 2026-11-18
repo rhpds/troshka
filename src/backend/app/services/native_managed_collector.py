@@ -129,15 +129,21 @@ def retained_inputs(sessions, domain_id):
 
 
 def retiring_inputs(sessions, domain_id):
-    from app.services.quota_cleanup import native_intents, settled_root_keys
+    from app.services.quota_cleanup import cleanup_storage_scopes, settled_root_keys
 
     with sessions() as db:
         return (
             [
                 v
-                for v in native_intents(db)
+                for v in cleanup_storage_scopes(db)
                 if str(v.domain_id) == str(domain_id)
-                and v.phase in {"teardown", "pending"}
+                and v.phase
+                in {
+                    "teardown",
+                    "pending",
+                    "namespace_delete_requested",
+                    "namespace_absent",
+                }
             ],
             settled_root_keys(db),
         )
@@ -359,9 +365,22 @@ def reconcile_allocations(sessions, manifest, project_id=None):
             and v.phase != "finalized"
             and (project_id is None or str(v.root.project_id) == str(project_id))
         ]
-    for project_id, intent_id in pending:
+    for pending_project_id, intent_id in pending:
         assert_collection_lease()
-        reconcile_native(project_id, intent_id)
+        reconcile_native(pending_project_id, intent_id)
+    from app.services.native_project_namespace_cleanup import reconcile, states
+
+    with sessions() as db:
+        generic = [
+            str(v.id)
+            for v in states(db)
+            if str(v.authority.domain_id) == str(manifest.pins.domain_id)
+            and v.phase != "finalized"
+            and (project_id is None or str(v.authority.project_id) == str(project_id))
+        ]
+    for cleanup_id in generic:
+        assert_collection_lease()
+        reconcile(cleanup_id)
 
 
 def prepare_work(sessions, pins, target_id, readers, backend):
@@ -399,8 +418,11 @@ def cycle(
     collect,
     *,
     project_id=None,
+    observation_only=False,
 ):
     """Collect a domain or an explicitly scoped project without changing authority."""
+    if observation_only and project_id is None:
+        raise ValueError("Observation refresh requires one project")
     started = datetime.now(UTC)
     try:
         work = (
@@ -454,6 +476,8 @@ def cycle(
         )
         assert_collection_lease()
         db.commit()
+    if observation_only:
+        return report
     try:
         from app.services.native_trash_cleanup import reconcile
 

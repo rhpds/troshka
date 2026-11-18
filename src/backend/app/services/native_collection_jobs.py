@@ -102,8 +102,12 @@ def assert_collection_lease():
             )
 
 
-def enqueue_collection(domain_id, project_id=None, *, cleanup=False):
+def enqueue_collection(
+    domain_id, project_id=None, *, cleanup=False, observation_only=False
+):
     """Atomically reserve one pending identity before enqueueing IDs only."""
+    if observation_only and (cleanup or project_id is None):
+        raise ValueError("Observation refresh requires one project and no cleanup")
     redis = get_redis_raw()
     key = _key(domain_id, project_id) + ":pending"
     token = ("cleanup-" if cleanup else "") + uuid.uuid4().hex
@@ -122,7 +126,7 @@ def enqueue_collection(domain_id, project_id=None, *, cleanup=False):
         Queue(
             "native_cleanup" if cleanup else "native_collection", connection=redis
         ).enqueue(
-            run_project_collection,
+            run_project_refresh if observation_only else run_project_collection,
             str(domain_id),
             str(project_id) if project_id else None,
             job_id=token,
@@ -182,13 +186,16 @@ def _identities(domain_id, project_id):
 
 def _cleanup_due(project_id):
     from app.core.database import SessionLocal
+    from app.services.native_project_namespace_cleanup import pending
     from app.services.quota_cleanup import native_intent
 
     if project_id is None:
         return False
     with SessionLocal() as db:
         intent = native_intent(db, project_id)
-        return intent is not None and intent.phase not in {"settled", "finalized"}
+        return pending(db, project_id) or (
+            intent is not None and intent.phase not in {"settled", "finalized"}
+        )
 
 
 def _acquire_slots(redis, keys, token, owned, *, readiness=False):
@@ -209,6 +216,12 @@ def _acquire_slots(redis, keys, token, owned, *, readiness=False):
 
 def run_project_collection(domain_id, project_id=None):
     return _run_collection_job(domain_id, project_id)
+
+
+def run_project_refresh(domain_id, project_id):
+    if project_id is None:
+        raise ValueError("Observation refresh requires one project")
+    return _run_collection_job(domain_id, project_id, observation_only=True)
 
 
 def run_domain_readiness(domain_id):
@@ -252,17 +265,21 @@ def _execution_slots(domain_id, project_id, readiness):
     ]
 
 
-def _invoke_runtime(domain_id, project_id, readiness):
+def _invoke_runtime(domain_id, project_id, readiness, *, observation_only=False):
     if readiness:
         from app.services.native_collection_runtime import run_readiness
 
         return run_readiness(domain_id)
     from app.services.native_collection_runtime import run_collection
 
+    if observation_only:
+        return run_collection(domain_id, project_id, observation_only=True)
     return run_collection(domain_id, project_id)
 
 
-def _run_collection_job(domain_id, project_id, *, readiness=False):
+def _run_collection_job(
+    domain_id, project_id, *, readiness=False, observation_only=False
+):
     redis = get_redis_raw()
     redis.ping()  # Never run without Redis, even when dev normally falls back.
     job = get_current_job()
@@ -270,7 +287,10 @@ def _run_collection_job(domain_id, project_id, *, readiness=False):
     base = _readiness_key(domain_id) if readiness else _key(domain_id, project_id)
     timeout = readiness_timeout() if readiness else _timeout()
     with _owned_execution(redis) as owned:
-        if _queued_priority(redis, job, base, token, owned, domain_id, project_id):
+        if observation_only and job is not None:
+            owned[base + ":pending"] = token
+            assert_collection_lease()
+        elif _queued_priority(redis, job, base, token, owned, domain_id, project_id):
             return "reprioritized"
         if not redis.set(base + ":executing", token, nx=True, ex=timeout + 60):
             return "deferred"
@@ -279,7 +299,9 @@ def _run_collection_job(domain_id, project_id, *, readiness=False):
         if not _acquire_slots(redis, keys, token, owned, readiness=readiness):
             return "deferred"
         assert_collection_lease()
-        result = _invoke_runtime(domain_id, project_id, readiness)
+        result = _invoke_runtime(
+            domain_id, project_id, readiness, observation_only=observation_only
+        )
         assert_collection_lease()
         return result
 
@@ -292,14 +314,14 @@ def dispatch_candidates(db):
         NativeProjectRoot,
     )
     from app.services.kubevirt_storage_enrollment import root_key, validated_enrollment
-    from app.services.quota_cleanup import native_intents, settled_root_keys
+    from app.services.quota_cleanup import cleanup_storage_scopes, settled_root_keys
 
     profiles = settings().get("profiles", [])
     allowed = {str(p["domain_id"]) for p in profiles}
     retired = settled_root_keys(db)
     cleanup = {
         str(v.root.project_id)
-        for v in native_intents(db)
+        for v in cleanup_storage_scopes(db)
         if v.phase not in {"settled", "finalized"}
     }
     domains = (
@@ -326,15 +348,17 @@ def dispatch_candidates(db):
 
 def dispatch_once():
     from app.core.database import SessionLocal
+    from app.services.native_project_namespace_cleanup import dispatch_pending, states
 
     automatic = settings().get("enabled", False)
     with SessionLocal() as db:
         candidates = [item for item in dispatch_candidates(db) if automatic or item[2]]
-    if not candidates:
+        cleanup_ids = [str(work.id) for work in states(db) if work.phase != "finalized"]
+    if not candidates and not cleanup_ids:
         return 0
     redis = get_redis_raw()
     redis.ping()
-    count = 0
+    count = dispatch_pending(redis, cleanup_ids)
     for domain_id, project_id, cleanup in candidates:
         if project_id is None:
             count += _dispatch_readiness(redis, domain_id)

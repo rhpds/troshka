@@ -12,6 +12,54 @@ from tests.test_kubevirt_storage_reports import native_case as native_case_fixtu
 native_case = native_case_fixture
 
 
+def test_observation_cycle_imports_evidence_without_resource_or_ledger_reconciliation(
+    monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from app.services import native_managed_collector as collector
+    from app.services import native_trash_cleanup
+
+    report = report_fixture("zero-private-parent.json")
+    project_id = str(report.project_roots[0].project_id)
+    report = report.model_copy(
+        update={"project_scope": report.project_roots[0].project_id}
+    )
+    manifest = SimpleNamespace(
+        pins=SimpleNamespace(initialization_evidence=object()), digest="digest"
+    )
+    sessions = MagicMock()
+    monkeypatch.setattr(
+        collector,
+        "anchored",
+        lambda *args: (SimpleNamespace(enrollment_id="enrolled"), manifest),
+    )
+    monkeypatch.setattr(collector, "project_snapshot", lambda *args: {"previous": None})
+    imported = MagicMock()
+    monkeypatch.setattr(collector, "import_report", imported)
+    trash, allocations, prepare = MagicMock(), MagicMock(), MagicMock()
+    monkeypatch.setattr(native_trash_cleanup, "reconcile", trash)
+    monkeypatch.setattr(collector, "reconcile_allocations", allocations)
+    monkeypatch.setattr(collector, "prepare_work", prepare)
+    result = collector.cycle(
+        sessions,
+        object(),
+        "target",
+        report.collector_id,
+        {},
+        object(),
+        lambda *args: report,
+        project_id=project_id,
+        observation_only=True,
+    )
+    assert result.report_id == report.report_id
+    imported.assert_called_once()
+    sessions.return_value.__enter__.return_value.commit.assert_called_once()
+    trash.assert_not_called()
+    allocations.assert_not_called()
+    prepare.assert_not_called()
+
+
 @pytest.mark.parametrize("configured, expected_scan", [(60, 50), (600, 50), (20, 10)])
 def test_readiness_budget_allows_slow_identity_checks_but_bounds_evidence_age(
     monkeypatch, configured, expected_scan

@@ -31,6 +31,15 @@ def test_full_deployment_includes_collector_baseline():
     assert "oc apply -f infra/storage-collector-project-rbac.yaml" in body
 
 
+def test_snapshot_class_verifier_read_is_get_only_on_the_collector_account():
+    items = json.loads((ROOT / "infra/storage-collector-base-rbac.yaml").read_text())["items"]
+    role = next(o for o in items if o["kind"] == "ClusterRole" and o["metadata"]["name"] == "troshka-storage-collector-base")
+    rules = [r for r in role["rules"] if "volumesnapshotclasses" in r["resources"]]
+    assert rules == [{"apiGroups": ["snapshot.storage.k8s.io"], "resources": ["volumesnapshotclasses"], "verbs": ["get"]}]
+    binding = next(o for o in items if o["kind"] == "ClusterRoleBinding" and o["roleRef"]["name"] == role["metadata"]["name"])
+    assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "troshka-storage-collector", "namespace": "troshka"}]
+
+
 def test_project_role_matches_existing_scoped_inventory_permissions():
     role = json.loads((ROOT / "infra/storage-collector-project-rbac.yaml").read_text())
     scoped = json.loads((ROOT / "infra/storage-collector-rbac.yaml").read_text())

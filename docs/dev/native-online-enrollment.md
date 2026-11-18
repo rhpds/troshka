@@ -1,5 +1,83 @@
 # Enroll existing native projects without stopping VMs
 
+## Reviewed custody successors
+
+For a project that already has custody, use the explicit-target operator CLI's
+`prepare-reconciliation` command with repeated `--project-id`, a `--reason`, and
+an `--output` path. Select each accounting-only project to promote with
+`--cleanup-authority-project-id`. Preparation pins the current predecessor and
+does not grant cleanup authority.
+
+Pass that output through the existing `verify-online` command using independently
+selected pins, backend configuration, collector kubeconfig, and administrator
+attestation. Run `review-reconciliation --enrollment <verified-file> --output
+<review-file>` and inspect the before/after evidence. Apply only the reviewed
+document with `apply-reconciliation --enrollment <verified-file> --review-digest
+<review_digest>` and the same explicit cleanup-authority selection. Every command
+still requires the database URL and reporting target UUID.
+
+Application requires verification within 60 seconds. If verification must be
+repeated, review its new digest again. Existing receipts remain immutable;
+successors are append-only. Changed predecessors, active operations, unavailable
+job tracking, and existing cleanup anchors reject the transition. Recovery never
+silently retargets an issued cleanup request. See the
+[release gate](project-deletion-release-gate.md) for remaining production blockers.
+
+### Replaced disks with independently proven removal
+
+An added disk does not settle an original disk. Reconciliation rejects a missing
+original binding unless an administrator explicitly selects a protected retirement
+receipt for that exact binding. Apply migrations through `d90bc31e7426` before
+using this workflow. The original custody and retirement evidence remain stored.
+
+For each removed binding, use these explicit-target commands from
+`scripts/import_kubevirt_storage.py`:
+
+1. `prepare-binding-retirement --project-id <id> --pvc-uid <original-uid>
+   --administrator <identity> --reason <reason> --output <request.json>`.
+   If the root generation changed, supply `--root <protected-root.json>` containing
+   the exact current root; root identity cannot change.
+2. `verify-binding-retirement --request <request.json> --pins <pins.json>
+   --inventory <inventory.json> --backend-config <backend.json> --kubeconfig
+   <collector-kubeconfig> --output <evidence.json>`. These are the protected managed
+   collector profile inputs. Verification performs provider reads only.
+3. `review-binding-retirement --evidence <evidence.json> --output <review.json>`.
+   Inspect the original custody identity, binding, private ancestry, and complete
+   absence evidence. Verification must establish absence of original PVC/PV/CSI
+   references, private images in both active storage and trash, and obsolete clone
+   source snapshots. Unknown or incomplete inventory blocks the operation.
+4. `apply-binding-retirement --evidence <evidence.json> --review-digest <digest>
+   --output <references.json>`. This records reviewed evidence; it grants no
+   deletion authority and releases no storage liability by itself.
+
+Every command requires `--target-id` and an explicit database URL, as above.
+Retirement apply requires evidence verified within 60 seconds. Reverify and review
+again if it expires; each retirement verification scan must also finish within
+60 seconds.
+The reference output is a JSON list of `{ "receipt_id": "...", "digest": "..." }`.
+For multiple original bindings, combine only the reviewed references into one
+protected, mode-0600 JSON file.
+
+Pass that file as `--binding-retirements <references.json>` to both
+`prepare-reconciliation` and `apply-reconciliation`. Final online verification
+rechecks absence for those exact immutable references and includes the observations
+in the reviewed custody digest. Its remaining root and CSI checks can take longer
+than the retirement observation's admission window. Successor apply requires the
+final online verification to be within 60 seconds and every retirement observation
+to fall between its protected preparation and that final verification. It does not
+relabel earlier observations or treat metadata reconciliation as deletion evidence.
+
+Applying a successor with retirement references invalidates the domain's observation
+cursors, including sibling project scopes, while retaining report history and
+conflict flags. A cutoff watermark rejects in-flight reports that began before or
+at that invalidation. Cleanup must obtain a new scan that independently confirms
+all relevant original resources and source snapshots remain absent. A returning
+resource or incomplete scan blocks cleanup. Shared cache source images are never
+selected for retirement or deletion by this workflow. These separate checks do not
+extend the retirement-admission or final-online-verification freshness windows.
+
+## Initial enrollment
+
 Online custody enrollment records administrator-approved ownership of existing
 native infrastructure. It uses provider reads and database writes only. It does
 not stop or restart workloads, enable quotas, change project owners, reconstruct
@@ -106,13 +184,31 @@ again. Never export credential-bearing topology contents into logs.
 
 Only projects in the prepared request may have a review. The receipt retains
 both exact versions, and both hashes are checked during verification and receipt
-validation. The saved deployment must still match at application and later
-cleanup. Namespace identity, provider identity, object custody, PVC/PV bindings,
+validation. The saved deployment must still match at application and enrollment
+reconciliation. Later cleanup uses the receipt's original root and storage
+identities, so canvas edits and installer metadata updates do not invalidate
+cleanup authority. It does not use the edited database topology to select
+resources for deletion. Namespace identity, provider identity, object custody, PVC/PV bindings,
 and COW ancestry checks remain mandatory. This exception grants cleanup-only
 compatibility, not valid compute accounting or permission to enable quotas.
 
 Omit `topology_reviews` for ordinary enrollment. Empty reviews are omitted from
 serialized evidence so existing receipt digests remain valid.
+
+Retained ancestry resolution also validates receipt integrity and current
+owner/provider identity independently of canvas metadata. Current collection
+and graph validation still require the exact original storage bindings and
+image relationships; this does not refresh stale observations.
+
+Cleanup comparison permits a Deployment's added
+`kubectl.kubernetes.io/restartedAt` pod-template annotation only when removing
+that annotation reproduces the original attested digest. Images, mounts,
+network annotations, UIDs and owner references remain checked. Existing receipts
+are never rewritten. A legacy receipt that already pinned a different restart
+timestamp cannot reconstruct that timestamp from its digest and still requires
+explicit reconciliation. New custody pins exclude this restart-only timestamp
+so repeated routine releases do not invalidate them. Sealed deletion identities
+remain exact.
 
 ## Verify and enroll
 

@@ -47,7 +47,9 @@ from app.services.native_collection_config import (
     _check_backend_coverage,
     read_operator_file,
 )
-from app.services.native_collection_config import _managed_inputs as _managed_inputs  # noqa: PLC0414 -- compatibility export used by collector bootstrap
+from app.services.native_collection_config import (
+    _managed_inputs as _managed_inputs,  # noqa: PLC0414 -- compatibility export used by collector bootstrap
+)
 from app.services.native_provider_reader import ProviderReader
 from collect_kubevirt_storage import atomic_report
 from pydantic import RootModel, TypeAdapter
@@ -199,6 +201,10 @@ def _parser():
         "--preserve-existing", action="store_true",
         help="Preserve matching existing receipts while adding verified projects",
     )
+    _reconciliation_parsers(commands)
+    from native_binding_retirement_cli import add_parsers
+
+    add_parsers(commands)
     ingest = commands.add_parser("import")
     for name in ("report", "enrollment-id", "enrollment-digest"):
         ingest.add_argument("--" + name, required=True)
@@ -213,6 +219,32 @@ def _parser():
     return parser
 
 
+def _reconciliation_parsers(commands):
+    prepare = commands.add_parser(
+        "prepare-reconciliation", help="Pin existing custody before independently verifying a successor"
+    )
+    prepare.add_argument("--project-id", action="append", required=True)
+    prepare.add_argument("--cleanup-authority-project-id", action="append", default=[])
+    prepare.add_argument("--reason", required=True)
+    prepare.add_argument("--output", required=True)
+    review = commands.add_parser(
+        "review-reconciliation", help="Write exact predecessor/successor evidence for review; grants no authority"
+    )
+    review.add_argument("--enrollment", required=True)
+    review.add_argument("--output", required=True)
+    apply = commands.add_parser(
+        "apply-reconciliation", help="Append freshly verified custody with an exact reviewed digest"
+    )
+    apply.add_argument("--enrollment", required=True)
+    apply.add_argument("--review-digest", required=True)
+    apply.add_argument("--cleanup-authority-project-id", action="append", default=[])
+    for command in (prepare, apply):
+        command.add_argument(
+            "--binding-retirements",
+            help="Protected JSON file of explicitly selected retirement receipt IDs and digests",
+        )
+
+
 def _dispatch(db, args):
     target = db.get(NativeReportingTarget, 1)
     if args.command == "configure-target" and target is None:
@@ -222,6 +254,10 @@ def _dispatch(db, args):
         raise ValueError("target UUID does not match configured database")
     if args.command == "configure-target":
         return target.target_id
+    from native_binding_retirement_cli import COMMANDS, dispatch
+
+    if args.command in COMMANDS:
+        return dispatch(db, args)
     if args.command == "prepare":
         request = prepare_native_enrollment(db, args.project_id)
         atomic_report(args.output, request)
@@ -234,6 +270,8 @@ def _dispatch(db, args):
         return str(request.request_id)
     if args.command in {"prepare-online", "enroll-online"}:
         return _online_dispatch(db, args)
+    if args.command in {"prepare-reconciliation", "review-reconciliation", "apply-reconciliation"}:
+        return _reconciliation_dispatch(db, args)
     if args.command in {"verify", "verify-online"}:
         return _verify(db, args)
     if args.command == "reconcile-managed":
@@ -264,6 +302,34 @@ def _online_dispatch(db, args):
     return native_online_enrollment.apply(
         db, read_operator_file(args.enrollment), expected_target_id=args.target_id,
         preserve_existing=args.preserve_existing,
+    )
+
+
+def _reconciliation_dispatch(db, args):
+    from app.services import native_custody_reconciliation as reconciliation
+
+    selection = {}
+    if getattr(args, "binding_retirements", None):
+        selection["binding_retirements"] = read_operator_file(args.binding_retirements)
+    if args.command == "prepare-reconciliation":
+        prepared = reconciliation.prepare(
+            db, args.project_id,
+            cleanup_authority_project_ids=args.cleanup_authority_project_id,
+            reason=args.reason,
+            **selection,
+        )
+        atomic_report(args.output, RootModel(prepared))
+        return prepared["request"]["request_id"]
+    verified = read_operator_file(args.enrollment)
+    if args.command == "review-reconciliation":
+        review = reconciliation.review(db, verified)
+        atomic_report(args.output, RootModel(review))
+        return review["review_digest"]
+    return reconciliation.apply(
+        db, verified, expected_target_id=args.target_id,
+        cleanup_authority_project_ids=args.cleanup_authority_project_id,
+        review_digest=args.review_digest,
+        **selection,
     )
 
 

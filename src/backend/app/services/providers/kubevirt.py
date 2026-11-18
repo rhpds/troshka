@@ -3,6 +3,7 @@ import os
 import re
 import time
 from contextlib import contextmanager
+from typing import Any, cast
 
 import yaml
 
@@ -1153,6 +1154,10 @@ def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:
     If the namespace is already terminating (project delete in flight), the create
     is skipped without raising — callers must not treat that as a hard failure.
     """
+    from app.services import native_origin_ops
+
+    if native_origin_ops.participates(project_id):
+        return native_origin_ops.create_pair(provider, project_id, pod, secret)
     # Serialize the entire launch with native cleanup claim. A precheck alone
     # allows a delayed create to resurrect a writer after off proof.
     with ops_writer_guard(project_id):
@@ -2158,10 +2163,21 @@ def _ensure_project_s3_secrets(
     provider, namespace: str, s3_config: dict, kwargs: dict
 ) -> tuple[dict | None, dict | None]:
     """Create project S3 secrets; return (cluster_s3, obc_s3)."""
+    cluster_s3, central_s3 = _resolve_project_s3_config(provider, kwargs)
+    _write_project_s3_secrets(provider, namespace, s3_config, cluster_s3, central_s3)
+    return cluster_s3, central_s3
+
+
+def _resolve_project_s3_config(provider, kwargs):
+    """Resolve all launch inputs without project-namespace side effects."""
     from app.services.s3_storage import get_cluster_s3_config
 
     db = kwargs.get("db")
     cluster_s3 = get_cluster_s3_config(db, provider.id) if db else None
+    return cluster_s3, kwargs.get("central_s3_config")
+
+
+def _write_project_s3_secrets(provider, namespace, s3_config, cluster_s3, central_s3):
     obc_s3 = None
     if cluster_s3:
         obc_s3 = _obc_s3_dict(cluster_s3)
@@ -2169,12 +2185,416 @@ def _ensure_project_s3_secrets(
 
     _ensure_s3_secret(provider, namespace, s3_config, "s3-credentials")
 
-    central_s3 = kwargs.get("central_s3_config")
     if central_s3:
         _ensure_s3_secret(provider, namespace, central_s3, "s3-central-credentials")
 
     _ensure_cache_s3_secrets(provider, s3_config, central_s3, obc_s3)
-    return cluster_s3, central_s3
+
+
+def _deny_legacy_origin_destroy(project_id):
+    from app.core.database import SessionLocal
+    from app.models.native_deployment_origin import NativeDeploymentOriginIntent
+    from app.schemas.quota import AccountingUnavailable
+
+    with SessionLocal() as db:
+        if (
+            db.query(NativeDeploymentOriginIntent.id)
+            .filter_by(project_id=project_id)
+            .first()
+        ):
+            raise AccountingUnavailable(
+                "Native origin cleanup requires retained drain authority; legacy destruction denied"
+            )
+
+
+def _origin_api(custom_api, core_api, api_client):
+    """Exact reads; root absence needs a complete LIST, other kinds a named 404."""
+    return _OriginApi(custom_api, core_api, api_client)
+
+
+class _OriginApi:
+    def __init__(self, custom_api, core_api, api_client):
+        self.custom_api, self.core_api, self.api_client = (
+            custom_api,
+            core_api,
+            api_client,
+        )
+
+    def _serialize(self, value):
+        return (
+            value
+            if isinstance(value, dict)
+            else self.api_client.sanitize_for_serialization(value)
+        )
+
+    def _support_method(self, kind, action):
+        from kubernetes import client
+
+        if kind == "Secret":
+            return getattr(self.core_api, action + "_namespaced_secret")
+        if kind == "RoleBinding":
+            return getattr(
+                client.RbacAuthorizationV1Api(self.api_client),
+                action + "_namespaced_role_binding",
+            )
+        raise ValueError("Unsupported origin resource kind")
+
+    def get(self, kind, namespace, name):
+        if kind == "TroshkaProject":
+            return self._root(namespace, name)
+        try:
+            if kind == "Namespace":
+                return self._serialize(self.core_api.read_namespace(name=name))
+            return self._serialize(
+                self._support_method(kind, "read")(namespace=namespace, name=name)
+            )
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return None
+            raise
+
+    def _root(self, namespace, name):
+        from app.services.native_deployment_origin import require
+
+        # Cluster-wide LIST already exists; named GET needs a binding that may
+        # not exist yet during first deploy or namespace-only recovery.
+        response = self.custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            field_selector=f"metadata.name={name}",
+            limit=2,
+            _request_timeout=10,
+        )
+        require(
+            isinstance(response, dict), "Native origin root LIST response unavailable"
+        )
+        metadata = response.get("metadata")
+        require(
+            isinstance(metadata, dict), "Native origin root LIST metadata unavailable"
+        )
+        require(
+            isinstance(metadata.get("resourceVersion"), str)
+            and bool(metadata["resourceVersion"])
+            and metadata.get("continue", "") == ""
+            and metadata.get("remainingItemCount", 0) == 0,
+            "Native origin root LIST incomplete",
+        )
+        items = response.get("items")
+        require(
+            isinstance(items, list) and len(items) <= 1,
+            "Native origin root LIST ambiguous or incomplete",
+        )
+        if not items:
+            return None
+        root = items[0]
+        require(isinstance(root, dict), "Native origin root LIST item unavailable")
+        meta = root.get("metadata")
+        require(
+            isinstance(meta, dict), "Native origin root LIST item metadata unavailable"
+        )
+        require(
+            meta.get("namespace") == namespace
+            and meta.get("name") == name
+            and isinstance(meta.get("uid"), str)
+            and bool(meta["uid"]),
+            "Native origin root LIST identity changed",
+        )
+        return root
+
+    def post(self, kind, body):
+        if kind == "Namespace":
+            return self._serialize(self.core_api.create_namespace(body=body))
+        if kind == "TroshkaProject":
+            return self.custom_api.create_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=body["metadata"]["namespace"],
+                plural="troshkaprojects",
+                body=body,
+            )
+        return self._serialize(
+            self._support_method(kind, "create")(
+                namespace=body["metadata"]["namespace"], body=body
+            )
+        )
+
+
+def _origin_namespace_grants(core_api, namespace):
+    from kubernetes import client as k8s
+
+    ensure_troshka_namespaced_rbac(
+        k8s.RbacAuthorizationV1Api(core_api.api_client), namespace
+    )
+
+
+def _origin_observation(api, intent):
+    return {
+        "cluster_uid": api.get("Namespace", None, "kube-system")["metadata"]["uid"],
+        "namespace": api.get("Namespace", None, intent.namespace),
+    }
+
+
+def _origin_resume(db, api, intent):
+    from app.services import native_deployment_origin as origin
+
+    # Refresh and validate attempt identity under locks, then perform reads unlocked.
+    origin._locked(db, str(intent.id))
+    retained = origin.receipts(db, str(intent.id))
+    db.commit()
+    phase, token = origin.recover_handoff(db, intent)
+    observed = origin.recover(api, intent, retained)
+    if observed is None:
+        origin.retry_handoff(db, intent, phase, token)
+        return False
+    origin.bind_namespace(
+        db, str(intent.id), observed, io_token=token if phase == "namespace" else None
+    )
+    db.commit()
+    if "root" not in observed:
+        if phase == "root":
+            origin.retry_handoff(db, intent, phase, token)
+        return False
+    origin.bind_root(
+        db, str(intent.id), observed, io_token=token if phase == "root" else None
+    )
+    db.commit()
+    return True
+
+
+def _origin_post(api, kind, body):
+    """A timeout/409 can recover only through a fresh exact readback."""
+    response = None
+    try:
+        response = api.post(kind, body)
+    except Exception:
+        meta = body["metadata"]
+        observed = api.get(kind, meta.get("namespace"), meta["name"])
+        if observed is None:
+            raise
+        return observed
+    meta = body["metadata"]
+    observed = api.get(kind, meta.get("namespace"), meta["name"])
+    if not observed or response["metadata"].get("uid") != observed["metadata"].get(
+        "uid"
+    ):
+        from app.schemas.quota import AccountingUnavailable
+
+        raise AccountingUnavailable("Native origin POST/readback UID changed")
+    return observed
+
+
+def _origin_support_intents(s3_config, cluster_s3, central_s3):
+    from app.services.kubevirt_storage_enrollment import digest
+
+    entries = [("s3-credentials", s3_config)]
+    if cluster_s3:
+        entries.append(("s3-obc-credentials", _obc_s3_dict(cluster_s3)))
+    if central_s3:
+        entries.append(("s3-central-credentials", central_s3))
+    return [
+        {"kind": "Secret", "name": name, "digest": digest(value)}
+        for name, value in entries
+    ]
+
+
+def _origin_create_namespace(db, api, core_api, intent):
+    from app.services import native_deployment_origin as origin
+
+    ns = api.get("Namespace", None, intent.namespace)
+    token = None
+    created = None
+    if ns is None and intent.namespace_mode == "managed":
+        token = origin.begin_io(db, str(intent.id), "namespace")
+        db.commit()
+        created = _origin_post(
+            api,
+            "Namespace",
+            {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {
+                    "name": intent.namespace,
+                    "labels": _project_namespace_labels(str(intent.project_id)),
+                    "annotations": origin.annotations(intent),
+                },
+            },
+        )
+    observed = _origin_observation(api, intent)
+    if created:
+        origin.require(
+            created["metadata"]["uid"] == observed["namespace"]["metadata"]["uid"],
+            "Native origin created namespace UID changed",
+        )
+    origin.bind_namespace(db, str(intent.id), observed, io_token=token)
+    db.commit()
+    # Exact support is dispatched separately, after the birth UID is committed.
+
+
+def _deploy_project_with_origin(
+    provider,
+    project_id,
+    project_cr,
+    s3_config,
+    cluster_s3,
+    central_s3,
+    db,
+    api,
+    core_api,
+):
+    from app.models.project import Project
+    from app.schemas.quota import AccountingUnavailable
+    from app.services import native_deployment_origin as origin
+    from app.services import native_origin_support as support
+    from app.services.kubevirt_storage_enrollment import digest
+
+    namespace = project_cr["metadata"]["namespace"]
+    intent = origin.active(db, project_id)
+    if intent is None:
+        cluster_uid = api.get("Namespace", None, "kube-system")["metadata"]["uid"]
+        mode = base_namespace_grants_mode()
+        if (
+            api.get("TroshkaProject", namespace, project_cr["metadata"]["name"])
+            is not None
+        ):
+            raise AccountingUnavailable(
+                "Historical native root requires explicit custody recovery"
+            )
+        if mode != "external" and api.get("Namespace", None, namespace) is not None:
+            raise AccountingUnavailable(
+                "Existing namespace has no original creation intent"
+            )
+    else:
+        cluster_uid, mode = intent.cluster_uid, intent.namespace_mode
+    from app.services import native_origin_checkpoints as checkpoints
+
+    origin_id = (
+        str(intent.id) if intent else checkpoints.initialize(db, project_cr["spec"])
+    )
+    bodies = (
+        support.original_bodies(db, intent)
+        if intent
+        else support.render(
+            namespace, mode, s3_config, cluster_s3, central_s3, origin_id
+        )
+    )
+    descriptor = dict(
+        origin_id=origin_id,
+        cluster_uid=cluster_uid,
+        namespace=namespace,
+        root_name=project_cr["metadata"]["name"],
+        namespace_mode=mode,
+        cr_spec_digest=digest(project_cr["spec"]),
+        support_intents=support.manifest(bodies),
+    )
+    from app.services.native_deployment_preflight import handoff
+
+    handoff(db, project_id)
+    from app.services.native_deployment_preflight import worker_attempt
+
+    if worker_attempt.get():
+        descriptor["attempt_id"] = cast(str, worker_attempt.get())
+    intent = origin.prepare(db, db.get(Project, project_id), provider, descriptor)
+    origin.retain_launch(
+        db,
+        intent,
+        dict(
+            project_cr=project_cr,
+            s3_config=s3_config,
+            cluster_s3=cluster_s3,
+            central_s3=central_s3,
+            support_bodies=bodies,
+        ),
+    )
+    db.commit()
+    project_cr["metadata"]["annotations"] = origin.annotations(intent)
+    _, pointer = origin._locked(db, str(intent.id))
+    retry_root = pointer.io_phase == "root"
+    db.commit()
+    if not retry_root:
+        _origin_create_namespace(db, api, core_api, intent)
+        _origin_write_support(
+            db, api, intent, provider, bodies, s3_config, cluster_s3, central_s3
+        )
+    else:
+        origin.bind_namespace(db, str(intent.id), _origin_observation(api, intent))
+        db.commit()
+    token = origin.begin_io(db, str(intent.id), "root")
+    db.commit()
+    created = _origin_post(api, "TroshkaProject", project_cr)
+    observed = origin.recover(api, intent, origin.receipts(db, str(intent.id)))
+    origin.require(
+        observed is not None
+        and "root" in observed
+        and all(
+            created["metadata"].get(key) == observed["root"]["metadata"].get(key)
+            for key in ("uid", "generation")
+        )
+        and digest(created.get("spec")) == digest(observed["root"].get("spec")),
+        "Native origin created root UID/generation/spec changed",
+    )
+    origin.bind_root(db, str(intent.id), observed, io_token=token)
+    db.commit()
+    return intent.root_name
+
+
+def _origin_write_support(
+    db, api, intent, provider, bodies, s3_config, cluster_s3, central_s3
+):
+    from app.services import native_origin_support as support
+
+    for body in bodies:
+        support.write(db, api, intent, body)
+    token = support.begin(db, intent)
+    _ensure_cache_s3_secrets(
+        provider,
+        s3_config,
+        central_s3,
+        _obc_s3_dict(cluster_s3) if cluster_s3 else None,
+    )
+    support.finish(db, intent, token, None)
+
+
+def _native_managed_dispatch(db, project_id, enforcement):
+    """A managed operation retains its admission path across an enforcement toggle."""
+    from app.models.quota import QuotaReservation
+    from app.services.quota_operations import current_operation
+
+    operation_id = current_operation.get()
+    if db is not None and operation_id:
+        row = (
+            db.query(QuotaReservation)
+            .filter_by(project_id=project_id, operation_id=operation_id)
+            .first()
+        )
+        if row and (row.dispatch_metadata or {}).get("native_deploy"):
+            return True
+    return enforcement
+
+
+def _submit_file_pull(custom_api, provider, project_id, namespace, cr_name, payload):
+    import json
+
+    from app.services import native_origin_ops, native_origin_remote
+
+    if native_origin_ops.participates(project_id):
+        return native_origin_remote.request_file(provider, project_id, payload)
+    custom_api.patch_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural="troshkaprojects",
+        name=cr_name,
+        body={
+            "metadata": {
+                "annotations": {
+                    "troshka.redhat.com/file-pull-request": json.dumps(payload)
+                }
+            }
+        },
+    )
+    return None
 
 
 class KubeVirtDriver(ProviderDriver):
@@ -2700,26 +3120,76 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
+        from app.services import native_deployment_origin as origin
+        from app.services.native_deployment_preflight import worker_attempt
         from app.services.quota_accounting import quotas_enabled
 
-        if quotas_enabled():
+        db = kwargs.get("db")
+        intent = origin.active(db, project_id) if db is not None else None
+        if (
+            intent is None
+            and worker_attempt.get() is None
+            and _native_managed_dispatch(db, project_id, quotas_enabled())
+        ):
             from app.services.native_managed_deploy import create_pending
 
             create_pending(provider, project_id)
             return f"project-{project_id[:8]}"
         _ensure_operator_crds(provider)
 
-        custom_api, core_api, _ = _get_k8s_clients(provider)
+        custom_api, core_api, api_client = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
+        from app.services.native_deployment_preflight import worker_attempt
 
-        _ensure_project_namespace(core_api, namespace, project_id)
-        cluster_s3, central_s3 = _ensure_project_s3_secrets(
-            provider, namespace, s3_config, kwargs
+        capturing = (
+            intent is not None
+            or worker_attempt.get() is not None
+            or origin.capture_enabled()
         )
+        api = _origin_api(custom_api, core_api, api_client) if capturing else None
+        if intent is not None and _origin_resume(db, api, intent):
+            return intent.root_name
+        if intent is not None:
+            launch = origin.load_launch(db, intent)
+            return _deploy_project_with_origin(
+                provider,
+                project_id,
+                launch["project_cr"],
+                launch["s3_config"],
+                launch["cluster_s3"],
+                launch["central_s3"],
+                db,
+                api,
+                core_api,
+            )
+        cluster_s3, central_s3 = _resolve_project_s3_config(provider, kwargs)
         s3_cr_config = _build_project_s3_cr_config(s3_config, cluster_s3)
         _apply_mtu_map(topology, kwargs.get("mtu_map", {}))
         project_cr = _build_troshka_project_cr(
             project_id, namespace, topology, s3_cr_config, central_s3, kwargs
+        )
+        if capturing:
+            if db is None:
+                from app.schemas.quota import AccountingUnavailable
+
+                raise AccountingUnavailable(
+                    "Native origin capture requires database session"
+                )
+            return _deploy_project_with_origin(
+                provider,
+                project_id,
+                project_cr,
+                s3_config,
+                cluster_s3,
+                central_s3,
+                db,
+                api,
+                core_api,
+            )
+
+        _ensure_project_namespace(core_api, namespace, project_id)
+        _write_project_s3_secrets(
+            provider, namespace, s3_config, cluster_s3, central_s3
         )
 
         custom_api.create_namespaced_custom_object(
@@ -2732,6 +3202,7 @@ class KubeVirtDriver(ProviderDriver):
         return f"project-{project_id[:8]}"
 
     def destroy_project(self, provider, project_id):
+        _deny_legacy_origin_destroy(project_id)
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
@@ -2808,7 +3279,6 @@ class KubeVirtDriver(ProviderDriver):
         off a clone, and cleans up), then polls ``status.filePull`` for the
         base64 result keyed by our requestId."""
         import base64
-        import json as _json
         import time as _time
         import uuid
 
@@ -2828,37 +3298,40 @@ class KubeVirtDriver(ProviderDriver):
             "sizeGb": size_gb,
             "path": guest_path,
         }
-        custom_api.patch_namespaced_custom_object(
-            group=CRD_GROUP,
-            version=CRD_VERSION,
-            namespace=namespace,
-            plural="troshkaprojects",
-            name=cr_name,
-            body={
-                "metadata": {
-                    "annotations": {
-                        "troshka.redhat.com/file-pull-request": _json.dumps(payload)
-                    }
-                }
-            },
+        support_operation = _submit_file_pull(
+            custom_api, provider, project_id, namespace, cr_name, payload
         )
 
         deadline = _time.time() + timeout_s
         while _time.time() < deadline:
+            observation: tuple[dict[str, Any], Any] | None = None
             try:
-                cr = custom_api.get_namespaced_custom_object(
-                    group=CRD_GROUP,
-                    version=CRD_VERSION,
-                    namespace=namespace,
-                    plural="troshkaprojects",
-                    name=cr_name,
+                cr = cast(
+                    dict[str, Any],
+                    custom_api.get_namespaced_custom_object(
+                        group=CRD_GROUP,
+                        version=CRD_VERSION,
+                        namespace=namespace,
+                        plural="troshkaprojects",
+                        name=cr_name,
+                    ),
                 )
-                fp = (dict(cr).get("status") or {}).get("filePull") or {}  # type: ignore[call-overload]
+                fp = (dict(cr).get("status") or {}).get("filePull") or {}
+                observation = (cr, fp)
             except Exception:
                 fp = {}
-            if fp.get("requestId") == req_id and fp.get("ready"):
+            if (
+                observation is not None
+                and fp.get("requestId") == req_id
+                and fp.get("ready")
+            ):
+                cr, _ = observation
                 if fp.get("error"):
                     raise RuntimeError(f"file-pull failed: {fp['error']}")
+                if support_operation is not None:
+                    from app.services.native_origin_remote import file_result
+
+                    file_result(support_operation, dict(cr))
                 return base64.b64decode(fp.get("contentB64", ""))
             _time.sleep(5)
         raise TimeoutError(f"file-pull timed out for {vm_name}:{guest_path}")

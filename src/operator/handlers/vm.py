@@ -5,8 +5,6 @@ import time
 from typing import cast
 
 import kopf
-from helpers.managed_power import checked_await as managed_await
-from helpers.managed_power import producer as managed_producer
 from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
@@ -28,7 +26,15 @@ from helpers.kubevirt import (
     collect_kubevirt_vm_warnings,
     is_video_config_enabled,
     parse_admission_api_warnings,
+    set_kubevirt_vm_power,
     storage_quantity_gi,
+)
+from helpers.managed_power import checked_await as managed_await
+from helpers.managed_power import producer as managed_producer
+from helpers.native_origin_checkpoint import (
+    CheckpointHold,
+    guard_client,
+    propagate_hold,
 )
 from helpers.topology import collect_vm_nic_network_errors, enrich_vm_nics
 from kubernetes import client
@@ -54,7 +60,7 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
 
 
 def _get_s3_config_from_project(namespace):
-    custom_api = client.CustomObjectsApi()
+    custom_api = guard_client(client.CustomObjectsApi())
     projects = custom_api.list_namespaced_custom_object(
         group=CRD_GROUP,
         version=CRD_VERSION,
@@ -68,7 +74,7 @@ def _get_s3_config_from_project(namespace):
 
 
 def _get_central_s3_config_from_project(namespace):
-    custom_api = client.CustomObjectsApi()
+    custom_api = guard_client(client.CustomObjectsApi())
     projects = custom_api.list_namespaced_custom_object(
         group=CRD_GROUP,
         version=CRD_VERSION,
@@ -93,6 +99,8 @@ def _get_project_topology(custom_api, namespace):
         items = projects.get("items", [])
         if items:
             return items[0].get("spec", {}).get("topology") or {}
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning("Could not load project topology in %s: %s", namespace, e)
     return None
@@ -134,7 +142,7 @@ def _ensure_cpu_host_model(body, namespace):
     if spec.get("cpuHostModel"):
         return body
     try:
-        custom_api = client.CustomObjectsApi()
+        custom_api = guard_client(client.CustomObjectsApi())
         projects = custom_api.list_namespaced_custom_object(
             group=CRD_GROUP,
             version=CRD_VERSION,
@@ -152,6 +160,8 @@ def _ensure_cpu_host_model(body, namespace):
                 model,
                 namespace,
             )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.debug("Could not inherit cpuHostModel in %s: %s", namespace, e)
     return body
@@ -172,6 +182,8 @@ def _check_owner_exists(custom_api, owner_name, owner_namespace):
         if e.status == 404:
             return False
         return True
+    except CheckpointHold:
+        raise
     except Exception:
         return True
 
@@ -241,6 +253,8 @@ def _check_datavolume_status(custom_api, name, namespace):
             logger.warning(f"DataVolume {name} not found, may have been deleted")
             return "deleted"
         return "pending"
+    except CheckpointHold:
+        raise
     except Exception:
         return "pending"
 
@@ -474,6 +488,8 @@ def _golden_requested_gb(core_api, golden_name):
         requested = golden.spec.resources.requests.get("storage", "")
         if requested:
             return int(str(requested).rstrip("Gi"))
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return 0
@@ -619,6 +635,8 @@ async def _provision_cdrom(
             owner_namespace=namespace,
         )
         return cdrom_pvc
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(
             f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}"
@@ -705,7 +723,7 @@ async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
             },
         },
     }
-    batch_api = client.BatchV1Api()
+    batch_api = guard_client(client.BatchV1Api())
     try:
         batch_api.create_namespaced_job(namespace=namespace, body=job)
     except client.ApiException as e:
@@ -719,8 +737,8 @@ async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
             if j.status.failed:  # type: ignore[union-attr]
                 logger.error(f"Guestfish job {gf_job_name} failed")
                 break
-        except Exception:
-            pass
+        except Exception as error:
+            propagate_hold(error)
         await asyncio.sleep(5)
 
 
@@ -734,6 +752,8 @@ async def _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name):
             plural="virtualmachines",
             name=kv_vm_name,
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     for _ in range(30):
@@ -915,6 +935,8 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                 body={"users": users},
             )
             logger.info(f"Added {sa_ref} to troshka-gateway SCC")
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Could not patch SCC for BMC in {namespace}: {e}")
 
@@ -995,6 +1017,8 @@ def _find_bmc_nad(namespace, custom_api):
                 return net.get("status", {}).get(
                     "nadName", f"{net['metadata']['name']}-nad"
                 )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return None
@@ -1040,6 +1064,8 @@ def _resolve_nad_refs(custom_api, namespace):
             net_name = net["metadata"]["name"]
             nad_name = net.get("status", {}).get("nadName", f"{net_name}-nad")
             nad_refs[net_name] = nad_name
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return nad_refs
@@ -1062,6 +1088,8 @@ def _resolve_network_net_features(custom_api, namespace):
             spec = net.get("spec") or {}
             if network_allow_nested_macs(spec):
                 features[net_name] = {"allowNestedMacs": True}
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return features
@@ -1147,8 +1175,8 @@ async def vm_create(meta, namespace, name, body, patch, **_):
     logger.info(f"Creating VM {name} in {namespace}")
     patch.status["state"] = "Creating"
 
-    core_api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
+    core_api = guard_client(client.CoreV1Api())
+    custom_api = guard_client(client.CustomObjectsApi())
 
     # Ensure the provider SA can exec into this project's virt-launcher pods
     # (console/serial VM exec) — scoped SCC-use RoleBinding, idempotent.
@@ -1246,6 +1274,8 @@ async def vm_create(meta, namespace, name, body, patch, **_):
             ),
         )
         domain_uuid = created_vm["metadata"]["uid"]
+    except CheckpointHold:
+        raise
     except Exception:
         domain_uuid = ""
     patch.status["domainUuid"] = domain_uuid
@@ -1508,17 +1538,7 @@ async def _wait_for_pvc_expansion(
 
 async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
     """Stop a KubeVirt VM and wait for the VMI to terminate."""
-    try:
-        custom_api.patch_namespaced_custom_object(
-            group=_KUBEVIRT_API,
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=kv_name,
-            body={"spec": {"running": False}},
-        )
-    except Exception:
-        pass
+    set_kubevirt_vm_power(custom_api, namespace, kv_name, running=False)
     for _ in range(60):
         try:
             custom_api.get_namespaced_custom_object(
@@ -1531,9 +1551,10 @@ async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
             await asyncio.sleep(2)
         except client.ApiException as e:
             if e.status == 404:
-                break
+                logger.info(f"VM {kv_name} stopped for reconfigure")
+                return
             raise
-    logger.info(f"VM {kv_name} stopped for reconfigure")
+    raise TimeoutError(f"VMI {kv_name} still present after 120s; reconfigure held")
 
 
 def _upsert_cloudinit_secret(body, namespace, core_api):
@@ -1605,8 +1626,8 @@ async def vm_update(
     logger.info(f"TroshkaVM {name} updated — reconciling KubeVirt VM {kv_name}")
     patch.status["state"] = "Reconfiguring"
 
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
 
     await managed_await(_stop_kubevirt_vm(custom_api, namespace, kv_name))
 
@@ -1676,6 +1697,8 @@ async def vm_update(
             ),
         )
         domain_uuid = recreated_vm["metadata"]["uid"]
+    except CheckpointHold:
+        raise
     except Exception:
         domain_uuid = status.get("domainUuid", "")
     patch.status["domainUuid"] = domain_uuid
@@ -1762,15 +1785,21 @@ def _delete_cloudinit_secret(name, core_api, namespace):
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_delete(spec, status, meta, namespace, name, **_):
     from helpers.managed_power import PowerClient, cleanup_child
+    from helpers.native_namespace_cleanup import finish_external
+
+    if finish_external(PowerClient(), namespace, "TroshkaVM"):
+        return
+    from helpers.native_origin_checkpoint import finalizer
 
     if cleanup_child(PowerClient(), meta, namespace):
         return
     logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
 
     kv_name = status.get("kubevirtVmName", f"troshka-{name}")
-    _delete_kubevirt_vm(custom_api, namespace, kv_name)
-    _delete_disk_resources(spec, name, custom_api, core_api, namespace)
-    _delete_cdrom_if_present(spec, name, core_api, namespace)
-    _delete_cloudinit_secret(name, core_api, namespace)
+    with finalizer(meta, namespace, spec):
+        _delete_kubevirt_vm(custom_api, namespace, kv_name)
+        _delete_disk_resources(spec, name, custom_api, core_api, namespace)
+        _delete_cdrom_if_present(spec, name, core_api, namespace)
+        _delete_cloudinit_secret(name, core_api, namespace)

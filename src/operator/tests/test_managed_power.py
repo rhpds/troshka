@@ -308,7 +308,7 @@ def lifecycle():
     owner = resource("TroshkaVM", "vm", root, status={"observedGeneration": 1})
     vm = resource("VirtualMachine", "vm-runtime", owner, {"runStrategy": "Always"})
     net = resource("TroshkaNetwork", "network", root, status={"nadName": "network-nad"})
-    values = [root, owner, vm, net]
+    values = [root, owner, vm, net, resource("Namespace", "ns")]
     for prefix in ("dnsmasq", "gateway", "exec", "vnc"):
         values.append(
             resource(

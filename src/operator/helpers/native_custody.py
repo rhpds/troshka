@@ -48,6 +48,46 @@ def identity(value):
     }
 
 
+def custody_identity(value):
+    """Create a fresh receipt independent of Deployment rollout restarts.
+
+    Keep identity() unchanged for sealed cleanup and concurrency checks. Only
+    the restart timestamp and its empty annotation map are normalized here.
+    """
+    candidate = deepcopy(value)
+    if candidate.get("kind") == "Deployment":
+        metadata = candidate.get("spec", {}).get("template", {}).get("metadata", {})
+        annotations = metadata.get("annotations")
+        if isinstance(annotations, dict):
+            annotations.pop("kubectl.kubernetes.io/restartedAt", None)
+            if not annotations:
+                metadata.pop("annotations")
+    return identity(candidate)
+
+
+def identity_matches(value, pin):
+    """Match legacy receipts across a restart without weakening sealed identity.
+
+    Stored receipts remain unchanged. Fresh normalized receipts and legacy
+    receipts without a timestamp may match across restarts. A legacy receipt
+    containing a timestamp can only match exactly: its original timestamp
+    cannot be recovered from a hash.
+    """
+    if identity(value) == pin or custody_identity(value) == pin:
+        return True
+    if value.get("kind") != "Deployment":
+        return False
+    candidate = deepcopy(value)
+    metadata = candidate.get("spec", {}).get("template", {}).get("metadata", {})
+    annotations = metadata.get("annotations", {})
+    restart = "kubectl.kubernetes.io/restartedAt"
+    if restart not in annotations:
+        return False
+    annotations.pop(restart)
+    # Legacy receipts may have pinned an explicitly empty annotations map.
+    return identity(candidate) == pin
+
+
 def stable(value):
     bare = value.get("kind") == "Pod" and any(r.get("kind") == "TroshkaProject" for r in value.get("metadata", {}).get("ownerReferences", []))
     return bare or writer_candidate(value) or value["kind"] not in {
@@ -231,7 +271,7 @@ def evidence(root):
 
 def matches(value, root):
     pins = evidence(root)
-    return pins is not None and identity(value) in pins
+    return pins is not None and any(identity_matches(value, pin) for pin in pins)
 
 
 def support_shape(value, root):
@@ -339,13 +379,29 @@ def eip_service(value, root, by_uid):
     pid = root.get("spec", {}).get("projectId", "")[:8]
     return (
         isinstance(eid, str) and len(eid) == 8 and all(c in "0123456789abcdef" for c in eid) and meta["name"] == "troshka-eip-" + eid
+        and bool(pid) and meta.get("namespace") == root["metadata"].get("namespace")
         and meta.get("labels") == {"app": "troshka-eip", "troshka-eip-id": eid}
         and spec.get("type") == "LoadBalancer"
         and spec.get("selector") == {"app": "troshka-gateway-" + pid}
         and not spec.get("externalName") and not spec.get("externalIPs")
         and bool(spec.get("ports"))
-        and all(p.get("protocol") == "TCP" and isinstance(p.get("port"), int) and p.get("targetPort") == {80: 1080, 443: 1443, 8080: 18080}.get(p["port"], p["port"]) for p in spec["ports"])
-        and all(p["port"] in gateway_ports(by_uid, {"app": "troshka-gateway-" + pid}) for p in spec["ports"])
+        and (eip_placeholder_ports(spec["ports"]) or (
+            all(p.get("protocol") == "TCP" and isinstance(p.get("port"), int) and p.get("targetPort") == {80: 1080, 443: 1443, 8080: 18080}.get(p["port"], p["port"]) for p in spec["ports"])
+            and all(p["port"] in {int(parts[0]) for parts in route_gateway_forwards(root, by_uid, {"app": "troshka-gateway-" + pid}) if parts[3] == "tcp"} for p in spec["ports"])
+        ))
+    )
+
+
+def eip_placeholder_ports(ports):
+    """allocate_eip emits 443 -> 443 before gateway forwarding is configured."""
+    if len(ports) != 1:
+        return False
+    port = ports[0]
+    return (
+        set(port) <= {"port", "targetPort", "protocol", "nodePort"}
+        and {k: port.get(k) for k in ("port", "targetPort", "protocol")}
+        == {"port": 443, "targetPort": 443, "protocol": "TCP"}
+        and ("nodePort" not in port or type(port["nodePort"]) is int and 0 < port["nodePort"] <= 65535)
     )
 
 
@@ -438,12 +494,26 @@ def app_proxy_code(host):
 
 def route_gateway(name, port, selector, by_uid, root):
     """Bind the published port to a retained project gateway forward."""
-    for parts in gateway_forwards(by_uid, selector):
+    for parts in route_gateway_forwards(root, by_uid, selector):
         external = int(parts[0])
         listen = {80: 1080, 443: 1443, 8080: 18080}.get(external, external)
-        if port == listen and name in route_names(root, parts[1], parts[2]):
+        if parts[3] == "tcp" and port == listen and name in route_names(root, parts[1], parts[2]):
             return True
     return False
+
+
+def route_gateway_forwards(root, by_uid, selector):
+    """Use retained topology only when its corresponding gateway no longer exists."""
+    if any(value.get("kind") == "Deployment" and all(value.get("spec", {}).get("selector", {}).get("matchLabels", {}).get(k) == v for k, v in selector.items()) for value in by_uid.values()):
+        return gateway_forwards(by_uid, selector)
+    from helpers.k8s import _build_port_forwards_str
+
+    gateways = [node.get("data", {}) for node in root.get("spec", {}).get("topology", {}).get("nodes", []) if node.get("data", {}).get("subtype") == "gateway"]
+    if len(gateways) != 1:
+        return []
+    forwards = _build_port_forwards_str(gateways[0].get("portForwards", []))
+    parts = [forward.split(":") for forward in forwards.split(",")]
+    return [part for part in parts if len(part) == 4 and part[0].isdigit()]
 
 
 def route_names(root, ip, port):

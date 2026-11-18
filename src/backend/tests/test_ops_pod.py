@@ -1076,8 +1076,19 @@ def _troshkad_host():
 
 def _kv_clients_patches(core_v1):
     """Patch the DB + kubevirt client resolution used by the monitor helpers."""
+    from app.models.provider import Provider
+
     session = MagicMock()
-    session.query.return_value.filter_by.return_value.first.return_value = MagicMock()
+    session.__enter__.return_value = session
+
+    def query(model):
+        result = MagicMock()
+        filtered = result.filter_by.return_value
+        filtered.populate_existing.return_value = filtered
+        filtered.first.return_value = MagicMock() if model is Provider else None
+        return result
+
+    session.query.side_effect = query
     return (
         patch("app.core.database.SessionLocal", return_value=session),
         patch(

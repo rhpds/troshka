@@ -64,6 +64,16 @@ The operator creates project namespace permissions on first deployment; it does
 not create the cluster's collector profile or initial enrollment. Cluster setup
 is deliberately separate so an empty host can be ready before its first project.
 
+With `nativeCollection.enabled`, backend, tunnel, and general workers use the same
+existing `nativeCollection.worker.configMapName`, `secretName`, and optional
+version-tagged `cliImage` as the collection worker. Protected profiles and
+transport files are copied into private regular files on a memory volume, then
+mounted read-only at `/etc/troshka/collection` and
+`/etc/troshka/collection-transport`. This wiring remains enabled when origin
+capture is disabled so retained custody and cleanup can still be verified.
+Readiness workers retain their separate overrides of the shared worker settings.
+Default installations with native collection disabled need no protected inputs.
+
 Routine releases use `collector_release_check.py --mode health` before and after
 promotion. This reads the latest accepted evidence and blocks on missing or failed
 observations, changed enrollment, conflicts, active cleanup, or changing inventory.
@@ -235,6 +245,14 @@ helm install troshka deploy/helm/ -n troshka \
 - Migration runs as Helm post-install/post-upgrade hook
 - Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)
 - ConfigMap changes trigger pod restart via `checksum/config` annotation
+- Native origin capture defaults to disabled (`nativeOrigin.captureEnabled: false`).
+  After snapshot/restore and retirement qualification, explicitly opt in with
+  `nativeOrigin.captureEnabled: true` in the release's Helm values (for Argo CD,
+  use the managed Helm values so self-heal preserves it). This renders Boolean
+  `native_origin.capture_enabled` in the shared `troshka-config` config.yaml;
+  the API, tunnel, and worker deployments mount it and roll via their existing
+  checksums. Protected per-domain `origin_admission` remains a separate explicit
+  setting; this opt-in neither changes collector profiles nor enables quotas.
 - infra01's expanded S4 PVC is recorded in the non-secret
   `deploy/helm/values-infra01.yaml` override. Include it with `-f` for Helm, or
   reference it in Argo CD's Helm `valueFiles` once the file is on the configured

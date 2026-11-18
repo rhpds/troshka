@@ -175,9 +175,36 @@ def domain_evidence(db, domain, roots, project_id=None):
     )
     try:
         lineages = resolve_lineages(db, source.clone_references, manifest)
+        from app.services.native_binding_retirement_collection import report_authority
+
+        retirements, retired_lineages = report_authority(
+            db, manifest, source, lineages=lineages
+        )
+        lineages += retired_lineages
+        from app.services.native_snapshot_graph import resolve as resolve_snapshots
+
+        snapshot_facts = resolve_snapshots(db, manifest, retired=retired)
     except ValueError:
         return None, source, {"managed_clone_authority_unverified"}
-    return attribute_graph(inventory, images, clone_lineages=lineages), source, set()
+    from app.services.native_project_namespace_cleanup import storage_scopes
+
+    cleanup_scopes = [
+        s
+        for s in storage_scopes(db, domain.id)
+        if s.phase in {"namespace_delete_requested", "namespace_absent"}
+    ]
+    return (
+        attribute_graph(
+            inventory,
+            images,
+            clone_lineages=lineages,
+            binding_retirements=retirements,
+            snapshot_facts=snapshot_facts,
+            project_cleanup_scopes=cleanup_scopes,
+        ),
+        source,
+        set(),
+    )
 
 
 def _shared_platform(db, domain, roots, now):

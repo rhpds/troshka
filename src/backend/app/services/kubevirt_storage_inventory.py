@@ -79,13 +79,18 @@ def _proof_root(kube, root, retained):
     return None
 
 
-def _pvc_binding(kube, pvc, pv_by_name, namespace):
+def _pvc_binding(
+    kube, pvc, pv_by_name, namespace, *, require_bound=True, bound_volume_name=None
+):
     meta, spec = pvc.get("metadata", {}), pvc.get("spec", {})
     if meta.get("namespace") != namespace:
         raise BindingError("pvc_namespace_mismatch")
-    if not spec.get("volumeName") or pvc.get("status", {}).get("phase") != "Bound":
+    volume_name = spec.get("volumeName") or bound_volume_name
+    if not volume_name or (
+        require_bound and pvc.get("status", {}).get("phase") != "Bound"
+    ):
         raise BindingError("pending_pvc")
-    pv = pv_by_name.get(spec["volumeName"], {})
+    pv = pv_by_name.get(volume_name, {})
     claim = pv.get("spec", {}).get("claimRef", {})
     if claim.get("uid") != meta.get("uid") or claim.get("namespace") != namespace:
         raise BindingError("claim_identity_mismatch")
@@ -168,8 +173,14 @@ def _snapshot_discovery(kube, root, contents):
             or ref.get("namespace") != root.namespace
         ):
             code = "snapshot_identity_unresolved"
-        # Ready references are insufficient without a supported backend snapshot resolver.
-        errors.append(Blocker(code=code, project_id=root.project_id))
+        from app.services.native_snapshot_graph import evidence_matches, proofs
+
+        authorized = any(
+            evidence_matches(records[-1], p)
+            for p in proofs(getattr(kube, "snapshot_facts", ()))
+        )
+        if not authorized:
+            errors.append(Blocker(code=code, project_id=root.project_id))
     for name, content in contents.items():
         ref = content.get("spec", {}).get("volumeSnapshotRef", {})
         if name in referenced or ref.get("namespace") != root.namespace:
@@ -244,7 +255,8 @@ def _retiring_discovery(kube, root, intent, pvs, contents):
     if namespace is not None:
         if namespace["metadata"]["uid"] != root.namespace_uid:
             raise ValueError("retiring namespace replaced")
-        kube.cleanup_rows(intent)
+        if intent.version != "native-project-namespace-v1":
+            kube.cleanup_rows(intent)
         projects = kube.projects(root.namespace)
         if projects and (
             len(projects) != 1 or projects[0]["metadata"]["uid"] != root.project_cr_uid

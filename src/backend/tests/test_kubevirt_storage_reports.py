@@ -109,7 +109,10 @@ def make_native_case(sessions, *, report=None, organization=False):
                 root = next(r for r in report.project_roots if r.namespace == namespace)
                 return [
                     {
-                        "metadata": {"uid": root.project_cr_uid},
+                        "metadata": {
+                            "uid": root.project_cr_uid,
+                            "generation": root.deployment_generation,
+                        },
                         "spec": {"projectId": str(root.project_id)},
                     }
                 ]

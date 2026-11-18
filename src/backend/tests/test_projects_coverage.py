@@ -1423,6 +1423,12 @@ class TestDeployAddedVmsKubevirt:
 
 
 class TestApplyKubevirtVmChanges:
+    @pytest.fixture(autouse=True)
+    def legacy_origin_boundary(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.native_origin_checkpoints.remove_child", lambda *args: False
+        )
+
     def test_deletes_removed_vms(self):
         from app.api.projects import _apply_kubevirt_vm_changes
         from app.services.deploy_topology import diff_topologies
@@ -2285,7 +2291,7 @@ class TestKubevirtVmRedeploy:
     @patch("app.api.projects._create_troshkavm_cr")
     @patch("app.api.projects._wait_kubevirt_pvcs_deleted")
     @patch("app.api.projects._wait_troshkavm_deleted")
-    @patch("app.api.projects._delete_troshkavm_cr")
+    @patch("app.api.projects._delete_troshkavm_cr", return_value=False)
     @patch(
         "app.api.projects._build_kubevirt_vm_spec",
         return_value={"disks": [{"id": "disk0001"}]},
@@ -2354,7 +2360,9 @@ class TestKubevirtVmRedeploy:
         mock_create_cr.assert_called_once()
         mock_wait_ready.assert_called_once()
         mock_notify.assert_called_once()
-        mock_session.commit.assert_called_once()
+        # Close the read transaction before remote checkpoint verification,
+        # then commit the final redeploy state.
+        assert mock_session.commit.call_count == 2
 
     @patch("app.api.projects._execute_kubevirt_vm_redeploy")
     def test_execute_vm_redeploy_dispatches_kubevirt(self, mock_kv_redeploy):

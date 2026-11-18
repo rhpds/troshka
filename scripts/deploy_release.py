@@ -249,13 +249,52 @@ def wait_rollout(kc, namespace, name):
     )
 
 
+def sync_operator_identity(kc, dep):
+    """Sync the operator's identity and singleton Recreate rollout contract."""
+    operators = [container for container in dep["spec"]["template"]["spec"]["containers"]
+                 if image_role(container["image"]) == "operator"]
+    if not operators:
+        return False
+    wanted = [{"name": key, "valueFrom": {"fieldRef": {"fieldPath": path}}} for key, path in (
+        ("POD_NAME", "metadata.name"), ("POD_NAMESPACE", "metadata.namespace"), ("POD_UID", "metadata.uid"))]
+    containers = []
+    for container in operators:
+        current = {entry["name"]: entry for entry in container.get("env", [])}
+        if any(not _identity_env_matches(current.get(entry["name"]), entry) for entry in wanted):
+            containers.append({"name": container["name"], "env": [{**entry, "value": None} for entry in wanted]})
+    spec = {}
+    if dep["spec"].get("replicas", 1) != 1:
+        spec["replicas"] = 1
+    strategy = dep["spec"].get("strategy", {})
+    if strategy.get("type", "RollingUpdate") != "Recreate" or "rollingUpdate" in strategy:
+        spec["strategy"] = {"type": "Recreate", "rollingUpdate": None}
+    if containers:
+        spec["template"] = {"spec": {"containers": containers}}
+    if not spec:
+        return False
+    patch = {"spec": spec}
+    oc(kc, "patch", "deployment/" + dep["metadata"]["name"], "-n", dep["metadata"]["namespace"],
+       "--type=strategic", "-p", json.dumps(patch))
+    return True
+
+
+def _identity_env_matches(current, wanted):
+    if not current or current.get("value"):
+        return False
+    expected = wanted["valueFrom"]["fieldRef"]["fieldPath"]
+    reference = current.get("valueFrom", {}).get("fieldRef", {})
+    return reference.get("fieldPath") == expected and reference.get("apiVersion", "v1") == "v1"
+
+
 def update_deployment(kc, dep, expected, image_tag="production"):
     namespace, name = dep["metadata"]["namespace"], dep["metadata"]["name"]
     dep = read_deployment(kc, namespace, name)
     preflight_networks(kc, dep)
+    identity_changed = sync_operator_identity(kc, dep)
     try:
         verify_live(kc, namespace, name, expected)
-        return
+        if not identity_changed:
+            return
     except RuntimeError:
         pass  # Read/API failures still propagate; only a stale rollout is repaired.
     replacements = [

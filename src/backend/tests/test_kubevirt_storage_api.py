@@ -491,6 +491,7 @@ def test_first_snapshot_partial_import_keeps_measured_api_subsets(
     assert "csi_snapshot_backend_unresolved" in body["reason_codes"]
     control = client.get(url("project", unaffected)).json()
     assert control["status"] == "complete"
+    assert "origin_snapshot_authority_unverified" not in control["reason_codes"]
     assert control["allocated_bytes"] == control["known_allocated_bytes"] == 50
     assert control["covered_projects"] == 1
     total = client.get(url("user", q.owner_id)).json()

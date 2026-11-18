@@ -30,14 +30,27 @@ def native_intent(db, project_id):
 
 def settled_root_keys(db):
     from app.services.kubevirt_storage_enrollment import root_key
+    from app.services.native_project_namespace_cleanup import storage_scopes
 
     return {
         root_key(v.root)
-        for v in native_intents(db)
+        for v in [*native_intents(db), *storage_scopes(db, settled_only=True)]
         if v.phase in {"settled", "finalized"}
         and v.settlement_report_id
         and v.settled_at
     }
+
+
+def cleanup_storage_scopes(db, domain_id=None):
+    """One read projection; old v1 orchestration and payload parsing stay intact."""
+    from app.services.native_project_namespace_cleanup import storage_scopes
+
+    old = [
+        v
+        for v in native_intents(db)
+        if domain_id is None or str(v.domain_id) == str(domain_id)
+    ]
+    return old + storage_scopes(db, domain_id)
 
 
 def active_roots(db, roots):
@@ -118,6 +131,24 @@ def _namespace_authority(rows, db=None, project=None):
     return "managed"
 
 
+class NativeCleanupRefreshRequired(accounting.AccountingUnavailable):
+    def __init__(self, domain_id, project_id):
+        super().__init__("Native storage observation refresh required")
+        self.domain_id = str(domain_id)
+        self.project_id = str(project_id)
+
+
+def _cleanup_report(db, domain, roots, manifest, project_id):
+    from app.services import quota_native
+
+    try:
+        return quota_native._measurement_report(
+            db, domain, roots, manifest, operations.now(), project_id=project_id
+        )
+    except quota_native.NativeObservationRefreshRequired as error:
+        raise NativeCleanupRefreshRequired(domain.id, project_id) from error
+
+
 def prepare_native(db, project, mode):
     """Persist the original cleanup identity before queue, credentials or teardown."""
     if operations.select_adapter(db, project) != "kubevirt":
@@ -165,9 +196,7 @@ def prepare_native(db, project, mode):
     roots = active_roots(
         db, db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
     )
-    _, source, report, _ = quota_native._measurement_report(
-        db, domain, roots, manifest, operations.now(), project_id=project.id
-    )
+    _, source, report, _ = _cleanup_report(db, domain, roots, manifest, project.id)
     if source.project_scope is not None:
         roots = [r for r in roots if r.project_id == project.id]
     retired = settled_root_keys(db)
@@ -184,6 +213,12 @@ def prepare_native(db, project, mode):
         if root_key(proof.root) in retired
         for key in proof.owned_images
     }
+    from app.services.native_binding_retirement_collection import report_authority
+
+    lineages = resolve_lineages(db, source.clone_references, manifest)
+    retirements, retired_lineages = report_authority(
+        db, manifest, source, lineages=lineages
+    )
     owned = cleanup_owned_images(
         inventory,
         [
@@ -191,8 +226,9 @@ def prepare_native(db, project, mode):
             for image in source.images
             if image.key.model_dump_json() not in retired_images
         ],
-        resolve_lineages(db, source.clone_references, manifest),
+        lineages + retired_lineages,
         pinned.project_id,
+        binding_retirements=retirements,
     )
     bindings = {
         b.pvc_uid: b
@@ -203,7 +239,15 @@ def prepare_native(db, project, mode):
         raise accounting.AccountingUnavailable(
             "Native cleanup requires a complete supported original storage graph"
         )
-    validate_cleanup_bindings(db, project, rows, bindings.values())
+    from app.services.native_clone_graph import binding_identity
+
+    retired_bindings = [binding_identity(r.binding) for r in retirements]
+    validate_cleanup_bindings(
+        db,
+        project,
+        rows,
+        [b for b in bindings.values() if binding_identity(b) not in retired_bindings],
+    )
     action_id = request_native_stop(db, project, for_cleanup=True)
     if not action_id:
         raise accounting.AccountingUnavailable(
@@ -256,12 +300,57 @@ def _already_off(rows):
 
 def request_native(db, project, mode):
     from app.core.redis import enqueue_job
+    from app.services import native_origin_namespace_cleanup
 
     try:
+        from app.services.native_deployment_preflight import (
+            request as request_preflight,
+        )
+
+        early_failure = request_preflight(db, project, mode)
+        if early_failure is not None:
+            return early_failure
+        previous = native_intent(db, project.id)
+        if previous is not None and previous.phase != "finalized":
+            if previous.mode != mode:
+                operations.unavailable("Original cleanup mode is already pending")
+            db.commit()
+            enqueue_job(reconcile_native, project.id, str(previous.intent_id))
+            return dict(
+                status="cleanup_pending",
+                id=project.id,
+                mode=mode,
+                cleanup_id=str(previous.intent_id),
+            )
+        namespace_cleanup = native_origin_namespace_cleanup.request(db, project, mode)
+        if namespace_cleanup is not None:
+            return namespace_cleanup
+        from app.services.native_project_namespace_cleanup import request
+
+        namespace_cleanup = request(db, project, mode)
+        if namespace_cleanup is not None:
+            return namespace_cleanup
         completed = _complete_unclaimed_native(db, project, mode)
         if completed is not None:
             return completed
         intent = prepare_native(db, project, mode)
+    except NativeCleanupRefreshRequired as error:
+        from app.services.native_collection_jobs import enqueue_collection
+
+        # End the locked preflight before dispatch; refresh cannot authorize or
+        # resume deletion and the user must retry the original operation.
+        db.rollback()
+        queued = enqueue_collection(
+            error.domain_id, error.project_id, observation_only=True
+        )
+        message = (
+            "Storage observation refresh requested; retry cleanup after it completes"
+            if queued
+            else "Storage observation refresh is pending or temporarily unavailable; retry cleanup shortly"
+        )
+        raise operations._http_denial(
+            accounting.AccountingUnavailable(message)
+        ) from error
     except accounting.AccountingUnavailable as error:
         raise operations._http_denial(error) from error
     if intent is None:
@@ -388,6 +477,10 @@ def _complete_unclaimed_native(db, project, mode):
 
 
 def guard_pending(db, project, *, lock=False):
+    from app.models.native_origin_namespace import NativeOriginNamespaceCleanup
+    from app.services.native_origin_namespace_cleanup import _load
+    from app.services.native_project_namespace_cleanup import pending
+
     if (
         lock
         and operations.select_adapter(db, project) == "kubevirt"
@@ -395,7 +488,17 @@ def guard_pending(db, project, *, lock=False):
     ):
         project, _ = _native_lock(db, project.id)
     intent = native_intent(db, project.id)
-    if intent is not None and intent.phase != "finalized":
+    namespace_pending = any(
+        _load(row).phase != "finalized"
+        for row in db.query(NativeOriginNamespaceCleanup).filter_by(
+            project_id=project.id
+        )
+    )
+    if (
+        namespace_pending
+        or pending(db, project.id)
+        or (intent is not None and intent.phase != "finalized")
+    ):
         operations.unavailable(
             "Original native cleanup is pending; resources and owner remain retained"
         )
@@ -1001,7 +1104,6 @@ def _settle_native(db, project, rows, intent):
 
 def _finish_native(db, project, intent):
     from app.services.deploy_service import _destroy_cleanup_dns, _destroy_cleanup_eips
-    from app.services.ws_pubsub import notify_project
 
     project, rows, intent = _checked_native(db, project.id, str(intent.intent_id))
     if intent.phase == "settled":
@@ -1018,25 +1120,31 @@ def _finish_native(db, project, intent):
         _destroy_cleanup_eips(db, project.id)
         project, rows, intent = _checked_native(db, project.id, str(intent.intent_id))
         _save_native(db, intent, phase="finalized")
-        if intent.mode == "delete":
-            db.delete(project)
-        else:
-            project.state, project.host_id, project.vni_map, project.deploy_error = (
-                "draft",
-                None,
-                None,
-                None,
-            )
-            project.deployed_topology = None
-        db.commit()
-        notify_project(
-            project_id,
-            (
-                {"type": "project-deleted"}
-                if intent.mode == "delete"
-                else {"type": "project-state", "state": "draft"}
-            ),
+        _finish_project_record(db, project, intent.mode)
+
+
+def _finish_project_record(db, project, mode):
+    """Shared local bookkeeping, after the caller commits its own absence proof."""
+    from app.services.ws_pubsub import notify_project
+
+    project_id = project.id
+    if mode == "delete":
+        db.delete(project)
+    else:
+        project.state, project.host_id, project.vni_map, project.deploy_error = (
+            "draft",
+            None,
+            None,
+            None,
         )
+        project.deployed_topology = None
+    db.commit()
+    notify_project(
+        project_id,
+        {"type": "project-deleted"}
+        if mode == "delete"
+        else {"type": "project-state", "state": "draft"},
+    )
 
 
 def guard_supported_cleanup(db, project):

@@ -1,44 +1,55 @@
 import asyncio
 import json
-import kopf
 import logging
 import time
 from typing import Any, cast
-from kubernetes import client
-from kubernetes.client.exceptions import ApiException
+
+import kopf
+from helpers import native_snapshot_workflow as snapshot_workflow
+from helpers.bmc import (
+    BMC_SIGNATURE_ANNOTATION,
+    bmc_signature,
+    build_bmc_deployment,
+)
 from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
-    owner_ref,
     build_exec_deployment,
     build_gateway_deployment,
     ensure_kubemacpool_opt_out,
+    owner_ref,
     vm_disk_pvc_name,
 )
+from helpers.kubevirt import build_blank_pvc, set_kubevirt_vm_power
 from helpers.managed_power import checked_await as managed_await
 from helpers.managed_power import producer as managed_producer
+from helpers.native_origin_checkpoint import (
+    CheckpointHold,
+    guard_client,
+    participating,
+    propagate_hold,
+)
+from helpers.native_snapshot_producer import unique_names
+from helpers.stuck_pod_heal import heal_stuck_project_pods
 from helpers.topology import (
-    build_vm_cr as _build_vm_cr,
-    extract_networks,
-    extract_vms,
     build_static_leases,
-    resolve_vm_disks,
-    resolve_nic_networks,
-    extract_containers,
     collect_container_disk_mounts,
     container_disk_pvc_name,
     container_start_delay,
     enrich_container_nics,
     enrich_showroom_infra_networks,
     extract_ceph_cluster,
+    extract_containers,
+    extract_networks,
+    extract_vms,
+    resolve_nic_networks,
+    resolve_vm_disks,
 )
-from helpers.kubevirt import build_blank_pvc
-from helpers.bmc import (
-    BMC_SIGNATURE_ANNOTATION,
-    bmc_signature,
-    build_bmc_deployment,
+from helpers.topology import (
+    build_vm_cr as _build_vm_cr,
 )
-from helpers.stuck_pod_heal import heal_stuck_project_pods
+from kubernetes import client
+from kubernetes.client.exceptions import ApiException
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +112,20 @@ def _cleanup_recert_job(core_api, batch_api, namespace, job_name):
                 core_api.delete_namespaced_pod(
                     name=pod.metadata.name, namespace=namespace
                 )
+            except CheckpointHold:
+                raise
             except Exception:
                 pass
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     try:
         batch_api.delete_namespaced_job(
             name=job_name, namespace=namespace, propagation_policy="Background"
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
 
@@ -169,6 +186,8 @@ def _extract_kubeconfig_secret(
                     )
                 else:
                     return f"Failed to create kubeconfig secret: {e}"
+    except CheckpointHold:
+        raise
     except Exception as e:
         return f"Failed to extract kubeconfig: {e}"
     return None
@@ -193,34 +212,24 @@ async def _stop_all_vms(custom_api, namespace):
         kv_name = vm_item.get("status", {}).get(
             "kubevirtVmName", f"troshka-{vm_item['metadata']['name']}"
         )
-        try:
-            custom_api.patch_namespaced_custom_object(
+        set_kubevirt_vm_power(custom_api, namespace, kv_name, running=False)
+
+    for _ in range(40):
+        vmis = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
                 group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": False}},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to stop VM {kv_name}: {e}")
-
-    for _ in range(40):
-        try:
-            vmis = cast(
-                dict[str, Any],
-                custom_api.list_namespaced_custom_object(
-                    group=_KUBEVIRT_GROUP,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachineinstances",
-                ),
-            )
-            if not vmis.get("items"):
-                break
-        except Exception:
-            pass
+                plural="virtualmachineinstances",
+            ),
+        )
+        if not isinstance(vmis.get("items"), list):
+            raise RuntimeError(f"Unable to verify VMI absence in {namespace}")
+        if not vmis["items"]:
+            return
         await asyncio.sleep(3)
+    raise TimeoutError(f"VMIs still present in {namespace} after 120s; capture held")
 
 
 async def _wait_volume_snapshot_ready(
@@ -243,10 +252,16 @@ async def _wait_volume_snapshot_ready(
                 rs = vs.get("status", {}).get("restoreSize", "")
                 if rs.endswith("Gi"):
                     restore_size_gi = max(size_gb, int(rs[:-2]))
-                break
+                return restore_size_gi
+        except CheckpointHold:
+            raise
         except Exception:
             pass
         await asyncio.sleep(5)
+    from helpers.native_origin_checkpoint import participating
+
+    if participating():
+        raise CheckpointHold("origin_snapshot_readiness_unresolved")
     return restore_size_gi
 
 
@@ -295,6 +310,8 @@ def _freeze_vmi(vmi_name, namespace, attempts=3):
             if i:
                 logger.info(f"Guest FS frozen for VMI {vmi_name} (attempt {i + 1})")
             return True
+        except CheckpointHold:
+            raise
         except Exception as e:
             last = e
         if i < attempts - 1:
@@ -311,6 +328,8 @@ def _thaw_vmi(vmi_name, namespace):
     production VM frozen."""
     try:
         _kubevirt_vmi_fs_action(vmi_name, namespace, "unfreeze")
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Could not thaw guest FS for VMI {vmi_name}: {e}")
 
@@ -320,10 +339,10 @@ async def _snapshot_and_export_disk(
 ):
     """Snapshot a single disk PVC, create temp PVC + scratch PVC, launch export job."""
     from helpers.patterns import (
-        build_volume_snapshot,
-        build_temp_pvc_from_snapshot,
-        build_scratch_pvc,
         build_export_job,
+        build_scratch_pvc,
+        build_temp_pvc_from_snapshot,
+        build_volume_snapshot,
     )
 
     pvc_name = disk_info["pvcName"]
@@ -338,6 +357,9 @@ async def _snapshot_and_export_disk(
     temp_pvc_name = f"export-{vm_name}-{disk_id}"
     scratch_pvc_name = f"scratch-{vm_name}-{disk_id}"
     job_name = f"{vm_name}-{disk_id}"
+    snap_name, temp_pvc_name, job_name = unique_names(snap_name, temp_pvc_name, job_name)
+    if participating():
+        scratch_pvc_name = f"scratch-{job_name}"
 
     _patch_cr_status(
         custom_api,
@@ -429,10 +451,10 @@ async def _snapshot_and_export_ceph_device(
     only owns the snapshot -> temp PVC -> convert -> upload pipeline.
     """
     from helpers.patterns import (
-        build_volume_snapshot,
-        build_temp_pvc_from_snapshot,
-        build_scratch_pvc,
         build_ceph_device_export_job,
+        build_scratch_pvc,
+        build_temp_pvc_from_snapshot,
+        build_volume_snapshot,
     )
 
     pvc_name = device_info["pvcName"]
@@ -446,6 +468,7 @@ async def _snapshot_and_export_ceph_device(
     snap_name = f"ceph-snap-{kind}-{index}"
     temp_pvc_name = f"ceph-export-{kind}-{index}"
     job_name = f"ceph-{kind}-{index}"
+    snap_name, temp_pvc_name, job_name = unique_names(snap_name, temp_pvc_name, job_name)
     # Must match helpers.patterns.build_ceph_device_export_job scratch naming
     # (``scratch-{job_name}``). A prior ``ceph-scratch-…`` prefix left Jobs
     # Pending on missing PVCs.
@@ -694,6 +717,12 @@ async def _capture_ceph_devices(
 
     if not ceph_devices:
         return []
+    if snapshot_workflow.resume("ceph"):
+        root, _, _ = snapshot_workflow._context()
+        if snapshot_workflow.outcome("ceph") != "complete":
+            _patch_cr_status(custom_api, namespace, name, {"phase": "CaptureError"})
+            raise RuntimeError("Previously failed Ceph capture")
+        return root.get("status", {}).get("capturedCephDisks", [])
 
     concurrency = min(len(ceph_devices), CEPH_CAPTURE_CONCURRENCY)
     semaphore = asyncio.Semaphore(concurrency)
@@ -733,11 +762,19 @@ async def _capture_ceph_devices(
         )
         for device in ceph_devices
     ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    from helpers.native_origin_drain import tracked_await
+
+    results = await tracked_await(asyncio.gather(*tasks, return_exceptions=True))
     errors = [r for r in results if isinstance(r, Exception)]
 
     if errors:
+        for error in errors:
+            propagate_hold(error)
         logger.error(f"Ceph device capture failed for {name}: {errors[0]}")
+        if participating():
+            _patch_cr_status(custom_api, namespace, name, {"phase": "CaptureError"})
+            created_jobs = snapshot_workflow.recorded_resources()
+            snapshot_workflow.begin("ceph", created_jobs, outcome="failed")
         _cleanup_capture_resources(
             core_api, custom_api, batch_api, created_jobs, namespace
         )
@@ -767,6 +804,9 @@ async def _capture_ceph_devices(
         for ej in created_jobs
     ]
 
+    if participating():
+        _patch_cr_status(custom_api, namespace, name, {"capturedCephDisks": captured})
+        snapshot_workflow.begin("ceph", created_jobs)
     _cleanup_capture_resources(core_api, custom_api, batch_api, created_jobs, namespace)
     logger.info(f"Ceph device capture complete for {name}: {len(captured)} device(s)")
     return captured
@@ -787,6 +827,8 @@ async def _run_ceph_capture_phase(
         captured_ceph_disks = await _capture_ceph_devices(
             ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name
         )
+    except CheckpointHold:
+        raise
     except Exception:
         logger.exception("Ceph capture phase aborted for %s", name)
         _clear_capture_annotation(custom_api, namespace, name)
@@ -818,6 +860,8 @@ def _check_export_job(batch_api, ej, namespace):
         if failed is not None and failed >= 3:
             return "failed"
         return "pending"
+    except CheckpointHold:
+        raise
     except Exception:
         return "pending"
 
@@ -874,6 +918,8 @@ def _read_job_progress(core_api, ej, namespace):
             return "starting"
         data = _json.loads(last_progress)
         return _format_export_progress(data)
+    except CheckpointHold:
+        raise
     except Exception as _exc:
         logger.debug("Progress read failed for %s: %s", ej.get("jobName", "?"), _exc)
         return "starting"
@@ -1021,6 +1067,8 @@ def _read_export_sizes(core_api, export_jobs, namespace):
                 for line in logs.splitlines():
                     if line.startswith("DISK_SIZE_BYTES="):
                         ej["sizeBytes"] = int(line.split("=")[1])
+        except CheckpointHold:
+            raise
         except Exception:
             pass
 
@@ -1047,14 +1095,17 @@ def _log_failed_export_pods(core_api, export_jobs, namespace):
                             pod.metadata.name,
                             logs,
                         )
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as error:
+                        propagate_hold(error)
+        except Exception as error:
+            propagate_hold(error)
 
 
 def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace):
     """Cleanup temp PVCs, scratch PVCs, snapshots, and export Jobs."""
+    if participating():
+        snapshot_workflow.cleanup(export_jobs)
+        return
     _log_failed_export_pods(core_api, export_jobs, namespace)
     for ej in export_jobs:
         try:
@@ -1062,16 +1113,16 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
                 name=ej["tempPvcName"],
                 namespace=namespace,
             )
-        except Exception:
-            pass
+        except Exception as error:
+            propagate_hold(error)
         if ej.get("scratchPvcName"):
             try:
                 core_api.delete_namespaced_persistent_volume_claim(
                     name=ej["scratchPvcName"],
                     namespace=namespace,
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                propagate_hold(error)
         try:
             # Strip snapshot finalizers first — otherwise delete hangs and the
             # namespace can stick Terminating if destroy races with capture.
@@ -1084,8 +1135,8 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
                     name=ej["snapName"],
                     body={"metadata": {"finalizers": None}},
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                propagate_hold(error)
             custom_api.delete_namespaced_custom_object(
                 group=_SNAPSHOT_GROUP,
                 version="v1",
@@ -1093,16 +1144,16 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
                 plural="volumesnapshots",
                 name=ej["snapName"],
             )
-        except Exception:
-            pass
+        except Exception as error:
+            propagate_hold(error)
         try:
             batch_api.delete_namespaced_job(
                 name=ej["jobName"],
                 namespace=namespace,
                 propagation_policy="Background",
             )
-        except Exception:
-            pass
+        except Exception as error:
+            propagate_hold(error)
 
 
 _CAPTURE_TEMP_PVC_PREFIXES = ("export-", "scratch-", "ceph-export-", "filepull-")
@@ -1119,6 +1170,8 @@ def _strip_and_delete_volume_snapshot(custom_api, namespace, snap_name):
             name=snap_name,
             body={"metadata": {"finalizers": None}},
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     try:
@@ -1130,6 +1183,8 @@ def _strip_and_delete_volume_snapshot(custom_api, namespace, snap_name):
             name=snap_name,
         )
         logger.info(f"Deleted VolumeSnapshot {snap_name}")
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to delete VolumeSnapshot {snap_name}: {e}")
 
@@ -1144,6 +1199,8 @@ def _strip_and_delete_snapshot_content(custom_api, cname):
             name=cname,
             body={"metadata": {"finalizers": None}},
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     try:
@@ -1154,6 +1211,8 @@ def _strip_and_delete_snapshot_content(custom_api, cname):
             name=cname,
         )
         logger.info(f"Deleted VolumeSnapshotContent {cname}")
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to delete VolumeSnapshotContent {cname}: {e}")
 
@@ -1190,6 +1249,8 @@ def _force_delete_volume_snapshots(custom_api, namespace):
                 plural="volumesnapshots",
             ),
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list VolumeSnapshots in {namespace}: {e}")
         return
@@ -1204,6 +1265,8 @@ def _force_delete_volume_snapshots(custom_api, namespace):
                 plural="volumesnapshotcontents",
             ),
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list VolumeSnapshotContents: {e}")
         return
@@ -1214,6 +1277,8 @@ def _force_delete_capture_temp_pvcs(core_api, namespace):
     """Delete export/scratch/filepull temp PVCs left by mid-destroy capture."""
     try:
         listed = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list PVCs in {namespace}: {e}")
         return
@@ -1227,6 +1292,8 @@ def _force_delete_capture_temp_pvcs(core_api, namespace):
                 namespace=namespace,
                 body={"metadata": {"finalizers": None}},
             )
+        except CheckpointHold:
+            raise
         except Exception:
             pass
         try:
@@ -1234,6 +1301,8 @@ def _force_delete_capture_temp_pvcs(core_api, namespace):
                 name=name, namespace=namespace
             )
             logger.info(f"Deleted capture temp PVC {name}")
+        except CheckpointHold:
+            raise
         except Exception as e:
             logger.warning(f"Failed to delete capture temp PVC {name}: {e}")
 
@@ -1257,8 +1326,12 @@ def _abort_pattern_capture_temps(core_api, custom_api, batch_api, namespace):
                     namespace=namespace,
                     propagation_policy="Background",
                 )
+            except CheckpointHold:
+                raise
             except Exception:
                 pass
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to delete pattern-export Jobs in {namespace}: {e}")
 
@@ -1274,6 +1347,8 @@ def _patch_cr_status(custom_api, namespace, name, status_fields):
             name=name,
             body={"status": status_fields},
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to patch CR status for {name}: {e}")
 
@@ -1289,6 +1364,8 @@ def _clear_capture_annotation(custom_api, namespace, name):
             name=name,
             body={"metadata": {"annotations": {CAPTURE_ANNOTATION: None}}},
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to clear capture annotation on {name}: {e}")
 
@@ -1304,6 +1381,8 @@ def _clear_file_pull_annotation(custom_api, namespace, name):
             name=name,
             body={"metadata": {"annotations": {FILE_PULL_ANNOTATION: None}}},
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to clear file-pull annotation on {name}: {e}")
 
@@ -1312,16 +1391,23 @@ def _cleanup_filepull_resources(
     core_api, custom_api, namespace, pod_name, tmp_pvc, snap_name
 ):
     """Always remove the file-pull pod, temp PVC, and snapshot (best-effort)."""
+    if participating():
+        snapshot_workflow.cleanup([dict(podName=pod_name, tempPvcName=tmp_pvc, snapName=snap_name)])
+        return
     try:
         core_api.delete_namespaced_pod(
             name=pod_name, namespace=namespace, propagation_policy="Background"
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     try:
         core_api.delete_namespaced_persistent_volume_claim(
             name=tmp_pvc, namespace=namespace
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     try:
@@ -1332,6 +1418,8 @@ def _cleanup_filepull_resources(
             plural="volumesnapshots",
             name=snap_name,
         )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
 
@@ -1345,6 +1433,8 @@ async def _wait_filepull_pod(core_api, namespace, pod_name, timeout_s=360):
         try:
             pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
             phase = getattr(pod.status, "phase", "") or ""
+        except CheckpointHold:
+            raise
         except Exception:
             pass
         log = ""
@@ -1353,6 +1443,8 @@ async def _wait_filepull_pod(core_api, namespace, pod_name, timeout_s=360):
                 core_api.read_namespaced_pod_log(name=pod_name, namespace=namespace)
                 or ""
             )
+        except CheckpointHold:
+            raise
         except Exception:
             pass
         if (
@@ -1369,6 +1461,24 @@ async def _wait_filepull_pod(core_api, namespace, pod_name, timeout_s=360):
     return ""
 
 
+async def _filepull_snapshot(custom_api, namespace, vm_name, snap_name, pvc_name, size_gb):
+    from helpers.patterns import build_volume_snapshot
+
+    frozen = _freeze_vmi(vm_name, namespace)
+    try:
+        snap = build_volume_snapshot(snap_name, namespace, pvc_name)
+        try:
+            custom_api.create_namespaced_custom_object(group=_SNAPSHOT_GROUP, version="v1",
+                namespace=namespace, plural="volumesnapshots", body=snap)
+        except ApiException as error:
+            if error.status != 409:
+                raise
+        return await _wait_volume_snapshot_ready(custom_api, namespace, snap_name, size_gb)
+    finally:
+        if frozen:
+            _thaw_vmi(vm_name, namespace)
+
+
 async def _handle_file_pull(config, namespace, name):
     """Extract a single file from a VM's disk via a point-in-time snapshot +
     guestfish (offline read of a clone — never the live RWO disk). Writes the
@@ -1377,7 +1487,7 @@ async def _handle_file_pull(config, namespace, name):
     import base64 as _b64
 
     from helpers.filepull import build_filepull_pod, parse_filepull_output
-    from helpers.patterns import build_temp_pvc_from_snapshot, build_volume_snapshot
+    from helpers.patterns import build_temp_pvc_from_snapshot
 
     req_id = str(config.get("requestId", ""))
     vm_name = config.get("vmName", "")
@@ -1385,37 +1495,22 @@ async def _handle_file_pull(config, namespace, name):
     size_gb = int(config.get("sizeGb", 0)) or 20
     guest_path = config.get("path", "")
 
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
 
     suffix = (req_id or vm_name)[:8] or "fp"
     snap_name = f"filepull-snap-{suffix}"
     tmp_pvc = f"filepull-tmp-{suffix}"
     pod_name = f"filepull-{suffix}"
+    snap_name, tmp_pvc, pod_name = unique_names(snap_name, tmp_pvc, pod_name)
+    if snapshot_workflow.resume("filepull"):
+        _clear_file_pull_annotation(custom_api, namespace, name)
+        return
 
     result = {"requestId": req_id, "ready": True, "error": ""}
     try:
         # Consistent point-in-time snapshot of the (possibly running) root disk.
-        frozen = _freeze_vmi(vm_name, namespace)
-        try:
-            snap = build_volume_snapshot(snap_name, namespace, pvc_name)
-            try:
-                custom_api.create_namespaced_custom_object(
-                    group=_SNAPSHOT_GROUP,
-                    version="v1",
-                    namespace=namespace,
-                    plural="volumesnapshots",
-                    body=snap,
-                )
-            except ApiException as e:
-                if e.status != 409:
-                    raise
-            restore_gi = await _wait_volume_snapshot_ready(
-                custom_api, namespace, snap_name, size_gb
-            )
-        finally:
-            if frozen:
-                _thaw_vmi(vm_name, namespace)
+        restore_gi = await _filepull_snapshot(custom_api, namespace, vm_name, snap_name, pvc_name, size_gb)
 
         temp_pvc = build_temp_pvc_from_snapshot(
             tmp_pvc, namespace, snap_name, restore_gi
@@ -1435,15 +1530,21 @@ async def _handle_file_pull(config, namespace, name):
             result["error"] = "file not found or pull failed"
         else:
             result["contentB64"] = _b64.b64encode(content).decode()
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.exception(f"file-pull failed for {name}: {e}")
         result["error"] = str(e)[:200]
     finally:
-        _cleanup_filepull_resources(
-            core_api, custom_api, namespace, pod_name, tmp_pvc, snap_name
-        )
+        if not participating():
+            _cleanup_filepull_resources(core_api, custom_api, namespace, pod_name, tmp_pvc, snap_name)
 
     _patch_cr_status(custom_api, namespace, name, {"filePull": result})
+    if participating():
+        resources = (snapshot_workflow.recorded_resources() if result["error"] else
+                     [dict(podName=pod_name, tempPvcName=tmp_pvc, snapName=snap_name)])
+        snapshot_workflow.begin("filepull", resources)
+        snapshot_workflow.cleanup(resources)
     _clear_file_pull_annotation(custom_api, namespace, name)
 
 
@@ -1454,9 +1555,13 @@ async def _handle_capture(capture_config, namespace, name, patch):
     ceph_devices = capture_config.get("cephDevices", [])
     restart_after = capture_config.get("restartAfter", False)
 
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
-    batch_api = client.BatchV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
+    batch_api = guard_client(client.BatchV1Api())
+
+    if snapshot_workflow.resume("capture"):
+        _clear_capture_annotation(custom_api, namespace, name)
+        return
 
     _patch_cr_status(
         custom_api,
@@ -1498,14 +1603,22 @@ async def _handle_capture(capture_config, namespace, name, patch):
             namespace=namespace, label_selector="troshka-role=pattern-export"
         )
         for j in getattr(stale_jobs, "items", []):
+            if participating():
+                # Origin helpers are retained individually; label scans carry no
+                # authority to adopt or remove a previous operation's Job.
+                continue
             try:
                 batch_api.delete_namespaced_job(
                     name=j.metadata.name,
                     namespace=namespace,
                     propagation_policy="Background",
                 )
+            except CheckpointHold:
+                raise
             except Exception:
                 pass
+    except CheckpointHold:
+        raise
     except Exception:
         pass
 
@@ -1518,23 +1631,16 @@ async def _handle_capture(capture_config, namespace, name, patch):
         return
 
     # Snapshot and export each disk
-    export_jobs = []
-    for disk_info in disk_manifest:
-        ej = await _snapshot_and_export_disk(
-            disk_info,
-            s3_config,
-            custom_api,
-            core_api,
-            batch_api,
-            namespace,
-            name,
-        )
-        export_jobs.append(ej)
+    export_jobs = await _launch_capture_disks(
+        disk_manifest, s3_config, custom_api, core_api, batch_api, namespace, name)
+    if export_jobs is None:
+        return
 
     err = await _poll_export_jobs(
         batch_api, export_jobs, namespace, custom_api, name, core_api
     )
     if err:
+        snapshot_workflow.begin("capture", export_jobs)
         _cleanup_capture_resources(
             core_api, custom_api, batch_api, export_jobs, namespace
         )
@@ -1570,8 +1676,29 @@ async def _handle_capture(capture_config, namespace, name, patch):
     )
     logger.info(f"Pattern capture complete for {name}: {len(captured_disks)} disk(s)")
 
+    snapshot_workflow.begin("capture", export_jobs)
     _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace)
     _clear_capture_annotation(custom_api, namespace, name)
+
+
+async def _launch_capture_disks(disks, s3_config, custom_api, core_api, batch_api, namespace, name):
+    jobs = []
+    try:
+        for disk in disks:
+            jobs.append(await _snapshot_and_export_disk(
+                disk, s3_config, custom_api, core_api, batch_api, namespace, name))
+        return jobs
+    except CheckpointHold:
+        raise
+    except Exception as error:
+        if not participating():
+            raise
+        _patch_cr_status(custom_api, namespace, name, {"phase": "CaptureError", "captureError": str(error)[:200]})
+        resources = snapshot_workflow.recorded_resources()
+        snapshot_workflow.begin("capture", resources)
+        snapshot_workflow.cleanup(resources)
+        _clear_capture_annotation(custom_api, namespace, name)
+        return None
 
 
 def _setup_recert_sa(core_api, custom_api, namespace):
@@ -1607,17 +1734,24 @@ def _setup_recert_sa(core_api, custom_api, namespace):
                 name="troshka-privileged-jobs",
                 body={"users": users},
             )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Could not patch SCC for recert SA in {namespace}: {e}")
 
 
 def _setup_export_sa(core_api, custom_api, namespace):
     """Create export SA and patch SCC for pattern export Jobs."""
+    metadata = client.V1ObjectMeta(name="troshka-export")
+    if participating():
+        root, _, _ = snapshot_workflow._context()
+        metadata.owner_references = [client.V1OwnerReference(api_version=root["apiVersion"], kind="TroshkaProject",
+            name=root["metadata"]["name"], uid=root["metadata"]["uid"], controller=True)]
     try:
         core_api.create_namespaced_service_account(
             namespace=namespace,
             body=client.V1ServiceAccount(
-                metadata=client.V1ObjectMeta(name="troshka-export"),
+                metadata=metadata,
             ),
         )
     except ApiException as e:
@@ -1644,6 +1778,8 @@ def _setup_export_sa(core_api, custom_api, namespace):
                 name="troshka-privileged-jobs",
                 body={"users": users},
             )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Could not patch SCC for export SA in {namespace}: {e}")
 
@@ -1727,8 +1863,8 @@ async def _materialize_ceph_restore(
     s3_config = project_spec.get("s3Config", {})
     central_s3_config = project_spec.get("centralS3Config", {})
     storage_class = ceph_spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
-    core_api = client.CoreV1Api()
-    batch_api = client.BatchV1Api()
+    core_api = guard_client(client.CoreV1Api())
+    batch_api = guard_client(client.BatchV1Api())
     # Restore Job uses troshka-export SA (same as pattern capture export).
     _setup_export_sa(core_api, custom_api, namespace)
 
@@ -1794,7 +1930,7 @@ def _restore_ceph_identity_objects(namespace, identity_objects):
         return
     from helpers.ceph_restore import restore_identity_objects
 
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     restore_identity_objects(core_api, namespace, identity_objects)
 
 
@@ -2021,6 +2157,8 @@ def _ensure_cache_namespace_and_secrets(
                     "secretKey": obc["secret_access_key"],
                 },
             )
+    except CheckpointHold:
+        raise
     except Exception:
         pass
 
@@ -2096,6 +2234,8 @@ def _golden_importer_crashlooping(core_api, namespace, pvc_name):
     try:
         pods = core_api.list_namespaced_pod(namespace=namespace)
         items = list(pods.items or [])
+    except CheckpointHold:
+        raise
     except Exception:
         return False
     return any(_pod_importer_crashlooping(pod, pvc_name) for pod in items)
@@ -2170,6 +2310,8 @@ def _golden_referenced_by_active_clone(custom_api, golden_name):
         dvs = custom_api.list_cluster_custom_object(
             group=_CDI_API_GROUP, version="v1beta1", plural="datavolumes"
         )
+    except CheckpointHold:
+        raise
     except Exception:
         # Fail safe: if we can't tell, assume referenced (keep the golden).
         return True
@@ -2203,6 +2345,8 @@ def reap_stuck_goldens(custom_api, core_api, now=None):
             namespace=CACHE_NAMESPACE,
             plural="datavolumes",
         )
+    except CheckpointHold:
+        raise
     except Exception:
         logger.exception("golden reaper: failed to list golden DataVolumes")
         return 0
@@ -2247,7 +2391,9 @@ async def _golden_reaper_loop():
     while True:
         await asyncio.sleep(_GOLDEN_REAP_INTERVAL_SECS)
         try:
-            reap_stuck_goldens(client.CustomObjectsApi(), client.CoreV1Api())
+            reap_stuck_goldens(guard_client(client.CustomObjectsApi()), guard_client(client.CoreV1Api()))
+        except CheckpointHold:
+            raise
         except Exception:
             logger.exception("golden reaper loop error")
 
@@ -2278,8 +2424,8 @@ def _create_golden_pvc_for_disk(
     custom_api, core_api, disk, s3_config, central_s3_config
 ):
     """Create a single golden PVC for a disk if it doesn't already exist."""
-    from helpers.kubevirt import build_datavolume_from_s3, CACHE_NAMESPACE
     from helpers.k8s import golden_pvc_name
+    from helpers.kubevirt import CACHE_NAMESPACE, build_datavolume_from_s3
 
     s3_path, use_central = _resolve_disk_s3_path(disk)
     if not s3_path:
@@ -2375,8 +2521,8 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
     """Create VNC console proxy SA, RBAC, deployment, service, and route."""
     from helpers.vnc import (
         build_vnc_proxy_deployment,
-        build_vnc_service,
         build_vnc_route,
+        build_vnc_service,
     )
 
     try:
@@ -2392,7 +2538,7 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
 
     _create_vnc_rbac(namespace)
 
-    apps_api = client.AppsV1Api()
+    apps_api = guard_client(client.AppsV1Api())
     vnc_dep = build_vnc_proxy_deployment(name, namespace, owner_body=body)
     try:
         apps_api.create_namespaced_deployment(namespace=namespace, body=vnc_dep)
@@ -2444,6 +2590,7 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
             patch.status["consoleRoute"] = console_host
             logger.info(f"Console route: {console_host}")
     except Exception as e:
+        propagate_hold(e)
         logger.warning(f"Could not read console route hostname: {e}")
 
 
@@ -2598,8 +2745,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     }
 
     topology = spec.get("topology", {})
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
 
     ensure_kubemacpool_opt_out(core_api, namespace)
 
@@ -2621,7 +2768,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
     )
 
-    apps_api = client.AppsV1Api()
+    apps_api = guard_client(client.AppsV1Api())
     await managed_await(
         _setup_gateway(core_api, apps_api, networks, namespace, name, body)
     )
@@ -2720,6 +2867,8 @@ def _detect_scheduling_error(core_api, namespace, kv_name):
             )
             for ev in ev_list.items or []:  # type: ignore[union-attr]
                 return ev.message or "Volume attach failed"
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return None
@@ -2866,6 +3015,8 @@ def _heal_one_stuck_launcher(
                 name=kv_name,
             ),
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to get KV VM {kv_name} for stuck heal: {e}")
         return None
@@ -2907,6 +3058,8 @@ def _heal_one_stuck_launcher(
             namespace=namespace,
             grace_period_seconds=0,
         )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to reschedule stuck launcher for {kv_name}: {e}")
         return None
@@ -2922,6 +3075,8 @@ def _find_stuck_launcher_pod(core_api, namespace, kv_name, now, threshold_s):
             namespace=namespace,
             label_selector=f"kubevirt.io/domain={kv_name}",
         )
+    except CheckpointHold:
+        raise
     except Exception:
         return None
     for pod in pods.items or []:  # type: ignore[union-attr]
@@ -2970,7 +3125,7 @@ def _recert_pvc_datavolume_phase(namespace, name):
     try:
         dv = cast(
             dict[str, Any],
-            client.CustomObjectsApi().get_namespaced_custom_object(
+            guard_client(client.CustomObjectsApi()).get_namespaced_custom_object(
                 group=_CDI_API_GROUP,
                 version="v1beta1",
                 namespace=namespace,
@@ -2982,6 +3137,8 @@ def _recert_pvc_datavolume_phase(namespace, name):
     except ApiException as e:
         if e.status == 404:
             return None
+        raise
+    except CheckpointHold:
         raise
     except Exception:
         return None
@@ -3006,6 +3163,8 @@ def _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
             )
             if pvc.status.phase != "Bound":  # type: ignore[union-attr]
                 return False
+        except CheckpointHold:
+            raise
         except Exception:
             return False
         dv_phase = _recert_pvc_datavolume_phase(namespace, pvc_name)
@@ -3034,6 +3193,8 @@ def _create_recert_jobs(batch_api, recert_cfgs, namespace):
                 try:
                     batch_api.create_namespaced_job(namespace=namespace, body=job)
                     logger.info(f"Created recert job {job_name}")
+                except CheckpointHold:
+                    raise
                 except Exception as ce:
                     logger.exception(f"Recert job creation failed for {vm_label}: {ce}")
                     return f"Failed to create recert job: {ce}"
@@ -3067,8 +3228,8 @@ def _poll_recert_jobs(batch_api, recert_cfgs, namespace, status, patch):
                             namespace=namespace,
                             propagation_policy="Background",
                         )
-                    except Exception:
-                        pass
+                    except Exception as error:
+                        propagate_hold(error)
                     return False, True
                 patch.status["phase"] = "Error"
                 patch.status[
@@ -3148,6 +3309,8 @@ def _pod_uses_pvc_on_node(core_api, namespace, node, pvc_name):
                 claim = getattr(v, "persistent_volume_claim", None)
                 if claim and claim.claim_name == pvc_name:
                     return True
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return False
@@ -3168,15 +3331,10 @@ def _start_kubevirt_vms(custom_api, vm_items, namespace):
             started += 1
             continue
         try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_GROUP,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"runStrategy": "Always"}},
-            )
+            set_kubevirt_vm_power(custom_api, namespace, kv_name, running=True)
             started += 1
+        except CheckpointHold:
+            raise
         except Exception:
             pass
     return started
@@ -3198,6 +3356,8 @@ def _fetch_vmi_states(custom_api, namespace):
         for vmi in vmis.get("items", []):
             states[vmi["metadata"]["name"]] = vmi.get("status", {}).get("phase", "")
         return states
+    except CheckpointHold:
+        raise
     except Exception:
         return {}
 
@@ -3221,8 +3381,8 @@ def _handle_recert(status, namespace, name, patch):
     if not isinstance(recert_cfgs, list) or status.get("recertDone"):
         return False
 
-    core_api = client.CoreV1Api()
-    batch_api = client.BatchV1Api()
+    core_api = guard_client(client.CoreV1Api())
+    batch_api = guard_client(client.BatchV1Api())
 
     if not _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
         patch.status["deployProgress"] = {
@@ -3252,14 +3412,16 @@ def _handle_recert(status, namespace, name, patch):
 
 def _cleanup_stale_volumes(namespace, name, patch):
     """Clean up stale VolumeAttachments. Returns True if caller should return."""
-    storage_api = client.StorageV1Api()
-    core_api_pvc = client.CoreV1Api()
+    storage_api = guard_client(client.StorageV1Api())
+    core_api_pvc = guard_client(client.CoreV1Api())
     try:
         stale = _find_stale_volume_attachments(storage_api, core_api_pvc, namespace)
         for va_name in stale:
             try:
                 storage_api.delete_volume_attachment(name=va_name)
                 logger.info(f"Deleted stale VolumeAttachment {va_name}")
+            except CheckpointHold:
+                raise
             except Exception:
                 pass
         if stale:
@@ -3269,6 +3431,8 @@ def _cleanup_stale_volumes(namespace, name, patch):
                 "detail": f"detached {len(stale)} stale volume(s)",
             }
             return True
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"PVC release check failed for {name}: {e}")
     return False
@@ -3384,8 +3548,8 @@ def _ensure_project_containers(spec, status, namespace, name, body, patch):
     from handlers.container import create_container_pods
     from handlers.vm import _resolve_nad_refs
 
-    core_api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
+    core_api = guard_client(client.CoreV1Api())
+    custom_api = guard_client(client.CustomObjectsApi())
     disk_pvcs = _provision_container_pvcs(core_api, namespace, topology, body)
     enrich_container_nics(topology, containers)
     enrich_showroom_infra_networks(topology, containers)
@@ -3474,8 +3638,8 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     if phase not in ("Deploying", "Running"):
         return
 
-    core_api_ev = client.CoreV1Api()
-    apps_api_ev = client.AppsV1Api()
+    core_api_ev = guard_client(client.CoreV1Api())
+    apps_api_ev = guard_client(client.AppsV1Api())
     # Unstick gateway/showroom/etc. hung on NotReady nodes (Multus Terminating /
     # ContainerCreating). Independent of VM list — run every tick.
     heal_details, heal_errs = heal_stuck_project_pods(
@@ -3486,7 +3650,7 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     for err in heal_errs:
         logger.warning("TroshkaProject %s stuck-pod heal: %s", name, err)
 
-    custom_api = client.CustomObjectsApi()
+    custom_api = guard_client(client.CustomObjectsApi())
 
     vms = cast(
         dict[str, Any],
@@ -3575,8 +3739,8 @@ def _build_bmc_deployment_body(bmc_vms, namespace):
     """
     from handlers.vm import _ensure_bmc_sa_and_rbac, _find_bmc_nad
 
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
     project_label = namespace.replace("troshka-", "")
 
     _enrich_bmc_ips(bmc_vms, custom_api, namespace)
@@ -3605,7 +3769,7 @@ def _ensure_bmc_deployment(vm_items, namespace):
     if not bmc_vms:
         return
 
-    apps_api = client.AppsV1Api()
+    apps_api = guard_client(client.AppsV1Api())
     project_label = namespace.replace("troshka-", "")
     dep_name = f"bmc-{project_label}"
 
@@ -3678,6 +3842,8 @@ def _get_bmc_credentials(custom_api, namespace):
                         "username": data.get("bmcUsername", ""),
                         "password": data.get("bmcPassword", ""),
                     }
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return {}
@@ -3705,6 +3871,8 @@ def _get_bmc_ips_from_topology(custom_api, namespace):
                     ips[vm_id] = data["bmcIp"]
             if ips:
                 return ips
+    except CheckpointHold:
+        raise
     except Exception:
         pass
     return {}
@@ -3749,15 +3917,19 @@ def _delete_custom_resources(
                     logger.warning(
                         f"Failed to delete {resource_label} {item_name}: {e}"
                     )
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list {resource_label}s in {namespace}: {e}")
 
 
 def _delete_namespaced_deployments(namespace: str) -> None:
     """Delete all Deployments in the project namespace (vnc-proxy, gateway, …)."""
-    apps_api = client.AppsV1Api()
+    apps_api = guard_client(client.AppsV1Api())
     try:
         deps = apps_api.list_namespaced_deployment(namespace=namespace)
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list Deployments in {namespace}: {e}")
         return
@@ -3777,9 +3949,11 @@ def _delete_namespaced_deployments(namespace: str) -> None:
 
 def _force_delete_namespaced_pods(namespace: str) -> None:
     """Force-delete pods so Multus CNI DEL runs while NADs still exist."""
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     try:
         pods = core_api.list_namespaced_pod(namespace=namespace)
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list pods in {namespace}: {e}")
         return
@@ -3798,7 +3972,7 @@ def _force_delete_namespaced_pods(namespace: str) -> None:
 
 def _wait_namespaced_pods_gone(namespace: str, attempts: int = 30) -> None:
     """Block NAD teardown until Multus-attached pods are gone."""
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     for _ in range(attempts):
         try:
             pods = core_api.list_namespaced_pod(namespace=namespace)
@@ -3807,6 +3981,8 @@ def _wait_namespaced_pods_gone(namespace: str, attempts: int = 30) -> None:
         except ApiException as e:
             if e.status == 404:
                 return
+        except CheckpointHold:
+            raise
         except Exception:
             return
         time.sleep(2)
@@ -3818,9 +3994,11 @@ def _wait_namespaced_pods_gone(namespace: str, attempts: int = 30) -> None:
 
 def _delete_namespaced_services(namespace: str) -> None:
     """Delete all Services before Namespace teardown (OVN orphan guard)."""
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     try:
         svcs = core_api.list_namespaced_service(namespace=namespace)
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list Services in {namespace}: {e}")
         return
@@ -3839,9 +4017,11 @@ def _delete_namespaced_services(namespace: str) -> None:
 
 
 def _delete_namespaced_pvcs(namespace: str) -> None:
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     try:
         pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    except CheckpointHold:
+        raise
     except Exception as e:
         logger.warning(f"Failed to list PVCs in {namespace}: {e}")
         return
@@ -3865,7 +4045,7 @@ def _wait_namespaced_services_gone(namespace: str, attempts: int = 30) -> None:
     Clearing the finalizer while Services linger lets Namespace deletion race
     ahead and orphan them — OVN then crashloops on ``namespace not found``.
     """
-    core_api = client.CoreV1Api()
+    core_api = guard_client(client.CoreV1Api())
     for _ in range(attempts):
         try:
             svcs = core_api.list_namespaced_service(namespace=namespace)
@@ -3874,6 +4054,8 @@ def _wait_namespaced_services_gone(namespace: str, attempts: int = 30) -> None:
         except ApiException as e:
             if e.status == 404:
                 return
+        except CheckpointHold:
+            raise
         except Exception:
             return
         time.sleep(2)
@@ -3908,6 +4090,8 @@ def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
                     body={"users": users},
                 )
                 logger.info(f"Removed {sa_ref} from {scc_name} SCC")
+        except CheckpointHold:
+            raise
         except Exception as e:
             logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
 
@@ -3915,7 +4099,10 @@ def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_delete(namespace, name, **_):
     from helpers.managed_power import PowerClient, cleanup_delete, cleanup_intent
+    from helpers.native_namespace_cleanup import finish_external
 
+    if finish_external(PowerClient(), namespace, "TroshkaProject"):
+        return
     body = _.get("body", {})
     if "troshka.redhat.com/managed-cleanup" in body.get("metadata", {}).get("annotations", {}):
         api = PowerClient()
@@ -3924,12 +4111,14 @@ async def project_delete(namespace, name, **_):
         if not cleanup_delete(api, root):
             raise kopf.TemporaryError("Original managed cleanup remains pending", delay=5)
         return
+    if "originCheckpoint" in body.get("spec", {}):
+        raise CheckpointHold("origin_root_requires_sealed_cleanup")
     logger.info(
         f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}"
     )
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
-    batch_api = client.BatchV1Api()
+    custom_api = guard_client(client.CustomObjectsApi())
+    core_api = guard_client(client.CoreV1Api())
+    batch_api = guard_client(client.BatchV1Api())
 
     # Reclaim mid-capture temps BEFORE other deletes — VolumeSnapshot finalizers
     # otherwise stick the namespace Terminating and leak Ceph capacity.
@@ -4048,13 +4237,24 @@ async def project_update(status, meta, namespace, name, patch, **_):
         await _handle_file_pull(fp_config, namespace, name)
         return
 
+    await _dispatch_capture(status, annotations, namespace, name, patch)
+
+
+async def _dispatch_capture(status, annotations, namespace, name, patch):
     capture_json = annotations.get(CAPTURE_ANNOTATION)
     if not capture_json:
         return
 
     phase = status.get("phase", "")
-    if phase == "Capturing":
+    if (phase in {"CaptureComplete", "CaptureError"} and participating()
+            and snapshot_workflow.pending("capture") is None):
         return
+    if phase == "Capturing":
+        if not participating():
+            return
+        root, _, _ = snapshot_workflow._context()
+        if not snapshot_workflow.capture_resumable(root):
+            return
 
     logger.info(f"Capture annotation detected on {name}, starting capture")
     try:
@@ -4070,3 +4270,12 @@ async def project_update(status, meta, namespace, name, patch, **_):
 @managed_producer(project=True, reconcile=True)
 async def project_managed_power_resume(body, namespace, **_):
     """Recover durable stop intent before any timer or child producer runs."""
+    if not participating():
+        return
+    root, _namespace, _api = snapshot_workflow._context()
+    if root.get("status", {}).get("phase") not in {"Capturing", "CaptureComplete", "CaptureError"}:
+        return
+    if snapshot_workflow.capture_resumable(root):
+        await _dispatch_capture(root.get("status", {}),
+                                root["metadata"].get("annotations", {}),
+                                namespace, root["metadata"]["name"], _["patch"])

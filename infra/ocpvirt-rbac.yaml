@@ -97,6 +97,7 @@ rules:
     resourceNames:
       - troshka-provider-namespaced
       - troshka-operator-namespaced
+      - troshka-origin-inventory
       - system:openshift:scc:kubevirt-controller
   # Create per-NS RoleBindings (chicken-egg before namespaced role exists in that NS)
   - apiGroups: ["rbac.authorization.k8s.io"]
@@ -110,6 +111,16 @@ rules:
   - apiGroups: ["ceph.rook.io"]
     resources: ["cephclusters", "cephblockpools"]
     verbs: ["get", "list"]
+---
+# Administrator-installed read visibility; bound only in receipted managed origin namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-origin-inventory
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["list"]
 ---
 # Namespaced mutate for provider SA — granted only via RoleBinding in troshka-* NSs.
 apiVersion: rbac.authorization.k8s.io/v1

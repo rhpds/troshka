@@ -998,7 +998,11 @@ def publish_synthetic_clone(q, operation, target, source, monkeypatch):
 def clone_measurement(
     q, target, reference, binding, middle, temp, golden, *, amount, base_report=None
 ):
-    from app.schemas.kubevirt_storage import ImageObservation, ProjectRoot
+    from app.schemas.kubevirt_storage import (
+        ImageObservation,
+        ProjectRoot,
+        SourceSnapshotChildren,
+    )
     from tests.test_native_managed_deploy import report_for
     from tests.test_native_managed_resume import FixedDatetime
     from tests.test_quota_native_storage import revised
@@ -1024,7 +1028,15 @@ def clone_measurement(
             )
         if image.key == golden.image_key:
             image = image.model_copy(
-                update={"snapshots": [golden], "children": [middle]}
+                update={
+                    "snapshots": [golden],
+                    "children": [middle],
+                    "source_snapshot_children": [
+                        SourceSnapshotChildren(
+                            snapshot=golden, present=True, children=[middle]
+                        )
+                    ],
+                }
             )
         images.append(image)
     images.append(

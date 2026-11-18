@@ -40,6 +40,7 @@ from app.services.kubevirt_storage_enrollment import (
     verify_native_enrollment,
 )
 from app.services.kubevirt_storage_reports import import_report
+from app.services.quota_native import NativeObservationRefreshRequired
 from tests.test_native_initialization_evidence import synthetic_profile
 from tests.test_native_managed_resume import (
     FixedDatetime,
@@ -1280,7 +1281,10 @@ def test_pending_enrollment_failure_invalidates_latest_attempt(
         domain = db.get(NativeCollectionDomain, str(q.pins.domain_id))
         assert domain.latest_report_id == str(report.report_id)
         assert domain.enrollment_id == q.enrollment_id
-        with pytest.raises(Exception, match="unavailable|complete|partial"):
+        with pytest.raises(
+            NativeObservationRefreshRequired,
+            match="observation failed temporarily; refresh required",
+        ):
             initialization.current(db, q.provider_id, FixedDatetime.current)
 
 

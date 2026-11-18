@@ -200,7 +200,13 @@ workloads:
     demoWorkloads: main
     namespacedWorkloads: main
 
+# Enable only after native origin qualification; domain admission stays explicit.
+nativeOrigin:
+  captureEnabled: false
+
 nativeCollection:
+  # Also supplies protected runtime files/CLI to backend, tunnel and lifecycle
+  # workers for origin verification and retained cleanup, even with capture off.
   enabled: false
   intervalSeconds: 60
   domainIntervalSeconds: 60
@@ -226,7 +232,7 @@ nativeCollection:
     secretName: ""
     # Optional version-tagged OpenShift CLI image exposing /usr/bin/oc.
     # Set this when the backend image does not already contain oc.
-    # Copies only oc into the collection worker; never mounts transport secrets.
+    # Shared by native runtime readers; the CLI init only mounts its binary volume.
     cliImage: ""
     resources:
       requests:

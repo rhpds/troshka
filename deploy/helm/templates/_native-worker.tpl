@@ -2,10 +2,6 @@
 {{- $root := .root }}
 {{- $worker := .worker }}
 {{- $profile := .profile }}
-{{- $cliImage := $worker.cliImage | default "" }}
-{{- if and $cliImage (or (contains "@" $cliImage) (not (regexMatch ":[^/:]+$" $cliImage)) (hasSuffix ":latest" $cliImage)) }}
-{{- fail "Collection CLI image requires an explicit version tag (not latest or a digest)" }}
-{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,61 +28,14 @@ spec:
       # Projected Secret/ConfigMap files are symlinks owned by root. Copy them
       # as the pod UID into private regular files for the protected-file reader.
       initContainers:
-        {{- if $cliImage }}
-        - name: prepare-collection-cli
-          image: {{ $cliImage | quote }}
-          command: ["/bin/sh", "-c", "rm -f /collection-bin/.oc && cp /usr/bin/oc /collection-bin/.oc && chmod 0555 /collection-bin/.oc && mv -f /collection-bin/.oc /collection-bin/oc"]
-          volumeMounts:
-            - name: collection-bin
-              mountPath: /collection-bin
-        {{- end }}
-        - name: prepare-collection-config
-          image: {{ include "troshka.backendImage" $root }}
-          command:
-            - python3
-            - -c
-            - |
-              import os
-              import tempfile
-              from pathlib import Path
-              for source, target in [("/config-source", "/protected/config"), ("/transport-source", "/protected/transport")]:
-                  destination = Path(target)
-                  destination.mkdir(mode=0o700, parents=True, exist_ok=True)
-                  for abandoned in destination.glob(".copy-*"):
-                      abandoned.unlink()
-                  for entry in Path(source).iterdir():
-                      if entry.name.startswith(".."):
-                          continue
-                      data = entry.read_bytes()
-                      path = destination / entry.name
-                      fd, temporary = tempfile.mkstemp(dir=destination, prefix=".copy-")
-                      try:
-                          os.fchmod(fd, 0o400)
-                          with os.fdopen(fd, "wb") as output:
-                              output.write(data)
-                          os.replace(temporary, path)
-                      finally:
-                          if os.path.exists(temporary):
-                              os.unlink(temporary)
-          volumeMounts:
-            - name: collection-config
-              mountPath: /config-source
-              readOnly: true
-            - name: collection-transport
-              mountPath: /transport-source
-              readOnly: true
-            - name: protected-files
-              mountPath: /protected
+        {{- include "troshka.nativeRuntime.initContainers" (dict "root" $root "worker" $worker) | nindent 8 }}
       containers:
         - name: worker
           image: {{ include "troshka.backendImage" $root }}
           imagePullPolicy: Always
           command: ["python3", "-m", "app.workers.deploy_worker"]
           env:
-            {{- if $cliImage }}
-            - name: PATH
-              value: /opt/collection-bin:/opt/app-root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-            {{- end }}
+            {{- include "troshka.nativeRuntime.env" (dict "worker" $worker) | nindent 12 }}
             - name: TROSHKA_WORKER_PROFILE
               value: {{ $profile }}
             - name: TROSHKA_DATABASE__URL
@@ -106,40 +55,9 @@ spec:
             - name: TROSHKA_DATABASE__POOL_RECYCLE
               value: {{ $root.Values.database.poolRecycle | quote }}
           volumeMounts:
-            {{- if $cliImage }}
-            - name: collection-bin
-              mountPath: /opt/collection-bin
-              readOnly: true
-            {{- end }}
-            - name: config
-              mountPath: /opt/app-root/src/config/config.yaml
-              subPath: config.yaml
-              readOnly: true
-            - name: protected-files
-              mountPath: /etc/troshka/collection
-              subPath: config
-              readOnly: true
-            - name: protected-files
-              mountPath: /etc/troshka/collection-transport
-              subPath: transport
-              readOnly: true
+            {{- include "troshka.nativeRuntime.volumeMounts" (dict "worker" $worker) | nindent 12 }}
           resources:
             {{- toYaml $worker.resources | nindent 12 }}
       volumes:
-        {{- if $cliImage }}
-        - name: collection-bin
-          emptyDir: {}
-        {{- end }}
-        - name: protected-files
-          emptyDir:
-            medium: Memory
-        - name: config
-          configMap:
-            name: troshka-config
-        - name: collection-config
-          configMap:
-            name: {{ required "Collection worker requires protected configMapName" $worker.configMapName }}
-        - name: collection-transport
-          secret:
-            secretName: {{ required "Collection worker requires transport secretName" $worker.secretName }}
+        {{- include "troshka.nativeRuntime.volumes" (dict "worker" $worker) | nindent 8 }}
 {{- end }}
