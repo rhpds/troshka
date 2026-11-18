@@ -24,6 +24,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   Failed stop requests, unavailable observations, and shutdown timeouts hold work.
   Origin captures resume retained checkpoints after acknowledgement or operator
   restart, preserving submission ambiguity and original producer identity fences.
+  Snapshot custody reads share the collection scan deadline across Ceph checks,
+  retaining bounded individual API requests instead of expiring early under the
+  shorter ordinary inventory deadline.
 
 - Native project cleanup fences late producers, waits for VM/VMI absence and
   Troshka finalizers, then deletes the namespace normally. An exact terminating

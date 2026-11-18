@@ -165,7 +165,9 @@ def online_case(cleanup_case, monkeypatch):
             )
 
     q.reader = Reader()
-    monkeypatch.setattr(online, "ReadOnlyManaged", lambda kube: kube)
+    monkeypatch.setattr(
+        online, "ReadOnlyManaged", lambda kube, *, scan_deadline=None: kube
+    )
     q.readers = {str(q.pins.provider_clusters[0].provider_id): q.reader}
     q.backend = Backend()
     return q

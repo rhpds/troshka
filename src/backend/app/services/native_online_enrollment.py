@@ -427,11 +427,15 @@ def _bindings(kube, root, pools):
 class ReadOnlyManaged:
     """Expose only bounded GET/list operations on the independently selected API."""
 
-    def __init__(self, kube):
+    def __init__(self, kube, *, scan_deadline=None):
         from app.services.native_managed_power import helpers
 
         self._reader = helpers().PowerClient(getattr(kube, "custody_api", kube.api))
         self._reader.begin_inventory()
+        if scan_deadline is not None:
+            # Snapshot verification shares one deadline across API and Ceph reads.
+            # PowerClient still caps every individual request at five seconds.
+            self._reader.deadline = scan_deadline
 
     def rows(self, kind, namespace):
         return self._reader.rows(kind, namespace)

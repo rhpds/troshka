@@ -96,7 +96,7 @@ def stable_facts(facts):
 def _api(kube):
     from app.services.native_online_enrollment import ReadOnlyManaged
 
-    return ReadOnlyManaged(kube)
+    return ReadOnlyManaged(kube, scan_deadline=getattr(kube, "scan_deadline", None))
 
 
 def _find(api, kind, namespace, name):
