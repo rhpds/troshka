@@ -25,9 +25,14 @@ protected. Both read-only snapshot verifications passed. Both accounting receipt
 were published and independently confirmed, preserving both failed Pattern
 records. The second required fresh verification after an execution changed state;
 the safety check held before publication, and the bounded retry passed after
-both executions reported complete. Fresh dev accounting through normal workers
-is still required. Production remains held until accounting and full deployment
-verification pass. These
+both executions reported complete. Subsequent fresh dev accounting **failed**:
+both publications contain proposed enrollment pins that exclude the settled,
+deleted mixed fixture, but snapshot reconciliation did not publish that enrollment
+transition. Exact protected-anchor validation correctly rejects those pins.
+The snapshot proofs and failed Pattern records remain preserved; publication
+alone is not successful recovery. No anchor guard was weakened. This requires
+a bounded publication correction and independently verified metadata recovery
+before another fresh accounting gate. Production remains held. These
 source fixes have not yet been installed in running services.
 
 Earlier November 18 qualification: committed source `b904f060` passed all normal
