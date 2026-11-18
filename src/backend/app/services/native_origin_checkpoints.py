@@ -270,6 +270,8 @@ def service_request(sessions, api, intent_id, request):
         _, _, key = _context(db, intent_id)
         row = _existing(db, request)
         require(row is not None, "Origin committed producer receipt missing")
+        if TYPE_CHECKING:
+            assert row is not None
         _receipt_authority(db, intent, row)
         return sign(
             key.encrypted_private_key,

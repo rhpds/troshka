@@ -30,6 +30,8 @@ def _origin(db, project, intent):
         and intent.namespace_mode == "managed",
         "Original managed namespace receipt required",
     )
+    if TYPE_CHECKING:
+        assert namespace is not None
     held = custody.retained(db, project, require_complete=False)
     source = dict(
         intent=intent.model_dump(mode="json"),

@@ -13,6 +13,12 @@ runtime ownership checks remain enforced. This authorization is not evidence
 that any of the seven has been deleted or that production has been upgraded.
 Source 8507ceca completed the normal backend-test fallback with 10,002 passed
 and 1,152 skipped; Sonar analysis did not run because SONAR_TOKEN was absent.
+The first release source 55d45044 also passed the normal pre-push tests (10,002
+passed, 1,152 skipped) and was pushed as v2026.11.18-project-deletion. Backend CI
+then rejected 37 optional-value type errors with Pyright 1.1.414; local checks
+used 1.1.408. The rollout orchestrator was stopped before deployment. The r2
+correction adds type-only narrowing after existing guards and an equivalent
+explicit pod null check; it does not relax runtime cleanup requirements.
 Successful capture/export/restore qualification is deferred and is not a release
 gate. Completed capture fixes remain documented; failed test attempts remain
 preserved. Deletion's own ownership, VM/VMI, namespace, private-storage and

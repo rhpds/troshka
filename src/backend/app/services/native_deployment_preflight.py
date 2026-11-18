@@ -6,6 +6,7 @@ missing intents and negative provider reads do not establish one.
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import event
@@ -45,6 +46,8 @@ def _payload(row):
         row is not None and digest(row.payload) == row.digest,
         "Native preflight proof missing or changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     return row.payload
 
 

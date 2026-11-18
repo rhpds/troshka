@@ -5,6 +5,7 @@ import json
 import re
 import time
 from copy import deepcopy
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -509,6 +510,8 @@ def _load(row):
         row is not None and row.digest == digest(row.payload),
         "Native origin namespace cleanup changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     return NamespaceCleanup.model_validate(row.payload)
 
 
@@ -581,6 +584,8 @@ def _verify_delete_evidence(db, work):
         work.inventory is not None and work.delete_resource_version,
         "Native origin delete evidence unavailable",
     )
+    if TYPE_CHECKING:
+        assert work.inventory is not None
     _evidence_matches(db, work, "sealed", work.inventory.model_dump(mode="json"))
     _evidence_matches(
         db,

@@ -30,6 +30,8 @@ def load(row):
         row is not None and digest(row.payload) == row.digest,
         "Namespace cleanup state changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     return ProjectNamespaceCleanup.model_validate(row.payload)
 
 
@@ -491,6 +493,8 @@ def _remove_own_crs(db, api, work):
             row is not None and row["metadata"]["uid"] == target.uid,
             "Cleanup CR observation changed",
         )
+        if TYPE_CHECKING:
+            assert row is not None
         origin.require(
             not row["metadata"].get("deletionTimestamp")
             or previous.get((target.kind, target.name)) == target.uid,
@@ -598,6 +602,8 @@ def _delete_namespace(db, api, work):
         namespace is not None and _acknowledged(api, work, namespace),
         "Namespace fence acknowledgement unavailable",
     )
+    if TYPE_CHECKING:
+        assert namespace is not None
     origin.require(
         not api.rows("VirtualMachine", work.authority.namespace)
         and not api.rows("VirtualMachineInstance", work.authority.namespace),

@@ -264,6 +264,8 @@ def _historical_enrollment(db, predecessor, before, successor, after):
         and current.domain_id == str(after.enrollment.pins.domain_id),
         "Custody enrollment identity changed",
     )
+    if TYPE_CHECKING:
+        assert current is not None
     manifest = online.enrollment.validated_enrollment(current)
     require(
         current.digest == successor.payload.get("enrollment_digest")
@@ -324,6 +326,8 @@ def _request(db, request_id):
         row is not None and row.digest == digest(row.payload),
         "Protected reconciliation request missing or changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     return row.payload
 
 

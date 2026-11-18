@@ -83,6 +83,8 @@ def _source(db, prepared):
         row is not None and row.digest == prepared.source_custody_digest,
         "Retirement source custody changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     receipt = online._validated(row.payload["receipt"])
     require(
         receipt.digest == row.digest
@@ -615,6 +617,8 @@ def resolve(db, reference):
         row is not None and row.digest == reference.digest,
         "Protected retirement receipt unavailable",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     value = _validated(row.payload)
     require(
         value.digest == row.digest

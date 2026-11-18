@@ -200,6 +200,8 @@ def _locked(db, intent_id, *, allow_cancelled=False):
         pointer is not None and pointer.intent_id == intent_id,
         "Native origin active attempt changed",
     )
+    if TYPE_CHECKING:
+        assert pointer is not None
     require(
         all(str(getattr(intent, key)) == str(value) for key, value in identity.items()),
         "Native origin ownership or provider changed",

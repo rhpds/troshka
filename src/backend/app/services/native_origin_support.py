@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+from typing import TYPE_CHECKING
 
 from app.models.native_origin_namespace import (
     NativeOriginSupportHandoff,
@@ -309,6 +310,8 @@ def bracket(api, intent, receipt, *, terminating=False):
         and receipt.namespace_delete_authority == (intent.namespace_mode == "managed"),
         "Native origin original namespace receipt changed",
     )
+    if TYPE_CHECKING:
+        assert receipt is not None
     cluster = api.get("Namespace", None, "kube-system")
     origin.require(
         cluster and cluster["metadata"].get("uid") == intent.cluster_uid,

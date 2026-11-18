@@ -58,6 +58,8 @@ def exec_command(
         pod is not None and not pod["metadata"].get("deletionTimestamp"),
         "Native exec Pod terminating",
     )
+    if TYPE_CHECKING:
+        assert pod is not None
     request = dict(
         pod_operation=pod_operation.id,
         pod_digest=pod_operation.digest,

@@ -312,6 +312,7 @@ def _completed_target(db, operation, root):
         verified = _verified_object(db, pod) if pod is not None else None
         if (
             verified
+            and pod is not None
             and pod.intent_id == operation.intent_id
             and pod.digest == request["pod_digest"]
             and verified["uid"] == request["pod_uid"]

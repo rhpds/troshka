@@ -1060,6 +1060,8 @@ def _historical(db, receipt_id, receipt_digest):
         row is not None and row.digest == receipt_digest,
         "Origin retirement source changed",
     )
+    if TYPE_CHECKING:
+        assert row is not None
     current = _current(db, row.intent_id)
     require(current is not None, "Origin custody current pointer missing")
     if TYPE_CHECKING:
@@ -1077,6 +1079,8 @@ def _historical(db, receipt_id, receipt_digest):
             and candidate.intent_id == row.intent_id,
             "Origin checkpoint predecessor changed",
         )
+        if TYPE_CHECKING:
+            assert candidate is not None
         value = _receipt(candidate)
     raise ValueError("Origin checkpoint ancestry limit exceeded")
 
@@ -1137,6 +1141,8 @@ def retirement_source(db, prepared):
         request_row is not None and request_row.digest == digest(request_row.payload),
         "Origin retirement request missing",
     )
+    if TYPE_CHECKING:
+        assert request_row is not None
     request = OriginCustodyRequest.model_validate(request_row.payload)
     require(
         str(request.predecessor_id) == row.id
