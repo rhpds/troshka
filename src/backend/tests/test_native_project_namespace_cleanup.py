@@ -747,9 +747,22 @@ def test_real_collector_import_and_no_reservation_settlement(namespace_case, mod
 
 
 @pytest.mark.parametrize("missing_source_chain", [False, True])
-@pytest.mark.parametrize("current_shape", [False, True])
+@pytest.mark.parametrize(
+    "current_shape,dependency_timeout,verified",
+    [
+        (False, False, False),
+        (True, False, False),
+        (True, True, True),
+        (True, True, False),
+    ],
+)
 def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_pending(
-    namespace_case, monkeypatch, missing_source_chain, current_shape
+    namespace_case,
+    monkeypatch,
+    missing_source_chain,
+    current_shape,
+    dependency_timeout,
+    verified,
 ):
     from types import SimpleNamespace
     from uuid import uuid4
@@ -854,6 +867,12 @@ def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_
             key: with_dependencies(image) if image.absence is None else image
             for key, image in images.items()
         }
+        if dependency_timeout:
+            from tests.test_native_snapshot_scope import with_usage_timeout
+
+            images[child] = with_usage_timeout(
+                images[child], report.completed_at if verified else None
+            )
     report = report.model_copy(
         update={
             "images": list(images.values()),
@@ -884,17 +903,18 @@ def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_
         )
         db.commit()
         assert db.get(NativeStorageSnapshot, report_id).accepted
-        if missing_source_chain:
+        blocked = missing_source_chain or (dependency_timeout and not verified)
+        if blocked:
             with pytest.raises(AccountingUnavailable):
                 settle(db, q.cleanup_id)
         else:
             settle(db, q.cleanup_id)
     with q.sessions() as db:
         assert cleanup.states(db, q.project_id)[0].phase == (
-            "namespace_absent" if missing_source_chain else "finalized"
+            "namespace_absent" if blocked else "finalized"
         )
         assert db.get(Project, q.project_id).state == (
-            "cleanup_pending" if missing_source_chain else "draft"
+            "cleanup_pending" if blocked else "draft"
         )
         assert db.get(Project, str(source.root.project_id)).state == "active"
 

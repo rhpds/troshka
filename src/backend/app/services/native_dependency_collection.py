@@ -42,7 +42,11 @@ def metadata(reader, image, pools, limits, boundary=None):
 def enrich(reader, image, pools, limits, boundary=None):
     from app.services.kubevirt_storage_collector import _ReadFailure
 
-    if image.measurement_status != "complete" or image.absence is not None:
+    if (
+        image.measurement_status not in {"complete", "timeout"}
+        or image.absence is not None
+        or (boundary is not None and image.measurement_status != "complete")
+    ):
         return image
     try:
         value, observed = metadata(reader, image, pools, limits, boundary)

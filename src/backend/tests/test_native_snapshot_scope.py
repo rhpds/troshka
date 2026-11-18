@@ -289,6 +289,18 @@ def with_dependencies(image):
     return image.model_copy(update={"current_dependencies": value})
 
 
+def with_usage_timeout(image, verified=NOW):
+    return image.model_copy(
+        update={
+            "measurement_status": "timeout",
+            "allocated_bytes": None,
+            "provisioned_bytes": None,
+            "measurement_semantics_version": None,
+            "dependency_graph_verified_at": verified,
+        }
+    )
+
+
 @pytest.mark.parametrize("projected_cache", [False, True])
 def test_current_descendants_and_flattened_intermediate_allow_only_terminal(
     scope_case, projected_cache
@@ -332,6 +344,181 @@ def test_current_closure_preserves_live_accounting_hold_and_bounds(scope_case):
 def test_legacy_observation_serialization_does_not_add_optional_evidence():
     image = observation("plain", 10)
     assert "current_dependencies" not in image.model_dump(mode="json")
+    assert "dependency_graph_verified_at" not in image.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "legacy_timeout",
+        "stale_read",
+        "stale_marker",
+        "wrong_status",
+        "cache_timeout",
+    ],
+)
+def test_timeout_dependency_verification_is_terminal_only(scope_case, change):
+    q = scope_case
+    current_images(q)
+    q.images[-1] = with_usage_timeout(q.images[-1])
+    if change == "legacy_timeout":
+        q.images[-1] = with_usage_timeout(q.images[-1], None)
+    elif change == "stale_read":
+        q.images[-1] = q.images[-1].model_copy(
+            update={"collected_at": NOW - timedelta(seconds=1)}
+        )
+    elif change == "stale_marker":
+        q.images[-1] = with_usage_timeout(q.images[-1], NOW - timedelta(seconds=1))
+    elif change == "wrong_status":
+        q.images[-1] = q.images[-1].model_copy(
+            update={"measurement_status": "unavailable"}
+        )
+    elif change == "cache_timeout":
+        q.images[2] = with_usage_timeout(q.images[2])
+    graph = attribute_graph(
+        q.inventory,
+        q.images,
+        snapshot_facts=[q.facts],
+        project_cleanup_scopes=[q.scope],
+    )
+    selected = next(p for p in graph.projects if p.project_id == q.selected.project_id)
+    assert (selected.coverage == "complete") == (change is None)
+    _, errors = authorize(q.inventory, {i.key: i for i in q.images}, [q.facts])
+    assert any(e.project_id is None for e in errors)
+
+
+@pytest.mark.parametrize(
+    "change", ["missing_dependencies", "absence", "earlier_than_read", "wrong_status"]
+)
+def test_dependency_verification_marker_requires_consistent_evidence(
+    scope_case, change
+):
+    from pydantic import ValidationError
+
+    from app.schemas.kubevirt_storage import ImageObservation
+
+    current_images(scope_case)
+    image = with_usage_timeout(scope_case.images[-1])
+    data = image.model_dump()
+    if change == "missing_dependencies":
+        data["current_dependencies"] = None
+    elif change == "absence":
+        absent = next(i for i in scope_case.images if i.absence is not None)
+        data = absent.model_dump() | {"dependency_graph_verified_at": NOW}
+    elif change == "earlier_than_read":
+        data["dependency_graph_verified_at"] = NOW - timedelta(seconds=1)
+    else:
+        data["measurement_status"] = "unavailable"
+    with pytest.raises(ValidationError):
+        ImageObservation.model_validate(data)
+
+
+def test_verified_dependencies_do_not_supply_ordinary_allocation():
+    images = [
+        with_usage_timeout(with_dependencies(observation("child-1", 10))),
+        observation("child-2", 20),
+        observation("cache", 100),
+    ]
+    projects = attribute_graph(inventory(), images).projects
+    assert projects[0].coverage != "complete"
+    assert projects[0].allocated_bytes is None
+    assert projects[0].known_allocated_bytes == 0
+    assert projects[1].coverage == "complete"
+    assert projects[1].allocated_bytes == 20
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unsupported", "invalid_output"])
+def test_failed_initial_dependency_read_cannot_verify_timed_out_allocation(
+    scope_case, failure
+):
+    from app.schemas.kubevirt_storage import CollectionLimits, ReadResult
+    from app.services.native_dependency_collection import enrich
+
+    current_images(scope_case)
+    image = with_usage_timeout(scope_case.images[-1], None).model_copy(
+        update={"current_dependencies": None}
+    )
+    reader = SimpleNamespace(
+        image_dependencies=lambda *args: ReadResult(status=failure, collected_at=NOW)
+    )
+    result = enrich(reader, image, [], CollectionLimits())
+    assert result.current_dependencies is None
+    assert result.dependency_graph_verified_at is None
+    assert result.measurement_status == "timeout" and result.allocated_bytes is None
+
+
+def test_cache_boundary_still_requires_complete_allocation(scope_case):
+    from app.schemas.kubevirt_storage import CollectionLimits
+    from app.services.native_dependency_collection import enrich
+
+    current_images(scope_case)
+    cache = with_usage_timeout(scope_case.images[2], None).model_copy(
+        update={"current_dependencies": None}
+    )
+
+    def forbidden(*args):
+        pytest.fail("cache allocation timeout cannot enter metadata-only proof")
+
+    result = enrich(
+        SimpleNamespace(image_dependencies=forbidden), cache, [], CollectionLimits(), []
+    )
+    assert (
+        result.current_dependencies is None
+        and result.dependency_graph_verified_at is None
+    )
+
+
+def test_cleanup_dependency_enrichment_requires_supported_backend_profile(
+    scope_case, monkeypatch
+):
+    from app.schemas.kubevirt_storage import CollectionLimits
+    from app.services import kubevirt_storage_collector as collector
+    from app.services import native_dependency_collection as dependency
+
+    current_images(scope_case)
+    image = with_usage_timeout(scope_case.images[-1], None).model_copy(
+        update={"current_dependencies": None}
+    )
+    monkeypatch.setattr(collector, "_trash_ids", lambda *args: set())
+    monkeypatch.setattr(collector, "_collect_image", lambda *args: image)
+
+    def forbidden(*args):
+        pytest.fail("unsupported backend must not collect dependency proof")
+
+    monkeypatch.setattr(dependency, "enrich", forbidden)
+    result = collector._queued_image(
+        None,
+        image.key,
+        {},
+        {image.key},
+        set(),
+        {},
+        [],
+        False,
+        "unsupported",
+        lambda: NOW,
+        CollectionLimits(),
+        [],
+    )
+    assert result == image
+
+
+def test_dependency_verification_cannot_be_after_report_completion():
+    from pydantic import ValidationError
+
+    from app.schemas.kubevirt_storage import NativeStorageReport
+    from tests.kubevirt_storage_helpers import report_fixture
+
+    report = report_fixture("zero-private-parent.json")
+    image = with_usage_timeout(
+        with_dependencies(report.images[0]), report.completed_at + timedelta(seconds=1)
+    )
+    data = report.model_dump() | {
+        "images": [image.model_dump(), *[i.model_dump() for i in report.images[1:]]]
+    }
+    with pytest.raises(ValidationError, match="outside collection"):
+        NativeStorageReport.model_validate(data)
 
 
 def test_current_descendant_conflicting_bindings_remain_blocked(scope_case):
@@ -374,11 +561,14 @@ def test_current_descendant_conflicting_bindings_remain_blocked(scope_case):
         "missing_cache_evidence",
     ],
 )
+@pytest.mark.parametrize("usage_timeout", [False, True])
 def test_changed_current_closure_rejects_incomplete_or_conflicting_proof(
-    scope_case, change
+    scope_case, change, usage_timeout
 ):
     q = scope_case
     current_images(q)
+    if usage_timeout:
+        q.images[-1] = with_usage_timeout(q.images[-1])
     child = q.images[-1]
     evidence = child.current_dependencies
     if change == "missing":
@@ -478,10 +668,20 @@ def test_duplicate_source_observation_cannot_prove_independence(scope_case):
 
 
 @pytest.mark.parametrize(
-    "cleanup,shared_cache", [(False, False), (True, False), (True, True)]
+    "cleanup,shared_cache,usage_timeout,final_failure",
+    [
+        (False, False, False, "drift"),
+        (True, False, False, "drift"),
+        (True, True, False, "drift"),
+        (True, True, True, "drift"),
+        (True, True, True, "graph_timeout"),
+        (True, True, True, "dependency_timeout"),
+        (True, True, True, "deadline"),
+        (True, True, True, "stale_dependency"),
+    ],
 )
 def test_scoped_collector_closes_current_cleanup_descendants_only(
-    scope_case, cleanup, shared_cache
+    scope_case, cleanup, shared_cache, usage_timeout, final_failure
 ):
     import json
     import time
@@ -523,9 +723,17 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
             )
         )
     child_reads = []
+    failure_mode = None
 
     class Reader(Rbd):
+        def image_usage(self, image):
+            if usage_timeout and image == key("snapshot-child"):
+                return ReadResult(status="timeout", collected_at=NOW)
+            return super().image_usage(image)
+
         def image_info(self, image):
+            if failure_mode == "graph_timeout" and image == key("snapshot-child"):
+                return ReadResult(status="timeout", collected_at=NOW)
             row = images[image]
             parent = row.parent
             value = {"id": image.image_id, "name": image.image_id}
@@ -571,6 +779,8 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
             )
 
         def image_dependencies(self, image, limit, selected=None):
+            if failure_mode == "dependency_timeout" and image == key("snapshot-child"):
+                return ReadResult(status="timeout", collected_at=NOW)
             value = images[image].current_dependencies
             if shared_cache and image == key("cache"):
                 assert selected == ["12001"]
@@ -588,7 +798,9 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
                         if selected is None or s.snapshot.snapshot_id in selected
                     ],
                 },
-                collected_at=NOW,
+                collected_at=NOW - timedelta(seconds=1)
+                if failure_mode == "stale_dependency"
+                else NOW,
             )
 
     inv = q.inventory.model_copy(
@@ -617,6 +829,27 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
     assert (key("snapshot-child") in {i.key for i in collected}) == cleanup
     if cleanup:
         assert all(i.current_dependencies is not None for i in collected)
+        if usage_timeout:
+            pending = next(i for i in collected if i.key == key("snapshot-child"))
+            assert pending.measurement_status == "timeout"
+            assert pending.allocated_bytes is None
+            assert pending.dependency_graph_verified_at is None
+            collected = _final_graph_check(
+                reader,
+                collected,
+                [{"poolnum": 1, "poolname": "pool"}],
+                limits,
+                time.monotonic() + 60,
+                errors,
+                lambda: NOW,
+            )
+            verified = next(i for i in collected if i.key == pending.key)
+            assert verified.measurement_status == "timeout"
+            assert (
+                verified.allocated_bytes is None and verified.provisioned_bytes is None
+            )
+            assert verified.measurement_semantics_version is None
+            assert verified.dependency_graph_verified_at == NOW
         if shared_cache:
             from app.services.native_snapshot_isolation import isolated
 
@@ -661,19 +894,23 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
             )
         child = images[key("snapshot-child")]
         value = child.current_dependencies
-        images[child.key] = child.model_copy(
-            update={
-                "current_dependencies": value.model_copy(
-                    update={"head": value.head.model_copy(update={"overlap_bytes": 11})}
-                )
-            }
-        )
+        failure_mode = final_failure
+        if final_failure == "drift":
+            images[child.key] = child.model_copy(
+                update={
+                    "current_dependencies": value.model_copy(
+                        update={
+                            "head": value.head.model_copy(update={"overlap_bytes": 11})
+                        }
+                    )
+                }
+            )
         checked = _final_graph_check(
             reader,
             collected,
             [{"poolnum": 1, "poolname": "pool"}],
             limits,
-            time.monotonic() + 60,
+            0 if final_failure == "deadline" else time.monotonic() + 60,
             errors,
             lambda: NOW,
         )
@@ -681,6 +918,20 @@ def test_scoped_collector_closes_current_cleanup_descendants_only(
             next(i for i in checked if i.key == child.key).measurement_status
             != "complete"
         )
+        failed = next(i for i in checked if i.key == child.key)
+        if final_failure == "stale_dependency":
+            assert failed.collected_at == NOW - timedelta(seconds=1)
+            assert failed.dependency_graph_verified_at == NOW
+            assert not isolated(
+                {i.key: i for i in checked},
+                {q.images[0].key},
+                key("cache"),
+                set(q.scope.owned_images),
+                NOW,
+            )
+            return
+        assert failed.current_dependencies is None
+        assert failed.dependency_graph_verified_at is None
 
 
 @pytest.mark.parametrize("cleanup", [False, True])

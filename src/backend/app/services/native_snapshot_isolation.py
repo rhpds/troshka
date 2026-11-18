@@ -33,7 +33,7 @@ def _complete(image, cutoff, boundary=False):
         image is None
         or image.current_dependencies is None
         or image.absence is not None
-        or image.measurement_status != "complete"
+        or not _measurement_or_verified_dependency(image, cutoff, boundary)
         or image.collected_at < cutoff
         or (image.source_snapshot_children is not None and not boundary)
     ):
@@ -54,6 +54,18 @@ def _complete(image, cutoff, boundary=False):
         and all(
             (d.overlap_bytes > 0) == (d.parent is not None) for d in dependencies(image)
         )
+    )
+
+
+def _measurement_or_verified_dependency(image, cutoff, boundary):
+    if image.measurement_status == "complete":
+        return True
+    verified = image.dependency_graph_verified_at
+    return (
+        not boundary
+        and image.measurement_status == "timeout"
+        and verified is not None
+        and verified >= max(cutoff, image.collected_at)
     )
 
 

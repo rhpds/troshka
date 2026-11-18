@@ -497,7 +497,11 @@ def _queued_image(
                 "measurement_semantics_version": None,
             }
         )
-    return enrich(reader, image, pools, limits) if key in isolating else image
+    return (
+        enrich(reader, image, pools, limits)
+        if key in isolating and capability_ok
+        else image
+    )
 
 
 def _queue_image_edges(queue, image, depth, isolating, expanded, cache, full):
@@ -572,17 +576,24 @@ def _final_checks(inventory, rbd_reader, errors):
         errors.append(Blocker(code="inventory_recheck_unavailable"))
 
 
-def _graph_metadata(reader, image, pools, limits):
+def _graph_metadata(reader, image, pools, limits, timestamps=None):
+    timestamps = [] if timestamps is None else timestamps
     info = _call(reader.image_info, image.key)
     if not isinstance(info.value, dict):
         raise ValueError("invalid image metadata")
     parent = _parent(info.value, image.key, pools, reader)
     result = _call(reader.image_snapshots, image.key)
+    timestamps.extend([info.collected_at, result.collected_at])
     snapshots, _ = _snapshot_rows(result.value, image.key)
     if len(snapshots) > limits.max_objects:
         raise _ReadFailure("scan_limit")
     children = _children(
-        reader, image.key, snapshots, pools, [], limits.max_objects - len(snapshots)
+        reader,
+        image.key,
+        snapshots,
+        pools,
+        timestamps,
+        limits.max_objects - len(snapshots),
     )
     return info.value.get("id"), parent, set(snapshots), set(children)
 
@@ -590,11 +601,23 @@ def _graph_metadata(reader, image, pools, limits):
 def _final_graph_check(reader, images, pools, limits, deadline, errors, clock):
     verified = []
     for image in images:
-        if image.measurement_status != "complete":
+        if (
+            image.measurement_status != "complete"
+            and image.current_dependencies is None
+        ):
             verified.append(image)
             continue
         try:
-            _verify_image_graph(reader, image, pools, limits, deadline, clock)
+            observed = _verify_image_graph(
+                reader, image, pools, limits, deadline, clock
+            )
+            if image.measurement_status == "timeout":
+                image = image.model_copy(
+                    update={
+                        "dependency_graph_verified_at": clock(),
+                        "collected_at": min(image.collected_at, observed),
+                    }
+                )
             verified.append(image)
         except (_ReadFailure, ValueError, KeyError, TypeError, AttributeError) as error:
             status = (
@@ -613,6 +636,8 @@ def _final_graph_check(reader, images, pools, limits, deadline, errors, clock):
                         "allocated_bytes": None,
                         "measurement_semantics_version": None,
                         "absence": None,
+                        "current_dependencies": None,
+                        "dependency_graph_verified_at": None,
                     }
                 )
             )
@@ -633,7 +658,8 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
             != image.absence.model_dump(exclude={"collected_at"})
         ):
             raise _ReadFailure("identity_changed")
-        return
+        return image.collected_at
+    timestamps = [image.collected_at]
     if image.source_snapshot_children is not None:
         observed = _source_metadata(
             reader,
@@ -641,6 +667,7 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
             {e.snapshot for e in image.source_snapshot_children},
             pools,
             limits,
+            timestamps,
         )
         if observed != (
             image.key.image_id,
@@ -648,9 +675,8 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
             image.source_snapshot_children,
         ):
             raise _ReadFailure("identity_changed")
-        _verify_dependencies(reader, image, pools, limits)
-        return
-    observed = _graph_metadata(reader, image, pools, limits)
+        return min(*timestamps, _verify_dependencies(reader, image, pools, limits))
+    observed = _graph_metadata(reader, image, pools, limits, timestamps)
     expected = (
         image.key.image_id,
         image.parent,
@@ -659,18 +685,20 @@ def _verify_image_graph(reader, image, pools, limits, deadline, clock):
     )
     if observed != expected:
         raise _ReadFailure("identity_changed")
-    _verify_dependencies(reader, image, pools, limits)
+    return min(*timestamps, _verify_dependencies(reader, image, pools, limits))
 
 
 def _verify_dependencies(reader, image, pools, limits):
     if image.current_dependencies is not None:
         from app.services.native_dependency_collection import metadata
 
-        current, _ = metadata(
+        current, observed = metadata(
             reader, image, pools, limits, image.current_dependencies.cache_boundary
         )
         if current != image.current_dependencies:
             raise _ReadFailure("identity_changed")
+        return observed
+    return image.collected_at
 
 
 def collect_report(

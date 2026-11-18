@@ -457,6 +457,7 @@ class ImageObservation(Evidence):
     measurement_semantics_version: Annotated[str, Field(max_length=256)] | None
     absence: BackendImageInventory | BackendImageState | None = None
     current_dependencies: CurrentImageDependencies | None = None
+    dependency_graph_verified_at: datetime | None = None
     source_snapshot_children: list[SourceSnapshotChildren] | None = Field(
         default=None, max_length=10000
     )
@@ -470,7 +471,22 @@ class ImageObservation(Evidence):
             data.pop("source_snapshot_children", None)
         if data.get("current_dependencies") is None:
             data.pop("current_dependencies", None)
+        if data.get("dependency_graph_verified_at") is None:
+            data.pop("dependency_graph_verified_at", None)
         return data
+
+    @model_validator(mode="after")
+    def dependency_verification_requires_evidence(self):
+        if self.dependency_graph_verified_at is not None and (
+            self.current_dependencies is None
+            or self.absence is not None
+            or self.measurement_status != "timeout"
+            or self.provisioned_bytes is not None
+            or self.measurement_semantics_version is not None
+            or self.dependency_graph_verified_at < self.collected_at
+        ):
+            raise ValueError("invalid independent dependency verification")
+        return self
 
     @model_validator(mode="after")
     def complete_requires_bytes(self):
@@ -587,6 +603,14 @@ class NativeStorageReport(AttributionResult):
             raise ValueError("reversed report timestamps")
         if any(i.collected_at > self.completed_at for i in self.images):
             raise ValueError("observation after report completion")
+        if any(
+            i.dependency_graph_verified_at is not None
+            and not self.started_at
+            <= i.dependency_graph_verified_at
+            <= self.completed_at
+            for i in self.images
+        ):
+            raise ValueError("dependency verification outside collection")
         if (
             self.initialization_observation is not None
             and not self.started_at

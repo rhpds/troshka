@@ -14,6 +14,32 @@ validation. The consolidated runtime fix passed independent re-review. Task5b
 disposable end-to-end qualification remains required before a full release with
 `--fresh-accounting`.
 
+November 18 continuation: candidate v16 is installed in dev at backend digest
+`18e5aaea212eea9c1879cf59d7fd84481d3b65465b90c473d29dba368019afb9`.
+All five backend deployment rollouts completed, and all six backend pods passed
+source, digest and protected-runtime verification. The committed source
+`f30aa97229c9f708228a32f0f3fd75d0de842259` passed the normal pre-push test fallback:
+9,942 passed, 1,145 skipped. No Sonar analysis ran because its token was absent.
+Fresh report `60913c0c-1d3d-4ae4-8286-d0a0d8b78f8b` still leaves the disposable
+Delete pending: one other-project descendant's usage measurement timed out,
+preventing complete isolation proof. A separate bounded usage read timed out as
+well. Both private images remain independently absent from active storage and
+trash; the shared source survives. This is not completed Delete qualification.
+
+The subsequent dependency-verification correction passed independent scoped
+review, 152 focused tests, eight SQLite settlement cases and eight isolated
+PostgreSQL settlement cases. It preserves unknown allocation after a usage
+timeout and requires a separate fresh final dependency verification. Candidate
+installation and live settlement qualification remain pending.
+
+The full dev health gate also fails on unresolved snapshot accounting for the
+two preserved failed capture tests. That separate recovery requires the requested
+scope decision; no capture work or gate exception has been started. Production
+remains unchanged. A read-only refresh at 07:24:45 UTC confirmed all seven original
+project namespaces active and not terminating, with their root and VM objects
+present. The final mixed recovery/delete fixture, temporary-key revocation and
+full dev/production release remain pending.
+
 Latest retained dev qualification, November 18 at 06:22:30 UTC: the v15 normal
 Delete of the redeployed disposable project reached VM/VMI and namespace absence.
 Independent two-round storage observations at 06:17:13 UTC prove both retained

@@ -115,3 +115,34 @@ expose those values. Do not copy raw debug object dumps into reports or issues;
 use allowlisted event/error summaries. The local acceptance log is restricted to
 its owner. Review logging levels/redaction and credential placement separately,
 and assess the affected credentials without reproducing their values here.
+
+## Preserved capture attempts block full release accounting
+
+**Status:** Confirmed on November 18; scope decision requested before recovery.
+
+The preserved dev projects `430db3b3-e7a8-471c-94eb-8a7786bb66f9` and
+`0db5e15e-7630-4c2f-916a-6c3670994d00` both report
+`csi_snapshot_backend_unresolved` in their latest collection errors and inventory
+blockers. Shared-domain accounting also reports failure. The full release health
+check covers these enrolled projects, so finishing the separate disposable
+deletion will not by itself satisfy that gate. No capture replay, accounting
+recovery, evidence removal or gate exception has been performed.
+
+Keep their failed records and resources intact. Recovery must be scoped separately
+from the deletion-only acceptance; do not silently bypass the full accounting
+gate. Read-only evidence is retained in
+`/private/tmp/troshka-v16-dev-health-details.json` and the native-deployment-origin
+task ledger.
+
+## Release-check interpretation of partial project coverage
+
+**Status:** Observed during read-only diagnostics; deferred for separate review.
+
+`scripts/collector_release_check.py:observe` derives project status from report
+acceptance, reason codes, collection errors and inventory blockers. It does not
+inspect each project's computed coverage. Report
+`60913c0c-1d3d-4ae4-8286-d0a0d8b78f8b` has partial project coverage but is classified
+as complete by that observer. The active-cleanup guard independently blocks the
+current release, and deletion settlement independently rejects the incomplete
+proof. Review whether the release checker also needs an explicit coverage check
+for projects without active cleanup. No gate behavior was changed here.
