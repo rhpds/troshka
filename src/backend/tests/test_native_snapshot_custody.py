@@ -605,7 +605,8 @@ def test_cancelled_snapshot_reconciliation_retains_never_allocated_debt(
         request = reconciliation.prepare(db, str(q.intent.id))
         db.commit()
     if settled_history:
-        assert old not in request.pins.project_roots
+        assert old in request.pins.project_roots
+        assert old.project_id not in {p.project_id for p in request.enrollment.projects}
         assert str(old.project_id) not in {
             str(p.project_id) for p in request.enrollment.projects
         }

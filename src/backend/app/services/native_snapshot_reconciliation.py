@@ -40,6 +40,11 @@ def _state(db, intent):
 
 def validate_state(db, request):
     custody.require(
+        [p.project_id for p in request.enrollment.projects]
+        == [request.intent.project_id],
+        "Snapshot target identity changed",
+    )
+    custody.require(
         request.mode == "snapshot-reconcile"
         and request.snapshot_read_state == _state(db, request.intent),
         "Snapshot cancellation or writer state changed",
@@ -57,15 +62,14 @@ def prepare(db, intent_id):
     row, receipt = current
     custody.retained(db, db.get(Project, row.project_id))
     domain, manifest = custody._domain(db, row.domain_id)
-    pins = custody._extended_pins(
-        manifest,
-        domain.enrollment_id,
-        receipt.publication.root,
-        retired=custody._settled_roots(db),
+    pins = manifest.pins
+    custody.require(
+        receipt.publication.root in pins.project_roots,
+        "Snapshot root is outside enrolled domain",
     )
-    enrollment = custody.enrollment.prepare_native_enrollment(
-        db, [str(r.project_id) for r in pins.project_roots]
-    )
+    # Snapshot readback does not verify or publish an enrollment transition.
+    # Historical roots may already be settled and their Project rows deleted.
+    enrollment = custody.enrollment.prepare_native_enrollment(db, [row.project_id])
     request = receipt.publication.model_copy(
         update={
             **{key: getattr(receipt, key) for key in SnapshotFacts.model_fields},

@@ -397,6 +397,113 @@ def test_snapshot_reconciliation_survives_completed_controller_retries(
     assert not h.deleted
 
 
+@pytest.mark.parametrize("deleted_history", [False, True])
+def test_snapshot_reconciliation_keeps_enrolled_anchor_after_other_root_settles(
+    checkpoint_case, monkeypatch, deleted_history
+):
+    from helpers.patterns import build_volume_snapshot
+
+    from app.models.project import Project
+    from app.services import (
+        native_snapshot_graph,
+        native_snapshot_reconciliation,
+        quota_cleanup,
+    )
+
+    h = SnapshotHarness(checkpoint_case, monkeypatch, "capture")
+    body = build_volume_snapshot(
+        "operation-snapshot", h.q.root.namespace, h.source["metadata"]["name"]
+    )
+    body["spec"]["volumeSnapshotClassName"] = "fixture-class"
+    h.create(body)
+    h.ready_snapshot("operation-snapshot")
+    with h.q.sessions() as db:
+        domain, manifest = custody._domain(db, str(h.q.pins.domain_id))
+        enrollment_id = domain.enrollment_id
+        old = next(r for r in manifest.pins.project_roots if r != h.q.root)
+        project = db.get(Project, str(old.project_id))
+        if deleted_history:
+            db.delete(project)
+        else:
+            project.state = "draft"
+            project.host_id = None
+        db.commit()
+    monkeypatch.setattr(
+        quota_cleanup,
+        "native_intents",
+        lambda db: [
+            SimpleNamespace(
+                root=old,
+                phase="finalized",
+                settlement_report_id="settlement",
+                settled_at=datetime.now(UTC),
+            )
+        ],
+    )
+    with h.q.sessions() as db:
+        request = native_snapshot_reconciliation.prepare(db, str(h.q.intent.id))
+        db.commit()
+    from app.models.native_origin_custody import NativeOriginCustodyRequest
+
+    proposed = request.model_copy(
+        update={
+            "request_id": uuid4(),
+            "pins": custody._extended_pins(
+                manifest,
+                enrollment_id,
+                h.q.root,
+                retired={custody.enrollment.root_key(old)},
+            ),
+        }
+    )
+    with h.q.sessions() as db:
+        db.add(
+            NativeOriginCustodyRequest(
+                id=str(proposed.request_id),
+                digest=custody.digest(proposed),
+                payload=proposed.model_dump(mode="json"),
+            )
+        )
+        db.flush()
+        domain, _ = custody._domain(db, str(h.q.pins.domain_id))
+        with pytest.raises(ValueError, match="runtime profile changed"):
+            custody._publication_request(db, proposed, domain)
+        db.rollback()
+    for identities in (
+        [],
+        [
+            request.enrollment.projects[0].model_copy(
+                update={"project_id": old.project_id}
+            )
+        ],
+    ):
+        changed = request.model_copy(
+            update={
+                "enrollment": request.enrollment.model_copy(
+                    update={"projects": identities}
+                )
+            }
+        )
+        with h.q.sessions() as db, pytest.raises(ValueError, match="target identity"):
+            native_snapshot_reconciliation.validate_state(db, changed)
+    value = native_snapshot_reconciliation.verify(request, h.q.reader, h.q.backend)
+    with h.q.sessions() as db:
+        native_snapshot_reconciliation.apply(db, value)
+        db.commit()
+    with h.q.sessions() as db:
+        domain, current = custody._domain(db, str(h.q.pins.domain_id))
+        assert domain.enrollment_id == enrollment_id
+        assert current == manifest
+        retained = custody.retained(db, db.get(Project, h.q.project_id))
+        assert len(retained[1].snapshots) == 1
+        assert native_snapshot_graph.resolve(
+            db, current, retired=quota_cleanup.settled_root_keys(db)
+        )
+    assert request.pins == manifest.pins
+    assert old.project_id not in {p.project_id for p in request.enrollment.projects}
+    assert not h.deleted
+
+
 def test_resolved_snapshot_only_failure_can_cleanup_through_signed_protocol(
     checkpoint_case, monkeypatch
 ):

@@ -758,15 +758,19 @@ def _publication_request(db, prepared, domain):
         )
     target, pins, profile_digest = runtime_profile(domain.id)
     anchored_domain, anchored_manifest = _anchored_domain(db, pins)
+    expected_pins = (
+        previous.pins
+        if prepared.mode == "snapshot-reconcile"
+        else _extended_pins(
+            previous, domain.enrollment_id, prepared.root, retired=_settled_roots(db)
+        )
+    )
     require(
         profile_digest == prepared.profile_digest
         and target == str(prepared.enrollment.target_id)
         and anchored_domain.enrollment_id == str(prepared.previous_enrollment_id)
         and anchored_manifest == previous
-        and _extended_pins(
-            previous, domain.enrollment_id, prepared.root, retired=_settled_roots(db)
-        )
-        == prepared.pins,
+        and expected_pins == prepared.pins,
         "Origin runtime profile changed",
     )
     current = _current(db, prepared.intent.id)

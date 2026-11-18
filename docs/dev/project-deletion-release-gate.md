@@ -30,10 +30,15 @@ both publications contain proposed enrollment pins that exclude the settled,
 deleted mixed fixture, but snapshot reconciliation did not publish that enrollment
 transition. Exact protected-anchor validation correctly rejects those pins.
 The snapshot proofs and failed Pattern records remain preserved; publication
-alone is not successful recovery. No anchor guard was weakened. This requires
-a bounded publication correction and independently verified metadata recovery
-before another fresh accounting gate. Production remains held. These
-source fixes have not yet been installed in running services.
+alone is not successful recovery. No anchor guard was weakened. The user approved
+the bounded correction and existing verified enrollment workflow. The successor
+`2bf74c06-274d-45d1-b5c9-92737bcf8af7` was independently verified and published;
+both unchanged receipts passed retained-authority checks before commit. Fresh
+normal-worker accounting is running again. The forward fix preserves current
+enrolled pins and prepares only the snapshot project's identity, including when
+an unrelated historical project has been deleted. Production remains held until
+fresh accounting passes. These source fixes have not yet been installed in
+running services.
 
 Earlier November 18 qualification: committed source `b904f060` passed all normal
 commit hooks and the normal pre-push test fallback: **9,980 passed, 1,149 skipped**.

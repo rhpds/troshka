@@ -29,6 +29,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   shorter ordinary inventory deadline. Snapshot accounting verification tolerates
   completed controller retry bookkeeping while preserving checks on active
   executions, operator identity, checkpoints and storage producer identities.
+  Snapshot reconciliation preserves enrolled domain references after unrelated
+  projects settle or are deleted, without proposing an unpublished enrollment
+  transition; only its own project identity is prepared and locked.
 
 - Native project cleanup fences late producers, waits for VM/VMI absence and
   Troshka finalizers, then deletes the namespace normally. An exact terminating
