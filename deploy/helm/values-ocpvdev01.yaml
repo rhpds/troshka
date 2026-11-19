@@ -38,3 +38,8 @@ affinity:
   avoidNodes: []
 appUpdate:
   mode: disabled
+
+# Match live troshka-dev: capture on, quotas off. Domain origin_admission stays
+# in the Argo/profile values for the enrolled collection domain.
+nativeOrigin:
+  captureEnabled: true

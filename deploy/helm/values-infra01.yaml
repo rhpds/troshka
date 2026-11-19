@@ -2,3 +2,9 @@
 # Keep this capacity aligned with the existing PVC; Kubernetes cannot shrink it.
 s4:
   storageSize: 4Ti
+
+# Record generic native birth provenance while quotas stay off (see
+# docs/superpowers/specs/2026-11-17-native-deployment-origin-design.md).
+# Per-domain origin_admission remains in Argo valuesObject profiles.
+nativeOrigin:
+  captureEnabled: true

@@ -14,6 +14,12 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native origin capture enabled for local, troshka-dev, and infra01 while quotas
+  stay off, so new generic kubevirt deploys retain namespace/root birth provenance
+  for guarded cleanup. Per-domain `origin_admission` is set on prod collection
+  profiles to match troshka-dev; existing projects still need reviewed online
+  enrollment/reconciliation for delete authority.
+
 - Deployment: storage verification is opt-in. Use `--verify-storage` for existing
   evidence, `--fresh-accounting` for a fresh fleet audit, or `--accounting-project`
   for selected projects. Image and application health checks remain required.
