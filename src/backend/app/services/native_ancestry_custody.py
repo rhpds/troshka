@@ -196,13 +196,16 @@ def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
         )
         assert source_parent is not None
         pending.append((binding, parent, middle, source_parent))
-    caches = []
+    # Keep None until clone parents exist so verification skips cache rediscovery
+    # when observe only sees unbound heads (matches prior caches-is-None guard).
+    caches = None
     if pending:
         _scope_needed_sources(
             kube, backend, {source.image_key for *_, source in pending}
         )
         caches = _sources(kube, pins)
     for binding, parent, middle, source_parent in pending:
+        assert caches is not None
         sources = [b for b in caches if b.image_key == source_parent.image_key]
         _require(
             len(sources) == 1, "Custody source is not an independently bound cache"
