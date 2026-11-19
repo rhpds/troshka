@@ -1,7 +1,8 @@
 import os
+import tempfile
+from pathlib import Path
 
-os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test_provider_model.db"
-
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.orm import sessionmaker
@@ -12,13 +13,25 @@ sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(3
 from app.core.database import Base
 from app.models.provider import Provider
 
+_DB_DIR = Path(
+    os.environ.get("TROSHKA_TEST_DB_DIR")
+    or tempfile.mkdtemp(prefix="troshka-provider-model-")
+)
+_DB_PATH = _DB_DIR / f"test_provider_model-{os.getpid()}.db"
+_DB_URL = f"sqlite:///{_DB_PATH}"
+
 engine = create_engine(
-    "sqlite:///./test_provider_model.db",
+    _DB_URL,
     connect_args={"check_same_thread": False},
 )
-Base.metadata.drop_all(bind=engine)
-Base.metadata.create_all(bind=engine)
 Session = sessionmaker(bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider_tables():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    yield
 
 
 def test_gcp_provider_columns():

@@ -1,3 +1,7 @@
+import os
+import tempfile
+from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.orm import sessionmaker
@@ -8,8 +12,13 @@ sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(3
 from app.core.database import Base
 from app.models import *  # noqa: F403
 
+_DB_DIR = Path(
+    os.environ.get("TROSHKA_TEST_DB_DIR")
+    or tempfile.mkdtemp(prefix="troshka-migration-")
+)
+_DB_PATH = _DB_DIR / f"test_migration-{os.getpid()}.db"
 engine = create_engine(
-    "sqlite:///./test_migration.db", connect_args={"check_same_thread": False}
+    f"sqlite:///{_DB_PATH}", connect_args={"check_same_thread": False}
 )
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)

@@ -13,7 +13,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
 PROJECT = "com.redhat.rhpds.troshka"
 SOURCE_DIRS = ("src/backend", "src/operator", "src/troshkad", "src/frontend/src")
 
@@ -97,7 +96,8 @@ def test_python(root, suite):
 def run_coverage(root, reports, env):
     # Each scan gets fresh reports; never combine stale CI shards.
     timeout = int(env.get("SONAR_TEST_TIMEOUT", "1800"))
-    test_env = {key: value for key, value in env.items() if key != "SONAR_TOKEN"}
+    test_env = _pytest_env(env)
+    _clear_sticky_sqlite(root)
     with tempfile.TemporaryDirectory(prefix="troshka-sonar-db-") as database_dir:
         test_env["TROSHKA_TEST_DB_DIR"] = str(Path(database_dir).resolve())
         for suite, source, filename in (
@@ -226,18 +226,55 @@ def print_findings(env):
         print("  Unable to retrieve findings: " + type(exc).__name__)
 
 
+def _pytest_env(env):
+    """Isolate pytest from developer-shell DB URLs and sticky cwd sqlite files."""
+    test_env = {key: value for key, value in env.items() if key != "SONAR_TOKEN"}
+    for key in (
+        "TROSHKA_DATABASE__URL",
+        "TROSHKA_DATABASE_URL",
+        "DATABASE_URL",
+        "SQLALCHEMY_DATABASE_URI",
+    ):
+        test_env.pop(key, None)
+    return test_env
+
+
+def _clear_sticky_sqlite(root):
+    """Remove leftover relative-path sqlite files from prior local pytest runs."""
+    for directory in (root, root / "src/backend"):
+        for path in directory.glob("test_*.db"):
+            for suffix in ("", "-wal", "-shm"):
+                candidate = Path(str(path) + suffix)
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+
+
 def run_offline_backend(env):
     """Preserve the existing backend pre-push check when Sonar cannot run."""
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
     before, after = env.get("PRE_COMMIT_FROM_REF"), env.get("PRE_COMMIT_TO_REF")
-    if before and after and not git(root, "diff", "--name-only", before, after, "--", "src/backend"):
+    if (
+        before
+        and after
+        and not git(root, "diff", "--name-only", before, after, "--", "src/backend")
+    ):
         print("No backend changes; offline backend tests skipped.")
         return
-    test_env = {key: value for key, value in env.items() if key != "SONAR_TOKEN"}
+    test_env = _pytest_env(env)
+    _clear_sticky_sqlite(root)
     with tempfile.TemporaryDirectory(prefix="troshka-push-db-") as database_dir:
         test_env["TROSHKA_TEST_DB_DIR"] = str(Path(database_dir).resolve())
         run_command(
-            [test_python(root, "backend"), "-m", "pytest", "tests/", "-q", "--tb=short"],
+            [
+                test_python(root, "backend"),
+                "-m",
+                "pytest",
+                "tests/",
+                "-q",
+                "--tb=short",
+            ],
             root / "src/backend",
             test_env,
             int(env.get("SONAR_TEST_TIMEOUT", "1800")),

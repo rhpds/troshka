@@ -1,3 +1,7 @@
+import os
+import tempfile
+from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.orm import sessionmaker
@@ -10,8 +14,13 @@ from app.models.host import Host
 from app.models.provider import Provider
 from app.models.storage_pool import SharedCacheEntry, StoragePool
 
+_DB_DIR = Path(
+    os.environ.get("TROSHKA_TEST_DB_DIR")
+    or tempfile.mkdtemp(prefix="troshka-storage-pools-")
+)
+_DB_PATH = _DB_DIR / f"test_storage_pools-{os.getpid()}.db"
 engine = create_engine(
-    "sqlite:///./test_storage_pools.db", connect_args={"check_same_thread": False}
+    f"sqlite:///{_DB_PATH}", connect_args={"check_same_thread": False}
 )
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
