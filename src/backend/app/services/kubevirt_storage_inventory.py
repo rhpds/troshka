@@ -404,21 +404,44 @@ def _cache_candidate(pvc, pvs, selected):
     )
 
 
+def _cache_image_name(pvc, pvs):
+    pv = pvs.get(pvc.get("spec", {}).get("volumeName"), {})
+    return (
+        pv.get("spec", {}).get("csi", {}).get("volumeAttributes", {}).get("imageName")
+    )
+
+
 def _cache_pvcs(kube, enrolled, pvs):
     records = []
     scope = getattr(kube, "project_cache_bindings", None)
     selected = (
         None if scope is None else [b for b in scope if _cache_root(b) == enrolled]
     )
+    # Online enrollment may pin exact source image names so CSI runs only for
+    # clone parents, not every golden in the shared cache namespace.
+    needed_names = (
+        None
+        if selected is not None
+        else getattr(kube, "needed_cache_image_names", None)
+    )
+    needed_keys = (
+        None if selected is not None else getattr(kube, "needed_cache_image_keys", None)
+    )
     for pvc in kube.pvcs(enrolled["namespace"]):
         if _expired(kube):
             raise TimeoutError("scan limit")
         if selected is not None and not _cache_candidate(pvc, pvs, selected):
             continue
+        if needed_names is not None:
+            image_name = _cache_image_name(pvc, pvs)
+            if image_name is not None and image_name not in needed_names:
+                continue
         fields, _ = _pvc_binding(kube, pvc, pvs, enrolled["namespace"])
         binding = CacheBinding(**enrolled, **fields)
         if selected is not None and binding not in selected:
             raise BindingError("cache_identity_changed")
+        if needed_keys is not None and binding.image_key not in needed_keys:
+            continue
         records.append(binding)
     if selected is not None:
         retained = getattr(kube, "retained_cache_bindings", [])

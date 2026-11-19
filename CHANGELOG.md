@@ -20,6 +20,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   profiles to match troshka-dev; existing projects still need reviewed online
   enrollment/reconciliation for delete authority.
 
+- Online ancestry verification now resolves only the shared-cache images that
+  clone parents require, instead of CSI-scanning every golden PVC in
+  `troshka-cache`.
+
 - Deployment: storage verification is opt-in. Use `--verify-storage` for existing
   evidence, `--fresh-accounting` for a fresh fleet audit, or `--accounting-project`
   for selected projects. Image and application health checks remain required.

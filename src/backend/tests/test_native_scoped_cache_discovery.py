@@ -66,6 +66,21 @@ def test_project_scope_skips_unrelated_cache_resolution_on_both_passes():
     assert calls == [source.volume_handle] * 2
 
 
+def test_needed_image_names_skip_unrelated_cache_csi():
+    kube, source, unrelated, _, pvs, calls = cache_case()
+    for pv, binding in zip(pvs, [source, unrelated]):
+        pv["spec"]["csi"]["volumeAttributes"] = {
+            "imageName": f"csi-vol-{binding.pvc_uid}"
+        }
+    kube.retained_cache_bindings = []
+    kube.needed_cache_image_names = {f"csi-vol-{source.pvc_uid}"}
+    kube.needed_cache_image_keys = {source.image_key}
+    result = discover_inventory(kube, [], [])
+    assert not result.blockers
+    assert result.cache_bindings == [source]
+    assert calls == [source.volume_handle]
+
+
 def test_domain_scan_still_resolves_all_cache_bindings():
     kube, source, unrelated, _, _, calls = cache_case()
     result = discover_inventory(kube, [], [])

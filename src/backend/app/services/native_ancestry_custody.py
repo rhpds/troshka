@@ -145,6 +145,27 @@ def _sources(kube, pins):
     return result
 
 
+def _scope_needed_sources(kube, backend, needed):
+    """Limit cache CSI to exact clone parents already identified via Ceph."""
+    if kube is None or getattr(kube, "project_cache_bindings", None) is not None:
+        return
+    names = set()
+    for key in needed:
+        info = _call(backend.image_info, key).value
+        name = info.get("name") if isinstance(info, dict) else None
+        _require(
+            isinstance(info, dict)
+            and info.get("id") == key.image_id
+            and isinstance(name, str)
+            and bool(name),
+            "Custody source image name unavailable",
+        )
+        assert isinstance(name, str)
+        names.add(name)
+    kube.needed_cache_image_keys = set(needed)
+    kube.needed_cache_image_names = names
+
+
 def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
     """Pin supported exact source -> intermediate -> bound-head current chains."""
     pools = _call(backend.pool_identity).value
@@ -152,7 +173,7 @@ def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
         _call(backend.cluster_identity).value == bindings[0].image_key.ceph_fsid,
         "Custody backend changed",
     )
-    proofs, observed, caches = [], {}, None
+    proofs, observed, pending = [], {}, []
     for binding in bindings:
         head = binding.image_key
         observed[head] = _metadata(backend, head, pools)
@@ -164,8 +185,6 @@ def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
         )
         if parent is None:
             continue
-        if caches is None:
-            caches = _sources(kube, pins)
         middle = parent.image_key
         observed[middle] = _metadata(backend, middle, pools)
         _, source_parent, middle_snaps, middle_children = observed[middle]
@@ -176,6 +195,14 @@ def observe(bindings, kube, backend, pins, verified_at, *, snapshot_edges=None):
             "Custody intermediate is not exclusive",
         )
         assert source_parent is not None
+        pending.append((binding, parent, middle, source_parent))
+    caches = []
+    if pending:
+        _scope_needed_sources(
+            kube, backend, {source.image_key for *_, source in pending}
+        )
+        caches = _sources(kube, pins)
+    for binding, parent, middle, source_parent in pending:
         sources = [b for b in caches if b.image_key == source_parent.image_key]
         _require(
             len(sources) == 1, "Custody source is not an independently bound cache"
