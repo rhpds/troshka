@@ -691,8 +691,9 @@ def request(db, project, mode):
     origin.require(work.mode == mode, "Native origin namespace cleanup mode changed")
     project.state, project.deploy_error = (
         "cleanup_pending",
-        "Origin namespace cleanup and independent storage settlement pending",
+        "Origin namespace cleanup and known-storage orphan reclaim pending",
     )
+    quota_cleanup.freeze_cleanup_metering(db, project)
     db.commit()
     from app.core.redis import mark_cancelled
 

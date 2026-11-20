@@ -1,4 +1,8 @@
-"""Terminal whole-project storage proof; ordinary snapshot source checks stay strict."""
+"""Terminal whole-project storage proof and map-based orphan reclaim.
+
+Project rows are released after namespace absence. Known private images are
+reclaimed asynchronously on the durable cleanup row without collector settlement.
+"""
 
 from typing import TYPE_CHECKING
 
@@ -97,96 +101,191 @@ def verified_retirements(scopes, inventory, images):
     return verified, errors
 
 
-def settle(db, cleanup_id):
-    from app.models.kubevirt_storage import (
-        NativeCollectionDomain,
-        NativeEnrollment,
-        NativeProjectRoot,
-    )
+def _pv_leftovers(api, namespace):
+    try:
+        pvs = api.rows("PersistentVolume", None)
+    except Exception:
+        return []
+    leftover = []
+    for pv in pvs:
+        claim = (pv.get("spec") or {}).get("claimRef") or {}
+        if claim.get("namespace") == namespace:
+            leftover.append(pv.get("metadata", {}).get("name") or "?")
+    return leftover
+
+
+def release_after_namespace(db, cleanup_id, api=None):
+    """Delete/undeploy the Project once the namespace is gone; keep the cleanup row."""
+    from app.models.native_deployment_origin import NativeDeploymentOriginActive
+    from app.models.provider import Provider
     from app.services import native_project_namespace_cleanup as cleanup
-    from app.services import quota_cleanup, quota_operations, quota_storage
-    from app.services.kubevirt_storage_enrollment import validated_enrollment
-    from app.services.kubevirt_storage_reports import report_inventory
+    from app.services.deploy_service import _destroy_cleanup_eips
+    from app.services.quota_cleanup import _finish_project_record
 
     project, work = cleanup._locked(db, cleanup_id)
     origin.require(
-        work.phase in {"namespace_absent", "settled"},
-        "Namespace absence required before storage settlement",
+        work.phase == "namespace_absent",
+        "Namespace absence required before project release",
     )
-    if work.phase == "settled":
-        db.commit()
-        return finish(db, cleanup_id)
-    selected = work.authority
-    origin.require(
-        selected.domain_id is not None and selected.root is not None,
-        "Storage scope unavailable; debt retained",
-    )
-    domain = db.get(NativeCollectionDomain, str(selected.domain_id))
-    manifest = validated_enrollment(db.get(NativeEnrollment, domain.enrollment_id))
-    roots = db.query(NativeProjectRoot).filter_by(domain_id=domain.id).all()
-    graph, source, row, _ = quota_cleanup._cleanup_report(
-        db, domain, roots, manifest, project.id
-    )
-    scope = next(v for v in cleanup.storage_scopes(db) if v.intent_id == work.id)
-    proof = verify_project_retirement(scope, report_inventory(source), source.images)
-    allocation = [p for p in graph.projects if p.project_id == selected.project_id]
-    origin.require(
-        len(allocation) == 1
-        and allocation[0].coverage == "complete"
-        and allocation[0].allocated_bytes == 0
-        and not allocation[0].blockers,
-        "Cleanup storage allocation remains pending",
-    )
-    rows = quota_operations.current_generation(quota_operations._rows(db, project.id))
-    if rows:
-        from app.services import quota_native
+    origin.require(project is not None, "Cleanup project unavailable before release")
+    if TYPE_CHECKING:
+        assert project is not None
+    client = None
+    if api is None:
+        from app.services.native_namespace_client import NamespaceClient
+        from app.services.providers.kubevirt import _get_k8s_clients
 
-        identity = quota_storage.measurement_row(rows).dispatch_metadata[
-            "native_storage_identity"
-        ]
-        measurement = quota_native.storage_measurement(
-            db,
-            project,
-            quota_operations._generation(rows[0]),
-            identity,
-            quota_operations.now(),
-        )
+        provider = db.get(Provider, str(work.authority.provider_id))
+        db.commit()
+        _, _, client = _get_k8s_clients(provider)
+        api = NamespaceClient(client)
+        project, work = cleanup._locked(db, cleanup_id)
+    try:
         origin.require(
-            str(measurement.report_id) == row.id and measurement.allocated_bytes == 0,
-            "Cleanup accounting report changed",
+            api.get("Namespace", None, work.authority.namespace) is None,
+            "Namespace still present during project release",
         )
-        quota_storage.apply_measurement(
-            db, project, rows, measurement, quota_operations.now()
+        leftovers = _pv_leftovers(api, work.authority.namespace)
+        origin.require(
+            not leftovers,
+            "Project PV leftovers remain: " + ",".join(leftovers[:5]),
         )
-    quota_cleanup.finalize_absence(db, project, proof.observed_at)
+    finally:
+        if client is not None:
+            client.close()
+
+    project, current = cleanup._locked(db, cleanup_id, work)
+    origin.require(project is not None, "Cleanup project unavailable before release")
+    if TYPE_CHECKING:
+        assert project is not None
+    project_id = project.id
+    dns = dict(
+        dns_provider_id=project.dns_provider_id,
+        domain=project.domain,
+        topology=project.deployed_topology or project.topology or {},
+    )
+    mode = current.mode
+    # External DNS/EIP must succeed before releasing the Project row so a failed
+    # callback can retry without stranding orphan_reclaim mid-flight.
+    db.commit()
+    _release_dns(db, dns)
+    _destroy_cleanup_eips(db, project_id)
+    from app.models.elastic_ip import ElasticIp
+
+    origin.require(
+        not db.query(ElasticIp).filter_by(project_id=project_id).first(),
+        "External EIP release remains pending",
+    )
+    project, current = cleanup._locked(db, cleanup_id)
+    origin.require(project is not None, "Cleanup project unavailable before release")
+    if TYPE_CHECKING:
+        assert project is not None
     cleanup._evidence(
         db,
-        work,
-        "storage_settled",
-        dict(report_id=row.id, proof=proof.model_dump(mode="json")),
+        current,
+        "project-released",
+        dict(
+            project_id=project_id,
+            mode=mode,
+            liability_digest=current.liability_digest,
+            private_images=[
+                k.model_dump(mode="json") for k in current.liabilities.private_images
+            ],
+        ),
     )
-    cleanup._save(
+    work = cleanup._save(
         db,
-        work,
-        phase="settled",
-        settlement_report_id=row.id,
-        settled_at=proof.observed_at,
-        last_error=None,
+        current,
+        phase="orphan_reclaim",
+        last_error="Project released; reclaiming known private storage orphans",
     )
-    from app.services.metering_service import _freeze_quota_invoice
+    if work.authority.source_kind == "origin":
+        pointer = db.get(NativeDeploymentOriginActive, project_id)
+        if pointer and pointer.intent_id == str(work.authority.source_id):
+            db.delete(pointer)
+    _finish_project_record(db, project, mode)
+    return load_work(db, cleanup_id)
 
-    _freeze_quota_invoice(db, project, proof.observed_at, refresh_live=False)
-    db.commit()
-    return finish(db, cleanup_id)
+
+def load_work(db, cleanup_id):
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    return cleanup.load(db.get(cleanup.State, str(cleanup_id)))
+
+
+def reclaim_orphans(db, cleanup_id, *, core_api=None):
+    """Bounded known-ID / soft-target reclaim; finalize when the map is clear."""
+    from app.models.provider import Provider
+    from app.services import native_orphan_reclaim as orphans
+    from app.services import native_project_namespace_cleanup as cleanup
+    from app.services.native_teardown_map import reclaim_targets
+
+    _, work = cleanup._locked(db, cleanup_id)
+    origin.require(
+        work.phase == "orphan_reclaim",
+        "Orphan reclaim requires released cleanup state",
+    )
+    private = list(work.liabilities.private_images)
+    soft = reclaim_targets(db, work)
+    if not private and not soft:
+        return orphans.finalize_if_clear(db, work, [])
+
+    client = None
+    if core_api is None:
+        from app.services.providers.kubevirt import _get_k8s_clients
+
+        provider = db.get(Provider, str(work.authority.provider_id))
+        db.commit()
+        core_api, _, client = _get_k8s_clients(provider)
+        _, work = cleanup._locked(db, cleanup_id)
+    try:
+        remaining = orphans.attempt(db, work, core_api=core_api)
+    finally:
+        if client is not None and hasattr(client, "close"):
+            client.close()
+    _, work = cleanup._locked(db, cleanup_id)
+    return orphans.finalize_if_clear(db, work, remaining)
+
+
+def settle(db, cleanup_id, api=None, *, core_api=None):
+    """Release the Project after NS absence, then reclaim known orphans.
+
+    Collector settlement reports are no longer required to drop the Project row.
+    """
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    _, work = cleanup._locked(db, cleanup_id)
+    if work.phase == "finalized":
+        db.commit()
+        return work
+    if work.phase == "namespace_absent":
+        work = release_after_namespace(db, cleanup_id, api=api)
+    if work.phase == "orphan_reclaim":
+        return reclaim_orphans(db, cleanup_id, core_api=core_api)
+    if work.phase == "settled":
+        return finish(db, cleanup_id)
+    origin.require(False, "Cleanup phase does not require settlement")
 
 
 def finish(db, cleanup_id):
+    """Legacy collector-settled finalization (pre map-based release)."""
     from app.models.native_deployment_origin import NativeDeploymentOriginActive
     from app.services import native_project_namespace_cleanup as cleanup
     from app.services.deploy_service import _destroy_cleanup_eips
     from app.services.quota_cleanup import _finish_project_record
 
     project, work = cleanup._locked(db, cleanup_id)
+    if work.phase == "finalized":
+        db.commit()
+        return
+    if project is None:
+        origin.require(
+            work.phase in {"orphan_reclaim", "settled"},
+            "Durable cleanup settlement required",
+        )
+        cleanup._save(db, work, phase="finalized")
+        db.commit()
+        return
     origin.require(
         work.phase == "settled" and work.settlement_report_id,
         "Durable cleanup settlement required",

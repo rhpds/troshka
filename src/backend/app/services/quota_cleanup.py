@@ -320,6 +320,7 @@ def request_native(db, project, mode):
         if previous is not None and previous.phase != "finalized":
             if previous.mode != mode:
                 operations.unavailable("Original cleanup mode is already pending")
+            freeze_cleanup_metering(db, project)
             db.commit()
             enqueue_job(reconcile_native, project.id, str(previous.intent_id))
             return dict(
@@ -340,6 +341,8 @@ def request_native(db, project, mode):
         if completed is not None:
             return completed
         intent = prepare_native(db, project, mode)
+        if intent is not None:
+            freeze_cleanup_metering(db, project)
     except NativeCleanupRefreshRequired as error:
         from app.services.native_collection_jobs import enqueue_collection
 
@@ -1269,6 +1272,30 @@ def verify_absence(db, project, host):
         ):
             return None
     return timestamp
+
+
+def freeze_cleanup_metering(db, project):
+    """Stop billing when delete/undeploy is accepted; do not wait for Ceph settlement.
+
+    Idempotent: already-closed intervals and a prior freeze are no-ops.
+    """
+    from app.models.metering import MeteringInterval
+    from app.services.metering_service import _freeze_quota_invoice
+    from app.services.quota_accounting import quotas_enabled
+
+    fence(db, project.id)
+    timestamp = operations.now()
+    open_meters = (
+        db.query(MeteringInterval)
+        .filter_by(project_id=project.id, ended_at=None)
+        .with_for_update()
+        .all()
+    )
+    if open_meters:
+        finalize_absence(db, project, timestamp)
+    if quotas_enabled() or open_meters:
+        _freeze_quota_invoice(db, project, timestamp, refresh_live=False)
+    db.flush()
 
 
 def finalize_absence(db, project, timestamp):

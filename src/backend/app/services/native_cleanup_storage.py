@@ -13,12 +13,16 @@ from app.services.kubevirt_storage_enrollment import digest
 
 
 def require_coverage(work):
-    selected = work.authority
+    """Require a sealed teardown map; collector enrollment is no longer a gate.
+
+    Soft coverage debts must already be cleared by ``native_teardown_map.seal``.
+    Hard PVC/producer debts still block destructive NS delete.
+    """
+    from app.services.native_teardown_map import hard_debts, map_sealed
+
+    origin.require(map_sealed(work), "Teardown map required before destructive cleanup")
     origin.require(
-        selected.domain_id is not None
-        and selected.enrollment_id is not None
-        and selected.root is not None
-        and not work.liabilities.unresolved,
+        not hard_debts(work.liabilities),
         "Verified storage coverage required before destructive cleanup",
     )
 
@@ -203,10 +207,6 @@ def recover(db, api, work):
         tuple[authority.CleanupAuthority, authority.StorageLiabilities],
         authority.resolve(db, project),
     )
-    candidate = work.model_copy(
-        update={"authority": selected, "liabilities": liabilities}
-    )
-    require_coverage(candidate)
     evidence = dict(
         previous=expected,
         authority=selected.model_dump(mode="json"),
@@ -223,6 +223,10 @@ def recover(db, api, work):
         liability_digest=digest(liabilities.model_dump(mode="json")),
         enrollment_boundary=authority.enrollment_boundary(db, selected),
     )
+    from app.services.native_teardown_map import seal
+
+    work = seal(db, api, work)
+    require_coverage(work)
     db.commit()
     # The old marker remains retained. advance publishes its successor and
     # requires a fresh ACK for the new authority before issuing any DELETE.

@@ -6,6 +6,14 @@ it to the current implementation. These entries are not claims of completed
 fixes. Remaining deletion acceptance and release gates stay in
 `project-deletion-release-gate.md`.
 
+## Map-based delete (November 20, 2026)
+
+Implemented: stop meter on delete request; seal a teardown map before NS drain;
+release the Project after namespace absence; reclaim known private images on
+`orphan_reclaim` without collector settlement. Soft coverage debts no longer
+block NS teardown. See `native_teardown_map.py`, `native_orphan_reclaim.py`, and
+`docs/dev/manual-accounting-retirement.md`.
+
 ## Capture restore verification uses conflicting deadlines
 
 **Status:** Confirmed during capture testing; deferred by the user's explicit

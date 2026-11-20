@@ -1,9 +1,15 @@
 # Accounting after manual project deletion
 
-Use this recovery only after an authorized manual deletion has removed the
+Prefer the automatic map-based delete path: metering stops when delete is
+accepted, the Project row is released after namespace absence, and known private
+RBD images are reclaimed asynchronously on the durable cleanup row
+(`orphan_reclaim` → `finalized`). Collector settlement reports are optional
+audit, not a gate.
+
+Use this recovery only when an authorized manual deletion already removed the
 Project row and left a finalized `NativeProjectNamespaceCleanup` record with
-immutable `manual-legacy-retirement` evidence. Normal cleanup continues to use
-automated storage settlement.
+immutable `manual-legacy-retirement` evidence (legacy cases that never got a
+teardown map).
 
 The explicit operator service checks the original namespace, PVs, snapshot
 contents, complete RBD directory/trash absence for every private image, and

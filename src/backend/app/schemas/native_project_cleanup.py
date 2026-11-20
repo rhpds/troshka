@@ -69,6 +69,7 @@ class ProjectNamespaceCleanup(Evidence):
         "vm_delete_requested",
         "namespace_delete_requested",
         "namespace_absent",
+        "orphan_reclaim",
         "settled",
         "finalized",
     ] = "fencing"

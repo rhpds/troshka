@@ -14,6 +14,14 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native delete is map-based: metering freezes when delete/undeploy is accepted,
+  a VM→PVC→RBD teardown map is sealed before namespace drain (custody or
+  live-namespace inventory — no domain-wide collector scan as a gate), the
+  Project row is released after namespace absence, and known private images are
+  reclaimed asynchronously (`orphan_reclaim`). Soft
+  `storage_coverage_unavailable` / `incomplete` debts no longer hold the
+  Project hostage; collector settlement remains optional audit.
+
 - Native storage discovery matches retiring cleanup intents by `root_key` (not
   full `ProjectRoot` equality), so namespace-absent roots still produce retiring
   evidence when `deployment_generation` drifted between enrollment and cleanup.

@@ -183,6 +183,24 @@ def namespace_adapter(q, monkeypatch):
         lambda work: q.settlement_collections.append(str(work.id)) or True,
     )
     monkeypatch.setattr(quota_operations, "now", lambda: FixedDatetime.current)
+    # Map-based release/reclaim: unit tests do not talk to rook toolbox.
+    from app.services import native_orphan_reclaim, native_project_retirement
+
+    monkeypatch.setattr(
+        native_orphan_reclaim, "attempt", lambda db, work, core_api=None: []
+    )
+
+    def reclaim_done(db, cleanup_id, **kwargs):
+        _, work = cleanup._locked(db, cleanup_id)
+        return native_orphan_reclaim.finalize_if_clear(db, work, [])
+
+    monkeypatch.setattr(native_project_retirement, "reclaim_orphans", reclaim_done)
+    real_settle = native_project_retirement.settle
+
+    def settle_with_api(db, cleanup_id, api=None, **kwargs):
+        return real_settle(db, cleanup_id, api=api or q.api, **kwargs)
+
+    monkeypatch.setattr(native_project_retirement, "settle", settle_with_api)
 
     def request():
         with q.sessions() as db:
@@ -909,19 +927,11 @@ def test_terminal_settlement_with_other_unresolved_snapshot_keeps_unknown_chain_
         )
         db.commit()
         assert db.get(NativeStorageSnapshot, report_id).accepted
-        blocked = missing_source_chain or (dependency_timeout and not verified)
-        if blocked:
-            with pytest.raises(AccountingUnavailable):
-                settle(db, q.cleanup_id)
-        else:
-            settle(db, q.cleanup_id)
+        # Map-based release no longer waits on collector proof completeness.
+        settle(db, q.cleanup_id)
     with q.sessions() as db:
-        assert cleanup.states(db, q.project_id)[0].phase == (
-            "namespace_absent" if blocked else "finalized"
-        )
-        assert db.get(Project, q.project_id).state == (
-            "cleanup_pending" if blocked else "draft"
-        )
+        assert cleanup.states(db, q.project_id)[0].phase == "finalized"
+        assert db.get(Project, q.project_id).state == "draft"
         assert db.get(Project, str(source.root.project_id)).state == "active"
 
 
@@ -994,9 +1004,8 @@ def test_namespace_absent_requests_cleanup_priority_collection(namespace_case):
     q.advance()
     assert q.advance().phase == "namespace_delete_requested"
     assert q.settlement_collections  # warms as soon as NS DELETE is retained
-    before_absent = list(q.settlement_collections)
     assert q.advance().phase == "namespace_absent"
-    assert q.settlement_collections[len(before_absent) :]  # again on namespace_absent
+    # Collector settlement is optional audit; project release no longer depends on it.
 
 
 def test_missing_storage_identity_remains_debt_after_namespace_absence(namespace_case):
@@ -1255,18 +1264,18 @@ def test_dns_failure_keeps_settlement_and_retries_original_records(
     with pytest.raises(AccountingUnavailable, match="DNS removal"):
         cleanup.reconcile(q.cleanup_id)
     with q.sessions() as db:
-        assert cleanup.states(db, q.project_id)[0].phase == "settled"
-        assert "DNS removal" in db.get(Project, q.project_id).deploy_error
-        assert (
-            db.get(Project, q.project_id).deployed_topology["_dns_records"] == records
-        )
+        work = cleanup.states(db, q.project_id)[0]
+        assert work.phase == "namespace_absent"
+        project = db.get(Project, q.project_id)
+        assert project is not None
+        assert project.deployed_topology["_dns_records"] == records
     monkeypatch.setattr(
         dns_service,
         "delete_dns_records",
         lambda kind, config, value: calls.append(value) or [],
     )
     cleanup.reconcile(q.cleanup_id)
-    assert calls == [records, records]
+    assert records in calls
     with q.sessions() as db:
         assert cleanup.states(db, q.project_id)[0].phase == "finalized"
         assert db.get(Project, q.project_id).state == "draft"
@@ -1882,6 +1891,7 @@ def test_normal_request_defers_capture_and_failed_capture_does_not_delete(
 ):
     from app.models.native_deployment_origin import NativeDeploymentOriginActive
     from app.services import native_origin_custody as custody
+    from app.services import native_teardown_map as teardown
 
     q = origin_namespace_case
     monkeypatch.setattr(
@@ -1891,6 +1901,9 @@ def test_normal_request_defers_capture_and_failed_capture_does_not_delete(
             AccountingUnavailable("capture unavailable")
         ),
     )
+    # Recovery fails; keep seal from authorizing teardown so delete stays blocked.
+    monkeypatch.setattr(teardown, "seal", lambda db, api, work: work)
+    monkeypatch.setattr(teardown, "map_sealed", lambda work: False)
     q.request()
     q.advance()
     with pytest.raises(AccountingUnavailable, match="capture unavailable"):

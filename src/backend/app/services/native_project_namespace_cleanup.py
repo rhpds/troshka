@@ -128,11 +128,26 @@ def _evidence(db, work, phase, payload):
 
 
 def _locked(db, cleanup_id, previous=None):
-    work = load(db.get(State, str(cleanup_id)))
-    project = db.get(Project, str(work.authority.project_id))
-    origin.require(
-        project is not None, "Cleanup project unavailable before finalization"
+    work = load(
+        db.query(State)
+        .filter_by(id=str(cleanup_id))
+        .populate_existing()
+        .with_for_update()
+        .one()
     )
+    project = db.get(Project, str(work.authority.project_id))
+    # Post-release phases own the cleanup row only; undeploy may still have a
+    # draft Project without a native provider assignment.
+    if work.phase in {"orphan_reclaim", "finalized"} or project is None:
+        origin.require(
+            work.phase in {"orphan_reclaim", "finalized"} or project is not None,
+            "Cleanup project unavailable before finalization",
+        )
+        origin.require(
+            previous is None or work == previous,
+            "Namespace cleanup changed during unlocked I/O",
+        )
+        return project, work
     authority.lock(db, project, work.authority)
     work = load(db.query(State).filter_by(id=str(cleanup_id)).populate_existing().one())
     origin.require(
@@ -188,10 +203,13 @@ def request(db, project, mode):
             origin.cancel(db, project.id)
         project.state, project.deploy_error = (
             "cleanup_pending",
-            "Namespace cleanup and independent storage settlement pending",
+            "Namespace cleanup and known-storage orphan reclaim pending",
         )
         db.flush()
         _evidence(db, work, "requested", payload)
+    from app.services.quota_cleanup import freeze_cleanup_metering
+
+    freeze_cleanup_metering(db, project)
     db.commit()
     from app.core.redis import mark_cancelled
 
@@ -786,7 +804,12 @@ def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
     _, work = _locked(db, cleanup_id)
     authority.local_writers_closed(db, work.authority)
     db.commit()
-    if work.phase in {"namespace_absent", "settled", "finalized"}:
+    if work.phase in {
+        "namespace_absent",
+        "orphan_reclaim",
+        "settled",
+        "finalized",
+    }:
         return work
     namespace = _namespace(api, work.authority)
     if namespace is None:
@@ -809,10 +832,9 @@ def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
             db,
             current,
             phase="namespace_absent",
-            last_error="Namespace absent; independent storage settlement pending",
+            last_error="Namespace absent; releasing project and reclaiming known orphans",
         )
         db.commit()
-        request_settlement_collection(work)
         return work
     if namespace["metadata"].get("deletionTimestamp"):
         origin.require(
@@ -844,11 +866,39 @@ def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
             annotations,
         )
         return work
+    from app.schemas.quota import AccountingUnavailable
     from app.services.native_cleanup_storage import recover, require_coverage
+    from app.services.native_teardown_map import hard_debts, map_sealed, seal
 
-    if work.authority.domain_id is None:
-        return recover(db, api, work)
-    work = _retain_inventory(db, api, work)
+    # Prefer origin custody recovery when enrollment was never retained. If
+    # recovery is unavailable (e.g. hung collector), fall back to a sealed
+    # live-namespace teardown map so delete is not held hostage.
+    if work.authority.domain_id is None and work.authority.source_kind == "origin":
+        try:
+            return recover(db, api, work)
+        except AccountingUnavailable as error:
+            # Only fall back to a live map when recovery failed for coverage /
+            # collector availability — not for identity or inventory mismatches.
+            message = str(error).lower()
+            soft = any(
+                token in message
+                for token in (
+                    "storage coverage",
+                    "capture unavailable",
+                    "read failed",
+                    "unavailable",
+                    "timeout",
+                )
+            )
+            if not soft:
+                raise
+            work = seal(db, api, work)
+            if not (map_sealed(work) and not hard_debts(work.liabilities)):
+                raise
+    else:
+        if work.authority.domain_id is not None:
+            work = _retain_inventory(db, api, work)
+        work = seal(db, api, work)
     require_coverage(work)
     work, empty = _remove_vms(db, api, work)
     if not empty:
@@ -871,8 +921,11 @@ def storage_scopes(db, domain_id=None, *, settled_only=False):
             continue
         if domain_id is not None and str(selected.domain_id) != str(domain_id):
             continue
-        if work.phase not in {"settled", "finalized"}:
-            resolved = authority.resolve(db, db.get(Project, str(selected.project_id)))
+        if work.phase not in {"orphan_reclaim", "settled", "finalized"}:
+            project = db.get(Project, str(selected.project_id))
+            if project is None:
+                continue
+            resolved = authority.resolve(db, project)
             origin.require(
                 resolved is not None
                 and resolved[0] == selected
@@ -918,16 +971,17 @@ def reconcile(cleanup_id):
             )
             db.commit()
             _, _, client = _get_k8s_clients(provider)
+            api = NamespaceClient(client)
             work = advance(
                 db,
-                NamespaceClient(client),
+                api,
                 cleanup_id,
                 operator_namespace=operator_namespace,
             )
-            if work.phase in {"namespace_absent", "settled"}:
+            if work.phase in {"namespace_absent", "orphan_reclaim", "settled"}:
                 from app.services.native_project_retirement import settle
 
-                settle(db, cleanup_id)
+                settle(db, cleanup_id, api=api)
         except Exception as error:
             from app.schemas.quota import AccountingUnavailable
 
@@ -940,7 +994,8 @@ def reconcile(cleanup_id):
             )
             _save(db, work, last_error=reason)
             db.commit()
-            if work.phase in {"namespace_absent", "settled"}:
+            if work.phase in {"namespace_absent", "orphan_reclaim"}:
+                # Keep polling orphan reclaim; optional collector audit may still help.
                 request_settlement_collection(work)
             raise
         finally:
@@ -961,7 +1016,7 @@ def dispatch_pending(redis, pending):
         key = "native:namespace-cleanup:" + cleanup_id
         ttl = (
             SETTLEMENT_POLL_SECONDS
-            if phase in {"namespace_absent", "settled"}
+            if phase in {"namespace_absent", "orphan_reclaim", "settled"}
             else CLEANUP_POLL_SECONDS
         )
         if redis.set(key, "queued", nx=True, ex=ttl):
