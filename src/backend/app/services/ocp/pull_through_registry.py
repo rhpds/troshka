@@ -21,9 +21,11 @@ _BEARER_PARAM_RE = re.compile(r'(?:^|,)\s*(\w+)="([^"]*)"')
 
 # Red Hat pull secrets authorize quay.io/openshift-release-dev pulls used by
 # openshift-install agent ISO generation.
-OCP_PULL_SECRET_DOWNLOAD_URL = "https://console.redhat.com/openshift/downloads"
+OCP_PULL_SECRET_DOWNLOAD_URL = (  # pragma: allowlist secret
+    "https://console.redhat.com/openshift/downloads"
+)
 _OCP_REGISTRY_HOST = "quay.io"
-_SETTINGS_PULL_SECRET = "Settings → OCP Pull Secret"
+_SETTINGS_PULL_SECRET = "Settings → OCP Pull Secret"  # pragma: allowlist secret
 
 
 class PullThroughRegistryError(Exception):
