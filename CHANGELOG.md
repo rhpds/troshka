@@ -14,6 +14,12 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Argo/OpenShift: OAuthClient sync uses chart `Replace=true` (not live `Skip`).
+  OpenShift rejects apply (`resourceVersion` `0x0`) and SSA (`managedFields must
+  be nil`) on this CR; Replace updates redirectURIs while ignoreDifferences keeps
+  only `/secret`. Do not ignore OAuthClient `/metadata` under
+  RespectIgnoreDifferences (that would preserve a live Skip forever).
+
 - Project delete immediately cancels in-flight deploy/start/ops work and locks
   the canvas read-only for `deleting` and `cleanup_pending` (palette, properties,
   topology saves). The API rejects topology writes in those states as well.

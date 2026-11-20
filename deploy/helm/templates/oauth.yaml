@@ -48,6 +48,10 @@ metadata:
     {{- include "troshka.labels" . | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
+    # OpenShift OAuthClient rejects kubectl apply (resourceVersion 0x0) and SSA
+    # (managedFields must be nil). Replace syncs redirectURIs safely; Argo
+    # RespectIgnoreDifferences keeps /secret from the live object.
+    argocd.argoproj.io/sync-options: Replace=true
 secret: {{ $clientSecret | quote }}
 redirectURIs:
   - "https://{{ .Values.route.host }}/oauth/callback"
