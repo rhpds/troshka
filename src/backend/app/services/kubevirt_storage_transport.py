@@ -357,6 +357,8 @@ class ToolboxTransport:
             raise ValueError("remote timeout unavailable")
         self.ready = True
         identity = self._dispatch(command_argv("fsid"))
+        if identity.status == "timeout":
+            raise ValueError("toolbox Ceph identity timeout")
         if identity.status != "complete" or identity.value != config.ceph_fsid:
             raise ValueError("toolbox Ceph identity mismatch")
 
@@ -373,8 +375,11 @@ class ToolboxTransport:
 
     def _prefix(self):
         c = self.config
+        # Bound oc API wait; remote Ceph still uses timeout --kill-after in _dispatch.
+        request = max(1, int(self.limits.command_timeout_seconds))
         return [
             "oc",
+            f"--request-timeout={request}s",
             "--kubeconfig=" + self.kubeconfig,
             "exec",
             "-n",

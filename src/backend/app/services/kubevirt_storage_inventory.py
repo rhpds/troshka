@@ -249,7 +249,14 @@ def _project_discovery(kube, root, retained, cluster, pvs, contents):
 
 def _retiring_discovery(kube, root, intent, pvs, contents):
     """An authorized original root may outlive its namespace; bytes still need reads."""
-    if intent.root != root or not intent.teardown_at or not intent.inventory_digest:
+    from app.services.kubevirt_storage_enrollment import root_key
+
+    # Same identity as settle: root_key, not full ProjectRoot (generation may drift).
+    if (
+        root_key(intent.root) != root_key(root)
+        or not intent.teardown_at
+        or not intent.inventory_digest
+    ):
         raise ValueError("retiring root authorization changed")
     namespace = kube.namespace_if_exists(root.namespace)
     if namespace is not None:
@@ -473,8 +480,14 @@ def _retained_conflicts(retained, roots, bindings):
 
 def discover_inventory(kube_reader, retained_bindings, roots):
     """Discover full enrolled namespaces; retained records contain identity only."""
+    from app.services.kubevirt_storage_enrollment import root_key
+
     bindings, snapshots, blockers, roots, retiring = [], [], [], list(roots), []
-    intents = {v.root: v for v in getattr(kube_reader, "retiring_intents", [])}
+    # Match settle/reports: identity is root_key, not full ProjectRoot equality
+    # (deployment_generation may drift between enrollment pins and cleanup intent).
+    intents = {
+        root_key(v.root): v for v in getattr(kube_reader, "retiring_intents", [])
+    }
     try:
         cluster = kube_reader.cluster_identity()
         pvs = {p["metadata"]["name"]: p for p in kube_reader.pvs()}
@@ -503,7 +516,7 @@ def discover_inventory(kube_reader, retained_bindings, roots):
         found, snapshot_records, problems, proof = _discover_root(
             kube_reader,
             root,
-            intents.get(root),
+            intents.get(root_key(root)),
             retained_bindings,
             cluster,
             pvs,

@@ -150,6 +150,7 @@ def test_toolbox_pins_identity_and_exact_remote_argv(monkeypatch):
     assert sum(argv[-2:] == ["ceph", "fsid"] for argv, _ in calls) == 1
     assert calls[-1][0] == [
         "oc",
+        "--request-timeout=15s",
         "--kubeconfig=/private/tmp/test-kubeconfig",
         "exec",
         "-n",
@@ -255,6 +256,44 @@ def test_exit_124_is_typed_timeout_without_stdout():
     )
     assert result.status == "timeout"
     assert result.value is None
+
+
+def test_toolbox_fsid_timeout_fails_fast(monkeypatch):
+    from app.schemas.kubevirt_storage import ReadResult
+    from tests.test_kubevirt_storage_graph import NOW
+
+    class Kube:
+        def cluster_identity(self):
+            return "cluster"
+
+        def pod(self, ns, name):
+            return {
+                "metadata": {"uid": "pod-uid"},
+                "spec": {"containers": [{"name": "rook-ceph-tools"}]},
+            }
+
+    def run(self, argv, **kw):
+        if argv[-1:] == ["true"]:
+            return ReadResult(status="complete", value="{}", collected_at=NOW)
+        return ReadResult(status="timeout", collected_at=NOW)
+
+    monkeypatch.setattr(BoundedProcess, "run", run)
+    config = ToolboxConfig(
+        cluster_key="cluster",
+        namespace="openshift-storage",
+        pod_name="rook-ceph-tools-test",
+        pod_uid="pod-uid",
+        container="rook-ceph-tools",
+        ceph_fsid="fsid",
+        allowed_pools=["pool"],
+    )
+    with pytest.raises(ValueError, match="toolbox Ceph identity timeout"):
+        ToolboxTransport(
+            CollectionLimits(command_timeout_seconds=3),
+            config,
+            Kube(),
+            "/private/tmp/test-kubeconfig",
+        )
 
 
 def test_wrong_live_pool_id_blocks_csi_before_journal_reads():

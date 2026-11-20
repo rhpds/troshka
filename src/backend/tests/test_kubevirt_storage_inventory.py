@@ -309,6 +309,55 @@ def test_orphan_content_removal_changes_digest():
     )
 
 
+def test_retiring_intent_matches_by_root_key_when_generation_differs():
+    """NS-gone settle must find the intent even if deployment_generation drifted."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.schemas.kubevirt_storage import ProjectRoot
+
+    enrolled = root(1).model_copy(update={"deployment_generation": 2})
+    intent_root = ProjectRoot(
+        **{
+            **root(1).model_dump(mode="json"),
+            "deployment_generation": 1,
+        }
+    )
+    intent = SimpleNamespace(
+        version="native-project-namespace-v1",
+        intent_id=uuid4(),
+        operation_id="op-1",
+        root=intent_root,
+        inventory_digest="a" * 64,
+        owned_images=[],
+        bindings=[],
+        teardown_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    class Gone(Kube):
+        retiring_intents = [intent]
+        scan_started_at = datetime(2026, 1, 2, tzinfo=UTC)
+
+        def namespace_if_exists(self, name):
+            return None
+
+        namespace = namespace_if_exists
+
+        def pvs(self):
+            return []
+
+        def pvcs(self, namespace):
+            return []
+
+    inventory = discover_inventory(Gone(), [], [enrolled])
+    assert not inventory.blockers
+    assert len(inventory.retiring_roots) == 1
+    assert inventory.retiring_roots[0].objects_absent
+    assert inventory.retiring_roots[0].intent_id == intent.intent_id
+    assert inventory.volume_bindings == []
+
+
 def test_legacy_snapshot_evidence_serialization_and_digest_are_preserved():
     import hashlib
     import json

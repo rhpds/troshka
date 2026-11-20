@@ -14,6 +14,13 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native storage discovery matches retiring cleanup intents by `root_key` (not
+  full `ProjectRoot` equality), so namespace-absent roots still produce retiring
+  evidence when `deployment_generation` drifted between enrollment and cleanup.
+  Toolbox Ceph identity (`ceph fsid`) uses `oc --request-timeout` plus the
+  existing remote `timeout --kill-after` / `command_timeout_seconds` bound so a
+  stuck tools CLI fails fast instead of hanging collection workers.
+
 - Shared `k8s_admission` normalize for native support admission and CR digests:
   whole-number float/int equality (`structural_contains` / `canonical_equal`),
   and OpenShift's 4-source `kube-api-access-*` projection (adds

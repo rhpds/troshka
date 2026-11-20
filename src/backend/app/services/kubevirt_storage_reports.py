@@ -1,6 +1,5 @@
 """Append-only report import. No network clients, quota ledger or billing writes."""
 
-
 from app.models.host import Host
 from app.models.kubevirt_storage import (
     NativeCollectionDomain,
@@ -39,9 +38,11 @@ def report_inventory(report):
         retained_bindings=report.retained_bindings,
         cache_bindings=report.cache_bindings,
         absent_cache_bindings=report.absent_cache_bindings,
-        blockers=report.inventory_blockers
-        if report.inventory_blockers is not None
-        else report.collection_errors,
+        blockers=(
+            report.inventory_blockers
+            if report.inventory_blockers is not None
+            else report.collection_errors
+        ),
         snapshot_evidence=report.snapshot_evidence,
         retiring_roots=report.retiring_roots,
         clone_references=report.clone_references,
@@ -594,7 +595,7 @@ def _retiring_errors(db, report, domain):
             or intent is None
             or (
                 proof.operation_id != intent.operation_id
-                or proof.root != intent.root
+                or root_key(proof.root) != root_key(intent.root)
                 or proof.inventory_digest != intent.inventory_digest
                 or set(proof.owned_images) != set(intent.owned_images)
                 or proof.observed_at < intent.teardown_at
