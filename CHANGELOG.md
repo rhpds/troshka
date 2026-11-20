@@ -14,6 +14,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Operations: the SonarQube pre-push hook is opt-in and disabled by default.
+  Export `RUN_SONAR=1` (or `SONAR=1`) to run the gate; ordinary pushes skip it.
+
 - Project delete immediately cancels in-flight deploy/start/ops work and locks
   the canvas read-only for `deleting` and `cleanup_pending` (palette, properties,
   topology saves). The API rejects topology writes in those states as well.
