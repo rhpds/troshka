@@ -290,7 +290,8 @@ def test_cclm_template_carries_workloads_chain():
         (w.get("role") if isinstance(w, dict) else w) or "" for w in topo["workloads"]
     ]
     assert topo_roles[0].endswith("troshka_workload_cclm_operators")
-    assert topo_roles[1].endswith("troshka_workload_cclm_network")
+    assert topo_roles[1].endswith("troshka_workload_cclm_platform_addons")
+    assert topo_roles[2].endswith("troshka_workload_cclm_network")
     collections = topo["requirements_content"]["collections"]
     assert collections[0]["version"] == "feat/cclm-workloads"
 

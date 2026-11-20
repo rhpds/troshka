@@ -38,15 +38,16 @@ FROM_ROLE=""
 ONLY_ROLE=""
 DRY_RUN=0
 
-ROLE_ORDER=(operators network hco forklift seed_vms)
+ROLE_ORDER=(operators platform_addons network hco forklift seed_vms)
 
 role_short_to_fqcn() {
     case "$1" in
-        operators) echo "troshka_workload_cclm_operators" ;;
-        hco)       echo "troshka_workload_cclm_hco" ;;
-        network)   echo "troshka_workload_cclm_network" ;;
-        forklift)  echo "troshka_workload_cclm_forklift" ;;
-        seed_vms)  echo "troshka_workload_cclm_seed_vms" ;;
+        operators)       echo "troshka_workload_cclm_operators" ;;
+        platform_addons) echo "troshka_workload_cclm_platform_addons" ;;
+        hco)             echo "troshka_workload_cclm_hco" ;;
+        network)         echo "troshka_workload_cclm_network" ;;
+        forklift)        echo "troshka_workload_cclm_forklift" ;;
+        seed_vms)        echo "troshka_workload_cclm_seed_vms" ;;
         *)
             echo "ERROR: unknown role '$1' (expected: ${ROLE_ORDER[*]})" >&2
             return 1

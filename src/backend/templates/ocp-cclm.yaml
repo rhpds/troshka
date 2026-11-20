@@ -167,6 +167,9 @@ requirements_content:
 workloads:
   - role: rhpds.demo_workloads.troshka_workload_cclm_operators
     runOnce: true
+  # Creates KubeDescheduler (and ACM/ACS/AAP CRs) — operators only subscribe OLM.
+  - role: rhpds.demo_workloads.troshka_workload_cclm_platform_addons
+    runOnce: true
   - role: rhpds.demo_workloads.troshka_workload_cclm_network
     runOnce: true
   - role: rhpds.demo_workloads.troshka_workload_cclm_hco
