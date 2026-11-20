@@ -111,7 +111,9 @@ def test_secret_and_oauth_identity_are_protected_during_sync(bootstrap):
     rules = app["spec"]["ignoreDifferences"]
     assert any(r["kind"] == "Secret" and r["name"] == "troshka-secrets"
                and r["jsonPointers"] == ["/data", "/stringData"] for r in rules)
-    assert any(r["kind"] == "OAuthClient" and r["jsonPointers"] == ["/secret"] for r in rules)
+    oauth = next(r for r in rules if r["kind"] == "OAuthClient")
+    assert oauth["jsonPointers"] == ["/secret"]
+    assert "/metadata" not in oauth["jsonPointers"]
 
 
 def test_adoption_protects_only_explicit_existing_workloads(bootstrap):

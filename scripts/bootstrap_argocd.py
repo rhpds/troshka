@@ -91,6 +91,9 @@ def application(name, namespace, revision, values, adopted, *, argo_namespace="o
     rules = [{"group": "", "kind": "Secret", "name": secret, "namespace": namespace,
               "jsonPointers": ["/data", "/stringData"]}
              for secret in ("troshka-secrets", "troshka-oauth-proxy", "troshka-oauth2-proxy", "troshka-basic-auth")]
+    # OAuthClient: ignore only /secret (never rotate). Do not ignore /metadata —
+    # RespectIgnoreDifferences would preserve a live Skip annotation forever and
+    # block the chart's Replace=true sync-option. OpenShift rejects apply/SSA.
     rules += [{"group": "oauth.openshift.io", "kind": "OAuthClient", "name": "troshka", "jsonPointers": ["/secret"]},
               {"group": "", "kind": "Namespace", "name": namespace, "jsonPointers": ["/spec/finalizers"]}]
     for resource in adopted:
