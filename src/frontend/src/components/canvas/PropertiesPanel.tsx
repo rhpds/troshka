@@ -13,6 +13,7 @@ import { appConfirm } from "@/lib/confirm";
 import { vmStatusLabel } from "@/lib/vmStatus";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
+import { isTopologyLocked } from "@/lib/canvasTopologyLock";
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import { validateCephLabIp } from "@/lib/cephLabIpValidation";
@@ -5919,7 +5920,7 @@ export default function PropertiesPanel() {
   const updateCluster = useCanvasStore((s) => s.updateCluster);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const projectState = useCanvasStore((s) => s.projectState);
-  const panelLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
+  const panelLocked = isTopologyLocked(projectState);
   const [showLibraryPicker, setShowLibraryPicker] = useState<"iso" | "image" | null>(null);
   const [showPxeIsoPicker, setShowPxeIsoPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);

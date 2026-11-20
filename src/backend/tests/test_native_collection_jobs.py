@@ -161,11 +161,21 @@ class RedisMemory:
         value = self.values.get(key)
         return value[0] if value and value[1] > self.now else None
 
-    def set(self, key, value, *, nx=False, ex):
+    def set(self, key, value, *, nx=False, ex, xx=False):
         if nx and self.get(key) is not None:
+            return False
+        if xx and self.get(key) is None:
             return False
         self.values[key] = (value, self.now + ex)
         return True
+
+    def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            if key in self.values:
+                del self.values[key]
+                removed += 1
+        return removed
 
     def eval(self, script, count, key, *args):
         if count == 2:
@@ -452,3 +462,58 @@ def test_readiness_reservations_cover_queue_wait_and_longer_execution():
         assert redis.get(jobs._readiness_key("domain") + ":pending") is not None
         redis.now = 180
         assert redis.get(jobs._readiness_key("domain") + ":pending") is None
+
+
+def test_settlement_phases_poll_faster_than_teardown():
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    redis = RedisMemory()
+    with patch("app.core.redis.enqueue_job") as enqueue:
+        assert (
+            cleanup.dispatch_pending(
+                redis, [("ns-absent", "namespace_absent"), ("fencing", "fencing")]
+            )
+            == 2
+        )
+        assert redis.values["native:namespace-cleanup:ns-absent"][1] == 10
+        assert redis.values["native:namespace-cleanup:fencing"][1] == 60
+        assert enqueue.call_count == 2
+        assert cleanup.dispatch_pending(redis, [("ns-absent", "namespace_absent")]) == 0
+
+
+def test_successful_cleanup_collection_nudges_settlement(monkeypatch):
+    redis = RedisMemory()
+    nudged = MagicMock(return_value=1)
+    monkeypatch.setattr(jobs, "get_redis_raw", lambda: redis)
+    monkeypatch.setattr(jobs, "_identities", lambda *a: (["provider"], ["fsid"]))
+    monkeypatch.setattr(jobs, "get_current_job", lambda: None)
+    monkeypatch.setattr(jobs, "_cleanup_due", lambda project: True)
+    monkeypatch.setattr(
+        "app.services.native_project_namespace_cleanup.nudge_settlement", nudged
+    )
+    runtime = MagicMock(return_value="report-id")
+    monkeypatch.setattr(
+        "app.services.native_collection_runtime.run_collection", runtime
+    )
+    assert jobs.run_project_collection("domain", "project") == "report-id"
+    nudged.assert_called_once_with("project")
+
+
+def test_nudge_settlement_clears_poll_lock_and_enqueues(monkeypatch):
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    redis = RedisMemory()
+    redis.set("native:namespace-cleanup:cid", "queued", ex=60)
+    monkeypatch.setattr(
+        cleanup,
+        "states_for_project",
+        lambda project_id: [
+            SimpleNamespace(id="cid", phase="namespace_absent"),
+        ],
+    )
+    monkeypatch.setattr("app.core.redis.get_redis_raw", lambda: redis)
+    with patch("app.core.redis.enqueue_job") as enqueue:
+        assert cleanup.nudge_settlement("project") == 1
+        assert enqueue.call_args.args[0] is cleanup.reconcile
+        assert enqueue.call_args.args[1] == "cid"
+        assert redis.values["native:namespace-cleanup:cid"][1] == 10

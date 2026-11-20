@@ -1,6 +1,5 @@
 """Complete bounded namespace inventory and the root-never-submitted cleanup branch."""
 
-
 import json
 import re
 import time
@@ -690,7 +689,14 @@ def request(db, project, mode):
         db.add(row)
     work = _load(row)
     origin.require(work.mode == mode, "Native origin namespace cleanup mode changed")
+    project.state, project.deploy_error = (
+        "cleanup_pending",
+        "Origin namespace cleanup and independent storage settlement pending",
+    )
     db.commit()
+    from app.core.redis import mark_cancelled
+
+    mark_cancelled(project.id)
     enqueue_job(reconcile, str(work.id))
     return dict(
         status="cleanup_pending", id=project.id, mode=mode, cleanup_id=str(work.id)

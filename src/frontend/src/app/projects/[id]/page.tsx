@@ -44,6 +44,7 @@ import {
 } from "@/lib/redeployOcp";
 import { formatApiDetail } from "@/lib/apiError";
 import { requestProjectDeletion } from "@/lib/projectDeletion";
+import { isTopologyLocked } from "@/lib/canvasTopologyLock";
 import { decimalCompare, fetchUsage, formatQuotaError, isQuotaRevocation, QuotaUsageData, saveLimits } from "@/lib/quotas";
 import QuotaScope from "@/components/quotas/QuotaScope";
 import { templateImportError, TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
@@ -2205,7 +2206,7 @@ timerToast && (
             </div>
           </div>
         )}
-        {nodes.length === 0 && projectName && projectState === "draft" && (
+        {nodes.length === 0 && projectName && projectState === "draft" && !isTopologyLocked(projectState) && (
           <div style={{
             position: "absolute", inset: 0, zIndex: 20,
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -2241,6 +2242,7 @@ timerToast && (
           </div>
         )}
         {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={resolvedOcpHealth} onDescriptionChange={(desc) => {
+          if (isTopologyLocked(projectState)) return;
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} autoStopMinutes={autoStopMinutes} autoDeleteMinutes={autoDeleteMinutes} onAutoStopChange={(v) => {

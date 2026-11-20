@@ -7253,8 +7253,10 @@ def undeploy_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    from app.core.redis import mark_cancelled
     from app.services.quota_cleanup import guard_supported_cleanup, request_native
 
+    mark_cancelled(project_id)
     pending = request_native(db, project, "undeploy")
     if pending is not None:
         return pending
@@ -7311,7 +7313,11 @@ def delete_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    from app.core.redis import mark_cancelled
     from app.services.quota_cleanup import guard_supported_cleanup, request_native
+
+    # Stop in-flight deploy/start/ops immediately, including native cleanup paths.
+    mark_cancelled(project_id)
 
     pending = request_native(db, project, "delete")
     if pending is not None:
@@ -7337,10 +7343,6 @@ def delete_project(
         project.deploy_error = None
         db.commit()
         notify_project(project_id, {"type": "project-state", "state": "deleting"})
-
-        from app.services.deploy_service import _mark_deploy_cancelled
-
-        _mark_deploy_cancelled(project_id)
 
         destroy_ctx = {
             "project_id": project.id,

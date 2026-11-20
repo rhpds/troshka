@@ -14,6 +14,13 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Project delete immediately cancels in-flight deploy/start/ops work and locks
+  the canvas read-only for `deleting` and `cleanup_pending` (palette, properties,
+  topology saves). The API rejects topology writes in those states as well.
+  After the namespace is gone, cleanup-priority collection starts immediately and
+  settlement re-runs as soon as a fresh report lands (10s poll while settling,
+  instead of waiting up to a minute), without relaxing storage proof requirements.
+
 - Native origin capture enabled for local, troshka-dev, and infra01 while quotas
   stay off, so new generic kubevirt deploys retain namespace/root birth provenance
   for guarded cleanup. Per-domain `origin_admission` is set on prod collection

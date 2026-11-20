@@ -230,7 +230,7 @@ describe("Canvas interactions", () => {
     fireEvent.click(screen.getByTitle("Show two")); expect(flow.props.nodes).toHaveLength(2); expect(flow.props.edges).toHaveLength(1);
   });
 
-  it.each(["deploying", "reconfiguring", "starting", "stopping"])("disables topology mutation while %s", projectState => {
+  it.each(["deploying", "reconfiguring", "starting", "stopping", "deleting", "cleanup_pending"])("disables topology mutation while %s", projectState => {
     useCanvasStore.setState({ projectState }); render(<Canvas />); drop("disk"); expect(useCanvasStore.getState().nodes).toEqual([]);
     expect(flow.props.nodesDraggable).toBe(false); expect(flow.props.onConnect).toBeUndefined(); expect(flow.props.deleteKeyCode).toBeNull();
   });

@@ -175,7 +175,13 @@ def namespace_adapter(q, monkeypatch):
 
     q.api = API()
     q.values = base.values
+    q.settlement_collections = []
     monkeypatch.setattr(redis, "enqueue_job", lambda *a, **k: q.enqueued.append(a))
+    monkeypatch.setattr(
+        cleanup,
+        "request_settlement_collection",
+        lambda work: q.settlement_collections.append(str(work.id)) or True,
+    )
     monkeypatch.setattr(quota_operations, "now", lambda: FixedDatetime.current)
 
     def request():
@@ -962,8 +968,35 @@ def test_pending_namespace_cleanup_blocks_redeploy(namespace_case):
 
     q = namespace_case
     q.request()
-    with q.sessions() as db, pytest.raises(Exception, match="cleanup|pending"):
+    with q.sessions() as db, pytest.raises(
+        Exception, match="cleanup|pending|read-only|deleting"
+    ):
         guard_pending(db, db.get(Project, q.project_id))
+
+
+def test_deleting_state_blocks_topology_writes_without_native_intent(
+    namespace_case,
+):
+    from app.services.quota_cleanup import guard_pending
+
+    q = namespace_case
+    with q.sessions() as db:
+        project = db.get(Project, q.project_id)
+        project.state = "deleting"
+        db.commit()
+        with pytest.raises(Exception, match="read-only|deleting"):
+            guard_pending(db, project)
+
+
+def test_namespace_absent_requests_cleanup_priority_collection(namespace_case):
+    q = namespace_case
+    q.request()
+    q.advance()
+    assert q.advance().phase == "namespace_delete_requested"
+    assert q.settlement_collections  # warms as soon as NS DELETE is retained
+    before_absent = list(q.settlement_collections)
+    assert q.advance().phase == "namespace_absent"
+    assert q.settlement_collections[len(before_absent) :]  # again on namespace_absent
 
 
 def test_missing_storage_identity_remains_debt_after_namespace_absence(namespace_case):

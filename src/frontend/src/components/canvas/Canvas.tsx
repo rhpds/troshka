@@ -35,6 +35,7 @@ import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import ClusterInstallLogModal from "./ClusterInstallLogModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM, onRequestDuplicateCluster, type ClusterConfig } from "@/stores/canvasStore";
+import { isTopologyLocked } from "@/lib/canvasTopologyLock";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
 import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks, syncClusterCanvasState, roleDiskSpecs } from "@/components/canvas/clusterMaterialize";
@@ -705,7 +706,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: Readonly<CanvasP
   const allEdges = useCanvasStore((s) => s.edges);
   const hiddenNodeIds = useCanvasStore((s) => s.hiddenNodeIds);
   const projectState = useCanvasStore((s) => s.projectState);
-  const canvasLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
+  const canvasLocked = isTopologyLocked(projectState);
   const nodes = allNodes;
 
   // Ctrl+Z / Ctrl+Shift+Z for undo/redo
@@ -713,6 +714,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: Readonly<CanvasP
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "z") {
         e.preventDefault();
+        if (canvasLocked) return;
         if (e.shiftKey) {
           useCanvasStore.getState().redo();
         } else {
@@ -722,7 +724,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: Readonly<CanvasP
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [canvasLocked]);
 
   const visibleNodes = useMemo(
     () => allNodes.filter((n) => !hiddenNodeIds.includes(n.id)),

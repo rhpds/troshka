@@ -493,6 +493,10 @@ def guard_pending(db, project, *, lock=False):
         and project.host_id
     ):
         project, _ = _native_lock(db, project.id)
+    if project.state in {"cleanup_pending", "deleting"}:
+        operations.unavailable(
+            "Project is deleting or settling; topology and resources remain read-only"
+        )
     intent = native_intent(db, project.id)
     namespace_pending = any(
         _load(row).phase != "finalized"
@@ -1147,9 +1151,11 @@ def _finish_project_record(db, project, mode):
     db.commit()
     notify_project(
         project_id,
-        {"type": "project-deleted"}
-        if mode == "delete"
-        else {"type": "project-state", "state": "draft"},
+        (
+            {"type": "project-deleted"}
+            if mode == "delete"
+            else {"type": "project-state", "state": "draft"}
+        ),
     )
 
 

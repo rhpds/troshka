@@ -303,7 +303,24 @@ def _run_collection_job(
             domain_id, project_id, readiness, observation_only=observation_only
         )
         assert_collection_lease()
+        _nudge_cleanup_settlement(
+            project_id, readiness, observation_only=observation_only, result=result
+        )
         return result
+
+
+def _nudge_cleanup_settlement(project_id, readiness, *, observation_only, result):
+    if (
+        readiness
+        or observation_only
+        or project_id is None
+        or result in {"deferred", "reprioritized"}
+        or not _cleanup_due(project_id)
+    ):
+        return
+    from app.services.native_project_namespace_cleanup import nudge_settlement
+
+    nudge_settlement(project_id)
 
 
 def dispatch_candidates(db):
@@ -353,12 +370,16 @@ def dispatch_once():
     automatic = settings().get("enabled", False)
     with SessionLocal() as db:
         candidates = [item for item in dispatch_candidates(db) if automatic or item[2]]
-        cleanup_ids = [str(work.id) for work in states(db) if work.phase != "finalized"]
-    if not candidates and not cleanup_ids:
+        pending = [
+            (str(work.id), work.phase)
+            for work in states(db)
+            if work.phase != "finalized"
+        ]
+    if not candidates and not pending:
         return 0
     redis = get_redis_raw()
     redis.ping()
-    count = dispatch_pending(redis, cleanup_ids)
+    count = dispatch_pending(redis, pending)
     for domain_id, project_id, cleanup in candidates:
         if project_id is None:
             count += _dispatch_readiness(redis, domain_id)

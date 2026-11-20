@@ -2,6 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { isTopologyLocked } from "@/lib/canvasTopologyLock";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import { buildPaletteOcpInfo } from "@/components/canvas/paletteOcpInfo";
 import {
@@ -687,6 +688,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const nodes = useCanvasStore((s) => s.nodes);
   const clusters = useCanvasStore((s) => s.clusters);
   const providerType = useCanvasStore((s) => s.providerType);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const paletteLocked = isTopologyLocked(projectState);
   const cephExists = nodes.some((n) => n.type === "cephClusterNode");
   const showroomExists = hasShowroomNode(nodes);
   const isKubevirt =
@@ -1125,6 +1128,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               {section.items.map((item) => {
                 if (item.kubevirtOnly && !isKubevirt) return null;
                 const disabled =
+                  paletteLocked ||
                   (item.type === "showroom" && showroomExists) ||
                   (item.type === "project-ceph" && cephExists);
                 return (
@@ -1142,7 +1146,11 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   }}
                   style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
                   title={
-                    disabled ? disabledPaletteItemTitle(item.type) : undefined
+                    paletteLocked
+                      ? "Canvas is read-only while deleting or settling storage"
+                      : disabled
+                        ? disabledPaletteItemTitle(item.type)
+                        : undefined
                   }
                 >
                   <PaletteIcon icon={item.icon} iconClass={item.iconClass} />

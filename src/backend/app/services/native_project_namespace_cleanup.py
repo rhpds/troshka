@@ -24,6 +24,53 @@ from app.services.native_namespace_client import (
     NamespaceClient,
 )
 
+# Reconcile poll while waiting on collector proof after the namespace is gone.
+SETTLEMENT_POLL_SECONDS = 10
+# Broader teardown phases (fencing, VM/CR drain, NS terminating).
+CLEANUP_POLL_SECONDS = 60
+
+
+def request_settlement_collection(work):
+    """Kick a cleanup-priority scan as soon as settlement can consume it."""
+    selected = work.authority
+    if selected.domain_id is None or selected.project_id is None:
+        return False
+    from app.services.native_collection_jobs import enqueue_collection
+
+    return enqueue_collection(
+        str(selected.domain_id), str(selected.project_id), cleanup=True
+    )
+
+
+def nudge_settlement(project_id):
+    """Re-run settle soon after a fresh cleanup-priority report lands."""
+    from app.core.redis import enqueue_job, get_redis_raw
+
+    with_pending = [
+        work
+        for work in states_for_project(project_id)
+        if work.phase in {"namespace_absent", "settled"}
+    ]
+    if not with_pending:
+        return 0
+    redis = get_redis_raw()
+    redis.ping()
+    count = 0
+    for work in with_pending:
+        key = "native:namespace-cleanup:" + str(work.id)
+        redis.delete(key)
+        if redis.set(key, "nudge", nx=True, ex=SETTLEMENT_POLL_SECONDS):
+            enqueue_job(reconcile, str(work.id))
+            count += 1
+    return count
+
+
+def states_for_project(project_id):
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as db:
+        return list(states(db, project_id))
+
 
 def load(row):
     origin.require(
@@ -146,6 +193,9 @@ def request(db, project, mode):
         db.flush()
         _evidence(db, work, "requested", payload)
     db.commit()
+    from app.core.redis import mark_cancelled
+
+    mark_cancelled(project.id)
     enqueue_job(reconcile, str(work.id))
     return dict(
         status="cleanup_pending", id=project.id, mode=mode, cleanup_id=str(work.id)
@@ -637,6 +687,8 @@ def _delete_namespace(db, api, work):
     )
     db.commit()
     api.delete_namespace(work.authority.namespace, work.authority.namespace_uid, rv)
+    # Cleanup scopes become visible here; start priority collection during NS GC.
+    request_settlement_collection(work)
     return work
 
 
@@ -670,6 +722,7 @@ def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
             last_error="Namespace absent; independent storage settlement pending",
         )
         db.commit()
+        request_settlement_collection(work)
         return work
     if namespace["metadata"].get("deletionTimestamp"):
         origin.require(
@@ -797,20 +850,31 @@ def reconcile(cleanup_id):
             )
             _save(db, work, last_error=reason)
             db.commit()
+            if work.phase in {"namespace_absent", "settled"}:
+                request_settlement_collection(work)
             raise
         finally:
             if client is not None:
                 client.close()
 
 
-def dispatch_pending(redis, ids):
-    """Resume retained cleanup after restart, including scopes without a domain."""
+def dispatch_pending(redis, pending):
+    """Resume retained cleanup after restart, including scopes without a domain.
+
+    ``pending`` is an iterable of ``(cleanup_id, phase)``. Settlement phases poll
+    faster so a complete report is consumed soon after it lands.
+    """
     from app.core.redis import enqueue_job
 
     count = 0
-    for cleanup_id in ids:
+    for cleanup_id, phase in pending:
         key = "native:namespace-cleanup:" + cleanup_id
-        if redis.set(key, "queued", nx=True, ex=60):
+        ttl = (
+            SETTLEMENT_POLL_SECONDS
+            if phase in {"namespace_absent", "settled"}
+            else CLEANUP_POLL_SECONDS
+        )
+        if redis.set(key, "queued", nx=True, ex=ttl):
             enqueue_job(reconcile, cleanup_id)
             count += 1
     return count
