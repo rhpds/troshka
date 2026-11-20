@@ -72,6 +72,11 @@ The chart's `OAuthClient/troshka` sets `argocd.argoproj.io/sync-options: Replace
 OpenShift rejects ordinary kubectl apply (`resourceVersion` `0x0`) and server-side
 apply (`managedFields must be nil`) on this CR. Replace updates `redirectURIs`
 while `ignoreDifferences` on `/secret` plus `RespectIgnoreDifferences=true` keeps
-the live client secret. Do **not** ignore `/metadata` on OAuthClient: that would
-preserve a live `Skip` annotation under RespectIgnoreDifferences and permanently
-bypass sync. Never use a live `Skip` annotation as the steady state.
+the live client secret. Do **not** ignore all of `/metadata` on OAuthClient: that
+would preserve a live `Skip` annotation under RespectIgnoreDifferences and
+permanently bypass sync. Never use a live `Skip` annotation as the steady state.
+
+Until a release pin includes the chart annotation, a live `Replace=true` annotation
+may be retained by ignoring only
+`/metadata/annotations/argocd.argoproj.io~1sync-options` (not all of `/metadata`).
+After the pin ships the chart annotation, that narrow ignore is optional.
