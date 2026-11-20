@@ -102,11 +102,11 @@ repos:
             package-lock\.json
           )
 
-  # VPN-aware Sonar gate. A reachable server must produce an exact-revision OK.
+  # Opt-in VPN-aware Sonar gate (RUN_SONAR=1). Reachable server → exact-revision OK.
   - repo: local
     hooks:
       - id: sonarqube-push
-        name: SonarQube gate (when API reachable)
+        name: SonarQube gate (opt-in; RUN_SONAR=1)
         entry: bash scripts/sonarqube-check.sh
         language: system
         pass_filenames: false

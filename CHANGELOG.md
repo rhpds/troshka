@@ -25,6 +25,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   and match live API ints through the protected launch under `digest_cr_spec`,
   so fencing can seal a late TroshkaProject root after worker rollouts.
 
+- Operations: the SonarQube pre-push hook is opt-in and disabled by default.
+  Export `RUN_SONAR=1` (or `SONAR=1`) to run the gate; ordinary pushes skip it.
+
 - Native origin CR-spec digests canonicalize whole-number JSON floats to ints
   before hashing (`digest_cr_spec`), so canvas/topology values like
   `position.x: 300.0` match Kubernetes API readback ints (`300`) on first bind.

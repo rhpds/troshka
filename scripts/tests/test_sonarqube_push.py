@@ -15,13 +15,30 @@ SPEC.loader.exec_module(sonar)
 
 
 class SonarPushTests(unittest.TestCase):
+    def test_disabled_by_default_skips_without_backend(self):
+        with (
+            patch.object(sonar, "api_json") as api,
+            patch.object(sonar, "run_coverage") as coverage,
+            patch.object(sonar, "run_offline_backend") as backend,
+        ):
+            self.assertEqual(sonar.check({"SONAR_TOKEN": "test-value"}), 0)
+            api.assert_not_called()
+            coverage.assert_not_called()
+            backend.assert_not_called()
+
+    def test_run_sonar_enables_check(self):
+        self.assertTrue(sonar.sonar_opted_in({"RUN_SONAR": "1"}))
+        self.assertTrue(sonar.sonar_opted_in({"SONAR": "yes"}))
+        self.assertFalse(sonar.sonar_opted_in({}))
+        self.assertFalse(sonar.sonar_opted_in({"RUN_SONAR": "0"}))
+
     def test_unreachable_server_runs_backend_fallback_without_coverage(self):
         with (
             patch.object(sonar, "api_json", side_effect=URLError("offline")),
             patch.object(sonar, "run_coverage") as coverage,
             patch.object(sonar, "run_offline_backend") as backend,
         ):
-            env = {"SONAR_TOKEN": "test-value"}
+            env = {"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"}
             self.assertEqual(sonar.check(env), 0)
             coverage.assert_not_called()
             backend.assert_called_once_with(env)
@@ -32,7 +49,7 @@ class SonarPushTests(unittest.TestCase):
             patch.object(sonar, "run_offline_backend", side_effect=sonar.CheckFailure("tests failed")),
         ):
             with self.assertRaisesRegex(sonar.CheckFailure, "tests failed"):
-                sonar.check({"SONAR_TOKEN": "test-value"})
+                sonar.check({"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"})
 
     def test_offline_backend_skips_push_without_backend_changes(self):
         with patch.object(sonar, "git", side_effect=["/repo", ""]), patch.object(sonar, "run_command") as run:
@@ -63,7 +80,9 @@ class SonarPushTests(unittest.TestCase):
                 patch.object(sonar, "verify_analysis"),
                 patch.object(sonar, "run_offline_backend") as backend,
             ):
-                self.assertEqual(sonar.check({"SONAR_TOKEN": "test-value"}), 0)
+                self.assertEqual(
+                    sonar.check({"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"}), 0
+                )
                 coverage.assert_called_once()
                 backend.assert_not_called()
 
@@ -73,34 +92,34 @@ class SonarPushTests(unittest.TestCase):
             patch.object(sonar, "run_coverage") as coverage,
             patch.object(sonar, "run_offline_backend") as backend,
         ):
-            self.assertEqual(sonar.check({}), 0)
+            self.assertEqual(sonar.check({"RUN_SONAR": "1"}), 0)
             api.assert_not_called()
             coverage.assert_not_called()
-            backend.assert_called_once_with({})
+            backend.assert_called_once_with({"RUN_SONAR": "1"})
 
     def test_missing_token_backend_failure_blocks_push(self):
         with patch.object(
             sonar, "run_offline_backend", side_effect=sonar.CheckFailure("tests failed")
         ):
             with self.assertRaisesRegex(sonar.CheckFailure, "tests failed"):
-                sonar.check({})
+                sonar.check({"RUN_SONAR": "1"})
 
     def test_http_error_is_not_treated_as_offline(self):
         error = HTTPError("https://sonar.example", 403, "Forbidden", {}, None)
         with patch.object(sonar, "api_json", side_effect=error):
             with self.assertRaisesRegex(sonar.CheckFailure, "403"):
-                sonar.check({"SONAR_TOKEN": "test-value"})
+                sonar.check({"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"})
 
     def test_unhealthy_server_blocks(self):
         with patch.object(sonar, "api_json", return_value={"status": "DOWN"}):
             with self.assertRaisesRegex(sonar.CheckFailure, "DOWN"):
-                sonar.check({"SONAR_TOKEN": "test-value"})
+                sonar.check({"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"})
 
     def test_tls_verification_failure_blocks(self):
         error = URLError(sonar.ssl.SSLCertVerificationError("untrusted certificate"))
         with patch.object(sonar, "api_json", side_effect=error):
             with self.assertRaisesRegex(sonar.CheckFailure, "TLS"):
-                sonar.check({"SONAR_TOKEN": "test-value"})
+                sonar.check({"RUN_SONAR": "1", "SONAR_TOKEN": "test-value"})
 
     def test_non_head_push_blocks(self):
         with patch.object(sonar, "git", return_value="abc"):
