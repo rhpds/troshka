@@ -14,6 +14,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Projects list hides `deleting` / `cleanup_pending` cards until the Project row
+  is released (after namespace absence), instead of clearing the “Deleting…”
+  state as soon as DELETE returns and leaving the card visible for the full
+  native teardown.
+
 - `deploy-full.sh` polls for the tagged `build-images.yml` GitHub Actions run
   after tag push (default 5 minutes) instead of exiting immediately when Actions
   has not registered the workflow yet; `--skip-push --tag` remains the timeout

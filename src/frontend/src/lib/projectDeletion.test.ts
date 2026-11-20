@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requestProjectDeletion } from "./projectDeletion";
+import { isAsyncProjectDeletion, requestProjectDeletion } from "./projectDeletion";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("project deletion responses", () => {
+  it.each(["deleting", "cleanup_pending"])("marks %s as in-flight deletion", (status) => {
+    expect(isAsyncProjectDeletion(status)).toBe(true);
+  });
+  it("does not treat settled states as in-flight deletion", () => {
+    expect(isAsyncProjectDeletion("active")).toBe(false);
+    expect(isAsyncProjectDeletion(undefined)).toBe(false);
+  });
   it.each(["deleting", "cleanup_pending"])("preserves asynchronous %s state", async status => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ status })));
     expect(await requestProjectDeletion("/project")).toBe(status);

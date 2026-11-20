@@ -9,7 +9,7 @@ import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
 import { formatApiDetail } from "@/lib/apiError";
-import { requestProjectDeletion } from "@/lib/projectDeletion";
+import { isAsyncProjectDeletion, requestProjectDeletion } from "@/lib/projectDeletion";
 import { generateImportPassword } from "@/lib/importPassword";
 import { TEMPLATE_YAML_EXAMPLE } from "@/lib/templateImport";
 import { summarizeDeployProgress } from "@/lib/deployProgress";
@@ -1128,10 +1128,15 @@ export default function ProjectsPage() {
   const [spendNowMs, setSpendNowMs] = useState(() => Date.now());
   const [spendFetchedAt, setSpendFetchedAt] = useState(() => Date.now());
   const meterProjectKey = projects
-    .filter((p) => p.state !== "draft" && p.state !== "deleting")
+    .filter((p) => p.state !== "draft" && !isAsyncProjectDeletion(p.state))
     .map((p) => p.id)
     .sort((left, right) => left.localeCompare(right))
     .join("|");
+
+  const persistDeletingProjects = (next: Set<string>) => {
+    localStorage.setItem("troshka-deleting-projects", JSON.stringify([...next]));
+    return next;
+  };
 
   const pollUntilSettled = () => {
     const poll = setInterval(() => {
@@ -1161,12 +1166,17 @@ export default function ProjectsPage() {
         const sorted = Array.isArray(data) ? data.toSorted((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
         setProjects(sorted);
         setLoading(false);
-        // Clean up deleting IDs only when project disappears from the list
+        // Keep in-flight deletes hidden until the Project row is released.
         const projectIds = new Set(sorted.map((p: Project) => p.id));
         setDeletingProjects(prev => {
           const updated = new Set(prev);
           for (const id of prev) { if (!projectIds.has(id)) updated.delete(id); }
-          if (updated.size !== prev.size) localStorage.setItem("troshka-deleting-projects", JSON.stringify([...updated]));
+          for (const p of sorted) {
+            if (isAsyncProjectDeletion(p.state)) updated.add(p.id);
+          }
+          if (updated.size !== prev.size || [...updated].some((id) => !prev.has(id))) {
+            return persistDeletingProjects(updated);
+          }
           return updated;
         });
       })
@@ -1238,31 +1248,45 @@ export default function ProjectsPage() {
   }, [spendById]);
 
   async function deleteProjects(targets: Project[]) {
-    setDeletingProjects(prev => new Set([...prev, ...targets.map(p => p.id)]));
+    setDeletingProjects(prev => persistDeletingProjects(new Set([...prev, ...targets.map(p => p.id)])));
+    let anyAsync = false;
     const errors = await Promise.all(targets.map(async p => {
       try {
         const status = await requestProjectDeletion(`${API_BASE}/api/v1/projects/${p.id}`);
-        if (status === "deleting" || status === "cleanup_pending") {
-          updateProjectState(p.id, status);
+        if (isAsyncProjectDeletion(status)) {
+          anyAsync = true;
+          updateProjectState(p.id, status!);
+          // Stay in deletingProjects until the API drops the row (NS gone).
         } else {
           removeProject(p.id);
           localStorage.removeItem(`troshka-canvas-${p.id}`);
+          setDeletingProjects(prev => {
+            const next = new Set(prev);
+            next.delete(p.id);
+            return persistDeletingProjects(next);
+          });
         }
         setSelectedProjects(prev => { const next = new Set(prev); next.delete(p.id); return next; });
         return null;
       } catch (error) {
+        setDeletingProjects(prev => {
+          const next = new Set(prev);
+          next.delete(p.id);
+          return persistDeletingProjects(next);
+        });
         return `${p.name}: ${error instanceof Error ? error.message : "Delete request failed"}`;
-      } finally {
-        setDeletingProjects(prev => { const next = new Set(prev); next.delete(p.id); return next; });
       }
     }));
     const failures = errors.filter(Boolean);
     if (failures.length) setAlertMsg(failures.join("\n"));
+    if (anyAsync) pollUntilSettled();
   }
 
           const q = search.toLowerCase();
           const isAdmin = userRole === "admin";
           const filteredProjects = projects.filter((p) => {
+            // Hide until backend releases the row after namespace absence.
+            if (isAsyncProjectDeletion(p.state) || deletingProjects.has(p.id)) return false;
             if (userId) {
               const cat: OwnershipCategory = p.owner_id === userId ? "mine" : "others";
               if (!matchesOwnershipFilter(cat, ownershipFilters, isAdmin)) return false;
