@@ -38,6 +38,31 @@ def digest(value):
     ).hexdigest()
 
 
+def canonicalize_json_numbers(value):
+    """Coerce whole-number floats to int for CR-spec digest stability.
+
+    Canvas/JSON often emits ``300.0`` / ``32.0`` while the Kubernetes API
+    readback returns ints. ``digest()`` is type-sensitive via ``json.dumps``,
+    so leave it unchanged for enrollment/storage payloads and use this only on
+    TroshkaProject ``spec`` digest paths (``digest_cr_spec``).
+    Non-integer floats (e.g. ``28.5``) are preserved.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: canonicalize_json_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [canonicalize_json_numbers(v) for v in value]
+    return value
+
+
+def digest_cr_spec(value):
+    """Digest a TroshkaProject CR ``spec`` with JSON number canonicalization."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return digest(canonicalize_json_numbers(value))
+
+
 def utc(value):
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 

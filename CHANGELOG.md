@@ -20,6 +20,13 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   After the namespace is gone, cleanup-priority collection starts immediately and
   settlement re-runs as soon as a fresh report lands (10s poll while settling,
   instead of waiting up to a minute), without relaxing storage proof requirements.
+  When delete cancels a native origin deploy after the TroshkaProject create
+  lands but before the root receipt is bound, cleanup now seals that late root
+  via `reconcile_cancelled` and adopts the exact UID into fencing authority so
+  producer fencing is not stuck forever on `root_uid=None` while the CR remains.
+  Cancelled recovery also matches protected launch specs through
+  `digest_cr_spec`, so already-stuck intents that still store a raw float digest
+  can seal the live CR without inventing a new root.
 
 - Native origin capture enabled for local, troshka-dev, and infra01 while quotas
   stay off, so new generic kubevirt deploys retain namespace/root birth provenance
