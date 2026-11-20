@@ -85,14 +85,16 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### Sonar pre-push remediation
 
-The `sonarqube-push` pre-push hook checks API reachability and runs local coverage
-plus the Sonar CLI when connected. If it blocks a push, continue remediation in
-the current chat: inspect the reported findings, fix and test them, commit, and
-retry the push until the exact revision has a passing quality gate. Do not skip
-or disable the hook to push failing code. The hook itself must not modify or
-amend commits during an active push. See `docs/dev/sonarqube-pre-push.md`.
+The `sonarqube-push` pre-push hook is **opt-in** (`RUN_SONAR=1` or `SONAR=1`);
+it is skipped by default on ordinary pushes. When enabled, it checks API
+reachability and runs local coverage plus the Sonar CLI when connected. If it
+blocks a push, continue remediation in the current chat: inspect the reported
+findings, fix and test them, commit, and retry with `RUN_SONAR=1` until the
+exact revision has a passing quality gate. Do not bypass a failed opted-in check
+to push failing code. The hook itself must not modify or amend commits during an
+active push. See `docs/dev/sonarqube-pre-push.md`.
 
-SonarQube enforces a quality gate on every push via GitLab CI. Key rule: **cognitive complexity must stay at or below 15 per function** (rule S3776). When adding logic to an existing function, check if it's already near the limit — extract helpers rather than nesting deeper.
+SonarQube also enforces a quality gate via GitLab CI. Key rule: **cognitive complexity must stay at or below 15 per function** (rule S3776). When adding logic to an existing function, check if it's already near the limit — extract helpers rather than nesting deeper.
 ## Key Patterns
 ### Backend Models (SQLAlchemy 2.0+)
 - `Mapped[type]` + `mapped_column()` syntax

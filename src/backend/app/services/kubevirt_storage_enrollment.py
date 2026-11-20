@@ -39,13 +39,13 @@ def digest(value):
 
 
 def canonicalize_json_numbers(value):
-    """Coerce whole-number floats to int for CR-spec digest stability.
+    """Coerce whole-number floats to int for CR-spec and admission stability.
 
     Canvas/JSON often emits ``300.0`` / ``32.0`` while the Kubernetes API
     readback returns ints. ``digest()`` is type-sensitive via ``json.dumps``,
-    so leave it unchanged for enrollment/storage payloads and use this only on
-    TroshkaProject ``spec`` digest paths (``digest_cr_spec``).
-    Non-integer floats (e.g. ``28.5``) are preserved.
+    so leave it unchanged for enrollment/storage payloads. Use this (via
+    ``digest_cr_spec`` / ``k8s_admission``) for TroshkaProject digests and
+    support admission equality. Non-integer floats (e.g. ``28.5``) are preserved.
     """
     if isinstance(value, float) and value.is_integer():
         return int(value)

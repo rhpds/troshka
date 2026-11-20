@@ -38,7 +38,7 @@ from app.schemas.native_snapshot_custody import SnapshotFacts
 from app.services import kubevirt_storage_enrollment as enrollment
 from app.services import native_deployment_origin as origin
 from app.services import native_online_enrollment as online
-from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
+from app.services.kubevirt_storage_enrollment import digest
 
 CurrentCustody = tuple[NativeOriginCustodyReceipt, OriginCustodyReceipt]
 RetainedCustody = tuple[NativeOriginCustodyReceipt, OriginCustodyReceipt, ProjectRoot]
@@ -329,6 +329,8 @@ def _extended_pins(previous, enrollment_id, root, *, retired=()):
 
 
 def _live_root(kube, prepared):
+    from app.core.database import SessionLocal
+
     root, intent = prepared.root, prepared.intent
     require(kube.cluster_identity() == root.cluster_key, "Origin cluster changed")
     enrollment._verify_project(kube, root)
@@ -345,8 +347,10 @@ def _live_root(kube, prepared):
         and not namespace["metadata"].get("deletionTimestamp"),
         "Origin root identity changed",
     )
+    with SessionLocal() as db:
+        launch_spec = origin.protected_launch_spec(db, intent)
     require(
-        digest_cr_spec(value["spec"]) == intent.cr_spec_digest,
+        origin._root_spec_matches(intent, value["spec"], launch_spec=launch_spec),
         "Origin root specification changed",
     )
     require(

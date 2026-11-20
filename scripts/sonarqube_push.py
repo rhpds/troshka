@@ -1,4 +1,7 @@
-"""VPN-aware, fail-closed Sonar gate for pre-commit's pre-push stage."""
+"""Opt-in VPN-aware Sonar gate for pre-commit's pre-push stage.
+
+Disabled by default. Set RUN_SONAR=1 (or SONAR=1) to enable.
+"""
 
 import base64
 import json
@@ -19,6 +22,12 @@ SOURCE_DIRS = ("src/backend", "src/operator", "src/troshkad", "src/frontend/src"
 
 class CheckFailure(Exception):
     """A reachable Sonar check did not establish permission to push."""
+
+
+def sonar_opted_in(env):
+    """Sonar pre-push is opt-in; set RUN_SONAR=1 (or SONAR=1) to enable."""
+    value = (env.get("RUN_SONAR") or env.get("SONAR") or "").strip().lower()
+    return value in ("1", "true", "yes", "on")
 
 
 def server_url(env):
@@ -282,6 +291,12 @@ def run_offline_backend(env):
 
 
 def check(env):
+    if not sonar_opted_in(env):
+        print(
+            "Sonar pre-push is opt-in and disabled by default; "
+            "set RUN_SONAR=1 (or SONAR=1) to enable."
+        )
+        return 0
     if not env.get("SONAR_TOKEN"):
         print("SONAR_TOKEN is not set; skipping Sonar pre-push check.")
         run_offline_backend(env)

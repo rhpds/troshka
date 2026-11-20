@@ -14,6 +14,20 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Shared `k8s_admission` normalize for native support admission and CR digests:
+  whole-number float/int equality (`structural_contains` / `canonical_equal`),
+  and OpenShift's 4-source `kube-api-access-*` projection (adds
+  `openshift-service-ca.crt`) so ops-pod create no longer fails with
+  "service-account projection changed" on OCP. CSI install observation reuses
+  the same SA recognizer. Cancelled origin delete recovery treats a GC'd RQ
+  original job as terminal when the project has no in-flight job reference;
+  `load_launch` / custody / checkpoint root checks accept legacy raw digests
+  and match live API ints through the protected launch under `digest_cr_spec`,
+  so fencing can seal a late TroshkaProject root after worker rollouts.
+
+- Operations: the SonarQube pre-push hook is opt-in and disabled by default.
+  Export `RUN_SONAR=1` (or `SONAR=1`) to run the gate; ordinary pushes skip it.
+
 - Native origin CR-spec digests canonicalize whole-number JSON floats to ints
   before hashing (`digest_cr_spec`), so canvas/topology values like
   `position.x: 300.0` match Kubernetes API readback ints (`300`) on first bind.

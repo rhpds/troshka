@@ -101,8 +101,11 @@ def test_process_timeout_kills_descendants(tmp_path):
         return
     from pathlib import Path
 
+    # Race: child can be fully reaped between the kill(0) probe and /proc read.
     status = Path(f"/proc/{pid}/stat")
-    assert status.exists() and status.read_text().split()[2] == "Z"
+    if not status.exists():
+        return
+    assert status.read_text().split()[2] == "Z"
 
 
 def test_toolbox_pins_identity_and_exact_remote_argv(monkeypatch):

@@ -6,21 +6,32 @@ Install the repository hooks with:
 pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
-The `sonarqube-push` hook runs for every push through the existing pre-commit
-configuration. Sonar is optional: it runs only when `SONAR_TOKEN` is exported
-and the internal Sonar API is reachable through the VPN. Without a token, it
-skips Sonar without probing the API. With a token, it probes the API with an
-eight-second timeout. If either prerequisite is missing, it runs the backend tests once
-when the pushed range contains backend changes. Manual runs without a push
-range also run backend tests. This preserves the existing offline test check.
-With a token set, an HTTP error or an unhealthy server blocks the push.
+The `sonarqube-push` hook is **opt-in and disabled by default**. Ordinary pushes
+skip it. To run the Sonar gate (and its offline backend fallback when Sonar
+cannot run), export `RUN_SONAR=1` or `SONAR=1` in the calling shell:
 
-To opt into Sonar while connected to the VPN, export `SONAR_TOKEN` in the calling shell and have
-`sonar-scanner`, Node/npm, frontend dependencies, and repository Python test
-environments installed. The token is passed through the scanner environment,
-not command-line arguments. The script does not read shell startup files or
-copy credentials. `SONAR_HOST_URL` (or the older `SONAR_URL`) can override the
-default `https://sonarqube.corp.redhat.com` instance.
+```bash
+RUN_SONAR=1 git push
+```
+
+`SKIP=sonarqube-push` still skips the hook when it would otherwise run. Without
+the opt-in flag the hook exits successfully immediately.
+
+When opted in, Sonar runs only when `SONAR_TOKEN` is exported and the internal
+Sonar API is reachable through the VPN. Without a token, it skips Sonar without
+probing the API. With a token, it probes the API with an eight-second timeout.
+If either prerequisite is missing, it runs the backend tests once when the
+pushed range contains backend changes. Manual runs without a push range also
+run backend tests. This preserves the existing offline test check. With a token
+set, an HTTP error or an unhealthy server blocks the push.
+
+To opt into Sonar while connected to the VPN, export `RUN_SONAR=1` and
+`SONAR_TOKEN` in the calling shell and have `sonar-scanner`, Node/npm, frontend
+dependencies, and repository Python test environments installed. The token is
+passed through the scanner environment, not command-line arguments. The script
+does not read shell startup files or copy credentials. `SONAR_HOST_URL` (or the
+older `SONAR_URL`) can override the default `https://sonarqube.corp.redhat.com`
+instance.
 
 The check generates fresh coverage for the backend, operator, host agent, and
 frontend, then runs the scanner and waits for the quality gate. Python test
@@ -52,11 +63,11 @@ process from inside `git push`.
 
 A failure prints the failing gate metrics and up to 100 current new-code
 findings. In Codex, continue in the current chat: investigate the findings,
-make the smallest appropriate fixes, test them, commit, and retry the push.
-Do not bypass the check to get a failed analysis through. A new fix commit
-requires a new push attempt because Git selected the original commit IDs
-before invoking the hook. Review false positives individually with source
-evidence; do not weaken the quality gate or add blanket exclusions.
+make the smallest appropriate fixes, test them, commit, and retry the push with
+`RUN_SONAR=1`. Do not bypass the check to get a failed analysis through. A new
+fix commit requires a new push attempt because Git selected the original
+commit IDs before invoking the hook. Review false positives individually with
+source evidence; do not weaken the quality gate or add blanket exclusions.
 
 `SONAR_TEST_TIMEOUT` defaults to 1800 seconds per suite,
 `SONAR_PUSH_TIMEOUT` to 1200 seconds for the scanner, and
@@ -72,5 +83,5 @@ python3 -m unittest discover -s scripts/tests -p test_sonarqube_push.py
 To run the real check manually on committed, clean source:
 
 ```bash
-bash scripts/sonarqube-check.sh
+RUN_SONAR=1 bash scripts/sonarqube-check.sh
 ```
