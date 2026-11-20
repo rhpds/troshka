@@ -38,7 +38,7 @@ from app.schemas.native_snapshot_custody import SnapshotFacts
 from app.services import kubevirt_storage_enrollment as enrollment
 from app.services import native_deployment_origin as origin
 from app.services import native_online_enrollment as online
-from app.services.kubevirt_storage_enrollment import digest
+from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
 
 CurrentCustody = tuple[NativeOriginCustodyReceipt, OriginCustodyReceipt]
 RetainedCustody = tuple[NativeOriginCustodyReceipt, OriginCustodyReceipt, ProjectRoot]
@@ -346,7 +346,7 @@ def _live_root(kube, prepared):
         "Origin root identity changed",
     )
     require(
-        digest(value["spec"]) == intent.cr_spec_digest,
+        digest_cr_spec(value["spec"]) == intent.cr_spec_digest,
         "Origin root specification changed",
     )
     require(

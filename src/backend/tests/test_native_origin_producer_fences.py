@@ -19,7 +19,7 @@ def checkpoint_case(online_case, monkeypatch):
     from app.services import native_deployment_origin as origin
     from app.services import native_origin_checkpoints as checkpoints
     from app.services import native_origin_custody as custody
-    from app.services.kubevirt_storage_enrollment import digest
+    from app.services.kubevirt_storage_enrollment import digest_cr_spec
 
     original = origin.prepare
     api = online_case.apis[online_case.project_ids[0]]
@@ -30,7 +30,9 @@ def checkpoint_case(online_case, monkeypatch):
     api.values["TroshkaProject", root["metadata"]["name"]] = root
 
     def prepare(db, project, provider, descriptor):
-        descriptor.update(origin_id=identity, cr_spec_digest=digest(root["spec"]))
+        descriptor.update(
+            origin_id=identity, cr_spec_digest=digest_cr_spec(root["spec"])
+        )
         return original(db, project, provider, descriptor)
 
     monkeypatch.setattr(origin, "prepare", prepare)

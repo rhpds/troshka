@@ -14,6 +14,12 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native origin CR-spec digests canonicalize whole-number JSON floats to ints
+  before hashing (`digest_cr_spec`), so canvas/topology values like
+  `position.x: 300.0` match Kubernetes API readback ints (`300`) on first bind.
+  Non-integer floats stay distinct. Enrollment and other storage digests are
+  unchanged.
+
 - Project delete immediately cancels in-flight deploy/start/ops work and locks
   the canvas read-only for `deleting` and `cleanup_pending` (palette, properties,
   topology saves). The API rejects topology writes in those states as well.

@@ -2447,7 +2447,7 @@ def _deploy_project_with_origin(
     from app.schemas.quota import AccountingUnavailable
     from app.services import native_deployment_origin as origin
     from app.services import native_origin_support as support
-    from app.services.kubevirt_storage_enrollment import digest
+    from app.services.kubevirt_storage_enrollment import digest_cr_spec
 
     namespace = project_cr["metadata"]["namespace"]
     intent = origin.active(db, project_id)
@@ -2485,7 +2485,7 @@ def _deploy_project_with_origin(
         namespace=namespace,
         root_name=project_cr["metadata"]["name"],
         namespace_mode=mode,
-        cr_spec_digest=digest(project_cr["spec"]),
+        cr_spec_digest=digest_cr_spec(project_cr["spec"]),
         support_intents=support.manifest(bodies),
     )
     from app.services.native_deployment_preflight import handoff
@@ -2531,7 +2531,8 @@ def _deploy_project_with_origin(
             created["metadata"].get(key) == observed["root"]["metadata"].get(key)
             for key in ("uid", "generation")
         )
-        and digest(created.get("spec")) == digest(observed["root"].get("spec")),
+        and digest_cr_spec(created.get("spec"))
+        == digest_cr_spec(observed["root"].get("spec")),
         "Native origin created root UID/generation/spec changed",
     )
     origin.bind_root(db, str(intent.id), observed, io_token=token)
