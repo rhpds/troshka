@@ -103,12 +103,25 @@ git merge-base --is-ancestor "$HEAD_REV" origin/main || {
 }
 
 echo "=== Wait for the tagged full image build ==="
-IMAGE_RUN=$(gh run list --branch "$RELEASE_TAG" --commit "$HEAD_REV" --limit 1 \
-  -w build-images.yml --json databaseId --jq '.[0].databaseId // empty')
-if [ -z "$IMAGE_RUN" ]; then
-  echo "GitHub has not registered the tag build yet. Resume with --skip-push --tag $RELEASE_TAG." >&2
-  exit 1
-fi
+# Tag push → Actions registration can lag a few seconds; poll instead of
+# immediately exiting and forcing a manual --skip-push resume.
+IMAGE_RUN_WAIT_SECONDS="${IMAGE_RUN_WAIT_SECONDS:-300}"
+IMAGE_RUN_POLL_SECONDS="${IMAGE_RUN_POLL_SECONDS:-5}"
+IMAGE_RUN=""
+IMAGE_WAIT_DEADLINE=$((SECONDS + IMAGE_RUN_WAIT_SECONDS))
+while [ -z "$IMAGE_RUN" ]; do
+  IMAGE_RUN=$(gh run list --branch "$RELEASE_TAG" --commit "$HEAD_REV" --limit 1 \
+    -w build-images.yml --json databaseId --jq '.[0].databaseId // empty' || true)
+  if [ -n "$IMAGE_RUN" ]; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$IMAGE_WAIT_DEADLINE" ]; then
+    echo "GitHub did not register the tag build within ${IMAGE_RUN_WAIT_SECONDS}s. Resume with --skip-push --tag $RELEASE_TAG." >&2
+    exit 1
+  fi
+  echo "Waiting for GitHub to register tag build $RELEASE_TAG..."
+  sleep "$IMAGE_RUN_POLL_SECONDS"
+done
 gh run watch "$IMAGE_RUN" --exit-status
 # watch may return immediately for an already-completed run; check explicitly.
 [ "$(gh run view "$IMAGE_RUN" --json conclusion --jq .conclusion)" = success ] || {

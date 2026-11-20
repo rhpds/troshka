@@ -299,7 +299,18 @@ with open(os.environ["COMMAND_LOG"], "a") as stream:
 if name == "git" and args[0] == "rev-parse":
     print("candidate")
 if name == "gh" and args[:2] == ["run", "list"]:
-    print("43" if "main" in args else "42")
+    if "main" in args:
+        print("43")
+    else:
+        # Simulate Actions lag after tag push: N empty lists, then the run id.
+        delay = int(os.environ.get("TAG_RUN_LIST_EMPTY", "0"))
+        path = os.environ.get("TAG_RUN_LIST_STATE")
+        seen = 0
+        if path:
+            state = pathlib.Path(path)
+            seen = int(state.read_text()) if state.exists() else 0
+            state.write_text(str(seen + 1))
+        print("" if seen < delay else "42")
 if name == "gh" and args[:2] == ["run", "view"]:
     key = "MAIN_CI_CONCLUSION" if args[2] == "43" else "CI_CONCLUSION"
     print(os.environ.get(key, "success"))
@@ -356,6 +367,33 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     assert not any("scripts/collector_release_check.py" in c or
                    "scripts/collector_fleet_preflight.py" in c for c in calls)
     assert all("--skip-project-pods" in calls[i] for i in hosts)
+
+
+def test_full_deploy_polls_until_tag_build_registers(shell_commands, tmp_path):
+    env, log = shell_commands
+    state = tmp_path / "tag-run-list-seen"
+    result = subprocess.run(
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest"],
+        env={
+            **env,
+            "TAG_RUN_LIST_EMPTY": "2",
+            "TAG_RUN_LIST_STATE": str(state),
+            "IMAGE_RUN_POLL_SECONDS": "0",
+            "IMAGE_RUN_WAIT_SECONDS": "30",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    tag_lists = [
+        c
+        for c in calls
+        if c[:3] == ["gh", "run", "list"] and "--branch" in c and c[c.index("--branch") + 1] == "vtest"
+    ]
+    assert len(tag_lists) >= 3
+    assert "Waiting for GitHub to register tag build vtest" in result.stderr + result.stdout
 
 
 def test_full_deploy_aligns_dev_after_main_build_and_pins_prod_git(shell_commands):

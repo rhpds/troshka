@@ -14,6 +14,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- `deploy-full.sh` polls for the tagged `build-images.yml` GitHub Actions run
+  after tag push (default 5 minutes) instead of exiting immediately when Actions
+  has not registered the workflow yet; `--skip-push --tag` remains the timeout
+  resume path.
+
 - Native delete is map-based: metering freezes when delete/undeploy is accepted,
   a VM→PVC→RBD teardown map is sealed before namespace drain (custody or
   live-namespace inventory — no domain-wide collector scan as a gate), the
