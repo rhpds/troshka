@@ -20,8 +20,10 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   `openshift-service-ca.crt`) so ops-pod create no longer fails with
   "service-account projection changed" on OCP. CSI install observation reuses
   the same SA recognizer. Cancelled origin delete recovery treats a GC'd RQ
-  original job as terminal when the project has no in-flight job reference, so
-  fencing can seal a late TroshkaProject root after worker rollouts.
+  original job as terminal when the project has no in-flight job reference;
+  `load_launch` / custody / checkpoint root checks accept legacy raw digests
+  and match live API ints through the protected launch under `digest_cr_spec`,
+  so fencing can seal a late TroshkaProject root after worker rollouts.
 
 - Native origin CR-spec digests canonicalize whole-number JSON floats to ints
   before hashing (`digest_cr_spec`), so canvas/topology values like

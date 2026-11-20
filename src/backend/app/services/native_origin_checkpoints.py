@@ -27,7 +27,7 @@ from app.models.native_origin_checkpoint import (
     NativeOriginProducerReceipt,
 )
 from app.schemas.quota import AccountingUnavailable
-from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
+from app.services.kubevirt_storage_enrollment import digest
 
 REQUEST = "troshka.redhat.com/origin-checkpoint-request"
 ACK = "troshka.redhat.com/origin-checkpoint-ack"
@@ -128,6 +128,7 @@ def _owned(api, value, root, namespace):
 
 def validate_live(api, intent, root_receipt, request, public_key):
     """Reconstruct the request from independently read live objects, never reports."""
+    from app.services import native_deployment_origin as origin
     from app.services.native_managed_power import helpers
 
     module = protocol()
@@ -135,10 +136,14 @@ def validate_live(api, intent, root_receipt, request, public_key):
         api.begin_inventory()
     root = api.get("TroshkaProject", intent.namespace, intent.root_name)
     require(request.get("intentId") == str(intent.id), "Origin request intent changed")
+    from app.core.database import SessionLocal
+
+    with SessionLocal() as db:
+        launch_spec = origin.protected_launch_spec(db, intent)
     require(
         root["metadata"]["uid"] == root_receipt.root_uid
         and root["metadata"]["generation"] == root_receipt.generation
-        and digest_cr_spec(root["spec"]) == intent.cr_spec_digest,
+        and origin._root_spec_matches(intent, root["spec"], launch_spec=launch_spec),
         "Origin request root changed",
     )
     require(

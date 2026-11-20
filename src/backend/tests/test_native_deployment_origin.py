@@ -1330,3 +1330,21 @@ def test_tracking_result_rechecks_original_handoff_snapshot(
             service().recover_handoff(db, intent)
         else:
             service().retry_handoff(db, intent, "namespace", token)
+
+
+def test_launch_spec_matches_legacy_raw_and_canonical_digests():
+    from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
+    from app.services.native_deployment_origin import (
+        _launch_spec_matches_intent,
+        _root_spec_matches,
+    )
+
+    float_spec = {"projectId": "x", "position": {"x": 300.0}}
+    int_spec = {"projectId": "x", "position": {"x": 300}}
+    legacy = SimpleNamespace(cr_spec_digest=digest(float_spec))
+    canonical = SimpleNamespace(cr_spec_digest=digest_cr_spec(float_spec))
+    assert _launch_spec_matches_intent(legacy, float_spec)
+    assert not _launch_spec_matches_intent(legacy, int_spec)
+    assert _root_spec_matches(legacy, int_spec, launch_spec=float_spec)
+    assert _launch_spec_matches_intent(canonical, int_spec)
+    assert _root_spec_matches(canonical, int_spec, launch_spec=None)

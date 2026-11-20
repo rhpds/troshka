@@ -271,6 +271,22 @@ def annotations(intent):
     }
 
 
+def _launch_spec_matches_intent(intent, spec):
+    """Accept digest_cr_spec or legacy raw digest for the same launch body."""
+    return (
+        digest_cr_spec(spec) == intent.cr_spec_digest
+        or digest(spec) == intent.cr_spec_digest
+    )
+
+
+def protected_launch_spec(db, intent):
+    """Return the sealed launch CR spec, or None when unavailable/mismatched."""
+    try:
+        return load_launch(db, intent)["project_cr"]["spec"]
+    except AccountingUnavailable:
+        return None
+
+
 def _root_spec_matches(intent, spec, *, launch_spec=None):
     """Accept current or pre-canonical intent digests for the same CR spec.
 
@@ -278,10 +294,11 @@ def _root_spec_matches(intent, spec, *, launch_spec=None):
     raw ``digest`` of canvas floats. Matching the protected launch payload under
     the same canonicalize helper recovers those without inventing a new root.
     """
-    live = digest_cr_spec(spec)
-    if live == intent.cr_spec_digest:
+    if _launch_spec_matches_intent(intent, spec):
         return True
-    return launch_spec is not None and live == digest_cr_spec(launch_spec)
+    return launch_spec is not None and digest_cr_spec(spec) == digest_cr_spec(
+        launch_spec
+    )
 
 
 def _namespace(intent, observed):
@@ -514,7 +531,7 @@ def retain_launch(db, intent, launch):
     from app.core.encryption import encrypt
 
     require(
-        digest_cr_spec(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
+        _launch_spec_matches_intent(intent, launch["project_cr"]["spec"]),
         "Native origin launch spec changed",
     )
     existing = db.get(NativeDeploymentOriginLaunch, str(intent.id))
@@ -541,7 +558,7 @@ def load_launch(db, intent):
             "Native origin protected launch cannot be decrypted"
         ) from exc
     require(
-        digest_cr_spec(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
+        _launch_spec_matches_intent(intent, launch["project_cr"]["spec"]),
         "Native origin protected launch changed",
     )
     meta = launch["project_cr"]["metadata"]
