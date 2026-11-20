@@ -1914,6 +1914,58 @@ def test_normal_request_defers_capture_and_failed_capture_does_not_delete(
         assert cleanup.states(db, q.project_id)[0].phase == "fencing"
 
 
+def test_missing_collection_pins_seals_map_and_skips_recover_on_retry(
+    origin_namespace_case, monkeypatch
+):
+    """Lifecycle worker lacks /etc/troshka/collection pins; seal instead of hang."""
+    from app.schemas.native_project_cleanup import StorageLiabilities
+    from app.services import native_cleanup_storage as retention
+    from app.services import native_teardown_map as teardown
+
+    q = origin_namespace_case
+    q.request()
+    q.advance()
+    recover_calls = []
+
+    def missing_pins(db, api, work):
+        recover_calls.append(work.phase)
+        raise FileNotFoundError(
+            "/etc/troshka/collection/ocpv01.dfw3-authorized-pins.json"
+        )
+
+    monkeypatch.setattr(retention, "recover", missing_pins)
+
+    def seal_ok(db, api, work):
+        liabilities = StorageLiabilities(unresolved=[])
+        return cleanup._save(
+            db,
+            work,
+            liabilities=liabilities,
+            liability_digest=digest(liabilities.model_dump(mode="json")),
+            last_error=None,
+        )
+
+    monkeypatch.setattr(teardown, "seal", seal_ok)
+    monkeypatch.setattr(
+        teardown,
+        "map_sealed",
+        lambda work: "storage_coverage_unavailable" not in work.liabilities.unresolved
+        and "storage_coverage_incomplete" not in work.liabilities.unresolved,
+    )
+    work = q.advance()
+    # Same tick continues past recover into VM/NS drain (no early return).
+    assert work.phase in {"vm_delete_requested", "namespace_delete_requested"}
+    assert recover_calls == ["fencing"]
+    # Later ticks must not re-enter recover (would FileNotFoundError again).
+    work = q.advance()
+    assert recover_calls == ["fencing"]
+    assert work.phase in {
+        "vm_delete_requested",
+        "namespace_delete_requested",
+        "namespace_absent",
+    }
+
+
 def test_incomplete_retained_custody_cannot_authorize_deletion(origin_namespace_case):
     q = origin_namespace_case
     origin_support.publish(q, mode="enroll")

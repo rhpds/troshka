@@ -20,7 +20,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   Project row is released after namespace absence, and known private images are
   reclaimed asynchronously (`orphan_reclaim`). Soft
   `storage_coverage_unavailable` / `incomplete` debts no longer hold the
-  Project hostage; collector settlement remains optional audit.
+  Project hostage; collector settlement remains optional audit. Origin recover
+  that hits missing collection pins on the lifecycle worker
+  (`FileNotFoundError` for `*-authorized-pins.json`) soft-fails into the same
+  live-map seal, and sealed cleanups no longer re-enter recover on later
+  reconcile ticks.
 
 - Native storage discovery matches retiring cleanup intents by `root_key` (not
   full `ProjectRoot` equality), so namespace-absent roots still produce retiring

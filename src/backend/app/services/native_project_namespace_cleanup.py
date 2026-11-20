@@ -1,5 +1,6 @@
 """One retained namespace teardown flow, separate from storage settlement."""
 
+import errno
 import json
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
@@ -866,45 +867,90 @@ def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
             annotations,
         )
         return work
-    from app.schemas.quota import AccountingUnavailable
-    from app.services.native_cleanup_storage import recover, require_coverage
-    from app.services.native_teardown_map import hard_debts, map_sealed, seal
-
-    # Prefer origin custody recovery when enrollment was never retained. If
-    # recovery is unavailable (e.g. hung collector), fall back to a sealed
-    # live-namespace teardown map so delete is not held hostage.
-    if work.authority.domain_id is None and work.authority.source_kind == "origin":
-        try:
-            return recover(db, api, work)
-        except AccountingUnavailable as error:
-            # Only fall back to a live map when recovery failed for coverage /
-            # collector availability — not for identity or inventory mismatches.
-            message = str(error).lower()
-            soft = any(
-                token in message
-                for token in (
-                    "storage coverage",
-                    "capture unavailable",
-                    "read failed",
-                    "unavailable",
-                    "timeout",
-                )
-            )
-            if not soft:
-                raise
-            work = seal(db, api, work)
-            if not (map_sealed(work) and not hard_debts(work.liabilities)):
-                raise
-    else:
-        if work.authority.domain_id is not None:
-            work = _retain_inventory(db, api, work)
-        work = seal(db, api, work)
-    require_coverage(work)
+    work = _ensure_teardown_coverage(db, api, work)
     work, empty = _remove_vms(db, api, work)
     if not empty:
         return work
     work, empty = _remove_own_crs(db, api, work)
     return _delete_namespace(db, api, work) if empty else work
+
+
+_SOFT_RECOVERY_TOKENS = (
+    "storage coverage",
+    "capture unavailable",
+    "read failed",
+    "unavailable",
+    "timeout",
+    "no such file",
+    "authorized-pins",
+)
+
+
+def _soft_recovery_failure(error):
+    """True when origin recover failed for collector/coverage availability."""
+    message = str(error).lower()
+    return any(token in message for token in _SOFT_RECOVERY_TOKENS)
+
+
+def _ensure_teardown_coverage(db, api, work):
+    """Retain or seal storage coverage before VM/CR/NS drain.
+
+    Origin recover needs collection pins (mounted on collection-worker, not the
+    lifecycle worker). Missing pins and other soft coverage failures seal a
+    live-namespace teardown map instead. Once sealed, later phases must not
+    re-enter recover — that reintroduced the pins FileNotFoundError hang.
+    """
+    from app.schemas.quota import AccountingUnavailable
+    from app.services.native_cleanup_storage import recover, require_coverage
+    from app.services.native_teardown_map import hard_debts, map_sealed, seal
+
+    if work.authority.domain_id is not None:
+        work = _retain_inventory(db, api, work)
+        work = seal(db, api, work)
+        require_coverage(work)
+        return work
+
+    if work.authority.source_kind != "origin":
+        work = seal(db, api, work)
+        require_coverage(work)
+        return work
+
+    if map_sealed(work) and not hard_debts(work.liabilities):
+        require_coverage(work)
+        return work
+
+    if work.phase == "fencing" and not map_sealed(work):
+        soft_error = None
+        try:
+            work = recover(db, api, work)
+            require_coverage(work)
+            return work
+        except AccountingUnavailable as error:
+            if not _soft_recovery_failure(error):
+                raise
+            soft_error = error
+        except FileNotFoundError as error:
+            soft_error = AccountingUnavailable(
+                "storage coverage capture unavailable: missing collection pins "
+                f"({error})"
+            )
+        except OSError as error:
+            if getattr(error, "errno", None) != errno.ENOENT:
+                raise
+            soft_error = AccountingUnavailable(
+                "storage coverage capture unavailable: missing collection pins "
+                f"({error})"
+            )
+        work = seal(db, api, work)
+        if not (map_sealed(work) and not hard_debts(work.liabilities)):
+            raise soft_error
+        require_coverage(work)
+        return work
+
+    if not map_sealed(work):
+        work = seal(db, api, work)
+    require_coverage(work)
+    return work
 
 
 def storage_scopes(db, domain_id=None, *, settled_only=False):
