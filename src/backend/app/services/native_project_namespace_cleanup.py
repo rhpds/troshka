@@ -240,6 +240,91 @@ def _marker(work, pins, identity):
     )
 
 
+def _adopt_recovered_origin_root(db, work, root_receipt):
+    """Refresh sealed cleanup authority after a late cancelled root receipt."""
+    project = db.get(Project, str(work.authority.project_id))
+    # Do not pass the stale null-root authority as ``expected``: resolve already
+    # reflects the sealed receipt, which is the gap this recovery closes.
+    resolved = authority.lock(db, project)
+    origin.require(
+        resolved is not None, "Origin cleanup authority unavailable after root recovery"
+    )
+    if TYPE_CHECKING:
+        assert resolved is not None
+    selected, liabilities = resolved
+    origin.require(
+        selected.source_kind == "origin"
+        and str(selected.source_id) == str(work.authority.source_id)
+        and selected.namespace_uid == work.authority.namespace_uid
+        and selected.cluster_uid == work.authority.cluster_uid
+        and work.authority.root_uid is None
+        and selected.root_uid == root_receipt.root_uid,
+        "Recovered origin root authority changed",
+    )
+    current = load(db.query(State).filter_by(id=str(work.id)).populate_existing().one())
+    origin.require(
+        current.phase == work.phase
+        and current.marker is None
+        and current.authority.root_uid is None
+        and str(current.authority.source_id) == str(work.authority.source_id)
+        and current.authority.namespace_uid == work.authority.namespace_uid,
+        "Namespace cleanup changed during origin root recovery",
+    )
+    evidence = dict(
+        previous=current.authority.model_dump(mode="json"),
+        authority=selected.model_dump(mode="json"),
+        root_uid=root_receipt.root_uid,
+        generation=root_receipt.generation,
+    )
+    _evidence(db, current, "origin_root_recovered:" + digest(evidence)[:32], evidence)
+    work = _save(
+        db,
+        current,
+        authority=selected,
+        liabilities=liabilities,
+        liability_digest=digest(liabilities.model_dump(mode="json")),
+        last_error=None,
+    )
+    db.commit()
+    return work
+
+
+def _recover_cancelled_origin_root(db, api, work):
+    """Seal a late cancelled root POST and adopt it before producer fencing.
+
+    Delete can cancel origin after the TroshkaProject create lands but before the
+    root receipt is bound. Cleanup then freezes ``root_uid=None`` and fencing
+    refuses to proceed while the CR remains. ``reconcile_cancelled`` already
+    retains that exact late result; cleanup must invoke it and refresh authority
+    before the strict lock/marker path. This does not invent UIDs or skip proof.
+    """
+    selected = work.authority
+    if (
+        selected.source_kind != "origin"
+        or selected.root_uid is not None
+        or work.marker is not None
+        or work.phase != "fencing"
+    ):
+        return work
+    intent = origin.active(db, str(selected.project_id))
+    if intent is None or str(intent.id) != str(selected.source_id):
+        return work
+    from app.models.native_deployment_origin import NativeDeploymentOriginActive
+
+    pointer = db.get(NativeDeploymentOriginActive, str(selected.project_id))
+    if pointer is None or not pointer.cancelled:
+        return work
+    _, root_receipt = origin.receipts(db, str(intent.id))
+    if root_receipt is None:
+        # Unlock before remote readback / worker-idle checks.
+        db.commit()
+        origin.reconcile_cancelled(db, api, intent)
+        _, root_receipt = origin.receipts(db, str(intent.id))
+    if root_receipt is None:
+        return work
+    return _adopt_recovered_origin_root(db, work, root_receipt)
+
+
 def _publish_marker(db, api, work, namespace, operator_namespace):
     if work.authority.root_uid is None:
         origin.require(
@@ -693,6 +778,11 @@ def _delete_namespace(db, api, work):
 
 
 def advance(db, api, cleanup_id, *, operator_namespace="troshka-operator"):
+    work = load(db.get(State, cleanup_id))
+    # Adopt a late sealed root before the strict predecessor lock; otherwise a
+    # cleanup frozen at root_uid=None can never match resolve() after binding.
+    if work.phase == "fencing" and work.authority.root_uid is None:
+        work = _recover_cancelled_origin_root(db, api, work)
     _, work = _locked(db, cleanup_id)
     authority.local_writers_closed(db, work.authority)
     db.commit()

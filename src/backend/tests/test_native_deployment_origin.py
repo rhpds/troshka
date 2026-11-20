@@ -259,10 +259,10 @@ def test_prepare_retry_keeps_original_token_and_digest(origin_case):
 )
 def test_binding_and_recovery_reject_changed_original_identity(origin_case, field):
     q = origin_case
-    from app.services.kubevirt_storage_enrollment import digest
+    from app.services.kubevirt_storage_enrollment import digest_cr_spec
 
     original = descriptor()
-    original["cr_spec_digest"] = digest({"projectId": q.project_id})
+    original["cr_spec_digest"] = digest_cr_spec({"projectId": q.project_id})
     with q.sessions() as db:
         intent = service().prepare(
             db, db.get(Project, q.project_id), db.get(Provider, q.provider_id), original

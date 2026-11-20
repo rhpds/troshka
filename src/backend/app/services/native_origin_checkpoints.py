@@ -27,7 +27,7 @@ from app.models.native_origin_checkpoint import (
     NativeOriginProducerReceipt,
 )
 from app.schemas.quota import AccountingUnavailable
-from app.services.kubevirt_storage_enrollment import digest
+from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
 
 REQUEST = "troshka.redhat.com/origin-checkpoint-request"
 ACK = "troshka.redhat.com/origin-checkpoint-ack"
@@ -138,7 +138,7 @@ def validate_live(api, intent, root_receipt, request, public_key):
     require(
         root["metadata"]["uid"] == root_receipt.root_uid
         and root["metadata"]["generation"] == root_receipt.generation
-        and digest(root["spec"]) == intent.cr_spec_digest,
+        and digest_cr_spec(root["spec"]) == intent.cr_spec_digest,
         "Origin request root changed",
     )
     require(
@@ -318,9 +318,11 @@ def _retain_request(sessions, api, intent, root_receipt, public, request):
                     payload=request,
                     custody_receipt_id=row.id,
                     custody_digest=row.digest,
-                    predecessor_id=str(prepared.predecessor_id)
-                    if prepared.predecessor_id
-                    else None,
+                    predecessor_id=(
+                        str(prepared.predecessor_id)
+                        if prepared.predecessor_id
+                        else None
+                    ),
                 )
             )
         db.commit()

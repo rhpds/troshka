@@ -86,11 +86,11 @@ def setup_case(q, monkeypatch, *, root=False):
     if root:
         from app.models.project import Project
         from app.models.provider import Provider
-        from app.services.kubevirt_storage_enrollment import digest
+        from app.services.kubevirt_storage_enrollment import digest_cr_spec
         from tests.test_native_deployment_origin import descriptor
 
         desc = descriptor()
-        desc["cr_spec_digest"] = digest({"projectId": q.project_id})
+        desc["cr_spec_digest"] = digest_cr_spec({"projectId": q.project_id})
         with q.sessions() as db:
             intent = service().prepare(
                 db, db.get(Project, q.project_id), db.get(Provider, q.provider_id), desc

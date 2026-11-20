@@ -1349,6 +1349,119 @@ def test_root_submitted_origin_captures_storage_before_destruction(
     assert not work.liabilities.unresolved
 
 
+def _strip_cleanup_root_uid(q):
+    """Reproduce delete-before-root-bind: cleanup frozen with root_uid=None."""
+    with q.sessions() as db:
+        work = cleanup.states(db, q.project_id)[0]
+        root_uid = work.authority.root_uid
+        assert root_uid
+        stripped = work.authority.model_copy(update={"root_uid": None})
+        cleanup._save(
+            db,
+            work,
+            authority=stripped,
+            last_error="Original root UID unresolved; producer boundary unavailable",
+        )
+        db.commit()
+    return root_uid
+
+
+def test_fencing_adopts_sealed_origin_root_before_marker(origin_namespace_case):
+    """Cleanup prepared without root_uid must adopt a later-sealed receipt."""
+    q = origin_namespace_case
+    q.request()
+    root_uid = _strip_cleanup_root_uid(q)
+    assert any(kind == "TroshkaProject" for kind, _ in q.values)
+    advanced = q.advance()
+    assert advanced.authority.root_uid == root_uid
+    assert advanced.marker is not None
+    assert advanced.marker["rootUid"] == root_uid
+    with q.sessions() as db:
+        assert any(
+            row.phase.startswith("origin_root_recovered:")
+            for row in db.query(cleanup.Evidence).filter_by(cleanup_id=q.cleanup_id)
+        )
+
+
+def test_fencing_seals_late_cancelled_root_via_reconcile(
+    origin_namespace_case, monkeypatch
+):
+    """Cancelled mid-root POST must be sealed before fencing while the CR lives."""
+    from uuid import uuid4
+
+    from app.models.native_deployment_origin import NativeDeploymentOriginActive
+    from app.services import native_deployment_origin as origin
+
+    q = origin_namespace_case
+    monkeypatch.setattr(origin, "require_idle", lambda *_a, **_k: None)
+    q.request()
+    root_uid = _strip_cleanup_root_uid(q)
+    with q.sessions() as db:
+        pointer = db.get(NativeDeploymentOriginActive, q.project_id)
+        pointer.cancelled = True
+        pointer.io_phase = "root"
+        pointer.io_token = str(uuid4())
+        pointer.io_job_id = "late-root-job"
+        db.commit()
+    real_receipts = origin.receipts
+    sealed = {"done": False}
+
+    def receipts(db, intent_id):
+        namespace, root = real_receipts(db, intent_id)
+        return (namespace, None) if not sealed["done"] else (namespace, root)
+
+    def reconcile_cancelled(db, api, intent):
+        sealed["done"] = True
+        pointer = db.get(NativeDeploymentOriginActive, str(intent.project_id))
+        pointer.io_phase = None
+        pointer.io_token = None
+        pointer.io_job_id = None
+        db.commit()
+        return {"root": True}
+
+    monkeypatch.setattr(origin, "receipts", receipts)
+    monkeypatch.setattr(origin, "reconcile_cancelled", reconcile_cancelled)
+    advanced = q.advance()
+    assert sealed["done"]
+    assert advanced.authority.root_uid == root_uid
+    assert advanced.marker is not None
+
+
+def test_root_spec_matches_accepts_launch_canonical_for_pre_canonical_intent():
+    """Already-stuck intents may store raw float digests; launch match still seals."""
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.services import native_deployment_origin as origin
+    from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
+
+    float_spec = {"projectId": str(uuid4()), "topology": {"x": 300.0, "ram": 32.0}}
+    int_spec = {"projectId": float_spec["projectId"], "topology": {"x": 300, "ram": 32}}
+    intent = SimpleNamespace(cr_spec_digest=digest(float_spec))
+    assert digest(int_spec) != intent.cr_spec_digest
+    assert digest_cr_spec(int_spec) != intent.cr_spec_digest
+    assert origin._root_spec_matches(intent, int_spec, launch_spec=float_spec)
+    assert not origin._root_spec_matches(intent, int_spec, launch_spec=None)
+
+
+def test_null_root_marker_still_requires_absent_project_cr(origin_namespace_case):
+    """Without recovery, fencing keeps the original producer-boundary hold."""
+    q = origin_namespace_case
+    q.request()
+    with q.sessions() as db:
+        work = cleanup.states(db, q.project_id)[0]
+        work = cleanup._save(
+            db,
+            work,
+            authority=work.authority.model_copy(update={"root_uid": None}),
+        )
+        db.commit()
+        namespace = q.api.get("Namespace", None, work.authority.namespace)
+        assert any(kind == "TroshkaProject" for kind, _ in q.values)
+        with pytest.raises(AccountingUnavailable, match="producer boundary"):
+            cleanup._publish_marker(db, q.api, work, namespace, "troshka-operator")
+
+
 def legacy_missing_custody(q, monkeypatch):
     # The API durably records cancellation without remote I/O. This is also
     # the exact pre-fix legacy state supported by background retention.

@@ -20,7 +20,7 @@ from app.schemas.native_origin_custody import (
 from app.schemas.native_snapshot_custody import SnapshotFacts
 from app.services import native_origin_custody as custody
 from app.services import native_snapshot_custody as snapshots
-from app.services.kubevirt_storage_enrollment import digest, utc
+from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec, utc
 
 
 def _state(db, intent):
@@ -117,7 +117,7 @@ def _root(kube, prepared):
     custody.require(
         value["metadata"]["uid"] == root.project_cr_uid
         and value["metadata"].get("generation") == root.deployment_generation
-        and digest(value["spec"]) == prepared.intent.cr_spec_digest,
+        and digest_cr_spec(value["spec"]) == prepared.intent.cr_spec_digest,
         "Snapshot original root changed",
     )
     return value

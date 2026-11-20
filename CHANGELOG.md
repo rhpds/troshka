@@ -14,12 +14,25 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native origin CR-spec digests canonicalize whole-number JSON floats to ints
+  before hashing (`digest_cr_spec`), so canvas/topology values like
+  `position.x: 300.0` match Kubernetes API readback ints (`300`) on first bind.
+  Non-integer floats stay distinct. Enrollment and other storage digests are
+  unchanged.
+
 - Project delete immediately cancels in-flight deploy/start/ops work and locks
   the canvas read-only for `deleting` and `cleanup_pending` (palette, properties,
   topology saves). The API rejects topology writes in those states as well.
   After the namespace is gone, cleanup-priority collection starts immediately and
   settlement re-runs as soon as a fresh report lands (10s poll while settling,
   instead of waiting up to a minute), without relaxing storage proof requirements.
+  When delete cancels a native origin deploy after the TroshkaProject create
+  lands but before the root receipt is bound, cleanup now seals that late root
+  via `reconcile_cancelled` and adopts the exact UID into fencing authority so
+  producer fencing is not stuck forever on `root_uid=None` while the CR remains.
+  Cancelled recovery also matches protected launch specs through
+  `digest_cr_spec`, so already-stuck intents that still store a raw float digest
+  can seal the live CR without inventing a new root.
 
 - Native origin capture enabled for local, troshka-dev, and infra01 while quotas
   stay off, so new generic kubevirt deploys retain namespace/root birth provenance

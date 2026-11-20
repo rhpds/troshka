@@ -28,7 +28,7 @@ from app.schemas.native_deployment_origin import (
     RootReceipt,
 )
 from app.schemas.quota import AccountingUnavailable
-from app.services.kubevirt_storage_enrollment import digest
+from app.services.kubevirt_storage_enrollment import digest, digest_cr_spec
 from app.services.quota_locks import lock_project
 
 TOKEN = "troshka.redhat.com/origin-token"
@@ -271,6 +271,19 @@ def annotations(intent):
     }
 
 
+def _root_spec_matches(intent, spec, *, launch_spec=None):
+    """Accept current or pre-canonical intent digests for the same CR spec.
+
+    Newer intents store ``digest_cr_spec``; already-stuck ones may still store a
+    raw ``digest`` of canvas floats. Matching the protected launch payload under
+    the same canonicalize helper recovers those without inventing a new root.
+    """
+    live = digest_cr_spec(spec)
+    if live == intent.cr_spec_digest:
+        return True
+    return launch_spec is not None and live == digest_cr_spec(launch_spec)
+
+
 def _namespace(intent, observed):
     require(
         observed.get("cluster_uid") == intent.cluster_uid,
@@ -367,9 +380,15 @@ def bind_root(db, intent_id, observed, *, record_cancelled=False, io_token=None)
         ),
         "Native origin root token changed",
     )
+    launch_spec = None
+    if record_cancelled:
+        try:
+            launch_spec = load_launch(db, intent)["project_cr"]["spec"]
+        except AccountingUnavailable:
+            launch_spec = None
     require(
         root.get("spec", {}).get("projectId") == str(intent.project_id)
-        and digest(root.get("spec")) == intent.cr_spec_digest,
+        and _root_spec_matches(intent, root.get("spec"), launch_spec=launch_spec),
         "Native origin root spec changed",
     )
     value = RootReceipt(
@@ -483,7 +502,7 @@ def retain_launch(db, intent, launch):
     from app.core.encryption import encrypt
 
     require(
-        digest(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
+        digest_cr_spec(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
         "Native origin launch spec changed",
     )
     existing = db.get(NativeDeploymentOriginLaunch, str(intent.id))
@@ -510,7 +529,7 @@ def load_launch(db, intent):
             "Native origin protected launch cannot be decrypted"
         ) from exc
     require(
-        digest(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
+        digest_cr_spec(launch["project_cr"]["spec"]) == intent.cr_spec_digest,
         "Native origin protected launch changed",
     )
     meta = launch["project_cr"]["metadata"]
@@ -532,7 +551,7 @@ def load_launch(db, intent):
     return launch
 
 
-def recover(api, intent, retained_receipts):
+def recover(api, intent, retained_receipts, *, launch_spec=None):
     """Read-only exact recovery; caller binds using fresh canonical locks."""
     cluster = api.get("Namespace", None, "kube-system")["metadata"]["uid"]
     require(cluster == intent.cluster_uid, "Native origin cluster changed")
@@ -577,7 +596,7 @@ def recover(api, intent, retained_receipts):
         "Native origin root token changed",
     )
     require(
-        digest(root.get("spec")) == intent.cr_spec_digest,
+        _root_spec_matches(intent, root.get("spec"), launch_spec=launch_spec),
         "Native origin root spec changed",
     )
     if retained_receipts[1]:
@@ -603,8 +622,13 @@ def reconcile_cancelled(db, api, intent):
     """
     phase, token = recover_handoff(db, intent)
     retained = receipts(db, str(intent.id))
+    launch_spec = None
+    try:
+        launch_spec = load_launch(db, intent)["project_cr"]["spec"]
+    except AccountingUnavailable:
+        launch_spec = None
     db.commit()
-    observed = recover(api, intent, retained)
+    observed = recover(api, intent, retained, launch_spec=launch_spec)
     if observed is None:
         return None
     bind_namespace(
