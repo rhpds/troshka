@@ -362,9 +362,14 @@ def test_operator_install_rejected_before_bootstrap(grants_mode, value):
     clients.assert_not_called()
 
 
-def test_deploy_project_base_failure_blocks_later_secret_cache_cr_writes(grants_mode):
+def test_deploy_project_base_failure_blocks_later_secret_cache_cr_writes(
+    grants_mode, monkeypatch
+):
     from app.services.providers.kubevirt import KubeVirtDriver
 
+    monkeypatch.setattr(
+        "app.services.native_deployment_origin.capture_enabled", lambda: False
+    )
     grants_mode("external")
     events = MagicMock()
     events.core.read_namespace.return_value = _namespace("troshka-project")

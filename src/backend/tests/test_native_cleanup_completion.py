@@ -1649,7 +1649,7 @@ def test_pending_cleanup_rejects_organization_transfer_without_reassigning_recei
             db, db.get(Project, q.project_ids[0]), "delete"
         )
         db.commit()
-        with pytest.raises(HTTPException, match="Original native cleanup"):
+        with pytest.raises(HTTPException, match="Project is deleting or settling"):
             organization_service.transfer_user(
                 db, actor, actor.id, destination.id, FixedDatetime.current
             )

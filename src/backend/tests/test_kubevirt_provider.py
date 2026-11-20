@@ -76,7 +76,10 @@ def test_get_host_powerstate_always_running():
     assert driver.get_host_powerstate(provider, "any") == "running"
 
 
-def test_deploy_project_creates_namespace_and_cr():
+def test_deploy_project_creates_namespace_and_cr(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.native_deployment_origin.capture_enabled", lambda: False
+    )
     provider = _make_provider()
     driver = get_provider_driver(provider)
 
@@ -661,8 +664,11 @@ def test_apply_ops_pod_skips_when_namespace_terminating():
     core.delete_namespaced_pod.assert_not_called()
 
 
-def test_deploy_project_enriches_topology_with_mtu():
+def test_deploy_project_enriches_topology_with_mtu(monkeypatch):
     """Verify deploy_project adds MTU from mtu_map to network nodes."""
+    monkeypatch.setattr(
+        "app.services.native_deployment_origin.capture_enabled", lambda: False
+    )
     provider = _make_provider()
     driver = get_provider_driver(provider)
 
