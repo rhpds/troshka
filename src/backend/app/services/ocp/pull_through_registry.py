@@ -19,9 +19,23 @@ _PROBE_TIMEOUT_S = 10
 # Only start a parameter at a delimiter, avoiding retries within malformed tokens.
 _BEARER_PARAM_RE = re.compile(r'(?:^|,)\s*(\w+)="([^"]*)"')
 
+# Red Hat pull secrets authorize quay.io/openshift-release-dev pulls used by
+# openshift-install agent ISO generation.
+OCP_PULL_SECRET_DOWNLOAD_URL = "https://console.redhat.com/openshift/downloads"
+_OCP_REGISTRY_HOST = "quay.io"
+_SETTINGS_PULL_SECRET = "Settings → OCP Pull Secret"
+
 
 class PullThroughRegistryError(Exception):
     """Registry unreachable or credentials rejected."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+class OcpPullSecretError(Exception):
+    """Stored OCP pull secret missing, malformed, or rejected by the registry."""
 
     def __init__(self, message: str):
         self.message = message
@@ -33,7 +47,7 @@ def _registry_base_url(url: str) -> str:
     if not host:
         raise PullThroughRegistryError(
             "Pull-through registry URL is not configured. "
-            "Update credentials in Settings → OCP Pull Secret."
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
         )
     if "://" not in host:
         host = f"https://{host}"
@@ -195,12 +209,12 @@ def probe_pull_through_registry(
         reason = getattr(e, "reason", e) or e
         raise PullThroughRegistryError(
             f"Pull-through registry unreachable ({base}): {reason}. "
-            "Update credentials in Settings → OCP Pull Secret."
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
         ) from e
     except TimeoutError as e:
         raise PullThroughRegistryError(
             f"Pull-through registry unreachable ({base}): timed out. "
-            "Update credentials in Settings → OCP Pull Secret."
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
         ) from e
 
 
@@ -208,8 +222,97 @@ def _auth_failure_message(base: str, code: int, reason) -> str:
     return (
         f"Pull-through registry unreachable or credentials invalid ({base}): "
         f"{code} {reason}. "
-        "Update credentials in Settings → OCP Pull Secret."
+        f"Update credentials in {_SETTINGS_PULL_SECRET}."
     )
+
+
+def _pull_secret_help(detail: str) -> str:
+    return (
+        f"{detail} Download a new pull secret from {OCP_PULL_SECRET_DOWNLOAD_URL} "
+        f"and update it in {_SETTINGS_PULL_SECRET}."
+    )
+
+
+def _credentials_from_auth_entry(entry: dict) -> tuple[str, str] | None:
+    if not isinstance(entry, dict):
+        return None
+    username = (entry.get("username") or "").strip()
+    password = entry.get("password") or ""
+    if username and password:
+        return username, password
+    auth = entry.get("auth")
+    if not auth or not isinstance(auth, str):
+        return None
+    try:
+        decoded = base64.b64decode(auth).decode()
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if ":" not in decoded:
+        return None
+    user, password = decoded.split(":", 1)
+    if not user or not password:
+        return None
+    return user, password
+
+
+def _quay_credentials_from_pull_secret(pull_secret_json: str) -> tuple[str, str]:
+    try:
+        data = json.loads(pull_secret_json or "")
+    except (TypeError, json.JSONDecodeError) as e:
+        raise OcpPullSecretError(
+            _pull_secret_help("OCP pull secret is not valid JSON.")
+        ) from e
+    auths = data.get("auths") if isinstance(data, dict) else None
+    if not isinstance(auths, dict) or not auths:
+        raise OcpPullSecretError(
+            _pull_secret_help("OCP pull secret has no registry credentials.")
+        )
+    for host in (_OCP_REGISTRY_HOST, f"https://{_OCP_REGISTRY_HOST}"):
+        creds = _credentials_from_auth_entry(auths.get(host) or {})
+        if creds:
+            return creds
+    raise OcpPullSecretError(
+        _pull_secret_help(
+            f"OCP pull secret is missing credentials for {_OCP_REGISTRY_HOST}."
+        )
+    )
+
+
+def probe_ocp_pull_secret(
+    pull_secret_json: str,
+    *,
+    timeout: float = _PROBE_TIMEOUT_S,
+) -> None:
+    """Verify the stored pull secret can authenticate to quay.io.
+
+    Raises OcpPullSecretError when the secret is malformed or rejected.
+    """
+    username, password = _quay_credentials_from_pull_secret(pull_secret_json)
+    try:
+        probe_pull_through_registry(
+            _OCP_REGISTRY_HOST, username, password, timeout=timeout
+        )
+    except PullThroughRegistryError as e:
+        # Rephrase PTR-oriented wording for the Red Hat pull-secret path.
+        raise OcpPullSecretError(
+            _pull_secret_help(
+                "OCP pull secret is invalid or expired "
+                f"(registry authentication failed for {_OCP_REGISTRY_HOST})."
+            )
+        ) from e
+
+
+def _probe_stored_ocp_pull_secret(owner) -> str | None:
+    try:
+        secret = decrypt(owner.ocp_pull_secret)
+    except Exception:
+        logger.exception("Failed to decrypt OCP pull secret")
+        return _pull_secret_help("OCP pull secret could not be decrypted.")
+    try:
+        probe_ocp_pull_secret(secret)
+    except OcpPullSecretError as e:
+        return e.message
+    return None
 
 
 def _clusters_needing_ptr(topology: dict, cluster_key: str | None) -> list[dict]:
@@ -257,17 +360,29 @@ def check_pull_through_registry_for_project(
 ) -> str | None:
     """Check install credentials and PTR before placement or job submission."""
     owner = db.query(User).filter_by(id=project.owner_id).first()
+    needs_secret = _requires_ocp_pull_secret(topology or {}, cluster_key)
     # Saving PTR credentials also stores the generated registry pull secret.
     # A mirror URL alone cannot satisfy openshift-install's pullSecret input.
-    if not (owner and owner.ocp_pull_secret) and _requires_ocp_pull_secret(
-        topology or {}, cluster_key
-    ):
+    if needs_secret and not (owner and owner.ocp_pull_secret):
         return (
             "OpenShift installation requires a pull secret for the project owner. "
-            "Add an OCP pull secret or save pull-through registry credentials in "
-            "Settings → OCP Pull Secret before deploying or retrying installation."
+            f"Download one from {OCP_PULL_SECRET_DOWNLOAD_URL} or save "
+            f"pull-through registry credentials in {_SETTINGS_PULL_SECRET} "
+            "before deploying or retrying installation."
         )
-    if not (owner and owner.pull_through_registry and owner.pull_through_registry_url):
+
+    ptr_enabled = bool(
+        owner and owner.pull_through_registry and owner.pull_through_registry_url
+    )
+    # Direct Red Hat pull secrets must still authenticate to quay.io before we
+    # spend time creating VMs / building the agent ISO. PTR installs probe the
+    # mirror credentials below instead (the stored secret is PTR-only).
+    if needs_secret and owner and owner.ocp_pull_secret and not ptr_enabled:
+        secret_err = _probe_stored_ocp_pull_secret(owner)
+        if secret_err:
+            return secret_err
+
+    if not ptr_enabled:
         return None
 
     needing = _clusters_needing_ptr(topology or {}, cluster_key)
@@ -279,7 +394,7 @@ def check_pull_through_registry_for_project(
     if not username or not enc_password:
         return (
             "Pull-through registry is enabled but username/password are missing. "
-            "Update credentials in Settings → OCP Pull Secret."
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
         )
 
     try:
@@ -288,7 +403,7 @@ def check_pull_through_registry_for_project(
         logger.exception("Failed to decrypt pull-through registry password")
         return (
             "Pull-through registry password could not be decrypted. "
-            "Update credentials in Settings → OCP Pull Secret."
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
         )
 
     try:

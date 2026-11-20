@@ -239,6 +239,7 @@ def test_check_returns_none_when_ptr_disabled():
     )
 
     owner = MagicMock(
+        ocp_pull_secret="enc",
         pull_through_registry=False,
         pull_through_registry_url=None,
     )
@@ -247,7 +248,17 @@ def test_check_returns_none_when_ptr_disabled():
     db.query.return_value.filter_by.return_value.first.return_value = owner
 
     topology = {"clusters": [{"id": "c1", "installOnDeploy": True}]}
-    assert check_pull_through_registry_for_project(db, project, topology) is None
+    with (
+        patch(
+            "app.services.ocp.pull_through_registry.decrypt",
+            return_value='{"auths":{"quay.io":{"auth":"dXNlcjpwYXNz"}}}',
+        ),
+        patch(
+            "app.services.ocp.pull_through_registry.probe_ocp_pull_secret",
+        ) as probe,
+    ):
+        assert check_pull_through_registry_for_project(db, project, topology) is None
+        probe.assert_called_once()
 
 
 def test_check_returns_none_when_clusters_opt_out():
@@ -374,6 +385,7 @@ def test_check_returns_error_when_credentials_missing():
     )
 
     owner = MagicMock(
+        ocp_pull_secret="enc",
         pull_through_registry=True,
         pull_through_registry_url="registry.example.com",
         pull_through_registry_user="",
@@ -387,3 +399,150 @@ def test_check_returns_error_when_credentials_missing():
     err = check_pull_through_registry_for_project(db, project, topology)
     assert err is not None
     assert "missing" in err.lower()
+
+
+def _owner_with_pull_secret(**kwargs):
+    defaults = dict(
+        ocp_pull_secret="enc",
+        pull_through_registry=False,
+        pull_through_registry_url=None,
+    )
+    defaults.update(kwargs)
+    return MagicMock(**defaults)
+
+
+def test_check_probes_pull_secret_when_ptr_disabled():
+    from app.services.ocp.pull_through_registry import (
+        OCP_PULL_SECRET_DOWNLOAD_URL,
+        OcpPullSecretError,
+        check_pull_through_registry_for_project,
+    )
+
+    owner = _owner_with_pull_secret()
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = owner
+    topology = {"clusters": [{"id": "ocp"}]}
+    secret = '{"auths":{"quay.io":{"auth":"dXNlcjpwYXNz"}}}'
+
+    with (
+        patch(
+            "app.services.ocp.pull_through_registry.decrypt",
+            return_value=secret,
+        ),
+        patch(
+            "app.services.ocp.pull_through_registry.probe_ocp_pull_secret",
+            side_effect=OcpPullSecretError(
+                f"OCP pull secret is invalid or expired "
+                f"(registry authentication failed for quay.io). "
+                f"Download a new pull secret from {OCP_PULL_SECRET_DOWNLOAD_URL} "
+                f"and update it in Settings → OCP Pull Secret."
+            ),
+        ),
+    ):
+        err = check_pull_through_registry_for_project(
+            db, MagicMock(owner_id="owner"), topology
+        )
+    assert err is not None
+    assert "invalid or expired" in err
+    assert OCP_PULL_SECRET_DOWNLOAD_URL in err
+    assert "Settings" in err
+
+
+def test_check_skips_quay_probe_when_ptr_enabled():
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    owner = _owner_with_pull_secret(
+        pull_through_registry=True,
+        pull_through_registry_url="registry.example.com",
+        pull_through_registry_user="user",
+        pull_through_registry_password="enc-pass",
+    )
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = owner
+    topology = {"clusters": [{"id": "c1", "installOnDeploy": True}]}
+
+    with (
+        patch(
+            "app.services.ocp.pull_through_registry.decrypt",
+            return_value="secret",
+        ),
+        patch(
+            "app.services.ocp.pull_through_registry.probe_ocp_pull_secret",
+        ) as quay_probe,
+        patch(
+            "app.services.ocp.pull_through_registry.probe_pull_through_registry",
+        ) as ptr_probe,
+    ):
+        assert (
+            check_pull_through_registry_for_project(
+                db, MagicMock(owner_id="owner"), topology
+            )
+            is None
+        )
+    quay_probe.assert_not_called()
+    ptr_probe.assert_called_once()
+
+
+def test_probe_ocp_pull_secret_accepts_quay_auth():
+    from app.services.ocp.pull_through_registry import probe_ocp_pull_secret
+
+    secret = '{"auths":{"quay.io":{"auth":"dXNlcjpwYXNz"}}}'
+    with patch(
+        "app.services.ocp.pull_through_registry.probe_pull_through_registry",
+    ) as probe:
+        probe_ocp_pull_secret(secret)
+    probe.assert_called_once_with("quay.io", "user", "pass", timeout=10)
+
+
+def test_probe_ocp_pull_secret_rejects_missing_quay_entry():
+    from app.services.ocp.pull_through_registry import (
+        OCP_PULL_SECRET_DOWNLOAD_URL,
+        OcpPullSecretError,
+        probe_ocp_pull_secret,
+    )
+
+    with pytest.raises(OcpPullSecretError) as exc:
+        probe_ocp_pull_secret('{"auths":{"registry.redhat.io":{"auth":"YTpi"}}}')
+    assert "quay.io" in exc.value.message
+    assert OCP_PULL_SECRET_DOWNLOAD_URL in exc.value.message
+
+
+def test_probe_ocp_pull_secret_rejects_registry_unauthorized():
+    from app.services.ocp.pull_through_registry import (
+        OCP_PULL_SECRET_DOWNLOAD_URL,
+        OcpPullSecretError,
+        PullThroughRegistryError,
+        probe_ocp_pull_secret,
+    )
+
+    secret = '{"auths":{"quay.io":{"auth":"dXNlcjpwYXNz"}}}'
+    with patch(
+        "app.services.ocp.pull_through_registry.probe_pull_through_registry",
+        side_effect=PullThroughRegistryError("401 Unauthorized"),
+    ):
+        with pytest.raises(OcpPullSecretError) as exc:
+            probe_ocp_pull_secret(secret)
+    assert "invalid or expired" in exc.value.message
+    assert OCP_PULL_SECRET_DOWNLOAD_URL in exc.value.message
+
+
+def test_missing_pull_secret_message_includes_download_link():
+    from app.services.ocp.pull_through_registry import (
+        OCP_PULL_SECRET_DOWNLOAD_URL,
+        check_pull_through_registry_for_project,
+    )
+
+    owner = MagicMock(
+        ocp_pull_secret=None,
+        pull_through_registry=False,
+        pull_through_registry_url=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = owner
+    err = check_pull_through_registry_for_project(
+        db, MagicMock(owner_id="owner"), {"clusters": [{"id": "ocp"}]}
+    )
+    assert err is not None
+    assert OCP_PULL_SECRET_DOWNLOAD_URL in err
