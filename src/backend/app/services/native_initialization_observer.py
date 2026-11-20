@@ -203,62 +203,21 @@ def deployment_parent(workload, replica_sets, pods):
 
 def token_projection(volume):
     """Recognize only Kubernetes and exact OpenShift service-CA token projections."""
-    name = volume["name"]
+    from app.services.k8s_admission import is_bound_service_account_volume
+
     require(
-        re.fullmatch(r"kube-api-access-[a-z0-9]{5}", name) is not None,
-        "unsupported injected CSI volume",
+        is_bound_service_account_volume(volume),
+        "service account projection differs",
     )
-    sources = volume["projected"]["sources"]
-    require(len(sources) in {3, 4}, "unsupported service account projection")
-    expiration = sources[0]["serviceAccountToken"]["expirationSeconds"]
+    expiration = volume["projected"]["sources"][0]["serviceAccountToken"][
+        "expirationSeconds"
+    ]
+    # CSI install observation pins the common kubelet lifetimes only.
     require(
         type(expiration) is int and expiration in (3600, 3607),
         "unsupported service account token lifetime",
     )
-    expected = {
-        "name": name,
-        "projected": {
-            "defaultMode": 420,
-            "sources": [
-                {
-                    "serviceAccountToken": {
-                        "expirationSeconds": expiration,
-                        "path": "token",
-                    }
-                },
-                {
-                    "configMap": {
-                        "name": "kube-root-ca.crt",
-                        "items": [{"key": "ca.crt", "path": "ca.crt"}],
-                    }
-                },
-                {
-                    "downwardAPI": {
-                        "items": [
-                            {
-                                "path": "namespace",
-                                "fieldRef": {
-                                    "apiVersion": "v1",
-                                    "fieldPath": "metadata.namespace",
-                                },
-                            }
-                        ]
-                    }
-                },
-            ],
-        },
-    }
-    if len(sources) == 4:
-        expected["projected"]["sources"].append(
-            {
-                "configMap": {
-                    "name": "openshift-service-ca.crt",
-                    "items": [{"key": "service-ca.crt", "path": "service-ca.crt"}],
-                }
-            }
-        )
-    require(volume == expected, "service account projection differs")
-    return name
+    return volume["name"]
 
 
 def remove_token_injection(actual, expected):

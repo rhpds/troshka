@@ -406,6 +406,27 @@ def bind_root(db, intent_id, observed, *, record_cancelled=False, io_token=None)
     return receipt
 
 
+def _original_job_status(original_job_id, reference):
+    """Return RQ status; missing jobs are terminal when the project is idle."""
+    from rq.exceptions import NoSuchJobError
+    from rq.job import Job
+
+    from app.core import redis
+
+    try:
+        return Job.fetch(original_job_id, connection=redis.get_redis_raw()).get_status(
+            refresh=True
+        )
+    except Exception as exc:
+        # Worker rollouts / Redis GC drop finished RQ jobs. With no project job
+        # reference, the original writer cannot still hold the project lock.
+        if isinstance(exc, NoSuchJobError) and not reference:
+            return "finished"
+        raise AccountingUnavailable(
+            "Native origin original worker tracking unavailable"
+        ) from exc
+
+
 def require_idle(project_id, original_job_id=None):
     from rq import get_current_job
 
@@ -432,18 +453,9 @@ def require_idle(project_id, original_job_id=None):
     )
     if TYPE_CHECKING:
         assert original_job_id is not None
-    try:
-        from rq.job import Job
-
-        status = Job.fetch(
-            original_job_id, connection=redis.get_redis_raw()
-        ).get_status(refresh=True)
-    except Exception as exc:
-        raise AccountingUnavailable(
-            "Native origin original worker tracking unavailable"
-        ) from exc
     require(
-        status in {"finished", "failed", "stopped", "canceled"},
+        _original_job_status(original_job_id, reference)
+        in {"finished", "failed", "stopped", "canceled"},
         "Native origin original writer is still active",
     )
 

@@ -1115,6 +1115,46 @@ def test_recovery_worker_tracks_own_job_and_terminal_original(
             service().require_idle("selected", "original-job")
 
 
+def test_require_idle_treats_missing_rq_job_as_terminal_when_idle(monkeypatch):
+    """Worker rollouts GC finished jobs; delete recovery must still seal roots."""
+    from unittest.mock import Mock
+
+    import rq
+    from rq.exceptions import NoSuchJobError
+    from rq.job import Job
+
+    from app.core import redis
+
+    monkeypatch.setattr(redis, "is_redis_available", lambda: True)
+    monkeypatch.setattr(
+        redis, "get_redis", lambda: SimpleNamespace(get=lambda key: None)
+    )
+    monkeypatch.setattr(redis, "get_redis_raw", lambda: object())
+    monkeypatch.setattr(rq, "get_current_job", lambda: None)
+    monkeypatch.setattr(Job, "fetch", Mock(side_effect=NoSuchJobError("gone")))
+    service().require_idle("selected", "original-job")
+
+
+def test_require_idle_still_fails_missing_job_when_project_ref_present(monkeypatch):
+    from unittest.mock import Mock
+
+    import rq
+    from rq.exceptions import NoSuchJobError
+    from rq.job import Job
+
+    from app.core import redis
+
+    monkeypatch.setattr(redis, "is_redis_available", lambda: True)
+    monkeypatch.setattr(
+        redis, "get_redis", lambda: SimpleNamespace(get=lambda key: "other-job")
+    )
+    monkeypatch.setattr(redis, "get_redis_raw", lambda: object())
+    monkeypatch.setattr(rq, "get_current_job", lambda: None)
+    monkeypatch.setattr(Job, "fetch", Mock(side_effect=NoSuchJobError("gone")))
+    with pytest.raises(AccountingUnavailable, match="in-flight work"):
+        service().require_idle("selected", "original-job")
+
+
 @pytest.mark.parametrize("change", ["uid", "generation", "spec"])
 def test_first_root_bind_preserves_post_readback_identity(
     provider_io, monkeypatch, change

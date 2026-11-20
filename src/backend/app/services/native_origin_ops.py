@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, Any, cast
 from app.services import native_deployment_origin as origin
 from app.services import native_origin_ops_state as state
 from app.services import native_origin_support as support
+from app.services.k8s_admission import (
+    canonical_equal,
+    is_bound_service_account_volume,
+    service_account_mount,
+    structural_contains,
+)
 from app.services.kubevirt_storage_enrollment import digest
 
 OPERATION = "troshka.redhat.com/ops-support-operation"
@@ -220,30 +226,16 @@ def create(project_id, api, body, *, replacement=None):
     return operation
 
 
-def _contains(expected, observed):
-    if isinstance(expected, dict):
-        return isinstance(observed, dict) and all(
-            k in observed and _contains(v, observed[k]) for k, v in expected.items()
-        )
-    if isinstance(expected, list):
-        return (
-            isinstance(observed, list)
-            and len(expected) == len(observed)
-            and all(_contains(a, b) for a, b in zip(expected, observed, strict=True))
-        )
-    return expected == observed
-
-
 def _admitted(body, observed):
     if body["kind"] == "Secret":
         origin.require(
-            _content(body) == _content(observed),
+            canonical_equal(_content(body), _content(observed)),
             "Native support admitted Secret changed",
         )
         return
     spec = _admitted_spec(body["spec"], observed.get("spec", {}))
     origin.require(
-        _contains(body["spec"], spec)
+        structural_contains(body["spec"], spec)
         and not spec.get("initContainers")
         and not spec.get("ephemeralContainers")
         and not spec.get("hostPID"),
@@ -251,52 +243,20 @@ def _admitted(body, observed):
     )
 
 
-def _service_account_volume(volume):
-    """Recognize only Kubernetes' standard bound service-account projection."""
-    value = deepcopy(volume)
-    name = value.pop("name", "")
-    if not isinstance(name, str) or not name.startswith("kube-api-access-"):
-        return False
-    projected = value.get("projected", {})
-    if projected.get("defaultMode", 420) != 420:
-        return False
-    projected.pop("defaultMode", None)
-    sources = projected.get("sources", [])
-    if len(sources) != 3:
-        return False
-    token = sources[0].get("serviceAccountToken", {})
-    expiration = token.pop("expirationSeconds", 3607)
-    return (
-        type(expiration) is int
-        and expiration > 0
-        and value
-        == {
-            "projected": {
-                "sources": [
-                    {"serviceAccountToken": {"path": "token"}},
-                    {
-                        "configMap": {
-                            "name": "kube-root-ca.crt",
-                            "items": [{"key": "ca.crt", "path": "ca.crt"}],
-                        }
-                    },
-                    {
-                        "downwardAPI": {
-                            "items": [
-                                {
-                                    "path": "namespace",
-                                    "fieldRef": {
-                                        "apiVersion": "v1",
-                                        "fieldPath": "metadata.namespace",
-                                    },
-                                }
-                            ]
-                        }
-                    },
-                ]
-            }
-        }
+def _strip_service_account_injection(expected, volumes, mounts):
+    """Drop the API-injected kube-api-access volume/mount when it matches."""
+    if len(volumes) != len(expected.get("volumes", [])) + 1:
+        return
+    volume = volumes[-1]
+    origin.require(
+        expected.get("automountServiceAccountToken") is not False
+        and is_bound_service_account_volume(volume)
+        and mounts
+        and canonical_equal(mounts[-1], service_account_mount(volume.get("name"))),
+        "Native support admitted service-account projection changed",
     )
+    volumes.pop()
+    mounts.pop()
 
 
 def _admitted_spec(expected, observed):
@@ -305,28 +265,17 @@ def _admitted_spec(expected, observed):
     origin.require(len(containers) == 1, "Native support admitted containers changed")
     volumes = spec.get("volumes", [])
     mounts = containers[0].get("volumeMounts", [])
-    if len(volumes) == len(expected.get("volumes", [])) + 1:
-        volume = volumes[-1]
-        mount = dict(
-            name=volume.get("name"),
-            mountPath="/var/run/secrets/kubernetes.io/serviceaccount",
-            readOnly=True,
-        )
-        origin.require(
-            expected.get("automountServiceAccountToken") is not False
-            and _service_account_volume(volume)
-            and mounts
-            and mounts[-1] == mount,
-            "Native support admitted service-account projection changed",
-        )
-        volumes.pop()
-        mounts.pop()
+    _strip_service_account_injection(expected, volumes, mounts)
     container = expected["containers"][0]
     origin.require(
-        _contains(expected.get("volumes", []), volumes)
-        and _contains(container.get("volumeMounts", []), mounts)
-        and container.get("command", []) == containers[0].get("command", [])
-        and container.get("args", []) == containers[0].get("args", []),
+        structural_contains(expected.get("volumes", []), volumes)
+        and structural_contains(container.get("volumeMounts", []), mounts)
+        and structural_contains(
+            container.get("command", []), containers[0].get("command", [])
+        )
+        and structural_contains(
+            container.get("args", []), containers[0].get("args", [])
+        ),
         "Native support admitted volumes, mounts or command changed",
     )
     return spec
