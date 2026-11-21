@@ -2353,6 +2353,9 @@ def deploy_project(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    from app.services.access_window import require_owner_access_window
+
+    require_owner_access_window(db, project, action="deploy")
     if project.state != "draft":
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, not draft"
@@ -2678,6 +2681,9 @@ def start_project(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    from app.services.access_window import require_owner_access_window
+
+    require_owner_access_window(db, project, action="start")
     if project.state not in ("stopped", "error"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, not stopped"
@@ -7179,6 +7185,9 @@ def redeploy_project(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    from app.services.access_window import require_owner_access_window
+
+    require_owner_access_window(db, project, action="redeploy")
     if project.state not in ("active", "stopped", "error"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, cannot redeploy"

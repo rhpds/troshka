@@ -46,10 +46,36 @@ it("creates using email and role without a display name field", async () => {
   render(<AdminUsersPage />);
   fireEvent.click(screen.getByRole("button", { name: "Add User" }));
   expect(screen.queryByLabelText(/Display Name/)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Access starts")).toBeInTheDocument();
+  expect(screen.getByLabelText("Access ends")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Email"), { target: { value: "invite@example.com" } });
   fireEvent.click(screen.getByRole("button", { name: "Create" }));
-  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/users/", expect.objectContaining({ method: "POST", body: JSON.stringify({ email: "invite@example.com", role: "user" }) })));
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/v1/users/", expect.objectContaining({
+    method: "POST",
+    body: JSON.stringify({
+      email: "invite@example.com",
+      role: "user",
+      access_starts_at: null,
+      access_ends_at: null,
+    }),
+  })));
   expect(await screen.findByText(/Account created/)).toBeInTheDocument();
+});
+
+it("shows not started and expired labels for access windows", async () => {
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, options) => {
+    if (String(url).endsWith("/users/") && !options?.method) {
+      return new Response(JSON.stringify([
+        { ...account("future", true), access_starts_at: "2099-01-01T00:00:00Z" },
+        { ...account("past", true), access_ends_at: "2000-01-01T00:00:00Z" },
+      ]));
+    }
+    return original(url, options);
+  });
+  render(<AdminUsersPage />);
+  expect(await screen.findByText("Not started")).toBeInTheDocument();
+  expect(screen.getByText("Expired")).toBeInTheDocument();
 });
 
 it("disables access through the user update endpoint", async () => {

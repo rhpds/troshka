@@ -28,6 +28,12 @@ class User(Base):
     access_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true"
     )
+    access_starts_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    access_ends_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     password_hash: Mapped[str | None] = mapped_column(String(255))
     quota_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     organization_id: Mapped[str | None] = mapped_column(

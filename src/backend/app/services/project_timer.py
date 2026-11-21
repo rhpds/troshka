@@ -95,6 +95,41 @@ def _process_expired_timers(s, now, result, _dry_run):
         _delete_project(s, p)
 
 
+def _process_expired_access_windows(s, now, result, _dry_run):
+    """Stop active projects owned by users whose access_ends_at has passed."""
+    from app.models.project import Project
+    from app.models.user import User
+
+    expired = (
+        s.query(Project)
+        .join(User, User.id == Project.owner_id)
+        .filter(
+            User.access_ends_at.isnot(None),
+            User.access_ends_at <= now,
+            Project.state == "active",
+        )
+        .all()
+    )
+    for p in expired:
+        result.setdefault("access_ended_stop", []).append(p.id)
+        if _dry_run:
+            continue
+        logger.info(
+            "Access-window stop for project %s (%s) owner=%s",
+            p.name,
+            p.id[:8],
+            p.owner_id[:8],
+        )
+        stop_action = _timer_quota_preflight(s, p, "stop")
+        if not stop_action:
+            continue
+        p.state = "stopping"
+        p.auto_stopped = True
+        s.commit()
+        _notify(p.id, {"type": "timer_fired", "timer": "access_ended"})
+        _queue_timer_stop(p.id, stop_action)
+
+
 def _process_timer_warnings(s, now, warning_threshold, result, _dry_run):
     """Send warnings for timers about to expire."""
     from app.models.project import Project
@@ -279,6 +314,7 @@ def _check_project_timers(_dry_run=False):
         "auto_delete": [],
         "auto_stop_warned": [],
         "auto_delete_warned": [],
+        "access_ended_stop": [],
     }
 
     s = SessionLocal()
@@ -286,6 +322,7 @@ def _check_project_timers(_dry_run=False):
         now = datetime.datetime.now(datetime.UTC)
         warning_threshold = now + datetime.timedelta(minutes=_WARNING_MINUTES)
         _process_expired_timers(s, now, result, _dry_run)
+        _process_expired_access_windows(s, now, result, _dry_run)
         _process_timer_warnings(s, now, warning_threshold, result, _dry_run)
         _recover_stuck_projects(s, now, result, _dry_run)
     except Exception:

@@ -1,23 +1,18 @@
+import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-from fastapi import HTTPException
-from fastapi.testclient import TestClient
-
 from app.core.auth import (
-    _enforce_access,
-    _get_user_groups,
     _parse_csv,
-    _resolve_role,
-    _role_for_groups,
     create_jwt,
     decode_jwt,
     hash_password,
+    role_for_email,
     verify_password,
 )
-from app.main import app
-
-client = TestClient(app)
+from app.services.access_window import (
+    access_window_denial_message,
+    user_within_access_window,
+)
 
 
 def test_parse_csv_handles_empty():
@@ -42,7 +37,6 @@ def test_allowed_users_blocks_unauthorized_sso_user():
     mock_config.auth.jwt_expiry_hours = 24
 
     with patch("app.core.auth.config", mock_config):
-        # Reimport to pick up new config
         from app.core.auth import _parse_csv
 
         allowed = _parse_csv("allowed@test.com")
@@ -78,128 +72,44 @@ def test_jwt_invalid_token():
     assert payload is None
 
 
-# --- Group support tests ---
-
-_MOCK_GROUPS = [
-    {
-        "metadata": {"name": "rhpds-admins"},
-        "users": ["prutledg", "admin2"],
-    },
-    {
-        "metadata": {"name": "troshka-operators"},
-        "users": ["operator1", "prutledg"],
-    },
-    {
-        "metadata": {"name": "troshka-users"},
-        "users": ["user1", "user2"],
-    },
-]
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_get_user_groups(mock_fetch):
-    groups = _get_user_groups("prutledg")
-    assert groups == {"rhpds-admins", "troshka-operators"}
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_get_user_groups_unknown_user(mock_fetch):
-    groups = _get_user_groups("nobody")
-    assert groups == set()
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_role_for_groups_admin(mock_fetch):
-    with patch("app.core.auth._admin_groups", {"rhpds-admins"}), patch(
-        "app.core.auth._operator_groups", {"troshka-operators"}
-    ), patch("app.core.auth._allowed_groups", {"troshka-users"}):
-        assert _role_for_groups("prutledg") == "admin"
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_role_for_groups_operator(mock_fetch):
-    with patch("app.core.auth._admin_groups", set()), patch(
-        "app.core.auth._operator_groups", {"troshka-operators"}
-    ), patch("app.core.auth._allowed_groups", {"troshka-users"}):
-        assert _role_for_groups("operator1") == "operator"
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_role_for_groups_user(mock_fetch):
-    with patch("app.core.auth._admin_groups", set()), patch(
-        "app.core.auth._operator_groups", set()
-    ), patch("app.core.auth._allowed_groups", {"troshka-users"}):
-        assert _role_for_groups("user1") == "user"
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_role_for_groups_none_when_not_in_any(mock_fetch):
-    with patch("app.core.auth._admin_groups", {"rhpds-admins"}), patch(
-        "app.core.auth._operator_groups", set()
-    ), patch("app.core.auth._allowed_groups", set()):
-        assert _role_for_groups("user1") is None
-
-
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_resolve_role_email_overrides_groups(mock_fetch):
+def test_role_for_email_uses_config_lists():
     with patch("app.core.auth._admin_users", {"admin@test.com"}), patch(
-        "app.core.auth._operator_users", set()
-    ), patch("app.core.auth._admin_groups", set()), patch(
-        "app.core.auth._operator_groups", {"troshka-operators"}
-    ), patch(
-        "app.core.auth._allowed_groups", {"troshka-users"}
+        "app.core.auth._operator_users", {"op@test.com"}
     ):
-        assert _resolve_role("admin@test.com", "user1") == "admin"
+        assert role_for_email("admin@test.com") == "admin"
+        assert role_for_email("op@test.com") == "operator"
+        assert role_for_email("user@test.com") == "user"
 
 
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_resolve_role_falls_back_to_groups(mock_fetch):
-    with patch("app.core.auth._admin_users", set()), patch(
-        "app.core.auth._operator_users", set()
-    ), patch("app.core.auth._admin_groups", set()), patch(
-        "app.core.auth._operator_groups", {"troshka-operators"}
-    ), patch(
-        "app.core.auth._allowed_groups", {"troshka-users"}
-    ):
-        assert _resolve_role("operator1@test.com", "operator1") == "operator"
+def test_access_window_unbounded_allows():
+    user = MagicMock(access_starts_at=None, access_ends_at=None)
+    assert user_within_access_window(user)
 
 
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_enforce_access_group_allowed(mock_fetch):
-    with patch("app.core.auth._allowed_groups", {"troshka-users"}), patch(
-        "app.core.auth._admin_groups", set()
-    ), patch("app.core.auth._operator_groups", set()), patch(
-        "app.core.auth._allowed_users", set()
-    ):
-        _enforce_access("user1@test.com", "user1")
+def test_access_window_before_start_denies():
+    now = datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC)
+    user = MagicMock(
+        access_starts_at=datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC),
+        access_ends_at=None,
+    )
+    assert not user_within_access_window(user, now=now)
+    assert "not started" in access_window_denial_message(user, now=now).lower()
 
 
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_enforce_access_group_denied(mock_fetch):
-    with patch("app.core.auth._allowed_groups", {"troshka-users"}), patch(
-        "app.core.auth._admin_groups", set()
-    ), patch("app.core.auth._operator_groups", set()), patch(
-        "app.core.auth._allowed_users", set()
-    ):
-        with pytest.raises(HTTPException) as exc_info:
-            _enforce_access("nobody@test.com", "nobody")
-        assert exc_info.value.status_code == 403
+def test_access_window_after_end_denies():
+    now = datetime.datetime(2026, 8, 1, tzinfo=datetime.UTC)
+    user = MagicMock(
+        access_starts_at=None,
+        access_ends_at=datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC),
+    )
+    assert not user_within_access_window(user, now=now)
+    assert "expired" in access_window_denial_message(user, now=now).lower()
 
 
-@patch("app.core.auth._fetch_openshift_groups", return_value=_MOCK_GROUPS)
-def test_enforce_access_email_fallback(mock_fetch):
-    with patch("app.core.auth._allowed_groups", {"troshka-users"}), patch(
-        "app.core.auth._admin_groups", set()
-    ), patch("app.core.auth._operator_groups", set()), patch(
-        "app.core.auth._allowed_users", {"special@test.com"}
-    ):
-        _enforce_access("special@test.com", "nobody")
-
-
-def test_enforce_access_no_groups_configured():
-    with patch("app.core.auth._allowed_groups", set()), patch(
-        "app.core.auth._admin_groups", set()
-    ), patch("app.core.auth._operator_groups", set()), patch(
-        "app.core.auth._allowed_users", set()
-    ):
-        _enforce_access("anyone@test.com")
+def test_access_window_inside_range_allows():
+    now = datetime.datetime(2026, 6, 15, tzinfo=datetime.UTC)
+    user = MagicMock(
+        access_starts_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+        access_ends_at=datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC),
+    )
+    assert user_within_access_window(user, now=now)

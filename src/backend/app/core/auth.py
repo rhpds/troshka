@@ -1,6 +1,5 @@
 import datetime
 import logging
-import time
 
 import bcrypt
 import jwt
@@ -10,84 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import config
 from app.core.database import get_db
+from app.services.access_window import user_within_access_window
 
 logger = logging.getLogger(__name__)
-
-# --- OpenShift group resolution ---
-_groups_cache: list[dict] = []
-_groups_cache_time: float = 0
-_GROUPS_CACHE_TTL = 60
-_k8s_client = None
-
-
-def _get_k8s_client():
-    global _k8s_client
-    if _k8s_client is not None:
-        return _k8s_client
-    try:
-        from kubernetes import client
-        from kubernetes import config as k8s_config
-
-        k8s_config.load_incluster_config()
-        _k8s_client = client.CustomObjectsApi()
-        logger.info("Kubernetes client initialized for group resolution")
-        return _k8s_client
-    except Exception:
-        logger.debug(
-            "Kubernetes client not available — group resolution disabled", exc_info=True
-        )
-        return None
-
-
-def _fetch_openshift_groups() -> list[dict]:
-    global _groups_cache, _groups_cache_time
-    if _groups_cache and time.time() - _groups_cache_time < _GROUPS_CACHE_TTL:
-        return _groups_cache
-
-    api = _get_k8s_client()
-    if api is None:
-        return []
-
-    try:
-        result = api.list_cluster_custom_object(
-            group="user.openshift.io",
-            version="v1",
-            plural="groups",
-        )
-        _groups_cache = result.get("items", [])  # type: ignore[union-attr]
-        _groups_cache_time = time.time()
-        logger.debug("Fetched %d OpenShift groups", len(_groups_cache))
-        return _groups_cache
-    except Exception:
-        logger.warning("Failed to fetch OpenShift groups", exc_info=True)
-        return _groups_cache
-
-
-def _get_user_groups(username: str, email: str | None = None) -> set[str]:
-    groups = _fetch_openshift_groups()
-    identities = {username}
-    if email:
-        identities.add(email)
-    return {
-        g["metadata"]["name"].lower()
-        for g in groups
-        if identities & set(g.get("users", []))
-    }
-
-
-def _role_for_groups(username: str, email: str | None = None) -> str | None:
-    if not username:
-        return None
-    user_groups = _get_user_groups(username, email)
-    if not user_groups:
-        return None
-    if _admin_groups and user_groups & _admin_groups:
-        return "admin"
-    if _operator_groups and user_groups & _operator_groups:
-        return "operator"
-    if _allowed_groups and user_groups & _allowed_groups:
-        return "user"
-    return None
 
 
 def _parse_csv(value: str) -> set[str]:
@@ -99,9 +23,6 @@ def _parse_csv(value: str) -> set[str]:
 _admin_users = _parse_csv(getattr(config.auth, "admin_users", ""))
 _allowed_users = _parse_csv(getattr(config.auth, "allowed_users", ""))
 _operator_users = _parse_csv(getattr(config.auth, "operator_users", ""))
-_allowed_groups = _parse_csv(getattr(config.auth, "allowed_groups", ""))
-_admin_groups = _parse_csv(getattr(config.auth, "admin_groups", ""))
-_operator_groups = _parse_csv(getattr(config.auth, "operator_groups", ""))
 
 
 def role_for_email(email: str) -> str:
@@ -110,20 +31,6 @@ def role_for_email(email: str) -> str:
         return "admin"
     if email_lower in _operator_users:
         return "operator"
-    return "user"
-
-
-def _resolve_role(email: str, ocp_username: str | None) -> str:
-    """Resolve user role: email config takes precedence, then group membership."""
-    email_lower = email.lower()
-    if email_lower in _admin_users:
-        return "admin"
-    if email_lower in _operator_users:
-        return "operator"
-    if ocp_username:
-        group_role = _role_for_groups(ocp_username, email)
-        if group_role:
-            return group_role
     return "user"
 
 
@@ -203,7 +110,11 @@ def find_enabled_user(db: Session, identity: str):
             .all()
         )
         user = matches[0] if len(matches) == 1 else None
-    return user if user is not None and user.access_enabled else None
+    if user is None or not user.access_enabled:
+        return None
+    if not user_within_access_window(user):
+        return None
+    return user
 
 
 def _get_or_create_dev_user(db: Session):
@@ -249,33 +160,9 @@ def _get_user_from_api_key(request: Request, db: Session):
     user = api_key.user
     if not user or not user.access_enabled:
         raise HTTPException(403, "Account access is disabled")
+    if not user_within_access_window(user):
+        raise HTTPException(403, "Account access is outside the allowed date range")
     return user
-
-
-def _enforce_access(email: str, ocp_username: str | None = None):
-    """Check if user is allowed via group membership or email allowlist."""
-    if _allowed_groups and ocp_username:
-        user_groups = _get_user_groups(ocp_username, email)
-        all_configured_groups = _allowed_groups | _admin_groups | _operator_groups
-        if user_groups & all_configured_groups:
-            return
-        if _allowed_users and email.lower() in _allowed_users:
-            return
-        logger.warning(
-            "Access denied for %s — groups: %s, allowed: %s",
-            ocp_username,
-            ", ".join(sorted(user_groups)) or "(none)",
-            ", ".join(sorted(all_configured_groups)),
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied: user '{ocp_username}' is not in an allowed group.",
-        )
-    if _allowed_users and email.lower() not in _allowed_users:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied for user {email}",
-        )
 
 
 # Route name -> permission a project-scoped API key must hold to reach it.
@@ -357,6 +244,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         user = _get_or_create_dev_user(db)
         if not user.access_enabled:
             raise HTTPException(403, "Account access is disabled")
+        if not user_within_access_window(user):
+            raise HTTPException(403, "Account access is outside the allowed date range")
         return user
 
     raise HTTPException(status_code=401, detail="Not authenticated")

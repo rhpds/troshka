@@ -1,5 +1,5 @@
+import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,9 +34,6 @@ def state(monkeypatch):
             allowed_users="",
             admin_users="",
             operator_users="",
-            allowed_groups="",
-            admin_groups="",
-            operator_groups="",
             jwt_secret="database-access-test-secret-fixture-only",
             jwt_algorithm="HS256",
             jwt_expiry_hours=24,
@@ -89,9 +86,6 @@ def test_unknown_sso_identity_is_denied_without_registration(state):
 def test_invitation_links_and_role_remains_database_owned(state, monkeypatch):
     sessions, settings, client = state
     settings.auth.allowed_users = "nobody@example.com"
-    monkeypatch.setattr(
-        auth, "_resolve_role", lambda *args: pytest.fail("External role lookup")
-    )
     response = client.post(
         "/api/v1/users/",
         headers=headers(),
@@ -303,20 +297,10 @@ def test_access_migration_preserves_existing_rows_and_enables_new_rows():
     engine.dispose()
 
 
-def test_legacy_import_filters_revoked_accounts_and_runs_once(state, monkeypatch):
+def test_legacy_import_filters_revoked_accounts_and_runs_once(state):
     sessions, settings, _ = state
-    settings.auth.allowed_groups = "troshka-users"
+    settings.auth.allowed_users = "admin@example.com,new@example.com"
     settings.auth.admin_users = "admin@example.com"
-    api = MagicMock()
-    api.list_cluster_custom_object.return_value = {
-        "items": [
-            {
-                "metadata": {"name": "troshka-users"},
-                "users": ["admin@example.com", "new@example.com"],
-            }
-        ]
-    }
-    monkeypatch.setattr(auth, "_get_k8s_client", lambda: api)
     with sessions() as db:
         db.add(User(email="revoked@example.com", role="admin", access_enabled=False))
         db.commit()
@@ -335,15 +319,6 @@ def test_legacy_import_filters_revoked_accounts_and_runs_once(state, monkeypatch
     assert access.import_legacy_access()
     with sessions() as db:
         assert db.get(User, ADMIN_ID).role == "user"
-    assert api.list_cluster_custom_object.call_count == 1
-
-
-def test_legacy_lookup_failure_does_not_complete_import(state, monkeypatch):
-    _, settings, _ = state
-    settings.auth.allowed_groups = "troshka-users"
-    monkeypatch.setattr(auth, "_get_k8s_client", lambda: None)
-    with pytest.raises(RuntimeError):
-        access.import_legacy_access()
 
 
 def test_ambiguous_case_insensitive_identity_is_denied(state):
@@ -437,22 +412,21 @@ def test_dev_login_preserves_database_role(state, monkeypatch):
     assert client.get("/api/v1/auth/dev-token/admin").status_code == 403
 
 
-def test_legacy_username_group_requires_explicit_mapping(state, monkeypatch):
-    sessions, settings, _ = state
-    settings.auth.allowed_groups = "troshka-users"
-    settings.auth.admin_users = "admin@example.com"
-    api = MagicMock()
-    api.list_cluster_custom_object.return_value = {
-        "items": [
-            {
-                "metadata": {"name": "troshka-users"},
-                "users": ["admin@example.com", "alice"],
-            }
-        ]
-    }
-    monkeypatch.setattr(auth, "_get_k8s_client", lambda: api)
-    with pytest.raises(RuntimeError, match="non-email"):
-        access.import_legacy_access()
+def test_access_window_blocks_enabled_user(state):
+    sessions, _, client = state
     with sessions() as db:
-        assert db.get(access.SystemConfig, access.MARKER) is None
-        assert db.query(User).filter_by(email="alice").first() is None
+        db.add(
+            User(
+                email="windowed@example.com",
+                role="user",
+                access_enabled=True,
+                access_starts_at=datetime.datetime(2099, 1, 1, tzinfo=datetime.UTC),
+            )
+        )
+        db.commit()
+    assert (
+        client.get(
+            "/api/v1/auth/me", headers=headers("windowed@example.com")
+        ).status_code
+        == 403
+    )

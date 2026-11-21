@@ -60,24 +60,19 @@ This additionally deploys:
 - ServiceAccount with OAuth redirect annotation
 - Route points to oauth-proxy → frontend → backend
 
-Users log in via the cluster's OAuth provider. The proxy injects `X-Forwarded-Email` and `X-Forwarded-User` headers. Roles are assigned by email config first (`troshka_admin_users`, `troshka_operator_users`), then by OCP group membership (`troshka_admin_groups`, `troshka_operator_groups`).
+Users log in via the cluster's OAuth provider. The proxy injects `X-Forwarded-Email` and `X-Forwarded-User` headers. Access and roles come from database User accounts (Admin → Users), including optional access start/end dates.
 
-### With SSO + Group-Based Access Control
-
-For shared instances where access is managed via OCP groups:
+### With SSO
 
 ```bash
 ansible-playbook deploy/ansible/deploy.yaml \
   -e troshka_deploy_postgres=true \
   -e troshka_deploy_minio=true \
   -e troshka_oauth_enabled=true \
-  -e troshka_admin_users=admin@redhat.com \
-  -e troshka_allowed_groups="rhpds-admins,troshka-users" \
-  -e troshka_admin_groups="rhpds-admins" \
-  -e troshka_operator_groups="troshka-operators"
+  -e troshka_admin_users=admin@redhat.com
 ```
 
-When `troshka_allowed_groups` is set, only users who belong to a configured group (or are listed in `troshka_allowed_users`) can access the application. Group membership is resolved at runtime by querying the OpenShift `user.openshift.io/v1/groups` API — no changes to the OAuth proxy are needed.
+Invite additional users in Admin → Users after install. OpenShift groups are not used for Troshka admission.
 
 ### External Database + S3 (no built-in services)
 
@@ -131,12 +126,9 @@ All variables have defaults in `deploy/ansible/inventory/group_vars/all.yaml`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `troshka_oauth_enabled` | `false` | Enable SSO via ose-oauth-proxy |
-| `troshka_admin_users` | `""` | CSV of admin user emails |
-| `troshka_operator_users` | `""` | CSV of operator user emails |
-| `troshka_allowed_users` | `""` | CSV of allowed user emails (empty = allow all) |
-| `troshka_allowed_groups` | `""` | CSV of OCP groups that can access the app |
-| `troshka_admin_groups` | `""` | CSV of OCP groups granted admin role |
-| `troshka_operator_groups` | `""` | CSV of OCP groups granted operator role |
+| `troshka_admin_users` | `""` | CSV of admin user emails (legacy one-time import) |
+| `troshka_operator_users` | `""` | CSV of operator user emails (legacy one-time import) |
+| `troshka_allowed_users` | `""` | CSV of allowed user emails (legacy one-time import) |
 
 ### Resource Limits
 
@@ -270,13 +262,11 @@ This deletes the entire namespace (all pods, PVCs, secrets) and the OAuthClient 
 Deploy Troshka using the Helm chart at `deploy/helm/`:
 
 ```bash
-# All-in-one with PostgreSQL, SSO, and group-based access
+# All-in-one with PostgreSQL and SSO (invite users in Admin → Users)
 helm install troshka deploy/helm/ -n troshka --create-namespace \
   --set postgres.deploy=true \
   --set auth.oauthEnabled=true \
   --set auth.adminUsers=admin@redhat.com \
-  --set auth.allowedGroups="rhpds-admins\,troshka-users" \
-  --set auth.adminGroups="rhpds-admins" \
   --set route.host=troshka.apps.cluster.example.com
 
 # External database, no SSO

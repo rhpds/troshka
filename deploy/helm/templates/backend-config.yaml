@@ -39,9 +39,6 @@ data:
       admin_users: {{ .Values.auth.adminUsers | quote }}
       operator_users: {{ .Values.auth.operatorUsers | quote }}
       allowed_users: {{ .Values.auth.allowedUsers | quote }}
-      allowed_groups: {{ .Values.auth.allowedGroups | quote }}
-      admin_groups: {{ .Values.auth.adminGroups | quote }}
-      operator_groups: {{ .Values.auth.operatorGroups | quote }}
     {{- if or .Values.s4.deploy .Values.s3.endpoint .Values.s3.useAws }}
     s3:
       {{- if .Values.s3.endpoint }}

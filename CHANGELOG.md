@@ -14,6 +14,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- User access is database-only: OpenShift group lookup no longer gates login or
+  roles. Admin → Users can set optional `access_starts_at` / `access_ends_at`;
+  outside the window, sign-in and deploy/start/redeploy of owned projects are
+  blocked, and reaching the end date auto-stops owned active projects.
+
 - KubeVirt **Install Operator** on a fresh cluster no longer 403s creating the
   `troshka` ServiceAccount: namespaced mutate RoleBindings are bound before SA
   create (K8s returns Forbidden—not Conflict—when create is denied on an

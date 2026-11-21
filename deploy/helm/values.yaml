@@ -107,13 +107,11 @@ auth:
       - "*"
     # Extra skip-auth path regexes (in addition to health/ws defaults).
     skipAuthRegexes: []
-  # Legacy settings are imported once when upgrading an existing deployment.
+  # Legacy email allowlists are imported once when upgrading an existing deployment.
+  # Runtime access and roles come from the User table (Admin → Users).
   adminUsers: ""
   operatorUsers: ""
   allowedUsers: ""
-  allowedGroups: ""
-  adminGroups: ""
-  operatorGroups: ""
 
 # Offer OCP 5.x (dev-preview) in the New Project / cluster version dropdown.
 ocp:

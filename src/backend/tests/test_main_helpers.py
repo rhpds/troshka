@@ -67,9 +67,6 @@ def _mock_oauth_config():
     mock_cfg.auth.admin_users = ""
     mock_cfg.auth.operator_users = ""
     mock_cfg.auth.allowed_users = ""
-    mock_cfg.auth.allowed_groups = ""
-    mock_cfg.auth.admin_groups = ""
-    mock_cfg.auth.operator_groups = ""
     return mock_cfg
 
 

@@ -15,41 +15,22 @@
 - **New background job**: use `from app.core.redis import enqueue_job` then `enqueue_job(func, arg1, arg2, queue_name="deploy")`
 - **Admin endpoint**: `GET /api/v1/admin/queue-status` — queue depths, active workers, in-flight deploys
 - Dev: `./dev-services.sh start` auto-starts Redis container + RQ worker
-### Group-Based Access Control
-- **Legacy migration only:** runtime admission and roles now come from enabled
-  database accounts. The helpers below remain for compatibility and initial import.
-- Groups resolved at runtime from OpenShift `user.openshift.io/v1/groups` API via `kubernetes` Python client
-- No group tables in DB — purely runtime resolution from the OCP cluster, cached 60s
-- Backend ServiceAccount `troshka-backend` needs ClusterRole `troshka-group-reader` (get/list on `user.openshift.io` groups)
-- Three group config keys: `allowed_groups` (access gate), `admin_groups` (admin role), `operator_groups` (operator role)
-- Role resolution priority: email config (`admin_users`/`operator_users`) > group membership > default `"user"`
-- Access check: if `allowed_groups` is set, user must be in any configured group (allowed/admin/operator) OR in `allowed_users` email fallback
-- `_upsert_sso_user()` updates role on each login if group membership changed
-- Graceful degradation: when SA token is absent (dev mode, non-OCP), group resolution is skipped entirely
-- OCP groups store usernames (e.g., `prutledg`), matched via `X-Forwarded-User` header from OAuth proxy
-- Key functions in `src/backend/app/core/auth.py`: `_fetch_openshift_groups()`, `_get_user_groups()`, `_role_for_groups()`, `_resolve_role()`, `_enforce_access()`
 ### Database User Access
 - SSO authenticates identity; it cannot create accounts or assign roles. A matching
   enabled database user is required. Exact identity matches take precedence; a
   unique case-insensitive match supports lowercased invitations without merging
-  ambiguous existing accounts.
-- Admin → Users creates accounts using email and role, and enables/disables access.
-  Disabling preserves projects and billing history. SSO, JWTs, API keys, and new
-  WebSocket/tunnel connections check database access. Already established streams
-  are not forcibly disconnected by this change.
-- Roles persist across SSO logins. Users cannot disable themselves or change their
-  own role; destructive admin changes are serialized and protect the last enabled
-  admin. No SSO-group synchronization or group-write RBAC is needed.
+  ambiguous existing accounts. OpenShift group membership is not consulted.
+- Admin → Users creates accounts using email and role, enables/disables access, and
+  optionally sets `access_starts_at` / `access_ends_at`. Outside that window, login
+  and deploy/start/redeploy of owned projects are denied; when `access_ends_at`
+  passes, the project timer auto-stops owned active projects. Null bounds mean no
+  date limit. Disabling access preserves projects and billing history.
+- Roles persist on the User row across SSO logins. Users cannot disable themselves
+  or change their own role; destructive admin changes are serialized and protect
+  the last enabled admin.
 - Migration `e47c2a9b6103` disables preexisting rows until one-time legacy access
-  import succeeds. The backend imports currently eligible users/roles from the old
-  allowlists/groups and records `database_access_initialized_v1` in `system_config`.
-  Failed group lookup leaves import pending; it never treats a lookup failure as an
-  empty policy. Thereafter, changing those legacy settings has no effect on access.
-- Before upgrading a group-based installation, verify group members use the same
-  email identities as SSO. If groups contain usernames instead, translate their
-  effective access and roles into explicit email allowlists and clear the legacy
-  group settings before upgrading. The importer rejects unmapped usernames rather
-  than guessing which database account they belong to.
+  import succeeds (email allowlists only). Thereafter, changing those legacy
+  settings has no effect on access.
 - Non-SSO startup enables existing dev accounts once and preserves their roles.
   Fresh dev accounts start enabled. Later restarts and dev-token requests preserve
   database access and roles; disabled dev accounts cannot bypass access checks.

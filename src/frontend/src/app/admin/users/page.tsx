@@ -23,6 +23,8 @@ interface UserInfo {
   auth_source: string;
   created_at: string;
   access_enabled: boolean;
+  access_starts_at?: string | null;
+  access_ends_at?: string | null;
   organization_id?: string | null;
 }
 
@@ -48,6 +50,32 @@ const roleLabels: Record<string, string> = {
   user: "User",
 };
 
+function toLocalInput(value?: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function fromLocalInput(value: string): string | null {
+  if (!value.trim()) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function windowStatus(user: UserInfo): "not_started" | "expired" | null {
+  const now = Date.now();
+  if (user.access_starts_at && new Date(user.access_starts_at).getTime() > now) {
+    return "not_started";
+  }
+  if (user.access_ends_at && new Date(user.access_ends_at).getTime() <= now) {
+    return "expired";
+  }
+  return null;
+}
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<UserInfo[]>([]);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -59,9 +87,13 @@ export default function AdminUsersPage() {
 
   const [newEmail, setNewEmail] = useState("");
   const [newRole, setNewRole] = useState("user");
+  const [newStartsAt, setNewStartsAt] = useState("");
+  const [newEndsAt, setNewEndsAt] = useState("");
 
   const [editId, setEditId] = useState<string | null>(null);
   const [editRole, setEditRole] = useState("");
+  const [editStartsAt, setEditStartsAt] = useState("");
+  const [editEndsAt, setEditEndsAt] = useState("");
 
   const loadUsers = () => {
     fetch("/api/v1/users/")
@@ -103,6 +135,8 @@ export default function AdminUsersPage() {
         body: JSON.stringify({
           email: newEmail,
           role: newRole,
+          access_starts_at: fromLocalInput(newStartsAt),
+          access_ends_at: fromLocalInput(newEndsAt),
         }),
       });
       if (resp.ok) {
@@ -110,6 +144,8 @@ export default function AdminUsersPage() {
         setShowCreate(false);
         setNewEmail("");
         setNewRole("user");
+        setNewStartsAt("");
+        setNewEndsAt("");
         loadUsers();
       } else {
         const err = await resp.json().catch(() => ({ detail: "Create failed" }));
@@ -121,13 +157,17 @@ export default function AdminUsersPage() {
     setCreating(false);
   };
 
-  const handleUpdateRole = async (userId: string) => {
+  const handleSaveEdit = async (userId: string) => {
     setError("");
     try {
       const resp = await fetch(`/api/v1/users/${userId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: editRole }),
+        body: JSON.stringify({
+          role: editRole,
+          access_starts_at: fromLocalInput(editStartsAt),
+          access_ends_at: fromLocalInput(editEndsAt),
+        }),
       });
       if (resp.ok) {
         setEditId(null);
@@ -175,6 +215,13 @@ export default function AdminUsersPage() {
     }
   };
 
+  const beginEdit = (user: UserInfo) => {
+    setEditId(user.id);
+    setEditRole(user.role);
+    setEditStartsAt(toLocalInput(user.access_starts_at));
+    setEditEndsAt(toLocalInput(user.access_ends_at));
+  };
+
   return (
       <PageSection>
         <div
@@ -203,7 +250,7 @@ export default function AdminUsersPage() {
           />
         )}
         {notice && <Alert variant="info" title={notice} isInline style={{ marginBottom: 16 }} />}
-        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>Manage Troshka access and roles here. SSO verifies identity; enabled accounts can sign in. New users remain unassigned until an administrator assigns an organization.</p>
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>Manage Troshka access and roles here. SSO verifies identity; enabled accounts can sign in. Optional access start/end dates limit login and provisioning; ending access auto-stops owned projects. New users remain unassigned until an administrator assigns an organization.</p>
 
         {showCreate && (
           <Card style={{ marginBottom: 16 }}>
@@ -246,6 +293,34 @@ export default function AdminUsersPage() {
                     <option value="admin">Admin</option>
                   </select></LabeledField>
                 </div>
+                <div>
+                  <LabeledField
+                    style={{ fontSize: 12, display: "block", marginBottom: 4 }}
+                    label={<>Access starts (optional)</>}
+                  >
+                    <input
+                      type="datetime-local"
+                      style={inputStyle}
+                      value={newStartsAt}
+                      onChange={(e) => setNewStartsAt(e.target.value)}
+                      aria-label="Access starts"
+                    />
+                  </LabeledField>
+                </div>
+                <div>
+                  <LabeledField
+                    style={{ fontSize: 12, display: "block", marginBottom: 4 }}
+                    label={<>Access ends (optional)</>}
+                  >
+                    <input
+                      type="datetime-local"
+                      style={inputStyle}
+                      value={newEndsAt}
+                      onChange={(e) => setNewEndsAt(e.target.value)}
+                      aria-label="Access ends"
+                    />
+                  </LabeledField>
+                </div>
                 <Button
                   variant="primary"
                   isDisabled={creating}
@@ -269,16 +344,20 @@ export default function AdminUsersPage() {
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {users.map((u) => (
+          {users.map((u) => {
+            const status = windowStatus(u);
+            return (
             <Card key={u.id}>
               <CardBody
                 style={{
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
                 }}
               >
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 240 }}>
                   <div style={{ fontWeight: 600 }}>
                     {u.email}
                     {u.id === currentUserId && (
@@ -299,6 +378,8 @@ export default function AdminUsersPage() {
                     {u.auth_source}
                     {" · joined "}
                     {new Date(u.created_at).toLocaleDateString()}
+                    {u.access_starts_at && ` · starts ${new Date(u.access_starts_at).toLocaleString()}`}
+                    {u.access_ends_at && ` · ends ${new Date(u.access_ends_at).toLocaleString()}`}
                   </div>
                   <OrganizationAssignment key={`${u.id}:${u.organization_id || "unassigned"}`} user={u} organizations={organizations} onChanged={message => { setNotice(message); loadUsers(); }} />
                 </div>
@@ -308,6 +389,7 @@ export default function AdminUsersPage() {
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
+                    flexWrap: "wrap",
                   }}
                 >
                   {editId === u.id ? (
@@ -316,15 +398,30 @@ export default function AdminUsersPage() {
                         style={{ ...inputStyle, width: "auto" }}
                         value={editRole}
                         onChange={(e) => setEditRole(e.target.value)}
+                        aria-label={`Role for ${u.email}`}
                       >
                         <option value="user">User</option>
                         <option value="operator">Operator</option>
                         <option value="admin">Admin</option>
                       </select>
+                      <input
+                        type="datetime-local"
+                        style={{ ...inputStyle, width: "auto" }}
+                        value={editStartsAt}
+                        onChange={(e) => setEditStartsAt(e.target.value)}
+                        aria-label={`Access starts for ${u.email}`}
+                      />
+                      <input
+                        type="datetime-local"
+                        style={{ ...inputStyle, width: "auto" }}
+                        value={editEndsAt}
+                        onChange={(e) => setEditEndsAt(e.target.value)}
+                        aria-label={`Access ends for ${u.email}`}
+                      />
                       <Button
                         variant="primary"
                         size="sm"
-                        onClick={() => handleUpdateRole(u.id)}
+                        onClick={() => handleSaveEdit(u.id)}
                       >
                         Save
                       </Button>
@@ -342,16 +439,15 @@ export default function AdminUsersPage() {
                         {roleLabels[u.role] || u.role}
                       </Label>
                       {!u.access_enabled && <Label color="red">Access disabled</Label>}
+                      {status === "not_started" && <Label color="orange">Not started</Label>}
+                      {status === "expired" && <Label color="red">Expired</Label>}
                       {u.id !== currentUserId && (
                         <>
                           <Button variant="secondary" size="sm" onClick={() => void handleAccess(u)}>{u.access_enabled ? "Disable access" : "Enable access"}</Button>
                           <Button
                             variant="secondary"
                             size="sm"
-                            onClick={() => {
-                              setEditId(u.id);
-                              setEditRole(u.role);
-                            }}
+                            onClick={() => beginEdit(u)}
                           >
                             Edit
                           </Button>
@@ -369,7 +465,8 @@ export default function AdminUsersPage() {
                 </div>
               </CardBody>
             </Card>
-          ))}
+            );
+          })}
         </div>
       </PageSection>
   );

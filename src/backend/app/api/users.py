@@ -17,6 +17,7 @@ from app.schemas.user import (
     UserResponse,
     UserUpdate,
 )
+from app.services.access_window import normalize_access_bounds
 from app.services.database_access import guard_account_change
 from app.services.group_access import protect_manager_user_deletion
 
@@ -26,6 +27,22 @@ VALID_ROLES = {"user", "operator", "admin"}
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 DbSession = Annotated[Session, Depends(get_db)]
+
+
+def _apply_access_window(
+    user: User, starts_at, ends_at, *, fields_set: set[str]
+) -> None:
+    if "access_starts_at" not in fields_set and "access_ends_at" not in fields_set:
+        return
+    next_start = (
+        starts_at if "access_starts_at" in fields_set else user.access_starts_at
+    )
+    next_end = ends_at if "access_ends_at" in fields_set else user.access_ends_at
+    start, end = normalize_access_bounds(next_start, next_end)
+    if "access_starts_at" in fields_set:
+        user.access_starts_at = start
+    if "access_ends_at" in fields_set:
+        user.access_ends_at = end
 
 
 @router.get("/", response_model=list[UserResponse])
@@ -66,12 +83,15 @@ def create_user(
         )
     if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(409, "A user with this email already exists")
+    start, end = normalize_access_bounds(body.access_starts_at, body.access_ends_at)
     user = User(
         email=email,
         display_name=body.display_name or email.split("@")[0],
         role=body.role,
         auth_source="invited",
         access_enabled=True,
+        access_starts_at=start,
+        access_ends_at=end,
     )
     db.add(user)
     db.commit()
@@ -117,6 +137,12 @@ def update_user(
         if user_id == current_user.id and not body.access_enabled:
             raise HTTPException(400, "Cannot disable your own access")
         user.access_enabled = body.access_enabled
+    _apply_access_window(
+        user,
+        body.access_starts_at,
+        body.access_ends_at,
+        fields_set=body.model_fields_set,
+    )
     db.commit()
     db.refresh(user)
     return user

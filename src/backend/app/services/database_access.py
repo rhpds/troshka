@@ -1,13 +1,13 @@
 """One-time legacy access import and explicit initial-admin provisioning.
 
 Login authorization never calls this module. After the import marker is saved,
-configuration and OpenShift groups no longer influence admission or roles.
+configuration email allowlists no longer influence admission or roles — the
+User row is authoritative.
 """
 
 import argparse
 import logging
 import threading
-from typing import Any, cast
 
 from fastapi import HTTPException
 from sqlalchemy import func, inspect, text
@@ -48,69 +48,19 @@ def _csv(name: str) -> set[str]:
 
 
 def _legacy_policy():
-    policy = {
-        key: _csv(key)
-        for key in (
-            "allowed_users",
-            "admin_users",
-            "operator_users",
-            "allowed_groups",
-            "admin_groups",
-            "operator_groups",
-        )
+    return {
+        key: _csv(key) for key in ("allowed_users", "admin_users", "operator_users")
     }
-    groups = {}
-    if any(
-        policy[key] for key in ("allowed_groups", "admin_groups", "operator_groups")
-    ):
-        from app.core.auth import _get_k8s_client
-
-        api = _get_k8s_client()
-        if api is None:
-            raise RuntimeError(
-                "OpenShift group lookup unavailable; legacy access import deferred"
-            )
-        response = api.list_cluster_custom_object(
-            "user.openshift.io", "v1", "groups", _request_timeout=(3, 10)
-        )
-        if not isinstance(response, dict) or not isinstance(
-            response.get("items"), list
-        ):
-            raise RuntimeError("Invalid OpenShift group response")
-        items = cast(list[dict[str, Any]], response["items"])
-        assert isinstance(items, list)
-        groups = {
-            group["metadata"]["name"].lower(): set(group.get("users") or [])
-            for group in items
-        }
-    return policy, groups
 
 
-def _members(groups, names):
-    return set().union(*(groups.get(name, set()) for name in names))
-
-
-def _legacy_admission(email, policy, groups):
-    if policy["allowed_groups"]:
-        names = (
-            policy["allowed_groups"]
-            | policy["admin_groups"]
-            | policy["operator_groups"]
-        )
-        return (
-            email in _members(groups, names) or email.lower() in policy["allowed_users"]
-        )
+def _legacy_admission(email, policy):
     return not policy["allowed_users"] or email.lower() in policy["allowed_users"]
 
 
-def _legacy_role(email, policy, groups):
+def _legacy_role(email, policy):
     if email.lower() in policy["admin_users"]:
         return "admin"
     if email.lower() in policy["operator_users"]:
-        return "operator"
-    if email in _members(groups, policy["admin_groups"]):
-        return "admin"
-    if email in _members(groups, policy["operator_groups"]):
         return "operator"
     return "user"
 
@@ -120,25 +70,14 @@ def import_legacy_access() -> bool:
         _lock(db)
         if db.get(SystemConfig, MARKER):
             return True
-        policy, groups = _legacy_policy()
+        policy = _legacy_policy()
         users = {user.email: user for user in db.query(User).all()}
-        names = (
-            policy["allowed_groups"]
-            | policy["admin_groups"]
-            | policy["operator_groups"]
-        )
-        if any("@" not in identity for identity in _members(groups, names)):
-            raise RuntimeError(
-                "Legacy groups contain non-email identities. Map access and roles "
-                "to explicit email allowlists before upgrading; import not committed."
-            )
-        identities = set(users) | _members(groups, names)
-        identities |= (
+        identities = set(users) | (
             policy["allowed_users"] | policy["admin_users"] | policy["operator_users"]
         )
         enabled_admins = 0
         for identity in sorted(identities):
-            allowed = _legacy_admission(identity, policy, groups)
+            allowed = _legacy_admission(identity, policy)
             if not allowed and identity not in users:
                 continue
             user = users.get(identity)
@@ -146,7 +85,7 @@ def import_legacy_access() -> bool:
                 user = User(email=identity, auth_source="invited")
                 db.add(user)
             user.access_enabled = allowed
-            user.role = _legacy_role(identity, policy, groups)
+            user.role = _legacy_role(identity, policy)
             enabled_admins += int(allowed and user.role == "admin")
         if not enabled_admins:
             # A fresh dedicated instance is seeded by the provisioning command.
