@@ -135,17 +135,21 @@ type DeployHostOption = {
   total_ram_mb: number;
 };
 
+type PullSecretStatus = "loading" | "missing" | "valid" | "invalid";
+
+const OCP_PULL_SECRET_DOWNLOAD_URL = "https://console.redhat.com/openshift/downloads";
+
 interface CreationRequirements {
   mode: string; yamlContent: string; selectedPattern: string | null; selectedTemplate: string | null;
   template?: TemplateSummary; requiresHost: boolean; hasHost: boolean;
-  commonPassword: string; hasPullSecret: boolean; loadingVersions: boolean;
+  commonPassword: string; pullSecretStatus: PullSecretStatus; loadingVersions: boolean;
   installVia: string; bastionImageId: string; bastionIsoId: string; bmcIpError: string;
 }
 
 function isOcpCreationBlocked(options: CreationRequirements): boolean {
-  const { template, commonPassword, hasPullSecret, loadingVersions, installVia, bastionImageId, bastionIsoId, bmcIpError } = options;
+  const { template, commonPassword, pullSecretStatus, loadingVersions, installVia, bastionImageId, bastionIsoId, bmcIpError } = options;
   if (template?.category !== "openshift") return false;
-  if (!commonPassword || (template.requires_pull_secret !== false && !hasPullSecret)) return true;
+  if (!commonPassword || (template.requires_pull_secret !== false && pullSecretStatus !== "valid")) return true;
   if (loadingVersions && !template.versions?.length) return true;
   return installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError);
 }
@@ -286,7 +290,8 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [customVersion, setCustomVersion] = useState(false);
   const [customVersionText, setCustomVersionText] = useState("");
   const [loadingVersions, setLoadingVersions] = useState(true);
-  const [hasPullSecret, setHasPullSecret] = useState(false);
+  const [pullSecretStatus, setPullSecretStatus] = useState<PullSecretStatus>("loading");
+  const [pullSecretError, setPullSecretError] = useState("");
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
@@ -356,10 +361,26 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setSshKeys(Array.isArray(data) ? data : []))
       .catch(() => {});
-    fetch(`${API_BASE}/api/v1/auth/ocp-pull-secret`)
+    fetch(`${API_BASE}/api/v1/auth/ocp-pull-secret?validate=true`)
       .then((r) => r.ok ? r.json() : {})
-      .then((data: { has_secret?: boolean }) => setHasPullSecret(data.has_secret || false))
-      .catch(() => {});
+      .then((data: { has_secret?: boolean; valid?: boolean; error?: string }) => {
+        if (!data.has_secret) {
+          setPullSecretStatus("missing");
+          setPullSecretError("");
+          return;
+        }
+        if (data.valid === false) {
+          setPullSecretStatus("invalid");
+          setPullSecretError(data.error || "OCP pull secret is invalid or expired.");
+          return;
+        }
+        setPullSecretStatus("valid");
+        setPullSecretError("");
+      })
+      .catch(() => {
+        setPullSecretStatus("missing");
+        setPullSecretError("");
+      });
   }, []);
 
   const inputStyle = {
@@ -459,7 +480,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
     (mode === "template" && selectedTemplateInfo?.category === "openshift" && !ocpVersion) || isProjectCreationBlocked({
     mode, yamlContent, selectedPattern, selectedTemplate,
     template: selectedTemplateInfo, requiresHost: userRole === "admin",
-    hasHost: deployHosts.length > 0, commonPassword, hasPullSecret,
+    hasHost: deployHosts.length > 0, commonPassword, pullSecretStatus,
     loadingVersions, installVia, bastionImageId, bastionIsoId, bmcIpError,
   });
 
@@ -857,12 +878,37 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                         ))}
                       </select></LabeledField>
                     </div>}
-                    {_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
-                      {hasPullSecret ? (
-                        <span style={{ color: "#4ade80" }}>configured ✓</span>
-                      ) : (
-                        <span style={{ color: "#f87171" }}>not set — <a href="/settings" style={{ color: "#3b82f6" }}>configure in Settings</a></span>
+                    {_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
+                        {pullSecretStatus === "loading" && (
+                          <span style={{ opacity: 0.7 }}>checking…</span>
+                        )}
+                        {pullSecretStatus === "valid" && (
+                          <span style={{ color: "#4ade80" }}>valid ✓</span>
+                        )}
+                        {pullSecretStatus === "missing" && (
+                          <span style={{ color: "#f87171" }}>not set — <a href="/settings" style={{ color: "#3b82f6" }}>configure in Settings</a></span>
+                        )}
+                        {pullSecretStatus === "invalid" && (
+                          <span style={{ color: "#f87171" }}>invalid/expired — <a href="/settings" style={{ color: "#3b82f6" }}>update in Settings</a></span>
+                        )}
+                      </div>
+                      {pullSecretStatus === "invalid" && (
+                        <div style={{ marginTop: 4, color: "#f87171" }}>
+                          {pullSecretError || "OCP pull secret is invalid or expired."}{" "}
+                          <a href={OCP_PULL_SECRET_DOWNLOAD_URL} target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>
+                            Download a new pull secret
+                          </a>
+                        </div>
+                      )}
+                      {pullSecretStatus === "missing" && (
+                        <div style={{ marginTop: 4, opacity: 0.8 }}>
+                          <a href={OCP_PULL_SECRET_DOWNLOAD_URL} target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>
+                            Download a pull secret
+                          </a>
+                          {" "}then save it in Settings.
+                        </div>
                       )}
                     </div>}
                     {_isOkd && !_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8, opacity: 0.7 }}>

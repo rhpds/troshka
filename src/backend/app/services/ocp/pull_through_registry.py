@@ -317,6 +317,47 @@ def _probe_stored_ocp_pull_secret(owner) -> str | None:
     return None
 
 
+def _probe_ptr_credentials(owner) -> str | None:
+    username = (owner.pull_through_registry_user or "").strip()
+    enc_password = owner.pull_through_registry_password
+    if not username or not enc_password:
+        return (
+            "Pull-through registry is enabled but username/password are missing. "
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
+        )
+    try:
+        password = decrypt(enc_password)
+    except Exception:
+        logger.exception("Failed to decrypt pull-through registry password")
+        return (
+            "Pull-through registry password could not be decrypted. "
+            f"Update credentials in {_SETTINGS_PULL_SECRET}."
+        )
+    try:
+        probe_pull_through_registry(owner.pull_through_registry_url, username, password)
+    except PullThroughRegistryError as e:
+        return e.message
+    return None
+
+
+def validate_user_pull_credentials(user) -> str | None:
+    """Live-probe the user's saved OCP registry credentials.
+
+    Returns an error message when missing/invalid, else None. Used by the
+    settings/create-wizard validate endpoint and by deploy preflight.
+    """
+    if not user or not user.ocp_pull_secret:
+        return (
+            "OpenShift installation requires a pull secret. "
+            f"Download one from {OCP_PULL_SECRET_DOWNLOAD_URL} or save "
+            f"pull-through registry credentials in {_SETTINGS_PULL_SECRET}."
+        )
+    ptr_enabled = bool(user.pull_through_registry and user.pull_through_registry_url)
+    if ptr_enabled:
+        return _probe_ptr_credentials(user)
+    return _probe_stored_ocp_pull_secret(user)
+
+
 def _clusters_needing_ptr(topology: dict, cluster_key: str | None) -> list[dict]:
     from app.services.ocp.agent_template import _cluster_use_pull_through_registry
 
@@ -390,26 +431,4 @@ def check_pull_through_registry_for_project(
     needing = _clusters_needing_ptr(topology or {}, cluster_key)
     if not needing:
         return None
-
-    username = (owner.pull_through_registry_user or "").strip()
-    enc_password = owner.pull_through_registry_password
-    if not username or not enc_password:
-        return (
-            "Pull-through registry is enabled but username/password are missing. "
-            f"Update credentials in {_SETTINGS_PULL_SECRET}."
-        )
-
-    try:
-        password = decrypt(enc_password)
-    except Exception:
-        logger.exception("Failed to decrypt pull-through registry password")
-        return (
-            "Pull-through registry password could not be decrypted. "
-            f"Update credentials in {_SETTINGS_PULL_SECRET}."
-        )
-
-    try:
-        probe_pull_through_registry(owner.pull_through_registry_url, username, password)
-    except PullThroughRegistryError as e:
-        return e.message
-    return None
+    return _probe_ptr_credentials(owner)

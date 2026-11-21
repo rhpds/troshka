@@ -26,7 +26,8 @@ beforeEach(() => {
     "/api/v1/ocp/versions": response([{ minor: "4.20", latest: "4.20.1" }]),
     "/api/v1/library/": response([]),
     "/api/v1/auth/ssh-keys": response([{ id: "ssh", name: "Laptop" }]),
-    "/api/v1/auth/ocp-pull-secret": response({ has_secret: true }),
+    "/api/v1/auth/ocp-pull-secret?validate=true": response({ has_secret: true, valid: true }),
+    "/api/v1/auth/ocp-pull-secret": response({ has_secret: true, valid: true }),
     "POST /api/v1/projects/": response({ id: "new" }),
     "/api/v1/projects/from-template": response({ id: "new" }),
   };
@@ -127,9 +128,25 @@ describe("new project creation", () => {
     expect(harness.created).not.toHaveBeenCalled();
   });
   it("blocks OpenShift creation without a required pull secret", async () => {
-    routes["/api/v1/auth/ocp-pull-secret"] = response({ has_secret: false });
+    routes["/api/v1/auth/ocp-pull-secret?validate=true"] = response({ has_secret: false, valid: false });
     routes["/api/v1/projects/templates"] = response([{ id: "ocp", name: "OpenShift SNO", category: "openshift" }]);
     await modal("Quick Starts"); fireEvent.click(screen.getByText("OpenShift SNO"));
+    expect(await screen.findByText(/not set/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+  it("blocks OpenShift creation when the pull secret is invalid", async () => {
+    routes["/api/v1/auth/ocp-pull-secret?validate=true"] = response({
+      has_secret: true,
+      valid: false,
+      error: "OCP pull secret is invalid or expired.",
+    });
+    routes["/api/v1/projects/templates"] = response([{ id: "ocp", name: "OpenShift SNO", category: "openshift" }]);
+    await modal("Quick Starts"); fireEvent.click(screen.getByText("OpenShift SNO"));
+    expect(await screen.findByText(/invalid\/expired/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download a new pull secret/i })).toHaveAttribute(
+      "href",
+      "https://console.redhat.com/openshift/downloads",
+    );
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });
   it("selects a default RHEL image and its matching DVD for YAML imports", async () => {

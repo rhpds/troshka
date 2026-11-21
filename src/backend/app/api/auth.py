@@ -186,24 +186,38 @@ def delete_ssh_key(key_id: int, user: CurrentUser, db: DbSession):
 
 
 @router.get("/ocp-pull-secret")
-def get_ocp_pull_secret(user: CurrentUser):
-    if not user.ocp_pull_secret:
-        return {
-            "has_secret": False,
-            "masked": "",
-            "pull_through_registry": user.pull_through_registry,
-            "pull_through_registry_url": user.pull_through_registry_url or "",
-        }
-    from app.core.encryption import decrypt
-
-    raw = decrypt(user.ocp_pull_secret)
-    masked = raw[:20] + "..." if len(raw) > 20 else raw
-    return {
-        "has_secret": True,
-        "masked": masked,
+def get_ocp_pull_secret(user: CurrentUser, validate: bool = False):
+    base = {
+        "has_secret": bool(user.ocp_pull_secret),
+        "masked": "",
         "pull_through_registry": user.pull_through_registry,
         "pull_through_registry_url": user.pull_through_registry_url or "",
     }
+    if not user.ocp_pull_secret:
+        if validate:
+            from app.services.ocp.pull_through_registry import (
+                validate_user_pull_credentials,
+            )
+
+            err = validate_user_pull_credentials(user)
+            base["valid"] = False
+            base["error"] = err
+        return base
+
+    from app.core.encryption import decrypt
+
+    raw = decrypt(user.ocp_pull_secret)
+    base["masked"] = raw[:20] + "..." if len(raw) > 20 else raw
+    if validate:
+        from app.services.ocp.pull_through_registry import (
+            validate_user_pull_credentials,
+        )
+
+        err = validate_user_pull_credentials(user)
+        base["valid"] = err is None
+        if err:
+            base["error"] = err
+    return base
 
 
 @router.put(
@@ -215,6 +229,12 @@ def set_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
     import json
 
     from app.core.encryption import encrypt
+    from app.services.ocp.pull_through_registry import (
+        OcpPullSecretError,
+        PullThroughRegistryError,
+        probe_ocp_pull_secret,
+        probe_pull_through_registry,
+    )
 
     if body.get("pull_through_registry"):
         url = body.get("pull_through_registry_url", "").strip()
@@ -225,6 +245,10 @@ def set_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
                 status_code=400,
                 detail="Registry URL, username, and password are all required",
             )
+        try:
+            probe_pull_through_registry(url, ptr_user, ptr_pass)
+        except PullThroughRegistryError as e:
+            raise HTTPException(status_code=400, detail=e.message) from e
         auth_b64 = base64.b64encode(f"{ptr_user}:{ptr_pass}".encode()).decode()
         pull_secret = json.dumps({"auths": {url: {"auth": auth_b64}}})
         user.ocp_pull_secret = encrypt(pull_secret)
@@ -242,6 +266,10 @@ def set_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
             raise HTTPException(
                 status_code=400, detail="Pull secret must be valid JSON"
             )
+        try:
+            probe_ocp_pull_secret(secret)
+        except OcpPullSecretError as e:
+            raise HTTPException(status_code=400, detail=e.message) from e
         user.ocp_pull_secret = encrypt(secret)
         user.pull_through_registry = False
         user.pull_through_registry_url = None

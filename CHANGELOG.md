@@ -17,7 +17,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 - OpenShift deploy/restart preflight now probes the saved pull secret against
   `quay.io` (when not using a pull-through registry) and blocks cluster creation
   if the secret is missing, malformed, or rejected; error text includes
-  https://console.redhat.com/openshift/downloads for a fresh pull secret.
+  https://console.redhat.com/openshift/downloads for a fresh pull secret. The
+  create wizard validates the saved secret before Create, Settings rejects
+  invalid secrets on save, and OKD/SCOS templates remain exempt.
 
 - Projects list hides `deleting` / `cleanup_pending` cards until the Project row
   is released (after namespace absence), instead of clearing the “Deleting…”
