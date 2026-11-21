@@ -1,3 +1,5 @@
+# users/groups are operator-managed (per-project SAs). Never `oc apply` this
+# file directly — use scripts/apply_scc.py so live users are preserved.
 apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:

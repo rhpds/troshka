@@ -14,6 +14,14 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Deploy hardening after the `v2026.11.21-032001` SCC/Argo hang incident: apply
+  SCCs via `scripts/apply_scc.py` (preserves live `users`); `deploy_release`
+  fail-fasts when project-pod SAs are missing from required SCCs; operator
+  re-ensures network SCC membership on resume/timer; Argo verify deletes known
+  `troshka-group-reader` orphans and fails with an OutOfSync list instead of a
+  10-minute wait; `deploy-full` tees to `/tmp/troshka-deploy-full-<tag>.log`
+  without masking exit codes.
+
 - User access is database-only: OpenShift group lookup no longer gates login or
   roles. Admin → Users can set optional `access_starts_at` / `access_ends_at`;
   outside the window, sign-in and deploy/start/redeploy of owned projects are

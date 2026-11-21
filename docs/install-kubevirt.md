@@ -58,14 +58,16 @@ This creates:
 
 The operator creates dnsmasq and gateway pods that need `NET_ADMIN` and `NET_RAW` capabilities. The SCCs must exist before the operator tries to create these pods.
 
+**Do not** `oc apply -f src/operator/deploy/scc.yaml` directly — that manifest ships `users: []` and client-side apply wipes operator-managed SA membership. Use the helper, which merges live `users` before apply:
+
 ```bash
-oc apply -f src/operator/deploy/scc.yaml
+python3 scripts/apply_scc.py --kubeconfig "$KUBECONFIG"
 ```
 
-This creates:
+This creates/updates:
 - **SCC** `troshka-network-pods` — NET_ADMIN, NET_RAW for dnsmasq/DHCP pods
 - **SCC** `troshka-gateway` — NET_ADMIN, NET_RAW for gateway/NAT pods
-- Updates `troshka-virt-exec` and `troshka-privileged-jobs` SCCs
+- Updates `troshka-virt-exec` and `troshka-privileged-jobs` SCCs (preserving live users)
 
 ### Step 4: Apply Operator CRDs
 

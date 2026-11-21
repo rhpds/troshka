@@ -119,14 +119,10 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
             raise
 
 
-@kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkanetworks")
-@managed_producer()
-async def network_create(spec, meta, namespace, name, body, patch, **_):
-    logger.info(f"Creating network {name} in {namespace}")
-
-    api = FenceClient(client.CoreV1Api())
-    custom_api = FenceClient(client.CustomObjectsApi())
-
+async def _ensure_network_sa_and_scc(namespace, api=None, custom_api=None):
+    """Idempotent SA create + SCC membership for dnsmasq/gateway pods."""
+    api = api or FenceClient(client.CoreV1Api())
+    custom_api = custom_api or FenceClient(client.CustomObjectsApi())
     try:
         api.create_namespaced_service_account(
             namespace=namespace,
@@ -139,13 +135,30 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             raise
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    await managed_await(_patch_scc_users(
+    await _patch_scc_users(
         custom_api,
         sa_ref,
         ("troshka-network-pods", "troshka-gateway"),
         "add",
         namespace,
-    ))
+    )
+    return api, custom_api, sa_ref
+
+
+@kopf.on.resume(CRD_GROUP, CRD_VERSION, "troshkanetworks")
+@managed_producer()
+async def network_resume(spec, meta, namespace, name, **_):
+    """Re-ensure SCC membership after operator restart or external wipe."""
+    logger.info(f"Resuming network {name} in {namespace} — ensuring SCC membership")
+    await _ensure_network_sa_and_scc(namespace)
+
+
+@kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkanetworks")
+@managed_producer()
+async def network_create(spec, meta, namespace, name, body, patch, **_):
+    logger.info(f"Creating network {name} in {namespace}")
+
+    api, custom_api, _sa_ref = await _ensure_network_sa_and_scc(namespace)
 
     nad = build_nad(body)
     try:
@@ -293,7 +306,11 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkanetworks", interval=30.0, idle=15.0)
 @managed_producer()
 async def network_nested_mac_ovn_timer(spec, name, namespace, **_):
-    """Heal every OVN zone without blocking other operator handlers."""
+    """Heal SCC membership and OVN nested-MAC zones without blocking other handlers."""
+    try:
+        await _ensure_network_sa_and_scc(namespace)
+    except Exception as e:
+        logger.warning("SCC ensure failed for network %s/%s: %s", namespace, name, e)
     if not network_allow_nested_macs(spec):
         return
     api = FenceClient(client.CoreV1Api())

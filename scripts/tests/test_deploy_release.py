@@ -788,3 +788,85 @@ def test_failed_network_preflight_never_changes_workloads_or_images(shell_comman
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert not any("promote" in c or "stage-dev" in c or "cluster" in c for c in calls)
     assert not any(c[:2] == ["oc", "apply"] for c in calls)
+
+
+def test_preflight_scc_rejects_missing_sa_membership(release, monkeypatch):
+    dep = {
+        "metadata": {"name": "bmc-abc", "namespace": "troshka-abc"},
+        "spec": {"template": {"spec": {"serviceAccountName": "troshka-bmc", "containers": []}}},
+    }
+
+    def oc(kc, *args, **kwargs):
+        if args[:2] == ("get", "scc"):
+            return json.dumps({"users": ["system:serviceaccount:other:troshka-bmc"]})
+        raise AssertionError(args)
+
+    monkeypatch.setattr(release, "oc", oc)
+    with pytest.raises(RuntimeError, match="not in SCC troshka-gateway"):
+        release.preflight_scc("kc", dep)
+
+
+def test_preflight_scc_accepts_present_membership(release, monkeypatch):
+    dep = {
+        "metadata": {"name": "dnsmasq-net", "namespace": "troshka-abc"},
+        "spec": {
+            "template": {"spec": {"serviceAccountName": "troshka-network", "containers": []}}
+        },
+    }
+    seen = []
+
+    def oc(kc, *args, **kwargs):
+        seen.append(args[2])
+        return json.dumps(
+            {"users": ["system:serviceaccount:troshka-abc:troshka-network"]}
+        )
+
+    monkeypatch.setattr(release, "oc", oc)
+    release.preflight_scc("kc", dep)
+    assert seen == ["troshka-network-pods", "troshka-gateway"]
+
+
+def test_out_of_sync_resources_lists_drift(release):
+    app = {
+        "status": {
+            "resources": [
+                {"kind": "ClusterRole", "name": "troshka-group-reader", "status": "OutOfSync"},
+                {"kind": "Deployment", "name": "troshka-backend", "namespace": "troshka", "status": "Synced",
+                 "health": {"status": "Healthy"}},
+            ]
+        }
+    }
+    bad = release.out_of_sync_resources(app)
+    assert bad == ["ClusterRole/troshka-group-reader status=OutOfSync health=None"]
+
+
+def test_ensure_argo_ready_deletes_orphans_then_fails_with_list(release, monkeypatch):
+    calls = []
+    app = {
+        "status": {
+            "sync": {"status": "OutOfSync"},
+            "resources": [
+                {"kind": "Namespace", "name": "troshka", "status": "OutOfSync"},
+            ],
+        }
+    }
+
+    def oc(kc, *args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("get", "clusterrole") or args[:2] == ("get", "clusterrolebinding"):
+            return f"{args[0]}/{args[1]}"
+        if args[0] == "delete":
+            return ""
+        if args[0] == "annotate":
+            return ""
+        if args[0] == "wait":
+            raise RuntimeError("timed out")
+        if args[:3] == ("get", "applications.argoproj.io", "troshka"):
+            return json.dumps(app)
+        raise AssertionError(args)
+
+    monkeypatch.setattr(release, "oc", oc)
+    with pytest.raises(RuntimeError, match="OutOfSync"):
+        release.ensure_argo_ready("kc", "troshka")
+    assert any(c[0] == "delete" and c[1] == "clusterrole" for c in calls)
+    assert any(c[0] == "delete" and c[1] == "clusterrolebinding" for c in calls)

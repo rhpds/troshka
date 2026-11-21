@@ -2131,6 +2131,35 @@ class TestModifySccUsers:
         assert patched["users"] == ["system:serviceaccount:ns:sa"]
 
 
+class TestEnsureNetworkSaAndScc:
+    def test_resume_readds_missing_membership(self, monkeypatch):
+        from kubernetes.client import ApiException
+        from handlers import network as network_mod
+
+        api = MagicMock()
+        api.create_namespaced_service_account.side_effect = ApiException(status=409)
+        custom_api = MagicMock()
+        patched = []
+
+        async def capture_patch(custom, sa_ref, scc_names, action, namespace):
+            patched.append((sa_ref, tuple(scc_names), action, namespace))
+
+        monkeypatch.setattr(network_mod, "_patch_scc_users", capture_patch)
+        asyncio.run(
+            network_mod._ensure_network_sa_and_scc(
+                "troshka-abc", api=api, custom_api=custom_api
+            )
+        )
+        assert patched == [
+            (
+                "system:serviceaccount:troshka-abc:troshka-network",
+                ("troshka-network-pods", "troshka-gateway"),
+                "add",
+                "troshka-abc",
+            )
+        ]
+
+
 class TestPatchSccUsers:
     def test_iterates_all_sccs(self):
         from handlers.network import _patch_scc_users, _modify_scc_users

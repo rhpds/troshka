@@ -61,6 +61,12 @@ if ! [[ "$RELEASE_TAG" =~ ^v[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || [ "${#RELEASE_TAG
   exit 2
 fi
 
+# Log without requiring callers to `| tee` (that masks non-zero exits when the
+# caller shell lacks pipefail). Script exit status stays on this process.
+DEPLOY_LOG="${DEPLOY_LOG:-/tmp/troshka-deploy-full-${RELEASE_TAG}.log}"
+echo "Logging to $DEPLOY_LOG"
+exec > >(tee -a "$DEPLOY_LOG") 2>&1
+
 # Local host inventory (gitignored). Absolute paths or short names + domain_suffix.
 eval "$(python3 scripts/deploy_hosts.py shell)"
 if [ -z "${KC:-}" ] || [ -z "${DEV_KC:-}" ] || [ "${#OPERATOR_KUBECONFIGS[@]}" -eq 0 ]; then

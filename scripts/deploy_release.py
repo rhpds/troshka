@@ -31,6 +31,16 @@ CRD_RBAC_PATHS = (
     "infra/storage-collector-base-rbac.yaml",
     "infra/storage-collector-project-rbac.yaml",
 )
+# Project-pod SAs → SCCs that must list them before rollout (operator-managed).
+SA_SCC_REQUIREMENTS = {
+    "troshka-network": ("troshka-network-pods", "troshka-gateway"),
+    "troshka-bmc": ("troshka-gateway",),
+}
+# Retired from the Helm chart but left behind when Argo prune is false.
+RETIRED_ARGO_RESOURCES = (
+    ("clusterrole", "troshka-group-reader"),
+    ("clusterrolebinding", "troshka-group-reader"),
+)
 
 
 def run(args, timeout=180, stdin=None):
@@ -301,6 +311,44 @@ def preflight_networks(kc, dep):
             )
 
 
+def deployment_service_account(dep):
+    return dep["spec"]["template"]["spec"].get("serviceAccountName") or "default"
+
+
+def required_sccs_for_sa(sa_name):
+    return SA_SCC_REQUIREMENTS.get(sa_name, ())
+
+
+def scc_users(kc, scc_name):
+    raw = oc(kc, "get", "scc", scc_name, "--ignore-not-found", "-o", "json")
+    if not raw:
+        return None
+    return list(json.loads(raw).get("users") or [])
+
+
+def preflight_scc(kc, dep):
+    """Fail fast when the pod SA is missing from required SCCs (avoids 300s FailedCreate)."""
+    namespace = dep["metadata"]["namespace"]
+    name = dep["metadata"]["name"]
+    sa = deployment_service_account(dep)
+    sccs = required_sccs_for_sa(sa)
+    if not sccs:
+        return
+    sa_ref = f"system:serviceaccount:{namespace}:{sa}"
+    for scc_name in sccs:
+        users = scc_users(kc, scc_name)
+        if users is None:
+            raise RuntimeError(
+                f"{namespace}/{name}: SCC {scc_name} missing; "
+                f"create it with scripts/apply_scc.py before rolling {sa_ref}"
+            )
+        if sa_ref not in users:
+            raise RuntimeError(
+                f"{namespace}/{name}: {sa_ref} not in SCC {scc_name} users; "
+                "restore membership (operator reconcile or patch) before rollout"
+            )
+
+
 def verify_live(kc, namespace, name, expected):
     dep = read_deployment(kc, namespace, name)
     pods = json.loads(oc(kc, "get", "pods", "-n", namespace, "-o", "json"))["items"]
@@ -365,6 +413,7 @@ def update_deployment(kc, dep, expected, image_tag="production"):
     namespace, name = dep["metadata"]["namespace"], dep["metadata"]["name"]
     dep = read_deployment(kc, namespace, name)
     preflight_networks(kc, dep)
+    preflight_scc(kc, dep)
     identity_changed = sync_operator_identity(kc, dep)
     try:
         verify_live(kc, namespace, name, expected)
@@ -413,6 +462,7 @@ def preflight(kc, skip_project_pods=False, roles=None):
         return
     for dep in targets:
         preflight_networks(kc, dep)
+        preflight_scc(kc, dep)
     print(f"{Path(kc).name}: helper network dependencies present", flush=True)
 
 
@@ -431,6 +481,7 @@ def cluster(
     # Fail the entire cluster before scheduling even one rollout mutation.
     for dep in targets:
         preflight_networks(kc, dep)
+        preflight_scc(kc, dep)
     failures = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {
@@ -555,10 +606,74 @@ def application(kc, expected, namespace="troshka", image_tag="production", roles
     )
     if health != "200":
         raise RuntimeError("Backend health check failed")
-    for field, value in (("sync.status", "Synced"), ("health.status", "Healthy"), ("operationState.phase", "Succeeded")):
-        oc(kc, "wait", f"applications.argoproj.io/{namespace}", "-n", "openshift-gitops",
-           f"--for=jsonpath={{.status.{field}}}={value}", "--timeout=600s", timeout=630)
+    ensure_argo_ready(kc, namespace)
     print("Runtime schema matches; backend health HTTP 200", flush=True)
+
+
+def argo_application(kc, name):
+    return json.loads(
+        oc(kc, "get", "applications.argoproj.io", name, "-n", "openshift-gitops", "-o", "json")
+    )
+
+
+def out_of_sync_resources(app):
+    bad = []
+    for resource in (app.get("status") or {}).get("resources") or []:
+        health = (resource.get("health") or {}).get("status")
+        status = resource.get("status")
+        if status not in (None, "Synced") or health not in (None, "Healthy"):
+            kind = resource.get("kind") or "?"
+            res_name = resource.get("name") or "?"
+            ns = resource.get("namespace") or ""
+            where = f"{ns}/" if ns else ""
+            bad.append(f"{kind}/{where}{res_name} status={status} health={health}")
+    return bad
+
+
+def delete_retired_argo_orphans(kc):
+    """Remove known chart-retired cluster objects that keep Argo OutOfSync with prune:false."""
+    for kind, name in RETIRED_ARGO_RESOURCES:
+        found = oc(kc, "get", kind, name, "--ignore-not-found", "-o", "name")
+        if not found:
+            continue
+        oc(kc, "delete", kind, name, "--ignore-not-found", "--wait=false")
+        print(f"Deleted retired Argo orphan {kind}/{name}", flush=True)
+
+
+def ensure_argo_ready(kc, namespace="troshka"):
+    """Drop known orphans, refresh, wait briefly — fail with OutOfSync list if still stuck."""
+    delete_retired_argo_orphans(kc)
+    oc(
+        kc,
+        "annotate",
+        f"applications.argoproj.io/{namespace}",
+        "-n",
+        "openshift-gitops",
+        "argocd.argoproj.io/refresh=normal",
+        "--overwrite",
+    )
+    for field, value in (
+        ("sync.status", "Synced"),
+        ("health.status", "Healthy"),
+        ("operationState.phase", "Succeeded"),
+    ):
+        try:
+            oc(
+                kc,
+                "wait",
+                f"applications.argoproj.io/{namespace}",
+                "-n",
+                "openshift-gitops",
+                f"--for=jsonpath={{.status.{field}}}={value}",
+                "--timeout=120s",
+                timeout=150,
+            )
+        except (RuntimeError, subprocess.SubprocessError) as exc:
+            bad = out_of_sync_resources(argo_application(kc, namespace))
+            detail = "\n".join(f"  {item}" for item in bad) or "  (no resource details)"
+            raise RuntimeError(
+                f"Argo application {namespace} did not reach {field}={value}:\n{detail}"
+            ) from exc
 
 
 def application_release_action(args, parser):

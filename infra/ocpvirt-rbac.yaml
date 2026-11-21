@@ -274,6 +274,8 @@ users:
 ---
 # Privileged SCC for recert Jobs — needs qemu-nbd device access, mount (SYS_ADMIN),
 # and SELinux RunAsAny to access disk content. Used by troshka-recert SA per project namespace.
+# users are operator-managed; deploy-full strips SCCs from this file before apply.
+# Prefer scripts/apply_scc.py for intentional SCC policy updates.
 apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:
