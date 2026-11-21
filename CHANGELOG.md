@@ -14,6 +14,13 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- `deploy-full` is faster for partial releases: tag builds only rebuild changed
+  images and carry-forward the rest from the previous `v*` tag; promote/host
+  rollouts/app waits skip unchanged roles; CRD/RBAC apply is skipped when those
+  paths are unchanged. Cluster kubeconfigs come from gitignored
+  `scripts/deploy-hosts.local.yaml` (see `.example`). Use `[rebuild-all]` in the
+  release commit message to force a full image rebuild.
+
 - OpenShift deploy/restart preflight now probes the saved pull secret against
   `quay.io` (when not using a pull-through registry) and blocks cluster creation
   if the secret is missing, malformed, or rejected; error text includes

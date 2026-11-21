@@ -21,6 +21,16 @@ IMAGES = (
     "ops-pod",
     "terminal",
 )
+APP_ROLES = ("backend", "frontend")
+OPERATOR_ROLES = tuple(role for role in IMAGES if role not in APP_ROLES)
+CLUSTER_ROLLOUT_ROLES = ("operator", "dnsmasq", "gateway", "bmc", "vnc-proxy")
+CRD_RBAC_PATHS = (
+    "src/operator/crds/",
+    "src/operator/deploy/clusterrole.yaml",
+    "infra/ocpvirt-rbac.yaml",
+    "infra/storage-collector-base-rbac.yaml",
+    "infra/storage-collector-project-rbac.yaml",
+)
 
 
 def run(args, timeout=180, stdin=None):
@@ -56,16 +66,74 @@ def digest(role, tag):
     return value
 
 
+def digest_or_none(role, tag):
+    try:
+        return digest(role, tag)
+    except (RuntimeError, subprocess.SubprocessError):
+        return None
+
+
 def release_digests(tag):
     with ThreadPoolExecutor(max_workers=4) as pool:
         return dict(zip(IMAGES, pool.map(lambda role: digest(role, tag), IMAGES)))
 
 
-def promote(tag):
-    # Resolve every source before mutating any destination, including transient
-    # job images that do not have persistent Deployments to restart.
+def parse_roles(value):
+    if value is None or value == "":
+        return list(IMAGES)
+    roles = [part.strip() for part in value.split(",") if part.strip()]
+    unknown = [role for role in roles if role not in IMAGES]
+    if unknown:
+        raise RuntimeError(f"Unknown image roles: {', '.join(unknown)}")
+    return roles
+
+
+def roles_changed_since(tag, baseline="production", roles=None):
+    """Return roles whose release digest differs from baseline (or is new)."""
+    check = list(IMAGES if roles is None else roles)
+    expected = {role: digest(role, tag) for role in check}
+    changed = [
+        role
+        for role in check
+        if digest_or_none(role, baseline) != expected[role]
+    ]
+    return expected, changed
+
+
+def git_paths_changed(previous_ref, head_ref="HEAD", paths=CRD_RBAC_PATHS):
+    """True when any listed path changed between previous_ref and head_ref."""
+    if not previous_ref:
+        return True
+    try:
+        diff = run(
+            ["git", "diff", "--name-only", f"{previous_ref}...{head_ref}", "--", *paths],
+            timeout=60,
+        )
+    except subprocess.SubprocessError:
+        return True
+    return bool(diff.strip())
+
+
+def previous_release_tag(current_tag):
+    tags = run(
+        ["git", "tag", "-l", "v*", "--sort=-creatordate"], timeout=60
+    ).splitlines()
+    for tag in tags:
+        if tag and tag != current_tag:
+            return tag
+    return ""
+
+
+def promote(tag, roles=None):
+    # Resolve every required source before mutating destinations. Unchanged roles
+    # already match production and are skipped.
     expected = release_digests(tag)
-    for role in IMAGES:
+    selected = list(IMAGES if roles is None else roles)
+    for role in selected:
+        current = digest_or_none(role, "production")
+        if current == expected[role]:
+            print(f"  {role}: production already at {tag} digest", flush=True)
+            continue
         source = f"docker://{REGISTRY}{role}:{tag}"
         target = f"docker://{REGISTRY}{role}:production"
         run(["skopeo", "copy", "--all", source, target], timeout=600)
@@ -75,11 +143,18 @@ def promote(tag):
     return expected
 
 
-def stage_dev_images(tag):
-    # Main and release builds can both publish latest. Resolve both release
-    # images first and copy by digest so dev tests exactly the promotion candidate.
-    expected = {role: digest(role, tag) for role in ("backend", "frontend")}
+def stage_dev_images(tag, roles=None):
+    # Main and release builds can both publish latest. Resolve release digests
+    # first and copy by digest so dev tests exactly the promotion candidate.
+    selected = [role for role in (roles or APP_ROLES) if role in APP_ROLES]
+    if not selected:
+        print("  stage-dev: no app image roles to align", flush=True)
+        return
+    expected = {role: digest(role, tag) for role in selected}
     for role, image_digest in expected.items():
+        if digest_or_none(role, "latest") == image_digest:
+            print(f"  {role}: dev latest already aligned with {tag}", flush=True)
+            continue
         run([
             "skopeo", "copy", "--all",
             f"docker://{REGISTRY}{role}@{image_digest}",
@@ -308,7 +383,8 @@ def update_deployment(kc, dep, expected, image_tag="production"):
     verify_live(kc, namespace, name, expected)
 
 
-def cluster_targets(kc, skip_project_pods=False):
+def cluster_targets(kc, skip_project_pods=False, roles=None):
+    wanted = set(roles or CLUSTER_ROLLOUT_ROLES) & set(CLUSTER_ROLLOUT_ROLES)
     deployments = json.loads(oc(kc, "get", "deployments", "-A", "-o", "json"))["items"]
     targets = []
     for dep in deployments:
@@ -317,26 +393,41 @@ def cluster_targets(kc, skip_project_pods=False):
             skip_project_pods or not namespace.startswith("troshka-")
         ):
             continue
-        roles = {
+        dep_roles = {
             image_role(c["image"])
             for c in dep["spec"]["template"]["spec"]["containers"]
         }
-        if roles & {"operator", "dnsmasq", "gateway", "bmc", "vnc-proxy"}:
+        if dep_roles & wanted:
             targets.append(dep)
-    if not any(d["metadata"]["name"] == "troshka-operator" for d in targets):
+    if "operator" in wanted and not any(
+        d["metadata"]["name"] == "troshka-operator" for d in targets
+    ):
         raise RuntimeError("Operator deployment missing")
     return targets
 
 
-def preflight(kc, skip_project_pods=False):
-    targets = cluster_targets(kc, skip_project_pods)
+def preflight(kc, skip_project_pods=False, roles=None):
+    targets = cluster_targets(kc, skip_project_pods, roles)
+    if not targets:
+        print(f"{Path(kc).name}: no cluster targets for selected roles", flush=True)
+        return
     for dep in targets:
         preflight_networks(kc, dep)
     print(f"{Path(kc).name}: helper network dependencies present", flush=True)
 
 
-def cluster(kc, expected, skip_project_pods=False, verify_only=False, image_tag="production"):
-    targets = cluster_targets(kc, skip_project_pods)
+def cluster(
+    kc,
+    expected,
+    skip_project_pods=False,
+    verify_only=False,
+    image_tag="production",
+    roles=None,
+):
+    targets = cluster_targets(kc, skip_project_pods, roles)
+    if not targets:
+        print(f"{Path(kc).name}: skipped (no deployments use changed roles)", flush=True)
+        return
     # Fail the entire cluster before scheduling even one rollout mutation.
     for dep in targets:
         preflight_networks(kc, dep)
@@ -396,7 +487,8 @@ def idle(kc):
     print("Job queues are idle", flush=True)
 
 
-def application(kc, expected, namespace="troshka", image_tag="production"):
+def application(kc, expected, namespace="troshka", image_tag="production", roles=None):
+    selected = set(roles or APP_ROLES) & set(APP_ROLES)
     targets = [
         ("backend", "backend"),
         ("frontend", "frontend"),
@@ -406,6 +498,10 @@ def application(kc, expected, namespace="troshka", image_tag="production"):
     for name in ("collection-worker", "readiness-worker"):
         if oc(kc, "get", "deployment", f"troshka-{name}", "-n", namespace, "--ignore-not-found", "-o", "name"):
             targets.append((name, "backend"))
+    targets = [(name, role) for name, role in targets if role in selected]
+    if not targets:
+        print(f"{namespace}: skipped app waits (no changed app roles)", flush=True)
+        return
     for name, role in targets:
         deployment = f"troshka-{name}"
         image = f"{REGISTRY}{role}:{image_tag}@{expected[role]}"
@@ -425,6 +521,9 @@ def application(kc, expected, namespace="troshka", image_tag="production"):
         wait_rollout(kc, namespace, deployment)
         verify_live(kc, namespace, deployment, expected)
         print(f"{deployment}: all replicas ready on the release digest", flush=True)
+    if "backend" not in selected:
+        print("Runtime schema/health checks skipped (backend unchanged)", flush=True)
+        return
     # Compare the actual packaged schema, not just the deployment's image field.
     schema = oc(
         kc,
@@ -465,16 +564,49 @@ def application(kc, expected, namespace="troshka", image_tag="production"):
 def application_release_action(args, parser):
     if not args.tag or not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", args.tag):
         parser.error("a named release --tag starting with v is required")
+    roles = parse_roles(args.roles) if args.roles is not None else None
     if args.action == "stage-dev":
-        stage_dev_images(args.tag)
+        stage_dev_images(args.tag, roles)
     else:
         pin_application_release(args.kubeconfig, args.namespace, args.tag)
+
+
+def release_plan(tag, baseline="production"):
+    """Summarize which image roles and CRD/RBAC paths changed for this release."""
+    previous = previous_release_tag(tag)
+    _, changed = roles_changed_since(tag, baseline)
+    return {
+        "tag": tag,
+        "previous_tag": previous,
+        "baseline": baseline,
+        "changed_roles": changed,
+        "unchanged_roles": [role for role in IMAGES if role not in changed],
+        "operator_roles_changed": [
+            role for role in changed if role in OPERATOR_ROLES
+        ],
+        "app_roles_changed": [role for role in changed if role in APP_ROLES],
+        "cluster_roles_changed": [
+            role for role in changed if role in CLUSTER_ROLLOUT_ROLES
+        ],
+        "apply_crds_rbac": git_paths_changed(previous, "HEAD", CRD_RBAC_PATHS),
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("promote", "images", "cluster", "application", "idle", "stage-dev", "pin-application", "preflight")
+        "action",
+        choices=(
+            "promote",
+            "images",
+            "cluster",
+            "application",
+            "idle",
+            "stage-dev",
+            "pin-application",
+            "preflight",
+            "plan",
+        ),
     )
     parser.add_argument("--tag")
     parser.add_argument("--state", type=Path)
@@ -483,17 +615,38 @@ def main():
     parser.add_argument("--image-tag", default="production")
     parser.add_argument("--skip-project-pods", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument(
+        "--roles",
+        help="Comma-separated image roles to act on (default: all relevant roles)",
+    )
+    parser.add_argument(
+        "--baseline",
+        default="production",
+        help="Tag/digest baseline for plan/promote skip decisions",
+    )
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", args.image_tag):
         parser.error("--image-tag must be a valid container tag")
+    roles = parse_roles(args.roles) if args.roles is not None else None
     if args.action in ("stage-dev", "pin-application"):
         application_release_action(args, parser)
+        return
+    if args.action == "plan":
+        if not args.tag or args.tag in ("latest", "production"):
+            parser.error("a named release --tag is required")
+        plan = release_plan(args.tag, args.baseline)
+        text = json.dumps(plan, indent=2)
+        if args.state:
+            args.state.write_text(text)
+        print(text, flush=True)
         return
     if args.action in ("promote", "images"):
         if not args.tag or args.tag in ("latest", "production"):
             parser.error("a named release --tag is required")
         values = (
-            promote(args.tag) if args.action == "promote" else release_digests(args.tag)
+            promote(args.tag, roles)
+            if args.action == "promote"
+            else release_digests(args.tag)
         )
         if args.state:
             args.state.write_text(json.dumps(values))
@@ -502,13 +655,22 @@ def main():
         idle(args.kubeconfig)
         return
     if args.action == "preflight":
-        preflight(args.kubeconfig, args.skip_project_pods)
+        preflight(args.kubeconfig, args.skip_project_pods, roles)
         return
     expected = json.loads(args.state.read_text())
     if args.action == "cluster":
-        cluster(args.kubeconfig, expected, args.skip_project_pods, args.verify_only, args.image_tag)
+        cluster(
+            args.kubeconfig,
+            expected,
+            args.skip_project_pods,
+            args.verify_only,
+            args.image_tag,
+            roles,
+        )
     else:
-        application(args.kubeconfig, expected, args.namespace, args.image_tag)
+        application(
+            args.kubeconfig, expected, args.namespace, args.image_tag, roles
+        )
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Push main + a release tag → wait for its full build → promote to production
-# → apply CRDs/RBAC → roll operators/project services → verify Argo workloads.
+# Push main + a release tag → wait for its image build → promote changed images
+# → apply CRDs/RBAC only when needed → roll only hosts/roles that changed.
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 SKIP_PUSH=false
@@ -20,6 +20,7 @@ usage() {
   echo "Usage: scripts/deploy-full.sh [--tag vNAME] [--skip-push] [--skip-operators] [--skip-project-pods] [--sync-ns-rbac] [--collector-access-plan FILE] [--collector-setup-plan FILE]"
   echo "Default: create vYYYY.MM.DD-HHMMSS (UTC) at HEAD and push HEAD to main plus the tag."
   echo "Resume an existing release with --skip-push --tag vNAME from its clean checkout."
+  echo "Hosts come from scripts/deploy-hosts.local.yaml (gitignored); see deploy-hosts.local.yaml.example."
   echo "Storage verification is optional: --verify-storage checks existing evidence; --fresh-accounting scans all projects; --accounting-project UUID scans selected production projects."
 }
 while [ "$#" -gt 0 ]; do
@@ -60,22 +61,31 @@ if ! [[ "$RELEASE_TAG" =~ ^v[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || [ "${#RELEASE_TAG
   exit 2
 fi
 
-KC="$HOME/secrets/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig"
-DEV_KC="$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig"
-OPERATOR_KUBECONFIGS=()
-for cluster in ocpv01.dfw3 ocpv02.dfw3 ocpv06.dal10 ocpv07.wdc06 ocpv08.dal10 ocpv09.dal13 ocpvdev01.dal13; do
-  OPERATOR_KUBECONFIGS+=("$HOME/secrets/$cluster.infra.demo.redhat.com.kubeconfig")
-done
+# Local host inventory (gitignored). Absolute paths or short names + domain_suffix.
+eval "$(python3 scripts/deploy_hosts.py shell)"
+if [ -z "${KC:-}" ] || [ -z "${DEV_KC:-}" ] || [ "${#OPERATOR_KUBECONFIGS[@]}" -eq 0 ]; then
+  echo "deploy-hosts.local.yaml did not resolve production/dev/operator kubeconfigs." >&2
+  exit 1
+fi
+
+join_roles() {
+  local IFS=,
+  echo "$*"
+}
 
 preflight_helper_networks() {
-  if [ "$SKIP_OPERATORS" = false ]; then
-    local kc
-    local flags=()
-    [ "$SKIP_PROJECT_PODS" = false ] || flags+=(--skip-project-pods)
-    for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
-      python3 scripts/deploy_release.py preflight --kubeconfig "$kc" "${flags[@]}"
-    done
+  if [ "$SKIP_OPERATORS" = true ] || [ "${#CLUSTER_ROLES[@]}" -eq 0 ]; then
+    echo "Skipping helper-network preflight (no changed cluster image roles)."
+    return
   fi
+  local kc
+  local flags=()
+  local role_args
+  role_args=$(join_roles "${CLUSTER_ROLES[@]}")
+  [ "$SKIP_PROJECT_PODS" = false ] || flags+=(--skip-project-pods)
+  for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
+    python3 scripts/deploy_release.py preflight --kubeconfig "$kc" --roles "$role_args" "${flags[@]}"
+  done
 }
 
 if [ "$VERIFY_STORAGE" = true ]; then
@@ -102,7 +112,7 @@ git merge-base --is-ancestor "$HEAD_REV" origin/main || {
   echo "Release is not on origin/main." >&2; exit 1;
 }
 
-echo "=== Wait for the tagged full image build ==="
+echo "=== Wait for the tagged image build ==="
 # Tag push → Actions registration can lag a few seconds; poll instead of
 # immediately exiting and forcing a manual --skip-push resume.
 IMAGE_RUN_WAIT_SECONDS="${IMAGE_RUN_WAIT_SECONDS:-300}"
@@ -140,13 +150,45 @@ fi
 
 STATE=$(mktemp -d)
 trap 'rm -rf "$STATE"' EXIT
-echo "=== Preflight all ten release images ==="
+echo "=== Preflight release images ==="
 python3 scripts/deploy_release.py images --tag "$RELEASE_TAG" --state "$STATE/digests.json"
+python3 scripts/deploy_release.py plan --tag "$RELEASE_TAG" --state "$STATE/plan.json"
+CHANGED_ROLES=()
+CLUSTER_ROLES=()
+APP_ROLES=()
+while IFS= read -r role; do
+  [ -n "$role" ] || continue
+  CHANGED_ROLES+=("$role")
+done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["changed_roles"]))' "$STATE/plan.json")
+while IFS= read -r role; do
+  [ -n "$role" ] || continue
+  CLUSTER_ROLES+=("$role")
+done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["cluster_roles_changed"]))' "$STATE/plan.json")
+while IFS= read -r role; do
+  [ -n "$role" ] || continue
+  APP_ROLES+=("$role")
+done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["app_roles_changed"]))' "$STATE/plan.json")
+APPLY_CRDS_RBAC=$(python3 -c 'import json,sys; print("true" if json.load(open(sys.argv[1]))["apply_crds_rbac"] else "false")' "$STATE/plan.json")
+if [ "$FORCE_NS_RBAC" = true ]; then
+  APPLY_CRDS_RBAC=true
+fi
+echo "Changed image roles: ${CHANGED_ROLES[*]:-none}"
+echo "Cluster rollout roles: ${CLUSTER_ROLES[*]:-none}"
+echo "App wait roles: ${APP_ROLES[*]:-none}"
+echo "Apply CRDs/RBAC: $APPLY_CRDS_RBAC"
+
+# Fail closed on helper-network gaps before staging/mutating workloads.
 preflight_helper_networks
-python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG"
-echo "=== Require dev Argo on this release ==="
-python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
-  --namespace troshka-dev --image-tag latest --state "$STATE/digests.json"
+
+if [ "${#APP_ROLES[@]}" -gt 0 ]; then
+  python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG" --roles "$(join_roles "${APP_ROLES[@]}")"
+  echo "=== Require dev Argo on changed app images ==="
+  python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
+    --namespace troshka-dev --image-tag latest --state "$STATE/digests.json" \
+    --roles "$(join_roles "${APP_ROLES[@]}")"
+else
+  echo "Skipping dev stage/app waits (no changed app images)."
+fi
 if [ "$VERIFY_STORAGE" = true ]; then
   python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
     --output "$STATE/dev-collector-preflight.json"
@@ -154,7 +196,7 @@ if [ "$VERIFY_STORAGE" = true ]; then
     --mode health --output "$STATE/dev-accounting.json"
 fi
 oc get deployment troshka-backend -n troshka --kubeconfig="$KC" --request-timeout=30s >/dev/null
-if [ "$SKIP_OPERATORS" = false ]; then
+if [ "$SKIP_OPERATORS" = false ] && [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     oc get deployment troshka-operator -n troshka-operator --kubeconfig="$kc" --request-timeout=30s >/dev/null
   done
@@ -191,9 +233,11 @@ apply_rbac() {
   fi
 }
 
-if [ "$SKIP_OPERATORS" = false ]; then
-  # Preserve operator-managed SCC membership while applying provider permissions.
-  python3 - infra/ocpvirt-rbac.yaml >"$STATE/provider-rbac.yaml" <<'PY'
+FAILED=false
+if [ "$SKIP_OPERATORS" = false ] && { [ "$APPLY_CRDS_RBAC" = true ] || [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; }; then
+  if [ "$APPLY_CRDS_RBAC" = true ]; then
+    # Preserve operator-managed SCC membership while applying provider permissions.
+    python3 - infra/ocpvirt-rbac.yaml >"$STATE/provider-rbac.yaml" <<'PY'
 import sys
 docs = open(sys.argv[1]).read().split("\n---\n")
 keep = [d.strip() for d in docs if next(
@@ -201,16 +245,28 @@ keep = [d.strip() for d in docs if next(
 ) not in ("", "SecurityContextConstraints")]
 print("\n---\n".join(keep))
 PY
+  else
+    echo "Skipping CRD/RBAC apply (unchanged since previous release)."
+  fi
   PIDS=()
+  CLUSTER_ROLE_ARGS=()
+  if [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; then
+    CLUSTER_ROLE_ARGS=(--roles "$(join_roles "${CLUSTER_ROLES[@]}")")
+  fi
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     (
-      apply_rbac "$kc"
-      python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" \
-        --image-tag "$RELEASE_TAG" --skip-project-pods
+      if [ "$APPLY_CRDS_RBAC" = true ]; then
+        apply_rbac "$kc"
+      fi
+      if [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; then
+        python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" \
+          --image-tag "$RELEASE_TAG" --skip-project-pods "${CLUSTER_ROLE_ARGS[@]}"
+      else
+        echo "$(basename "$kc"): skipped cluster image rollout (no changed operator images)"
+      fi
     ) >"$STATE/$(basename "$kc").log" 2>&1 &
     PIDS+=($!)
   done
-  FAILED=false
   for pid in "${PIDS[@]}"; do
     wait "$pid" || FAILED=true
   done
@@ -218,7 +274,7 @@ PY
     cat "$STATE/$(basename "$kc").log"
   done
 else
-  FAILED=false
+  echo "Skipping operator host CRD/image stage (unchanged or --skip-operators)."
 fi
 
 if [ "$FAILED" = true ]; then
@@ -243,18 +299,29 @@ if [ "$VERIFY_STORAGE" = true ]; then
 fi
 python3 scripts/deploy_release.py idle --kubeconfig "$KC"
 preflight_helper_networks
-./scripts/promote-to-production.sh "$RELEASE_TAG"
+if [ "${#CHANGED_ROLES[@]}" -gt 0 ]; then
+  python3 scripts/deploy_release.py promote --tag "$RELEASE_TAG" --roles "$(join_roles "${CHANGED_ROLES[@]}")" \
+    --state "$STATE/digests.json"
+else
+  echo "Skipping promote (all production digests already match $RELEASE_TAG)."
+fi
 python3 scripts/deploy_release.py pin-application --kubeconfig "$KC" --tag "$RELEASE_TAG"
-if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
+if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ] && [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
-    python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json"
+    python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" \
+      --roles "$(join_roles "${CLUSTER_ROLES[@]}")"
   done
 fi
 
 echo "=== Verify Argo application, workers, tunnels, runtime schema and health ==="
-oc annotate applications.argoproj.io troshka -n openshift-gitops \
-  argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
-python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json"
+if [ "${#APP_ROLES[@]}" -gt 0 ]; then
+  oc annotate applications.argoproj.io troshka -n openshift-gitops \
+    argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
+  python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json" \
+    --roles "$(join_roles "${APP_ROLES[@]}")"
+else
+  echo "Skipping production app waits (no changed app images)."
+fi
 if [ "$VERIFY_STORAGE" = true ]; then
   echo "=== Verify collector configuration and accounting ($ACCOUNTING_MODE) ==="
   python3 scripts/collector_fleet_preflight.py \

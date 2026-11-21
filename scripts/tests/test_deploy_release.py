@@ -191,6 +191,10 @@ def test_promote_includes_terminal_and_ops_pod_and_verifies_destination(
     def run(args, **kwargs):
         if args[:2] == ["skopeo", "copy"]:
             copied.append(args[-1])
+            return "sha256:abc"
+        # Production starts stale; after copy, verification must see the new digest.
+        if args[:2] == ["skopeo", "inspect"] and str(args[-1]).endswith(":production"):
+            return "sha256:abc" if str(args[-1]) in copied else "sha256:old"
         return "sha256:abc"
 
     monkeypatch.setattr(release, "run", run)
@@ -226,9 +230,23 @@ def test_stage_dev_resolves_both_images_before_copy(release, monkeypatch):
 
 def test_stage_dev_copies_immutable_sources_and_checks_latest(release, monkeypatch):
     calls = []
+    aligned = set()
 
     def run(args, **kwargs):
         calls.append(args)
+        # Per-role: latest starts stale, then matches after that role is copied.
+        if args[:2] == ["skopeo", "copy"]:
+            dest = str(args[-1])
+            for role in ("backend", "frontend"):
+                if dest.endswith(f"{role}:latest"):
+                    aligned.add(role)
+            return "sha256:abc"
+        if args[:2] == ["skopeo", "inspect"] and str(args[-1]).endswith(":latest"):
+            role = next(
+                (r for r in ("backend", "frontend") if f"{r}:latest" in str(args[-1])),
+                None,
+            )
+            return "sha256:abc" if role in aligned else "sha256:old"
         return "sha256:abc"
 
     monkeypatch.setattr(release, "run", run)
@@ -239,7 +257,7 @@ def test_stage_dev_copies_immutable_sources_and_checks_latest(release, monkeypat
     assert {c[-1] for c in copies} == {
         f"docker://{release.REGISTRY}{role}:latest" for role in ("backend", "frontend")
     }
-    assert len([c for c in calls if c[:2] == ["skopeo", "inspect"] and c[-1].endswith(":latest")]) == 2
+    assert len([c for c in calls if c[:2] == ["skopeo", "inspect"] and c[-1].endswith(":latest")]) >= 2
 
 
 def test_stage_dev_rejects_destination_digest_mismatch(release, monkeypatch):
@@ -314,6 +332,52 @@ if name == "gh" and args[:2] == ["run", "list"]:
 if name == "gh" and args[:2] == ["run", "view"]:
     key = "MAIN_CI_CONCLUSION" if args[2] == "43" else "CI_CONCLUSION"
     print(os.environ.get(key, "success"))
+if name == "python3" and args and args[0] == "-c":
+    code = args[1]
+    sys.argv = ["python3", *args[2:]]
+    exec(compile(code, "<deploy-full-test>", "exec"), {})
+    raise SystemExit(0)
+if name == "python3" and any(str(a).endswith("deploy_hosts.py") for a in args):
+    # Mirror the historical hardcoded fleet so existing orchestration asserts stay stable.
+    print("KC='/tmp/ocpv-infra01.dal12.infra.demo.redhat.com.kubeconfig'")
+    print("DEV_KC='/tmp/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig'")
+    print("OPERATOR_KUBECONFIGS=(")
+    for host in (
+        "ocpv01.dfw3", "ocpv02.dfw3", "ocpv06.dal10", "ocpv07.wdc06",
+        "ocpv08.dal10", "ocpv09.dal13", "ocpvdev01.dal13",
+    ):
+        print(f"  '/tmp/{host}.infra.demo.redhat.com.kubeconfig'")
+    print(")")
+    raise SystemExit(0)
+if name == "python3" and "scripts/deploy_release.py" in args:
+    if "images" in args and "--state" in args:
+        state = pathlib.Path(args[args.index("--state") + 1])
+        roles = [
+            "backend", "frontend", "operator", "dnsmasq", "gateway",
+            "tools", "bmc", "vnc-proxy", "ops-pod", "terminal",
+        ]
+        state.write_text(json.dumps({role: "sha256:test" for role in roles}))
+    if "plan" in args and "--state" in args:
+        state = pathlib.Path(args[args.index("--state") + 1])
+        state.write_text(json.dumps({
+            "tag": "vtest",
+            "previous_tag": "",
+            "baseline": "production",
+            "changed_roles": [
+                "backend", "frontend", "operator", "dnsmasq", "gateway",
+                "tools", "bmc", "vnc-proxy", "ops-pod", "terminal",
+            ],
+            "unchanged_roles": [],
+            "operator_roles_changed": [
+                "operator", "dnsmasq", "gateway", "tools", "bmc",
+                "vnc-proxy", "ops-pod", "terminal",
+            ],
+            "app_roles_changed": ["backend", "frontend"],
+            "cluster_roles_changed": [
+                "operator", "dnsmasq", "gateway", "bmc", "vnc-proxy",
+            ],
+            "apply_crds_rbac": True,
+        }))
 if name == "python3" and "cluster" in args and os.environ.get("FAIL_CLUSTER"):
     sys.exit(1)
 if name == "python3" and "preflight" in args and os.environ.get("FAIL_NETWORK"):

@@ -1,0 +1,22 @@
+# Copy to scripts/deploy-hosts.local.yaml (gitignored via *.local.yaml).
+# Short names are expanded with domain_suffix for kubeconfig paths:
+#   ocpv01.dfw3 → ~/secrets/ocpv01.dfw3.infra.demo.redhat.com.kubeconfig
+# Full hostnames or absolute kubeconfig paths are used as-is.
+
+kubeconfig_dir: ~/secrets
+domain_suffix: infra.demo.redhat.com
+
+# App clusters (Troshka Argo applications)
+production: ocpv-infra01.dal12
+dev: ocpvdev01.dal13
+
+# Operator / helper fleets rolled by deploy-full
+operators:
+  - ocpv01.dfw3
+  - ocpv02.dfw3
+  - ocpv04.lon3
+  - ocpv06.dal10
+  - ocpv07.wdc06
+  - ocpv08.dal10
+  - ocpv09.dal13
+  - ocpvdev01.dal13

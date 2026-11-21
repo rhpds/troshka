@@ -12,11 +12,21 @@ images; adoption preserves active overlays until the first rollout is reviewed.
 
 From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a
 UTC release tag (`vYYYY.MM.DD-HHMMSS`), atomically pushes HEAD to `main` and the
-tag, waits for the tag's full image build, upgrades host prerequisites, and
+tag, waits for the tag's image build, upgrades host prerequisites, and
 promotes that release to the existing `production`
 image tags. It also advances the production Argo application's Git revision to
 that named release, preserving its Helm settings. `main` remains the integration
 branch; Argo CD Image Updater still deploys `production` digests.
+
+Release hosts are read from gitignored `scripts/deploy-hosts.local.yaml`
+(copy from `scripts/deploy-hosts.local.yaml.example`). Short names expand with
+`domain_suffix` into `$kubeconfig_dir/<name>.<suffix>.kubeconfig`.
+
+Tag builds only rebuild images whose paths changed since the previous `v*` tag
+and carry-forward unchanged images onto the new tag. `deploy-full` then skips
+promote/host/app work for digests that already match `production`, and skips
+CRD/RBAC apply when those files are unchanged. Put `[rebuild-all]` in the
+release commit message to force every image rebuild.
 
 Before promotion, the script waits for any image build for the same commit on
 `main`, then aligns backend/frontend `latest` with the named release by digest.
