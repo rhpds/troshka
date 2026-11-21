@@ -1374,6 +1374,27 @@ def ensure_troshka_namespaced_rbac(rbac_api, namespace: str) -> None:
     )
 
 
+def _bootstrap_system_namespaces(
+    rbac_api, core_api, apps_api, operator_ns: str
+) -> None:
+    """Create system namespaces and bind namespaced mutate roles into each."""
+    for ns in ("troshka", CACHE_NAMESPACE, operator_ns):
+        try:
+            _apply_manifest(
+                "Namespace",
+                ns,
+                None,
+                {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}},
+                core_api,
+                apps_api,
+            )
+            ensure_troshka_namespaced_rbac(rbac_api, ns)
+        except (BaseNamespaceGrantsError, BaseNamespaceGrantsModeError):
+            raise
+        except Exception:
+            logger.warning(_NS_RBAC_CONTINUE_MSG, ns, exc_info=True)
+
+
 def _ensure_provider_rbac(provider) -> None:
     """Ensure namespaced provider resources exist and verify cluster RBAC.
 
@@ -1382,6 +1403,9 @@ def _ensure_provider_rbac(provider) -> None:
     present (it cannot legally write them). Namespaced resources it has rights to
     (Namespace, ServiceAccount) are (re)applied. Per-NS RoleBindings for namespaced
     mutate roles are ensured on system namespaces.
+
+    Fresh clusters must bind namespaced mutate roles before creating ServiceAccounts:
+    without that RoleBinding, create SA returns 403 (not 409) even if the SA exists.
     """
     from kubernetes import client
 
@@ -1403,18 +1427,23 @@ def _ensure_provider_rbac(provider) -> None:
         ns = doc["metadata"].get("namespace")
         if kind in ("ClusterRole", "ClusterRoleBinding"):
             _verify_cluster_rbac(rbac_api, kind, name)
-            continue
-        _apply_manifest(kind, name, ns, doc, core_api, apps_api)
+        elif kind == "Namespace":
+            _apply_manifest(kind, name, ns, doc, core_api, apps_api)
 
-    creds = provider.get_credentials()
-    operator_ns = creds.get("namespace", "troshka-operator")
-    for ns in ("troshka", CACHE_NAMESPACE, operator_ns):
-        try:
-            ensure_troshka_namespaced_rbac(rbac_api, ns)
-        except (BaseNamespaceGrantsError, BaseNamespaceGrantsModeError):
-            raise
-        except Exception:
-            logger.warning(_NS_RBAC_CONTINUE_MSG, ns, exc_info=True)
+    operator_ns = provider.get_credentials().get("namespace", "troshka-operator")
+    _bootstrap_system_namespaces(rbac_api, core_api, apps_api, operator_ns)
+
+    for doc in docs:
+        if doc.get("kind") != "ServiceAccount":
+            continue
+        _apply_manifest(
+            "ServiceAccount",
+            doc["metadata"]["name"],
+            doc["metadata"].get("namespace"),
+            doc,
+            core_api,
+            apps_api,
+        )
 
 
 def _verify_external_provider_rbac(provider, core_api, rbac_api, docs) -> None:

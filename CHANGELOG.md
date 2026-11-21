@@ -14,6 +14,11 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- KubeVirt **Install Operator** on a fresh cluster no longer 403s creating the
+  `troshka` ServiceAccount: namespaced mutate RoleBindings are bound before SA
+  create (K8s returns Forbidden—not Conflict—when create is denied on an
+  already-present SA).
+
 - `deploy-full` is faster for partial releases: tag builds only rebuild changed
   images and carry-forward the rest from the previous `v*` tag; promote/host
   rollouts/app waits skip unchanged roles; CRD/RBAC apply is skipped when those

@@ -345,6 +345,61 @@ def test_external_provider_bootstrap_failure_propagates(grants_mode):
     ]
 
 
+def test_managed_provider_bootstrap_binds_before_serviceaccounts(grants_mode):
+    """Fresh clusters 403 on SA create until namespaced RoleBindings exist."""
+    from app.services.providers.kubevirt import _ensure_provider_rbac
+
+    grants_mode("managed")
+    provider = MagicMock()
+    provider.get_credentials.return_value = {"namespace": "troshka-operator"}
+    docs = [
+        {
+            "kind": "Namespace",
+            "metadata": {"name": "troshka"},
+        },
+        {
+            "kind": "ServiceAccount",
+            "metadata": {"name": "troshka", "namespace": "troshka"},
+        },
+        {"kind": "ClusterRole", "metadata": {"name": "troshka-provider"}},
+        {"kind": "ClusterRoleBinding", "metadata": {"name": "troshka-provider"}},
+        {"kind": "SecurityContextConstraints", "metadata": {"name": "skip-me"}},
+    ]
+    order = []
+
+    def apply(kind, name, ns, body, core_api, apps_api):
+        order.append(("apply", kind, name))
+
+    def bind(rbac_api, namespace):
+        order.append(("bind", namespace))
+
+    with patch(
+        "app.services.providers.kubevirt._get_k8s_clients",
+        return_value=(None, MagicMock(), None),
+    ), patch(
+        "kubernetes.client.RbacAuthorizationV1Api", return_value=MagicMock()
+    ), patch(
+        "kubernetes.client.AppsV1Api", return_value=MagicMock()
+    ), patch(
+        "app.services.providers.kubevirt._load_provider_rbac_docs", return_value=docs
+    ), patch(
+        "app.services.providers.kubevirt._verify_cluster_rbac",
+        side_effect=lambda *a, **k: order.append(("verify", a[1], a[2])),
+    ), patch(
+        "app.services.providers.kubevirt._apply_manifest", side_effect=apply
+    ), patch(
+        "app.services.providers.kubevirt.ensure_troshka_namespaced_rbac",
+        side_effect=bind,
+    ):
+        _ensure_provider_rbac(provider)
+
+    sa_idx = order.index(("apply", "ServiceAccount", "troshka"))
+    assert ("verify", "ClusterRole", "troshka-provider") in order[:sa_idx]
+    assert ("bind", "troshka") in order[:sa_idx]
+    assert ("bind", "troshka-cache") in order[:sa_idx]
+    assert ("bind", "troshka-operator") in order[:sa_idx]
+
+
 @pytest.mark.parametrize("value", ["external", "invalid", None])
 def test_operator_install_rejected_before_bootstrap(grants_mode, value):
     from app.services.providers.kubevirt import _deploy_operator
