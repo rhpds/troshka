@@ -290,16 +290,15 @@ helm install troshka deploy/helm/ -n troshka \
   append this pointer to its Namespace rule, preserving other ignore rules and
   private Helm values. This changes drift detection, not namespace finalizers
   or OAuth credentials.
-- **OpenShift oauth-proxy uses the ServiceAccount as the OAuth client.** Do not
-  set `--client-id=troshka` / `--client-secret-file` alongside
-  `--openshift-service-account`: the provider defaults the client-secret to the
-  SA token, which then fails redeem against a static `OAuthClient` secret
-  (`unauthorized_client` → 500 on `/oauth/callback`). Rely on the SA redirect
-  annotation and omit custom client-id/secret flags (see `oauth.yaml`).
-- **Cookie Secret `stringData` must stay stable under Argo CD.** Helm `lookup`
-  is empty in Argo CD renders, so each sync would re-roll `randAlphaNum` into
-  the `troshka-oauth-proxy` Secret. The Application must ignore Secret `/data`
-  **and** `/stringData`, and set `RespectIgnoreDifferences=true`
+- **OAuth Allow screen:** use static `OAuthClient` with `grantMethod: auto` and
+  `--client-id=troshka` / `--client-secret-file` (plus `--openshift-service-account`
+  for API access). Pure SA client_id always shows Allow. Keep
+  `OAuthClient.secret` equal to Secret `client-secret`.
+- **OAuth secrets must stay stable under Argo CD.** Helm `lookup` is empty in
+  Argo CD renders, so each sync would re-roll `randAlphaNum` into Secret
+  `stringData` while `OAuthClient.secret` stays ignored → `unauthorized_client`
+  on `/oauth/callback`. Ignore Secret `/data` **and** `/stringData`, ignore
+  OAuthClient `/secret`, set `RespectIgnoreDifferences=true`
   (see `application-helm.yaml.example` / `scripts/bootstrap_argocd.py`).
 ### Kustomize (`deploy/base/` + `deploy/overlays/`)
 ```bash

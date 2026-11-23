@@ -32,6 +32,8 @@ spec:
             - --tls-cert=/etc/tls/private/tls.crt
             - --tls-key=/etc/tls/private/tls.key
             - --cookie-secret-file=/etc/oauth/cookie-secret
+            - --client-id=troshka
+            - --client-secret-file=/etc/oauth/client-secret
             - --openshift-service-account=troshka-oauth
             - --openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
             - --pass-user-headers=true
