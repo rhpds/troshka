@@ -14,11 +14,12 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
-- Prod SSO login 500 on `/oauth/callback`: Argo CD re-rolled the oauth-proxy
-  Secret `stringData` while `OAuthClient` secret stayed ignored
-  (`unauthorized_client`). Aligned live secrets; Argo ignoreDifferences now
-  cover Secret `/stringData` as well as `/data`, and the Helm example /
-  oauth annotations document the guard so sync cannot desync them again.
+- Prod SSO login 500 on `/oauth/callback`: oauth-proxy was configured with
+  `--client-id=troshka` (static `OAuthClient`) while the OpenShift provider
+  defaults the client-secret to the SA token → `unauthorized_client` on code
+  redeem. Switched the proxy to the SA OAuth client
+  (`system:serviceaccount:troshka:troshka-oauth`); Argo ignoreDifferences also
+  cover Secret `/stringData` so sync cannot re-roll cookie/client material.
 
 - Deploy hardening after the `v2026.11.21-032001` SCC/Argo hang incident: apply
   SCCs via `scripts/apply_scc.py` (preserves live `users`); `deploy_release`

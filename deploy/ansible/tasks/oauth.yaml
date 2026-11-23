@@ -97,6 +97,8 @@
                   - containerPort: 8443
                     name: proxy
                 args:
+                  # SA is the OAuth client; do not pair --client-id with a static
+                  # OAuthClient secret (proxy defaults secret to the SA token).
                   - --provider=openshift
                   - --https-address=:8443
                   - --http-address=
@@ -104,8 +106,6 @@
                   - --tls-cert=/etc/tls/private/tls.crt
                   - --tls-key=/etc/tls/private/tls.key
                   - --cookie-secret-file=/etc/oauth/cookie-secret
-                  - --client-id=troshka-{{ troshka_namespace }}
-                  - --client-secret-file=/etc/oauth/client-secret
                   - --openshift-service-account=troshka-oauth
                   - --openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
                   - --pass-user-headers=true
