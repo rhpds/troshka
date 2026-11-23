@@ -33,9 +33,30 @@ spec:
       jsonPointers:
         # Kubernetes retains this field even when the chart omits it.
         - /spec/finalizers
+    # Helm lookup is empty under Argo CD, so each sync would otherwise
+    # re-roll randAlphaNum into stringData and break OAuth login while
+    # OAuthClient.secret stays ignored. Ignore both encodings of Secret data.
+    - group: ""
+      kind: Secret
+      name: troshka-oauth-proxy
+      jsonPointers:
+        - /data
+        - /stringData
+    - group: ""
+      kind: Secret
+      name: troshka-oauth2-proxy
+      jsonPointers:
+        - /data
+        - /stringData
+    - group: oauth.openshift.io
+      kind: OAuthClient
+      name: troshka
+      jsonPointers:
+        - /secret
   syncPolicy:
     automated:
       prune: false
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true

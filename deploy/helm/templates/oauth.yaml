@@ -35,6 +35,10 @@ metadata:
     {{- include "troshka.labels" . | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
+    # Argo CD: ignoreDifferences must cover /data and /stringData (see
+    # deploy/argocd/application-helm.yaml.example). Without that, each sync
+    # re-rolls randAlphaNum when lookup is empty and desyncs OAuthClient.
+    argocd.argoproj.io/sync-options: RespectIgnoreDifferences=true
 type: Opaque
 stringData:
   client-secret: {{ $clientSecret | quote }}
@@ -48,6 +52,7 @@ metadata:
     {{- include "troshka.labels" . | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: RespectIgnoreDifferences=true
 secret: {{ $clientSecret | quote }}
 redirectURIs:
   - "https://{{ .Values.route.host }}/oauth/callback"

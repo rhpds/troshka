@@ -17,6 +17,7 @@ metadata:
     app.kubernetes.io/component: auth
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: RespectIgnoreDifferences=true
 type: Opaque
 stringData:
   client-id: {{ .Values.auth.oauth2Proxy.clientId | quote }}
