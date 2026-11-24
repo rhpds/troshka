@@ -16,6 +16,82 @@ function workerStateColor(state: string): "green" | "orange" | "grey" {
   return state === "busy" ? "orange" : "grey";
 }
 
+interface FailedDelete {
+  project_id: string;
+  name: string;
+  state: string;
+  owner: string | null;
+  error: string | null;
+  phase: string | null;
+  cleanup_id: string | null;
+  updated_at: string | null;
+  created_at: string | null;
+}
+
+function FailedDeletesCard({ items, count }: { items: FailedDelete[]; count: number }) {
+  return (
+    <Card isCompact style={{
+      marginBottom: 16,
+      borderColor: "var(--pf-t--global--color--status--danger--default)",
+      borderWidth: 1,
+    }}>
+      <CardBody>
+        <Alert
+          variant="danger"
+          isInline
+          title={`${count} failed delete${count === 1 ? "" : "s"} stuck in cleanup`}
+          style={{ marginBottom: 12 }}
+        >
+          These projects are hidden from the Projects list until namespace teardown finishes.
+          They may still accrue disk charges while stuck.
+        </Alert>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {items.map((item) => (
+            <div
+              key={item.project_id}
+              style={{
+                padding: 10,
+                borderRadius: 6,
+                border: "1px solid rgba(239,68,68,0.35)",
+                background: "rgba(239,68,68,0.08)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <strong style={{ fontSize: 13 }}>{item.name}</strong>
+                  <span style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.55, marginLeft: 8 }}>
+                    {item.project_id.slice(0, 8)}
+                  </span>
+                  <div style={{ fontSize: 12, marginTop: 2, opacity: 0.8 }}>
+                    <Label isCompact color="orange">{item.state}</Label>
+                    {item.phase && <Label isCompact style={{ marginLeft: 6 }}>{item.phase}</Label>}
+                    {item.owner && <span style={{ marginLeft: 8 }}>{item.owner}</span>}
+                  </div>
+                </div>
+                {item.updated_at && (
+                  <div style={{ fontSize: 11, opacity: 0.5 }}>
+                    updated {new Date(item.updated_at).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              {item.error && (
+                <pre style={{
+                  fontSize: 11, padding: 6, borderRadius: 4, margin: "8px 0 0",
+                  background: "rgba(239,68,68,0.12)",
+                  color: "var(--pf-t--global--color--status--danger--default)",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 100, overflowY: "auto",
+                }}>
+                  {item.error}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
 interface QueueInfo {
   name: string;
   queued: number;
@@ -44,6 +120,7 @@ interface FailedJob {
   error: string;
   enqueued_at: string | null;
   ended_at: string | null;
+  is_delete?: boolean;
 }
 
 interface ScalingInfo {
@@ -65,6 +142,8 @@ interface QueueStatus {
   worker_count?: number;
   inflight_deploys?: Record<string, number>;
   scaling?: ScalingInfo | null;
+  failed_deletes?: FailedDelete[];
+  failed_delete_count?: number;
 }
 
 export default function QueuePage() {
@@ -162,12 +241,18 @@ export default function QueuePage() {
 
   if (!status) return <PageSection><p>Loading...</p></PageSection>;
 
+  const failedDeletes = status.failed_deletes || [];
+  const failedDeleteCount = status.failed_delete_count ?? failedDeletes.length;
+
   if (!status.redis) {
     return (
       <PageSection>
         <Alert variant="info" isInline title="Redis Not Connected">
           {status.message || "Running in single-process mode. Jobs execute as threads in the backend."}
         </Alert>
+        {failedDeleteCount > 0 && (
+          <FailedDeletesCard items={failedDeletes} count={failedDeleteCount} />
+        )}
       </PageSection>
     );
   }
@@ -175,9 +260,14 @@ export default function QueuePage() {
   const totalQueued = (status.queues || []).reduce((s, q) => s + q.queued, 0);
   const totalStarted = (status.queues || []).reduce((s, q) => s + q.started, 0);
   const totalFailed = (status.queues || []).reduce((s, q) => s + q.failed, 0);
+  const deleteFailedJobs = failedJobs.filter((j) => j.is_delete);
 
   return (
     <PageSection>
+      {failedDeleteCount > 0 && (
+        <FailedDeletesCard items={failedDeletes} count={failedDeleteCount} />
+      )}
+
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
         <Card isCompact>
@@ -196,6 +286,12 @@ export default function QueuePage() {
           <CardBody>
             <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>FAILED</div>
             <div style={{ fontSize: 28, fontWeight: 600, color: totalFailed > 0 ? "var(--pf-t--global--color--status--danger--default)" : undefined }}>{totalFailed}</div>
+          </CardBody>
+        </Card>
+        <Card isCompact>
+          <CardBody>
+            <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 4 }}>FAILED DELETES</div>
+            <div style={{ fontSize: 28, fontWeight: 600, color: failedDeleteCount > 0 ? "var(--pf-t--global--color--status--danger--default)" : undefined }}>{failedDeleteCount}</div>
           </CardBody>
         </Card>
         <Card isCompact>
@@ -343,19 +439,29 @@ export default function QueuePage() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>
                 Failed Jobs — <Label isCompact>{failedQueue}</Label> ({failedCount})
+                {deleteFailedJobs.length > 0 && (
+                  <Label isCompact color="red" style={{ marginLeft: 8 }}>
+                    {deleteFailedJobs.length} delete/cleanup
+                  </Label>
+                )}
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {failedJobs.map((job) => (
                 <div key={job.id} style={{
                   padding: 10, borderRadius: 6,
-                  border: "1px solid var(--pf-t--global--border--color--default)",
-                  background: "var(--pf-t--global--background--color--secondary--default)",
+                  border: job.is_delete
+                    ? "1px solid rgba(239,68,68,0.45)"
+                    : "1px solid var(--pf-t--global--border--color--default)",
+                  background: job.is_delete
+                    ? "rgba(239,68,68,0.08)"
+                    : "var(--pf-t--global--background--color--secondary--default)",
                 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
                     <div>
                       <span style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.5 }}>{job.id.slice(0, 12)}</span>
                       <span style={{ fontSize: 12, marginLeft: 8 }}>{job.func.split(".").pop()}</span>
+                      {job.is_delete && <Label isCompact color="red" style={{ marginLeft: 8 }}>delete</Label>}
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
                       <Button variant="secondary" size="sm" isDisabled={retrying === job.id} onClick={() => retryJob(job.id)}>

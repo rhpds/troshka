@@ -924,15 +924,78 @@ def _collect_inflight_deploys(r_str):
     return inflight
 
 
+_DELETE_FUNC_TOKENS = ("cleanup", "delete", "destroy", "undeploy", "retire")
+
+
+def _func_is_delete(func_name: str) -> bool:
+    lower = (func_name or "").lower()
+    return any(token in lower for token in _DELETE_FUNC_TOKENS)
+
+
+def _collect_failed_deletes():
+    """Projects stuck in native delete/cleanup — still billable until released."""
+    from app.core.database import SessionLocal
+    from app.models.native_project_cleanup import NativeProjectNamespaceCleanup
+    from app.models.project import Project
+    from app.models.user import User
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Project)
+            .filter(Project.state.in_(("cleanup_pending", "deleting")))
+            .order_by(Project.updated_at.desc())
+            .limit(100)
+            .all()
+        )
+        items = []
+        for project in rows:
+            owner = db.get(User, project.owner_id) if project.owner_id else None
+            cleanup = (
+                db.query(NativeProjectNamespaceCleanup)
+                .filter_by(project_id=project.id)
+                .order_by(NativeProjectNamespaceCleanup.id.desc())
+                .first()
+            )
+            phase = None
+            cleanup_id = None
+            if cleanup and isinstance(cleanup.payload, dict):
+                phase = cleanup.payload.get("phase")
+                cleanup_id = str(cleanup.id)
+            items.append(
+                {
+                    "project_id": project.id,
+                    "name": project.name,
+                    "state": project.state,
+                    "owner": getattr(owner, "email", None),
+                    "error": (project.deploy_error or "")[:300] or None,
+                    "phase": phase,
+                    "cleanup_id": cleanup_id,
+                    "updated_at": (
+                        project.updated_at.isoformat() if project.updated_at else None
+                    ),
+                    "created_at": (
+                        project.created_at.isoformat() if project.created_at else None
+                    ),
+                }
+            )
+        return items
+    finally:
+        db.close()
+
+
 @app.get(f"{_API_PREFIX}/admin/queue-status")
 def queue_status(user: AdminUser):
     """Show job queue depths, active workers, and failed jobs."""
     from app.core.redis import is_redis_available
 
+    failed_deletes = _collect_failed_deletes()
     if not is_redis_available():
         return {
             "redis": False,
             "message": "Redis not available — running in single-process mode",
+            "failed_deletes": failed_deletes,
+            "failed_delete_count": len(failed_deletes),
         }
 
     from app.core.redis import get_redis, get_redis_raw
@@ -959,7 +1022,16 @@ def queue_status(user: AdminUser):
         "worker_count": len(workers),
         "inflight_deploys": _collect_inflight_deploys(get_redis()),
         "scaling": scaling,
+        "failed_deletes": failed_deletes,
+        "failed_delete_count": len(failed_deletes),
     }
+
+
+@app.get(f"{_API_PREFIX}/admin/delete-alerts")
+def delete_alerts(user: AdminUser):
+    """Lightweight count for admin nav warning on Job Queue."""
+    items = _collect_failed_deletes()
+    return {"count": len(items), "failed_deletes": items}
 
 
 @app.post(
@@ -1018,9 +1090,10 @@ def set_db_pool_endpoint(user: AdminUser, body: dict):
 
 def _failed_job_entry(job, jid: str) -> dict:
     meta = job.meta or {}
+    func = job.func_name or ""
     return {
         "id": jid,
-        "func": job.func_name,
+        "func": func,
         "args": [str(a)[:100] for a in (job.args or [])],
         "error": str(job.exc_info or "")[:500],
         "enqueued_at": (job.enqueued_at.isoformat() if job.enqueued_at else None),
@@ -1028,6 +1101,7 @@ def _failed_job_entry(job, jid: str) -> dict:
         "project": (meta.get("project_id") or "")[:8],
         "host": (meta.get("host_id") or "")[:8],
         "worker_pod": meta.get("worker_pod", ""),
+        "is_delete": _func_is_delete(func),
     }
 
 
@@ -1057,7 +1131,11 @@ def list_failed_jobs(
                 job = Job.fetch(jid, connection=r)
                 jobs.append(_failed_job_entry(job, jid))
             except Exception:
-                jobs.append({"id": jid, "error": "could not fetch"})
+                jobs.append({"id": jid, "error": "could not fetch", "is_delete": False})
+        # Surface delete/cleanup failures first in the Job Queue UI.
+        jobs.sort(
+            key=lambda row: (0 if row.get("is_delete") else 1, row.get("id") or "")
+        )
         return {"queue": queue_name, "count": len(failed_ids), "jobs": jobs}
     except Exception as e:
         return {"error": str(e)}

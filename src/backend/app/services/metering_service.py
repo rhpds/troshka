@@ -1031,7 +1031,10 @@ def reconcile_all_projects(db: Session) -> None:
         return
     projects = (
         db.query(Project)
-        .filter(Project.state != "draft", Project.host_id.isnot(None))
+        .filter(
+            Project.state.notin_(("draft", "cleanup_pending", "deleting")),
+            Project.host_id.isnot(None),
+        )
         .all()
     )
     for project in projects:
@@ -1071,6 +1074,8 @@ def confirm_managed_compute_off(
 
 def touch_metering(db: Session, project: Project) -> None:
     if not metering_enabled() or not project.host_id:
+        return
+    if project.state in {"cleanup_pending", "deleting"}:
         return
     try:
         reconcile_project(db, project)

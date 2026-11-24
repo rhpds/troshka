@@ -14,6 +14,17 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Origin map-seal deletes no longer hang at `vm_delete_requested` with
+  `Cleanup CR finalizer registration proof unavailable`: teardown always
+  retains CR/PVC inventory (including `domain_id=null` soft-seal) before drain
+  so orphan completion can prove `troshka.redhat.com/finalizer`. Metering also
+  treats `cleanup_pending` / `deleting` like stop — topology disks no longer
+  reopen intervals after delete freeze.
+
+- Job Queue surfaces stuck `cleanup_pending` / `deleting` projects in a Failed
+  Deletes panel (with delete/cleanup RQ failures sorted first). Admin nav shows
+  a red warning on Job Queue while any failed deletes remain.
+
 - Prod SSO login 500 on `/oauth/callback`: Argo re-rolled oauth-proxy Secret
   `stringData` while `OAuthClient/troshka.secret` stayed ignored
   (`unauthorized_client`). Aligned live secrets, kept static `OAuthClient`

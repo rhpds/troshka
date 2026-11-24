@@ -1966,6 +1966,78 @@ def test_missing_collection_pins_seals_map_and_skips_recover_on_retry(
     }
 
 
+def test_origin_null_domain_soft_seal_retains_inventory_for_orphan_proof(
+    origin_namespace_case, monkeypatch
+):
+    """Origin without enrollment must still snapshot troshka finalizers before drain."""
+    from app.schemas.native_project_cleanup import StorageLiabilities
+    from app.services import native_cleanup_storage as retention
+    from app.services import native_origin_custody as custody
+    from app.services import native_teardown_map as teardown
+
+    q = origin_namespace_case
+    monkeypatch.setattr(custody, "retained", lambda *a, **k: None)
+
+    owned = [v for (kind, _), v in q.values.items() if kind in OWN_KINDS]
+    for own in owned:
+        own["metadata"]["finalizers"] = ["troshka.redhat.com/finalizer"]
+
+    def missing_pins(db, api, work):
+        raise FileNotFoundError(
+            "/etc/troshka/collection/ocpv01.dfw3-authorized-pins.json"
+        )
+
+    monkeypatch.setattr(retention, "recover", missing_pins)
+
+    def seal_ok(db, api, work):
+        liabilities = StorageLiabilities(unresolved=[])
+        return cleanup._save(
+            db,
+            work,
+            liabilities=liabilities,
+            liability_digest=digest(liabilities.model_dump(mode="json")),
+            last_error=None,
+        )
+
+    monkeypatch.setattr(teardown, "seal", seal_ok)
+    monkeypatch.setattr(
+        teardown,
+        "map_sealed",
+        lambda work: "storage_coverage_unavailable" not in work.liabilities.unresolved
+        and "storage_coverage_incomplete" not in work.liabilities.unresolved,
+    )
+
+    delete = q.api.delete
+
+    def terminating(kind, namespace, name, uid, rv, **kwargs):
+        if kind not in OWN_KINDS:
+            return delete(kind, namespace, name, uid, rv, **kwargs)
+        q.values[kind, name]["metadata"]["deletionTimestamp"] = "2026-11-24T12:00:00Z"
+
+    monkeypatch.setattr(q.api, "delete", terminating)
+
+    q.request()
+    with q.sessions() as db:
+        work = cleanup.states(db, q.project_id)[0]
+        assert work.authority.source_kind == "origin"
+        assert work.authority.domain_id is None
+
+    q.advance()
+    work = q.advance()
+    assert work.phase == "vm_delete_requested"
+    with q.sessions() as db:
+        rows = db.query(cleanup.Evidence).filter_by(cleanup_id=q.cleanup_id).all()
+        inventory = next(p for p in rows if p.phase.startswith("inventory:"))
+        assert any(
+            "troshka.redhat.com/finalizer" in v.get("finalizers", [])
+            for v in inventory.payload
+        )
+
+    for own in owned:
+        own["metadata"]["finalizers"] = ["orphan"]
+    assert q.advance().phase == "namespace_delete_requested"
+
+
 def test_incomplete_retained_custody_cannot_authorize_deletion(origin_namespace_case):
     q = origin_namespace_case
     origin_support.publish(q, mode="enroll")

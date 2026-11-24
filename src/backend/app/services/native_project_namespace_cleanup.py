@@ -504,11 +504,32 @@ def _delete_targets(api, work, targets, *, orphan=False):
             )
 
 
+def _inventory_evidence(db, work):
+    return [
+        row
+        for row in db.query(Evidence).filter_by(cleanup_id=str(work.id)).all()
+        if row.phase.startswith("inventory:")
+    ]
+
+
 def _retain_inventory(db, api, work):
     # Dedicated namespace authority does not require LIST on unrelated children.
     # These exact storage and participating-controller lists remain mandatory.
+    # Skip once evidence exists: re-running after live-map soft-seal (empty
+    # bindings) would re-add unresolved_pvc debts and block require_coverage.
+    if _inventory_evidence(db, work):
+        return work
+    from app.services.native_teardown_map import hard_debts, map_sealed
+
     rows = _required_inventory(api, work.authority.namespace)
     _, current = _locked(db, work.id, work)
+    diagnostics = [_diagnostic(r) for r in rows]
+    _evidence(db, current, "inventory:" + digest(diagnostics)[:32], diagnostics)
+    # Soft-sealed live maps already authorized teardown. Snapshot finalizers for
+    # orphan completion proof, but do not reintroduce PVC/snapshot hard debts.
+    if map_sealed(current) and not hard_debts(current.liabilities):
+        db.commit()
+        return current
     liabilities = _support_liabilities(db, current)
     known_pvcs = {b.pvc_uid for b in liabilities.bindings}
     known_snapshots = {s.snapshot_uid for s in liabilities.snapshots}
@@ -524,9 +545,7 @@ def _retain_inventory(db, api, work):
         ):
             if execution.get("state") != "complete":
                 debt.add("interrupted_operator_execution:" + execution_id)
-    diagnostics = [_diagnostic(r) for r in rows]
     liabilities = liabilities.model_copy(update={"unresolved": sorted(debt)})
-    _evidence(db, current, "inventory:" + digest(diagnostics)[:32], diagnostics)
     work = _save(
         db,
         current,
@@ -899,13 +918,18 @@ def _ensure_teardown_coverage(db, api, work):
     lifecycle worker). Missing pins and other soft coverage failures seal a
     live-namespace teardown map instead. Once sealed, later phases must not
     re-enter recover — that reintroduced the pins FileNotFoundError hang.
+
+    Always snapshot inventory first. Origin soft-seal (domain_id null) used to
+    skip this, so orphan CR completion could not prove
+    ``troshka.redhat.com/finalizer`` registration and hung forever.
     """
     from app.schemas.quota import AccountingUnavailable
     from app.services.native_cleanup_storage import recover, require_coverage
     from app.services.native_teardown_map import hard_debts, map_sealed, seal
 
+    work = _retain_inventory(db, api, work)
+
     if work.authority.domain_id is not None:
-        work = _retain_inventory(db, api, work)
         work = seal(db, api, work)
         require_coverage(work)
         return work

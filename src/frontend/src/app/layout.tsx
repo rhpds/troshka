@@ -208,7 +208,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     if (pathname === "/getting-started" && showGettingStartedShine) dismissGettingStartedShine();
   }, [pathname, showGettingStartedShine]);
 
-  const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean }>({ hosts: false, pools: false });
+  const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean; queue: boolean }>({
+    hosts: false,
+    pools: false,
+    queue: false,
+  });
   const [staleHostIds, setStaleHostIds] = useState<string[]>([]);
   const [agentUpdating, setAgentUpdating] = useState(false);
   const [agentUpdateError, setAgentUpdateError] = useState<string | null>(null);
@@ -223,10 +227,16 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         // Live disk/Ceph usage — Hosts page reds Storage at ≥80%; nav must match
         // even when storage_warnings hasn't been written yet by the health poller.
         fetch("/api/v1/hosts/storage").then(r => r.ok ? r.json() : {}),
-      ]).then(([hosts, ev, storage]: [MonitoredHost[], { version?: string }, Record<string, DiskUsage>]) => {
+        fetch("/api/v1/admin/delete-alerts").then(r => r.ok ? r.json() : { count: 0 }),
+      ]).then(([hosts, ev, storage, deleteAlerts]: [
+        MonitoredHost[],
+        { version?: string },
+        Record<string, DiskUsage>,
+        { count?: number },
+      ]) => {
         if (cancelled) return;
         const { warnings, stale } = summarizeHosts(hosts, ev?.version || "", storage);
-        setNavWarnings(warnings);
+        setNavWarnings({ ...warnings, queue: (deleteAlerts?.count || 0) > 0 });
         setStaleHostIds(stale);
         if (stale.length === 0 && !agentUpdating) {
           setDismissedAgentBanner(false);
@@ -521,7 +531,8 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               {adminItems.map((item) => {
                 const hostsWarn = item.path === "/admin/hosts" && (navWarnings.hosts || staleHostIds.length > 0);
                 const poolsWarn = item.path === "/admin/storage-pools" && navWarnings.pools;
-                const warn = hostsWarn || poolsWarn;
+                const queueWarn = item.path === "/admin/queue" && navWarnings.queue;
+                const warn = hostsWarn || poolsWarn || queueWarn;
                 let warnTitle = "";
                 if (hostsWarn) {
                   const reasons: string[] = [];
@@ -530,6 +541,8 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                   warnTitle = `Hosts need attention: ${reasons.join(", ")}`;
                 } else if (poolsWarn) {
                   warnTitle = "Storage pool needs attention";
+                } else if (queueWarn) {
+                  warnTitle = "Failed deletes stuck in cleanup";
                 }
                 return (
                 <NavItem
@@ -540,7 +553,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                   isActive={pathname === item.path || pathname?.startsWith(item.path + "/")}
                 >
                   {item.label}
-                  {warn && <span title={warnTitle} style={{ color: "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
+                  {warn && <span title={warnTitle} style={{ color: queueWarn ? "#f87171" : "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
                 </NavItem>
                 );
               })}

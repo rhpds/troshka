@@ -222,7 +222,13 @@ def desired_resources(snapshot: dict, *, quota_mode: bool = False) -> set[Desire
         return set()
     if billing_mode == "dedicated":
         return _dedicated_host_resources(snapshot, provider_type, default_host)
-    if not quota_mode and project_state in ("stopped", "stopping"):
+    if not quota_mode and project_state in (
+        "stopped",
+        "stopping",
+        "cleanup_pending",
+        "deleting",
+    ):
+        # Delete accepted: freeze must stick; topology disks must not reopen meters.
         return set()
     out: set[Desired] = set()
     for vm in snapshot.get("vms") or []:

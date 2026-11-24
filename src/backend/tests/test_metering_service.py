@@ -204,6 +204,41 @@ def test_project_stop_closes_disk_too():
     db.close()
 
 
+@pytest.mark.parametrize("state", ["cleanup_pending", "deleting"])
+def test_cleanup_states_close_disk_and_do_not_reopen(state):
+    db, project, host = _setup(running=True)
+    t0 = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    running = {
+        "provider_type": "aws",
+        "host_id": host.id,
+        "project_state": "active",
+        "host_rates": host.metering_rates,
+        "vms": [
+            {
+                "id": "vm1",
+                "running": True,
+                "vcpus": 2,
+                "ram_gib": 4,
+                "host_id": host.id,
+            }
+        ],
+        "disks": [{"id": "d1", "size_gib": 10, "host_id": host.id}],
+        "eips": [],
+        "ceph": [],
+    }
+    reconcile_project(db, project, now=t0, snapshot=running)
+    db.commit()
+    t1 = t0 + timedelta(hours=1)
+    project.state = state
+    db.commit()
+    reconcile_project(db, project, now=t1, snapshot={**running, "project_state": state})
+    db.commit()
+    rows = db.query(MeteringInterval).filter_by(project_id=project.id).all()
+    assert rows
+    assert all(row.ended_at.replace(tzinfo=UTC) == t1 for row in rows)
+    db.close()
+
+
 def test_dedicated_keeps_full_host_open_when_stopped():
     db, project, host = _setup(
         running=True, rates={"vcpu_hour": 1.0, "ram_gib_hour": 0.0}
