@@ -385,7 +385,10 @@ def test_empty_collection_binds_verified_scope_without_inventing_images(empty_ca
     assert report.images == report.projects == report.platform_pools == []
     assert report.pool_keys == q.pins.pool_keys
     assert report.cluster_keys == ["cluster-uid"]
-    assert len([c for c in q.commands if c == ["ceph", "fsid"]]) == 2
+    assert (
+        len([c for c in q.commands if c == ["ceph", "--connect-timeout", "5", "fsid"]])
+        == 2
+    )
     assert ingest(q, identity, manifest, report) == str(report.report_id)
     body = report.model_dump(mode="json")
     body.pop("backend_scope")
@@ -591,9 +594,9 @@ def test_managed_collector_first_extension_removes_only_bootstrap_marker(empty_c
         cluster_identity=lambda: "cluster-uid",
         namespace=lambda name: {
             "metadata": {
-                "uid": root.namespace_uid
-                if name == root.namespace
-                else "storage-ns-uid"
+                "uid": (
+                    root.namespace_uid if name == root.namespace else "storage-ns-uid"
+                )
             }
         },
         projects=lambda name: [

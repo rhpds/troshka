@@ -377,7 +377,14 @@ def test_admission_dependency_replacement_during_independent_reads_rejects(
 
 
 def test_public_observer_commands_are_fixed_and_read_only():
-    assert command_argv("server_versions") == ["ceph", "versions", "--format", "json"]
+    assert command_argv("server_versions") == [
+        "ceph",
+        "--connect-timeout",
+        "5",
+        "versions",
+        "--format",
+        "json",
+    ]
     assert command_argv("namespaces", pool="tenant") == [
         "rbd",
         "namespace",
@@ -648,7 +655,14 @@ def test_real_readers_independently_observe_exact_installation(installed):
     assert value.target == q.profile.target
     assert value.observed_at == q.timestamp
     assert "headroom_bytes" not in value.model_dump(mode="json")
-    assert ["ceph", "versions", "--format", "json"] in q.commands
+    assert [
+        "ceph",
+        "--connect-timeout",
+        "5",
+        "versions",
+        "--format",
+        "json",
+    ] in q.commands
     assert not any("df" in c for c in q.commands)
     assert len(q.calls) >= 12
     with pytest.raises(AccountingUnavailable, match="physical acceptance"):
