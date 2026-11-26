@@ -19,7 +19,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   evidence, cancellation and private history. Networking, installation and
   cleanup checks explain observed blockers without executing repairs. Responses
   render formatted headings, lists, tables and code while blocking raw HTML and
-  model-provided links or images. Disabled
+  model-provided links or images. An animated spinner and live status make active
+  requests visible while answers are being prepared. Disabled
   by default; requires a dedicated MaaS credential and dev acceptance before use.
 
 - Origin map-seal deletes no longer hang at `vm_delete_requested` with

@@ -1,5 +1,5 @@
 "use client";
-import { Alert, Button, Modal, ModalBody, ModalHeader, TextArea } from "@patternfly/react-core";
+import { Alert, Button, Modal, ModalBody, ModalHeader, Spinner, TextArea } from "@patternfly/react-core";
 import { useEffect, useRef, useState } from "react";
 import { assistantRequest, sendAssistantMessage, type ChatMessage, type Conversation, type Evidence, type Grant } from "@/lib/assistant-client";
 import ConsentControls from "./ConsentControls";
@@ -55,7 +55,7 @@ export default function AssistantPanel({ projectId, onClose }: { projectId: stri
     const text = question;
     const requestId = crypto.randomUUID();
     const abort = new AbortController(); controller.current = abort;
-    setBusy(true); setQuestion(""); setError("");
+    setBusy(true); setStatus("Reviewing your question"); setQuestion(""); setError("");
     setMessages(previous => [...previous, { role: "user", text, status: "running", request_id: requestId }]);
     try {
       await sendAssistantMessage(id, text, requestId, abort.signal, event => {
@@ -92,7 +92,10 @@ export default function AssistantPanel({ projectId, onClose }: { projectId: stri
         </div>)}
       </section>
       <EvidenceList evidence={evidence} />
-      <p role="status">{status}</p>
+      <div role="status" aria-live="polite" aria-atomic="true" style={{ display: "flex", alignItems: "center", gap: 12, marginBlock: 16 }}>
+        {busy && <span aria-hidden="true" style={{ display: "inline-flex" }}><Spinner size="md" /></span>}
+        <span>{status}</span>
+      </div>
       <TextArea aria-label="Question" value={question} onChange={(_, value) => setQuestion(value)} maxLength={2000} isDisabled={busy} />
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBlock: 16 }}>
         <Button onClick={() => void submit()} isDisabled={!id || busy || !question.trim()}>Ask</Button>
