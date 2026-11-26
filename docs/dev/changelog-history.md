@@ -10,6 +10,7 @@ Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags
 
 | Tag | Date (UTC) | Source commit |
 | --- | --- | --- |
+| v2026.11.26-checkpoint-assistant | 2026-11-26 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.26-checkpoint-assistant) |
 | v2026.11.26-assistant-formatting-dev | 2026-11-26 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.26-assistant-formatting-dev) |
 | v2026.11.26-assistant-dev | 2026-11-26 | [b8c65279](https://github.com/rhpds/troshka/commit/b8c65279ed69658899d3d74f90d7f17ca28cce2a) |
 | v2026.11.18-legacy-accounting-retirement-r3 | 2026-11-18 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.18-legacy-accounting-retirement-r3) |
