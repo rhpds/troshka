@@ -1,4 +1,11 @@
 from app.models.api_key import ApiKey
+from app.models.assistant import (
+    AssistantAuditEvent,
+    AssistantConversation,
+    AssistantEvidence,
+    AssistantGrant,
+    AssistantMessage,
+)
 from app.models.disk import Disk
 from app.models.dns_provider import DnsProvider
 from app.models.elastic_ip import ElasticIp
@@ -106,6 +113,11 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.workload_run import WorkloadRun
 
 __all__ = [
+    "AssistantAuditEvent",
+    "AssistantConversation",
+    "AssistantEvidence",
+    "AssistantGrant",
+    "AssistantMessage",
     "NativeOriginNamespaceCleanup",
     "NativeOriginNamespaceEvidence",
     "NativeOriginSupportHandoff",

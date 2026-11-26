@@ -29,6 +29,15 @@ backend:
     limits:
       memory: 2Gi
 
+# Opt-in. Provision a dedicated MaaS key separately; never put it in values files.
+assistant:
+  enabled: false
+  baseUrl: "https://maas-rhdp.apps.maas.redhatworkshops.io"
+  model: "claude-sonnet-4-6"
+  existingSecret: ""
+  # Secret data field name, not a credential.
+  secretKey: api-key  # pragma: allowlist secret
+
 # Dedicated nested-OCP API tunnel fleet (troshka-oc). Isolated from backend.
 tunnel:
   enabled: true

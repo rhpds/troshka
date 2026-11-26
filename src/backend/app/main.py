@@ -576,12 +576,17 @@ async def lifespan(app):
 
     collection_dispatch_stop = start_collection_dispatcher()
 
+    from app.services.assistant.retention import start_retention
+
+    assistant_retention_stop = start_retention()
+
     audit("lifespan startup complete")
     yield
 
     audit("lifespan shutdown begin")
     access_bootstrap_stop.set()
     collection_dispatch_stop.set()
+    assistant_retention_stop.set()
     # Shutdown
     from app.core.redis import close_redis
 
@@ -741,6 +746,9 @@ _API_PREFIX = "/api/v1"
 # authenticated route is covered without per-router opt-in. The /ws websocket,
 # which bypasses HTTP dependencies, enforces the denial inline.
 app.include_router(auth_routes.router, prefix=_API_PREFIX)
+from app.api import assistant as assistant_routes
+
+app.include_router(assistant_routes.router, prefix=_API_PREFIX)
 app.include_router(project_routes.router, prefix=_API_PREFIX)
 app.include_router(vm_routes.router, prefix=_API_PREFIX)
 app.include_router(network_routes.router, prefix=_API_PREFIX)
