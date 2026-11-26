@@ -141,3 +141,9 @@ quotas:
   # Local filesystem operating reserve; distinct from project-owned allocated blocks.
   storage_pool_reserve_bytes: 1073741824
   storage_pool_reserve_percent: 5
+assistant:
+  enabled: false
+  base_url: "https://maas-rhdp.apps.maas.redhatworkshops.io"
+  model: "claude-sonnet-4-6"
+  # Set TROSHKA_ASSISTANT__API_KEY through the deployment Secret.
+  api_key: ""

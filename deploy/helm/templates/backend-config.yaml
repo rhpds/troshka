@@ -9,6 +9,10 @@ metadata:
     app.kubernetes.io/component: backend
 data:
   config.yaml: |
+    assistant:
+      enabled: {{ .Values.assistant.enabled }}
+      base_url: {{ .Values.assistant.baseUrl | quote }}
+      model: {{ .Values.assistant.model | quote }}
     native_origin:
       capture_enabled: {{ .Values.nativeOrigin.captureEnabled }}
       command_timeout_seconds: {{ .Values.nativeOrigin.commandTimeoutSeconds }}

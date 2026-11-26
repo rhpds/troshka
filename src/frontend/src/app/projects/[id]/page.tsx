@@ -2,6 +2,7 @@
 import { vmNetworkIssues } from "@/lib/vmNetworkValidation";
 
 import LabeledField from "@/components/LabeledField";
+import { AssistantLauncher } from "@/components/assistant/AssistantPanel";
 import ModalBackdrop from "@/components/ModalBackdrop";
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -2379,6 +2380,7 @@ showWorkloadModal && (
       <div className="project-action-bar">
         {renderProjectHeader()}
         <div className="project-action-bar-actions">
+          <AssistantLauncher projectId={projectId} />
           {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (
             <button type="button"
               className="project-publish-btn"

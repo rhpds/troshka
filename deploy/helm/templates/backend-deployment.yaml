@@ -34,6 +34,13 @@ spec:
             - containerPort: 8200
               name: http
           env:
+            {{- if .Values.assistant.enabled }}
+            - name: TROSHKA_ASSISTANT__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "assistant.existingSecret is required when assistant is enabled" .Values.assistant.existingSecret | quote }}
+                  key: {{ .Values.assistant.secretKey | quote }}
+            {{- end }}
             {{- if include "troshka.nativeRuntime.enabled" . }}
             {{- include "troshka.nativeRuntime.env" (dict "worker" .Values.nativeCollection.worker) | nindent 12 }}
             {{- end }}

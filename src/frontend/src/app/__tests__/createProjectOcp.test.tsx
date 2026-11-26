@@ -36,7 +36,7 @@ vi.mock("@patternfly/react-icons/dist/esm/icons/cubes-icon", () => ({
   default: () => null,
 }));
 
-import { NewProjectModal } from "@/app/projects/page";
+import { NewProjectModal } from "@/app/projects/ProjectsPage";
 
 // The create flow dynamically imports the canvas store after a successful
 // from-template POST. Stub it so the test never touches real store logic.

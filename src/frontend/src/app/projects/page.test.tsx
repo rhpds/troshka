@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ProjectsPage, { NewProjectModal } from "./page";
+import ProjectsPage, { NewProjectModal } from "./ProjectsPage";
 
 const harness = vi.hoisted(() => ({ push: vi.fn(), confirm: vi.fn(), created: vi.fn(), close: vi.fn(), alert: vi.fn(), load: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: harness.push }) }));
