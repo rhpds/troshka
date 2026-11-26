@@ -17,7 +17,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic
   evidence, cancellation and private history. Networking, installation and
-  cleanup checks explain observed blockers without executing repairs. Disabled
+  cleanup checks explain observed blockers without executing repairs. Responses
+  render formatted headings, lists, tables and code while blocking raw HTML and
+  model-provided links or images. Disabled
   by default; requires a dedicated MaaS credential and dev acceptance before use.
 
 - Origin map-seal deletes no longer hang at `vm_delete_requested` with

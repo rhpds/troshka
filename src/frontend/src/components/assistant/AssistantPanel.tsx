@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { assistantRequest, sendAssistantMessage, type ChatMessage, type Conversation, type Evidence, type Grant } from "@/lib/assistant-client";
 import ConsentControls from "./ConsentControls";
 import EvidenceList from "./EvidenceList";
+import AssistantMessage from "./AssistantMessage";
 
 export function AssistantLauncher({ projectId }: { projectId: string }) {
   const [enabled, setEnabled] = useState(false);
@@ -86,7 +87,8 @@ export default function AssistantPanel({ projectId, onClose }: { projectId: stri
       <section aria-label="Conversation" aria-live="polite">
         {messages.map((m, i) => <div key={`${m.request_id}-${m.role}-${i}`} style={{ marginBlock: 12 }}>
           <strong>{m.role === "user" ? "You" : "Troshka assistant"}</strong>
-          <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{m.text}</p>
+          {m.role === "assistant" ? <AssistantMessage text={m.text} /> :
+            <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{m.text}</p>}
         </div>)}
       </section>
       <EvidenceList evidence={evidence} />
