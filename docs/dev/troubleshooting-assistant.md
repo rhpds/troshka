@@ -101,6 +101,25 @@ retention logs contain no conversation text. Inspect those warnings operationall
 
 ## Validation record (2026-11-26)
 
+### Dev deployment
+
+`troshka-dev` on `ocpvdev01.dal13` is enabled on
+`v2026.11.26-assistant-dev` (source `b8c65279`). Both Argo's Git revision and
+ImageUpdater now target this named release rather than following main/latest.
+Argo reported Synced/Healthy; backend, frontend, tunnel and active workers were
+verified against the named image digests. Migration `b7a260112601` is applied.
+The backend reads `troshka-assistant-maas-dev` (`api-key`), provisioned from the
+existing Parsec credential at the user's request. No credential is in Git.
+
+A temporary synthetic dev user/project passed authenticated API-to-MaaS diagnosis
+of a missing pull secret and active-turn consent revocation. The fixture user,
+project and conversation were removed, retaining only normal audit metadata.
+Public-route browser testing requires OpenShift sign-in. Production was not
+deployed. Dev is pinned to this release until a subsequent deployment deliberately
+advances its Git revision and image updater together.
+
+### Local validation
+
 Local validation passed 50 backend tests (including real Redis cross-process
 coordination), 84 frontend tests, TypeScript checking, Helm rendering, and a
 disposable PostgreSQL migration upgrade/downgrade. A synthetic live check against
