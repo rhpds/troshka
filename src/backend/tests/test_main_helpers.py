@@ -1907,9 +1907,14 @@ class TestLifespan:
                 stack.enter_context(patch(f"app.services.{service}"))
                 for service in services
             ]
+            retention = stack.enter_context(
+                patch("app.services.assistant.retention.start_retention")
+            )
             yield
             for starter in starters:
                 starter.assert_called_once()
+            retention.assert_called_once()
+            retention.return_value.set.assert_called_once()
 
     def test_lifespan_calls_startup_functions_and_yields(self):
         import asyncio
