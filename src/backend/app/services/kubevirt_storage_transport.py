@@ -107,13 +107,13 @@ def command_argv(
             dependency_snapshots,
         )
     if operation == "fsid":
-        return ["ceph", "fsid"]
+        return ["ceph", "--connect-timeout", "5", "fsid"]
     if operation == "pools":
-        return ["ceph", "osd", "lspools", "--format", "json"]
+        return ["ceph", "--connect-timeout", "5", "osd", "lspools", "--format", "json"]
     if operation == "version":
         return ["rbd", "--version"]
     if operation == "server_versions":
-        return ["ceph", "versions", "--format", "json"]
+        return ["ceph", "--connect-timeout", "5", "versions", "--format", "json"]
     if operation == "namespaces":
         return ["rbd", "namespace", "list", "--pool", _token(pool), "--format", "json"]
     pool, namespace = _token(pool), _token(namespace, empty=True)

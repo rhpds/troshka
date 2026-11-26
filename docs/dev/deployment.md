@@ -78,7 +78,8 @@ The operator creates project namespace permissions on first deployment; it does
 not create the cluster's collector profile or initial enrollment. Cluster setup
 is deliberately separate so an empty host can be ready before its first project.
 
-With `nativeCollection.enabled`, backend, tunnel, and general workers use the same
+With `nativeCollection.enabled` or `nativeCollection.runtimeEnabled`, backend,
+tunnel, and general workers use the same
 existing `nativeCollection.worker.configMapName`, `secretName`, and optional
 version-tagged `cliImage` as the collection worker. Protected profiles and
 transport files are copied into private regular files on a memory volume, then
@@ -86,7 +87,15 @@ mounted read-only at `/etc/troshka/collection` and
 `/etc/troshka/collection-transport`. This wiring remains enabled when origin
 capture is disabled so retained custody and cleanup can still be verified.
 Readiness workers retain their separate overrides of the shared worker settings.
-Default installations with native collection disabled need no protected inputs.
+Set `runtimeEnabled: true` when origin checkpoints or retained cleanup need these
+files but scheduled collection must remain disabled (`enabled: false`). Runtime
+mounts do not enable scans or change domain admission. Default installations with
+both settings disabled need no protected inputs.
+
+Origin custody verification uses `nativeOrigin.commandTimeoutSeconds` (45) and
+`nativeOrigin.verificationTimeoutSeconds` (900), independently of routine
+collection job timeouts. These bound repeated CSI, namespace ownership, and clone
+ancestry checks; increasing the window does not bypass any verification.
 
 Routine releases skip collector configuration and storage accounting verification.
 Application health, exact image digests, schema, operator rollouts, and helper

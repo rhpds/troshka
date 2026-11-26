@@ -11,6 +11,8 @@ data:
   config.yaml: |
     native_origin:
       capture_enabled: {{ .Values.nativeOrigin.captureEnabled }}
+      command_timeout_seconds: {{ .Values.nativeOrigin.commandTimeoutSeconds }}
+      verification_timeout_seconds: {{ .Values.nativeOrigin.verificationTimeoutSeconds }}
     native_collection:
       enabled: {{ .Values.nativeCollection.enabled }}
       interval_seconds: {{ .Values.nativeCollection.intervalSeconds }}

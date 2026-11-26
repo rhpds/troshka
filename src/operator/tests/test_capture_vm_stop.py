@@ -43,6 +43,8 @@ class KubeVirtApi:
         assert plural == "virtualmachines"
         if self.failure == "stop":
             raise ApiException(status=403)
+        if self.failure == "vm-absent":
+            raise ApiException(status=404)
         if self.failure == "hold":
             raise CheckpointHold("test_checkpoint_hold")
         updated = dict(self.spec)
@@ -108,6 +110,18 @@ def test_reconfigure_stop_waits_for_absence(initial):
     assert not api.vmi_present
     assert api.observations > 0
     assert api.spec == {"runStrategy": "Halted"}
+
+
+@pytest.mark.parametrize("vmi_present", [False, True])
+def test_reconfigure_retry_after_vm_delete_still_checks_vmi(vmi_present):
+    api = KubeVirtApi({"runStrategy": "Halted"}, "vm-absent")
+    api.vmi_present = vmi_present
+    if vmi_present:
+        with pytest.raises(TimeoutError):
+            asyncio.run(vm._stop_kubevirt_vm(api, "ns", "vm-one"))
+    else:
+        asyncio.run(vm._stop_kubevirt_vm(api, "ns", "vm-one"))
+    assert api.observations > 0
 
 
 @pytest.mark.parametrize("failure,error", [("stop", ApiException), ("vmi-list", ApiException),

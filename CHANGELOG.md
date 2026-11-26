@@ -14,6 +14,23 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
 
 ## November 2026 — Groups, quotas, and native storage accounting
 
+- Native storage checkpoints: a separate `nativeCollection.runtimeEnabled`
+  setting supplies protected verification files to application processes while
+  scheduled collection remains disabled, preventing VM changes from waiting
+  indefinitely for acknowledgements because those files are missing.
+  An explicit map-retirement recovery can independently verify already released
+  projects, preserve shared images, and retain absence receipts without inventing
+  collector settlement reports or deleting provider resources.
+  Ownership verification uses the configured provider's read-only interface
+  after matching its cluster identity to the storage collector and protected
+  pins, so checkpoint checks do not require broader collector permissions.
+  Checkpoint verification has its own bounded timeout, independent of routine
+  collection, to allow repeated CSI and clone-ancestry checks to finish.
+  VM reconfiguration retries tolerate an already removed VM while still proving
+  its VMI has terminated before recreating it with retained disks.
+  Ceph connection timeouts apply only to Ceph CLI calls, leaving RADOS journal
+  and directory reads free of unsupported global options.
+
 - Origin map-seal deletes no longer hang at `vm_delete_requested` with
   `Cleanup CR finalizer registration proof unavailable`: teardown always
   retains CR/PVC inventory (including `domain_id=null` soft-seal) before drain

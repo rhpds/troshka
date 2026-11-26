@@ -1281,17 +1281,20 @@ def test_missing_retained_binding_holds_protected_reads(custody_case):
 
 @pytest.mark.parametrize("retiring", [False, True])
 @pytest.mark.parametrize("cache_growth", [False, True])
+@pytest.mark.parametrize("wrong_cluster", [False, True])
 def test_configured_runtime_constructs_and_closes_independent_readers(
     growing_cache_case,
     monkeypatch,
     retiring,
     cache_growth,
+    wrong_cluster,
 ):
     from types import SimpleNamespace
 
     from app.services import kubevirt_storage_inventory as inventory_service
     from app.services import native_collection_config as configuration
     from app.services import native_collection_runtime as runtime
+    from app.services import native_provider_reader as provider_service
 
     q = growing_cache_case
     if cache_growth:
@@ -1352,11 +1355,34 @@ def test_configured_runtime_constructs_and_closes_independent_readers(
 
     monkeypatch.setattr(configuration, "_backend_reader", backend)
     monkeypatch.setattr(inventory_service, "KubernetesReader", reader)
+
+    def provider_reader(provider, limits, deadline):
+        assert str(provider.id) == str(q.pins.provider_clusters[0].provider_id)
+        assert limits.command_timeout_seconds == 45
+        assert limits.scan_timeout_seconds == 900
+        constructed.append("provider")
+        return SimpleNamespace(
+            api=q.reader.api,
+            cluster_identity=(lambda: "wrong-cluster")
+            if wrong_cluster
+            else q.reader.cluster_identity,
+            close=lambda: closed.append("provider"),
+        )
+
+    monkeypatch.setattr(provider_service, "ProviderReader", provider_reader)
+    if wrong_cluster:
+        with pytest.raises(ValueError, match="differs from protected provider cluster"):
+            if retiring:
+                custody.verify_retirement_configured(reference)
+            else:
+                custody.verify_configured(request)
+        assert closed == ["provider", "kube"]
+        return
     if retiring:
         result = custody.verify_retirement_configured(reference)
         assert result.prepared == reference
     else:
         result = custody.verify_configured(request)
         assert result.prepared == request
-    assert constructed == ["backend", "kube"]
-    assert closed == ["kube"]
+    assert constructed == ["backend", "kube", "provider"]
+    assert closed == ["provider", "kube"]

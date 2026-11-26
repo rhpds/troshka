@@ -1,4 +1,8 @@
 {{/* Shared protected inputs for every process that verifies native custody. */}}
+{{- define "troshka.nativeRuntime.enabled" -}}
+{{- if or .Values.nativeCollection.enabled .Values.nativeCollection.runtimeEnabled -}}true{{- end -}}
+{{- end -}}
+
 {{- define "troshka.nativeRuntime.initContainers" -}}
 {{- $cliImage := .worker.cliImage | default "" }}
 {{- if and $cliImage (or (contains "@" $cliImage) (not (regexMatch ":[^/:]+$" $cliImage)) (hasSuffix ":latest" $cliImage)) }}

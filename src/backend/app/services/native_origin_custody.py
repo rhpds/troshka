@@ -570,6 +570,28 @@ def verify_retirement_configured(prepared):
     return _verify_configured(request, retiring=value)
 
 
+def _attach_custody_reader(kube, prepared, limits, deadline, cleanup):
+    """Keep storage credentials narrow; bind ownership reads to the same cluster."""
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+    from app.services.native_provider_reader import ProviderReader
+
+    provider_id = str(prepared.intent.provider_id)
+    with SessionLocal() as db:
+        provider = db.get(Provider, provider_id)
+        require(provider is not None, "Origin custody provider unavailable")
+        reader = ProviderReader(provider, limits, deadline)
+    cleanup.callback(reader.close)
+    pins = prepared.pins.provider_clusters
+    require(
+        len(pins) == 1
+        and str(pins[0].provider_id) == provider_id
+        and kube.cluster_identity() == reader.cluster_identity() == pins[0].cluster_key,
+        "Origin custody reader differs from protected provider cluster",
+    )
+    kube.custody_api = reader.api
+
+
 def _verify_configured(request, *, retiring=None):
     import time
     from contextlib import ExitStack
@@ -599,8 +621,10 @@ def _verify_configured(request, *, retiring=None):
         "Origin runtime requires one protected provider",
     )
     limits = CollectionLimits(
-        command_timeout_seconds=args.command_timeout_seconds,
-        scan_timeout_seconds=args.verification_timeout_seconds,
+        command_timeout_seconds=config.get("native_origin.command_timeout_seconds", 45),
+        scan_timeout_seconds=config.get(
+            "native_origin.verification_timeout_seconds", 900
+        ),
     )
     deadline = time.monotonic() + limits.scan_timeout_seconds
     with ExitStack() as cleanup:
@@ -621,6 +645,7 @@ def _verify_configured(request, *, retiring=None):
             max_objects=limits.max_objects,
         )
         cleanup.callback(kube.api.close)
+        _attach_custody_reader(kube, prepared, limits, deadline, cleanup)
         if prepared.mode == "snapshot-reconcile":
             from app.services.native_snapshot_reconciliation import (
                 verify as verify_snapshots,

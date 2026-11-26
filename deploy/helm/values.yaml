@@ -201,11 +201,17 @@ workloads:
 # Enable only after native origin qualification; domain admission stays explicit.
 nativeOrigin:
   captureEnabled: false
+  # Custody scans include repeated namespace, CSI, and clone ancestry checks.
+  # Keep their deadline independent from routine collection job timeouts.
+  commandTimeoutSeconds: 45
+  verificationTimeoutSeconds: 900
 
 nativeCollection:
-  # Also supplies protected runtime files/CLI to backend, tunnel and lifecycle
-  # workers for origin verification and retained cleanup, even with capture off.
+  # Enables scheduled collection; also enables the protected runtime below.
   enabled: false
+  # Keep origin checkpoints and retained cleanup operational without scheduling
+  # routine collection. Uses the existing worker config/transport/CLI settings.
+  runtimeEnabled: false
   intervalSeconds: 60
   domainIntervalSeconds: 60
   readinessIntervalSeconds: 20

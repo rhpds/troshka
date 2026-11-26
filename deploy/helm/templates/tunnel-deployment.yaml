@@ -22,7 +22,7 @@ spec:
     spec:
       serviceAccountName: troshka-backend
       {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
-      {{- if .Values.nativeCollection.enabled }}
+      {{- if include "troshka.nativeRuntime.enabled" . }}
       initContainers:
         {{- include "troshka.nativeRuntime.initContainers" (dict "root" . "worker" .Values.nativeCollection.worker) | nindent 8 }}
       {{- end }}
@@ -48,7 +48,7 @@ spec:
             - containerPort: 8201
               name: http
           env:
-            {{- if .Values.nativeCollection.enabled }}
+            {{- if include "troshka.nativeRuntime.enabled" . }}
             {{- include "troshka.nativeRuntime.env" (dict "worker" .Values.nativeCollection.worker) | nindent 12 }}
             {{- end }}
             - name: TROSHKA_DATABASE__URL
@@ -83,7 +83,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
           volumeMounts:
-            {{- if .Values.nativeCollection.enabled }}
+            {{- if include "troshka.nativeRuntime.enabled" . }}
             {{- include "troshka.nativeRuntime.volumeMounts" (dict "worker" .Values.nativeCollection.worker) | nindent 12 }}
             {{- else }}
             - name: config
@@ -108,7 +108,7 @@ spec:
           resources:
             {{- toYaml .Values.tunnel.resources | nindent 12 }}
       volumes:
-        {{- if .Values.nativeCollection.enabled }}
+        {{- if include "troshka.nativeRuntime.enabled" . }}
         {{- include "troshka.nativeRuntime.volumes" (dict "worker" .Values.nativeCollection.worker) | nindent 8 }}
         {{- else }}
         - name: config

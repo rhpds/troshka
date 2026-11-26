@@ -44,3 +44,18 @@ Run `scripts/collector_release_check.py --mode fresh` for the affected applicati
 after reconciliation. Successful receipt creation alone does not establish that
 the rest of the domain's accounting is healthy. Never delete enrollment history
 or manufacture an automated settlement report to pass a release gate.
+
+## Released map-based projects
+
+For an already released map-based project with immutable `namespace_absent` and
+`project-released` evidence, use
+`native_map_retirement.reconcile_configured(cleanup_id, administrator=..., reason=..., apply=False)`.
+This path accepts only resolved storage identities, checks complete private-image
+directory/trash absence and shared-image survival, then permits `apply=True` to
+finalize the cleanup and append a `map-storage-verified` receipt. It never deletes
+provider resources or manufactures a collector settlement report. Pending or
+unverifiable images leave the cleanup unchanged. A later change to the retained
+cleanup or release evidence invalidates the receipt.
+
+Both recovery paths batch private-image inventory by pool while retaining two
+complete identity-bound directory/trash reads and exact per-image coverage.

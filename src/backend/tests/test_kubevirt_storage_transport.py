@@ -15,7 +15,7 @@ from app.services.kubevirt_storage_transport import (
 
 
 def test_fixed_commands_reject_injection_and_mutations():
-    assert command_argv("fsid") == ["ceph", "fsid"]
+    assert command_argv("fsid") == ["ceph", "--connect-timeout", "5", "fsid"]
     with pytest.raises(ValueError):
         command_argv("delete", pool="pool", image="a")
     with pytest.raises(ValueError):
@@ -29,6 +29,20 @@ def test_fixed_commands_reject_injection_and_mutations():
         )[-1]
         == "-"
     )
+
+
+@pytest.mark.parametrize("operation", ["fsid", "pools", "server_versions"])
+def test_ceph_reads_bound_connection_without_global_options(operation):
+    assert command_argv(operation)[:3] == ["ceph", "--connect-timeout", "5"]
+    assert command_argv("directory_keys", pool="pool") == [
+        "rados",
+        "--pool",
+        "pool",
+        "--namespace",
+        "",
+        "listomapkeys",
+        "rbd_directory",
+    ]
 
 
 def test_decoder_uses_length_and_pool_id():
@@ -128,7 +142,9 @@ def test_toolbox_pins_identity_and_exact_remote_argv(monkeypatch):
         calls.append((argv, kw))
         return ReadResult(
             status="complete",
-            value="fsid" if argv[-2:] == ["ceph", "fsid"] else "{}",
+            value="fsid"
+            if argv[-4:] == ["ceph", "--connect-timeout", "5", "fsid"]
+            else "{}",
             collected_at=NOW,
         )
 
@@ -147,7 +163,12 @@ def test_toolbox_pins_identity_and_exact_remote_argv(monkeypatch):
         CollectionLimits(), config, kube, "/private/tmp/test-kubeconfig"
     )
     transport.run("info", pool="pool", image="abc")
-    assert sum(argv[-2:] == ["ceph", "fsid"] for argv, _ in calls) == 1
+    assert (
+        sum(
+            argv[-4:] == ["ceph", "--connect-timeout", "5", "fsid"] for argv, _ in calls
+        )
+        == 1
+    )
     assert calls[-1][0] == [
         "oc",
         "--request-timeout=15s",

@@ -152,7 +152,9 @@ def test_manual_retirement_rejects_incomplete_or_changed_proof(manual_case, faul
         assert root_key(q.root) not in settled_root_keys(db)
 
 
-@pytest.mark.parametrize("remaining", [False, True, "unavailable"])
+@pytest.mark.parametrize(
+    "remaining", [False, True, "unavailable", "truncated", "wrong_id"]
+)
 def test_provider_verification_checks_full_private_image_absence(
     manual_case, remaining
 ):
@@ -203,14 +205,19 @@ def test_provider_verification_checks_full_private_image_absence(
         def command_version(self):
             return result("test")
 
-        def image_inventory(self, key, *, max_objects):
+        def images_inventory(self, keys, *, max_objects):
             if remaining == "unavailable":
                 return ReadResult(status="unavailable", collected_at=datetime.now(UTC))
-            original = next(i.absence for i in q.manual_images if i.key == key)
-            changes = {"collected_at": datetime.now(UTC)}
-            if remaining:
-                changes["active"] = True
-            return result(original.model_copy(update=changes))
+            proofs = []
+            for key in keys:
+                original = next(i.absence for i in q.manual_images if i.key == key)
+                changes = {"collected_at": datetime.now(UTC)}
+                if remaining is True:
+                    changes["active"] = True
+                if remaining == "wrong_id":
+                    changes["image_id"] = "unrelated"
+                proofs.append(original.model_copy(update=changes))
+            return result(proofs[:-1] if remaining == "truncated" else proofs)
 
     if remaining:
         with pytest.raises((ValueError, AccountingUnavailable)):

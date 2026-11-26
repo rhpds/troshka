@@ -112,6 +112,23 @@ def test_capture_alone_and_default_install_do_not_require_native_secret_referenc
             assert "initContainers" not in _pod(objects, name)
 
 
+def test_checkpoint_runtime_available_with_scheduled_collection_disabled():
+    objects = _objects(_helm(
+        "nativeCollection.enabled=false",
+        "nativeCollection.runtimeEnabled=true",
+        "nativeOrigin.captureEnabled=true",
+        "nativeCollection.worker.configMapName=protected-config",
+        "nativeCollection.worker.secretName=protected-transport",
+        f"nativeCollection.worker.cliImage={CLI_IMAGE}",
+    ))
+    for name in APP_PODS:
+        _assert_runtime(_pod(objects, name))
+    config = objects["ConfigMap", "troshka-config"]["data"]["config.yaml"]
+    assert yaml.safe_load(config)["native_collection"]["enabled"] is False
+    assert yaml.safe_load(config)["native_origin"]["command_timeout_seconds"] == 45
+    assert yaml.safe_load(config)["native_origin"]["verification_timeout_seconds"] == 900
+
+
 @pytest.mark.parametrize("missing", ["configMapName", "secretName"])
 def test_enabled_runtime_requires_existing_protected_references(missing):
     options = {

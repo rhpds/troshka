@@ -1538,7 +1538,13 @@ async def _wait_for_pvc_expansion(
 
 async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
     """Stop a KubeVirt VM and wait for the VMI to terminate."""
-    set_kubevirt_vm_power(custom_api, namespace, kv_name, running=False)
+    try:
+        set_kubevirt_vm_power(custom_api, namespace, kv_name, running=False)
+    except client.ApiException as error:
+        # A checkpoint retry can resume after VM deletion. Any surviving VMI
+        # must still be observed absent before reconciliation can continue.
+        if error.status != 404:
+            raise
     for _ in range(60):
         try:
             custom_api.get_namespaced_custom_object(

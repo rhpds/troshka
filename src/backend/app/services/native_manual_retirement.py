@@ -10,7 +10,11 @@ from datetime import UTC, datetime
 from app.models.native_project_cleanup import NativeProjectNamespaceCleanup as State
 from app.models.native_project_cleanup import NativeProjectNamespaceEvidence as Evidence
 from app.models.project import Project
-from app.schemas.kubevirt_storage import ImageObservation, NativeInventory
+from app.schemas.kubevirt_storage import (
+    BackendImageState,
+    ImageObservation,
+    NativeInventory,
+)
 from app.schemas.native_project_cleanup import CleanupStorageScope
 from app.services import native_project_namespace_cleanup as cleanup
 from app.services.kubevirt_storage_enrollment import digest, root_key, utc
@@ -174,9 +178,37 @@ def settled_keys(db):
     return result
 
 
+def _private_absence(backend, keys, version, limits):
+    """Batch complete directory/trash reads instead of rescanning for each ID."""
+    result = backend.images_inventory(keys, max_objects=limits.max_objects)
+    require(
+        result.status == "complete"
+        and isinstance(result.value, list)
+        and len(result.value) == len(keys),
+        "Private storage inventory incomplete",
+    )
+    images = []
+    for key, raw in zip(keys, result.value):
+        proof = BackendImageState.model_validate(raw)
+        require(proof.excludes(key), "Private storage remains or identity changed")
+        images.append(
+            ImageObservation(
+                key=key,
+                collected_at=proof.collected_at,
+                allocated_bytes=0,
+                provisioned_bytes=0,
+                measurement_status="complete",
+                command_version=version,
+                measurement_semantics_version="kubevirt-rbd-absence-v1",
+                absence=proof,
+            )
+        )
+    return images
+
+
 def observe(scope, kube, backend, limits):
     """Read original namespace/PV/content absence and exact backend identities."""
-    from app.services.kubevirt_storage_collector import _call, _observe, _retiring_image
+    from app.services.kubevirt_storage_collector import _call, _observe
     from app.services.kubevirt_storage_inventory import _retiring_discovery
 
     require(
@@ -214,11 +246,7 @@ def observe(scope, kube, backend, limits):
         and capability.semantics_version == "kubevirt-rbd-allocated-v1",
         "Backend measurement capability unavailable",
     )
-    images = [
-        _retiring_image(backend, k, version, limits, lambda: datetime.now(UTC))
-        for k in scope.owned_images
-    ]
-    require(all(i is not None for i in images), "Private storage remains")
+    images = _private_absence(backend, scope.owned_images, version, limits)
     images.extend(
         _observe(backend, k, pools, True, version, lambda: datetime.now(UTC), limits)
         for k in scope.liabilities.shared_images

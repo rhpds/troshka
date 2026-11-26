@@ -32,10 +32,12 @@ def settled_root_keys(db):
     from app.services.kubevirt_storage_enrollment import root_key
     from app.services.native_legacy_retirement import settled_keys as legacy_keys
     from app.services.native_manual_retirement import settled_keys
+    from app.services.native_map_retirement import settled_keys as map_keys
     from app.services.native_project_namespace_cleanup import storage_scopes
 
     return (
         settled_keys(db)
+        | map_keys(db)
         | legacy_keys(db)
         | {
             root_key(v.root)
