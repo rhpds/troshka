@@ -29,10 +29,8 @@ def _source(db, work):
             .filter_by(cleanup_id=str(work.id), phase=phase)
             .one_or_none()
         )
-        require(
-            row is not None and row.digest == digest(row.payload),
-            "Map retirement release evidence unavailable",
-        )
+        if row is None or row.digest != digest(row.payload):
+            raise ValueError("Map retirement release evidence unavailable")
         evidence[phase] = row.digest
     scopes = [s for s in cleanup.storage_scopes(db) if str(s.intent_id) == str(work.id)]
     require(len(scopes) == 1, "Map retirement storage scope unavailable")
