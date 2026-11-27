@@ -219,6 +219,7 @@ apply_rbac() {
     --ignore-not-found --kubeconfig="$kc" --request-timeout=30s -o jsonpath='{range .items[*]}{.metadata.resourceVersion}{" "}{end}')
   oc apply -f src/operator/crds/ --kubeconfig="$kc" --request-timeout=30s
   oc apply -f src/operator/deploy/clusterrole.yaml --kubeconfig="$kc" --request-timeout=30s
+  oc apply -f src/operator/deploy/collector-maintenance.yaml --kubeconfig="$kc" --request-timeout=30s
   oc apply -f "$STATE/provider-rbac.yaml" --kubeconfig="$kc" --request-timeout=30s
   oc apply -f infra/storage-collector-base-rbac.yaml --kubeconfig="$kc" --request-timeout=30s
   oc apply -f infra/storage-collector-project-rbac.yaml --kubeconfig="$kc" --request-timeout=30s

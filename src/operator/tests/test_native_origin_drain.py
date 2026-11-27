@@ -238,6 +238,11 @@ def test_network_timer_registers_and_joins_actual_exec_thread(monkeypatch):
     monkeypatch.setattr(network.kopf.timer, "side_effect", lambda *a, **kw: lambda fn: fn)
     importlib.reload(network)
 
+    # This test exercises execution draining, not service-account provisioning.
+    # Keep the unrelated prerequisite inside the existing synthetic API boundary.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(network, "_ensure_network_sa_and_scc", AsyncMock())
+
     root, api = case()
     child = resource("TroshkaNetwork", "network", root)
     api.values["TroshkaNetwork", "network"] = child

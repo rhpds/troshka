@@ -557,7 +557,8 @@ def test_failed_cluster_is_not_reported_as_success(shell_commands):
         check=False,
     )
     assert result.returncode != 0
-    assert "cluster rollouts failed" in result.stderr
+    # deploy-full merges stderr into its tee-backed stdout release log.
+    assert "cluster rollouts failed" in result.stdout + result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert not any("promote" in c for c in calls)
 

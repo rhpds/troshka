@@ -7,6 +7,7 @@ resources:
   - deploy/clusterrole.yaml
   - deploy/clusterrolebinding.yaml
   - deploy/deployment.yaml
+  - deploy/collector-maintenance.yaml
   - crds/troshkaproject.yaml
   - crds/troshkanetwork.yaml
   - crds/troshkavm.yaml

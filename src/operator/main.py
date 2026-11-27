@@ -14,6 +14,7 @@ import handlers.container  # noqa: F401,E402
 import handlers.capabilities  # noqa: F401,E402
 import handlers.ceph  # noqa: F401,E402
 import handlers.namespace_cleanup  # noqa: F401,E402
+import handlers.collector_transport  # noqa: F401,E402
 
 
 @kopf.on.startup()

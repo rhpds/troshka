@@ -1,0 +1,194 @@
+{{- if and .Values.deploy .Values.collectorMaintenance.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: troshka-collector-maintenance
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector-maintenance
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: troshka-collector-maintenance-state
+  namespace: {{ include "troshka.namespace" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if eq .Values.collectorMaintenance.state.storageClass "-" }}
+  storageClassName: ""
+  {{- else if .Values.collectorMaintenance.state.storageClass }}
+  storageClassName: {{ .Values.collectorMaintenance.state.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.collectorMaintenance.state.size | quote }}
+---
+# Runtime owns data. Do not template heartbeat values that GitOps would reset.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: troshka-collector-maintenance-status
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: troshka-collector-maintenance
+  namespace: {{ include "troshka.namespace" . }}
+rules:
+  # Immutable revision names are generated at publication time. No secret list.
+  - apiGroups: [""]
+    resources: [configmaps, secrets]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [troshka-collector-maintenance-status]
+    verbs: [patch, update]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-collector-maintenance
+  namespace: {{ include "troshka.namespace" . }}
+subjects:
+  - kind: ServiceAccount
+    name: troshka-collector-maintenance
+    namespace: {{ include "troshka.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: troshka-collector-maintenance
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
+  namespace: {{ .Values.collectorMaintenance.argoNamespace | quote }}
+rules:
+  - apiGroups: [argoproj.io]
+    resources: [applications]
+    resourceNames: [{{ required "collectorMaintenance.application is required" .Values.collectorMaintenance.application | quote }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
+  namespace: {{ .Values.collectorMaintenance.argoNamespace | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: troshka-collector-maintenance
+    namespace: {{ include "troshka.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-collector-maintenance
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector-maintenance
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-collector-maintenance
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-collector-maintenance
+        app.kubernetes.io/component: collector-maintenance
+    spec:
+      serviceAccountName: troshka-collector-maintenance
+      automountServiceAccountToken: true
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
+      # OpenShift restricted SCC assigns UID and fsGroup for the writable PVC.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: publisher
+          image: {{ include "troshka.backendImage" . }}
+          imagePullPolicy: Always
+          command: [python3, scripts/collector_controller.py]
+          args:
+            - --plan
+            - /etc/troshka-maintenance/plan.json
+            - --state-dir
+            - /var/lib/troshka-collector-maintenance
+            - --interval
+            - {{ .Values.collectorMaintenance.intervalSeconds | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: TROSHKA_DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: database-url
+            - name: TROSHKA_AUTH__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: encryption-key
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: COLLECTOR_MAINTENANCE_APPLICATION
+              value: {{ .Values.collectorMaintenance.application | quote }}
+            - name: COLLECTOR_MAINTENANCE_ARGO_NAMESPACE
+              value: {{ .Values.collectorMaintenance.argoNamespace | quote }}
+            - name: COLLECTOR_MAINTENANCE_STATUS_CONFIGMAP
+              value: troshka-collector-maintenance-status
+          volumeMounts:
+            - name: plan
+              mountPath: /etc/troshka-maintenance
+              readOnly: true
+            - name: config
+              mountPath: /opt/app-root/src/config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/troshka-collector-maintenance
+          resources:
+            {{- toYaml .Values.collectorMaintenance.resources | nindent 12 }}
+      volumes:
+        - name: plan
+          configMap:
+            name: {{ required "collectorMaintenance.planConfigMap is required" .Values.collectorMaintenance.planConfigMap | quote }}
+            items:
+              - key: plan.json
+                path: plan.json
+        - name: config
+          configMap:
+            name: troshka-config
+        - name: state
+          persistentVolumeClaim:
+            claimName: troshka-collector-maintenance-state
+{{- end }}

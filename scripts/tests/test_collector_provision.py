@@ -63,3 +63,15 @@ def test_helm_parameter_override_cannot_silently_defeat_provisioning(provision):
         "parameters": [{"name": "nativeCollection.worker.secretName", "value": "other"}]}}}}
     with pytest.raises(ValueError):
         provision.native_settings(app)
+
+
+def test_rollout_does_not_count_old_ready_pods_as_new_ready(provision):
+    deployment = {"metadata": {"generation": 2}, "spec": {"replicas": 2, "template": {"spec": {"volumes": [
+        {"name": "collection-config", "configMap": {"name": "new"}},
+        {"name": "collection-transport", "secret": {"secretName": "new"}}]}}},  # pragma: allowlist secret
+        "status": {"observedGeneration": 2, "updatedReplicas": 2, "availableReplicas": 2,
+                   "readyReplicas": 2, "replicas": 3}}
+    assert not provision.consumer_ready(deployment, "new", allow_terminating=True)
+    deployment["status"].update(availableReplicas=3, readyReplicas=3)
+    assert provision.consumer_ready(deployment, "new", allow_terminating=True)
+    assert not provision.consumer_ready(deployment, "new")

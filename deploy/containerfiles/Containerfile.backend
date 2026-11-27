@@ -3,6 +3,14 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 
 WORKDIR /opt/app-root/src
 
+# POST/SPDY exec preserves collectors' create-only pods/exec permission.
+RUN curl -fsSL --retry 3 -o /tmp/oc-client.tar.gz \
+      https://mirror.openshift.com/pub/openshift-v4/clients/ocp/4.20.10/openshift-client-linux-amd64-rhel9.tar.gz \
+    && echo '9088ce68b6b97e659e568aaff568685df92afd1a2742bb310d72096976ff9125  /tmp/oc-client.tar.gz' | sha256sum -c - \
+    && tar xzf /tmp/oc-client.tar.gz -C /opt/app-root/bin oc \
+    && chmod 0755 /opt/app-root/bin/oc \
+    && rm /tmp/oc-client.tar.gz
+
 # agnosticv CLI — the workloads subsystem shells out to it to list/merge AgnosticV catalog items.
 ARG AGNOSTICV_VERSION=1.0.0
 RUN curl -fsSL -o /opt/app-root/bin/agnosticv \
@@ -21,6 +29,7 @@ COPY scripts/migrate_groups.py /opt/app-root/src/scripts/migrate_groups.py
 COPY scripts/import_kubevirt_storage.py /opt/app-root/src/scripts/import_kubevirt_storage.py
 COPY scripts/native_binding_retirement_cli.py /opt/app-root/src/scripts/native_binding_retirement_cli.py
 COPY scripts/collect_kubevirt_storage.py /opt/app-root/src/scripts/collect_kubevirt_storage.py
+COPY scripts/collector_*.py /opt/app-root/src/scripts/
 COPY schemas/ /opt/app-root/src/schemas/
 # The backend imports the shared troshka_serial package (serial/headless VM exec)
 # at deploy time from app/services/headless.py, kubevirt_serial.py, kubevirt.py.

@@ -254,6 +254,26 @@ nativeCollection:
       limits:
         memory: 2Gi
 
+# Dedicated central publisher. Install the approved nonsecret plan ConfigMap
+# (key plan.json) separately before enabling. Provider credentials stay in DB.
+collectorMaintenance:
+  enabled: false
+  application: troshka
+  argoNamespace: openshift-gitops
+  planConfigMap: troshka-collector-maintenance
+  intervalSeconds: 300
+  state:
+    size: 1Gi
+    # Empty uses the cluster default StorageClass; '-' disables defaulting.
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
 worker:
   replicas: 100
   # Each RQ worker runs one job at a time, so a tiny pool is plenty. Postgres

@@ -30,6 +30,13 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   its VMI has terminated before recreating it with retained disks.
   Ceph connection timeouts apply only to Ceph CLI calls, leaving RADOS journal
   and directory reads free of unsupported global options.
+  Collector fleet checks detect expired and near-expiry credentials, failed live
+  access, and missing or replaced toolbox pods. Opt-in cluster operators renew
+  dedicated credentials and verify toolbox replacements against approved
+  Deployment identities before updating exact-name permissions. A separate
+  central publisher updates Argo configuration using verified operator outputs.
+  Updates preserve rollback evidence, defer around active jobs,
+  verify every consuming deployment, and hold partial attempts for review.
 
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic

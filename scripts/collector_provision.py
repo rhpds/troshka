@@ -162,25 +162,33 @@ def rotate_transports(entry):
     return result
 
 
-def wait_mounts(entry, name):
+def consumer_ready(value, name, allow_terminating=False, config_name=None):
+    volumes = {v["name"]: v for v in value["spec"]["template"]["spec"]["volumes"]}
+    status = value.get("status", {})
+    replicas = value["spec"]["replicas"]
+    return (
+        volumes["collection-config"]["configMap"]["name"] == (config_name or name)
+        and volumes["collection-transport"]["secret"]["secretName"] == name
+        and status.get("observedGeneration", 0) >= value["metadata"]["generation"]
+        and status.get("updatedReplicas", 0) == replicas
+        and status.get("availableReplicas", 0) >= replicas
+        and status.get("readyReplicas", 0) >= status.get("replicas", 0)
+        and (allow_terminating or status.get("replicas", 0) == replicas)
+    )
+
+
+def wait_mounts(entry, name, allow_terminating=False):
     deadline = time.monotonic() + 600
     waiter = threading.Event()
     while time.monotonic() < deadline:
         complete = True
-        for deployment in ("troshka-collection-worker", "troshka-readiness-worker"):
-            value = json.loads(oc(entry["kubeconfig"], "get", "deployment", deployment,
-                                  "-n", entry["namespace"], "-o", "json"))
-            volumes = {v["name"]: v for v in value["spec"]["template"]["spec"]["volumes"]}
-            status = value.get("status", {})
-            replicas = value["spec"]["replicas"]
-            complete = complete and (
-                volumes["collection-config"]["configMap"]["name"] == name
-                and volumes["collection-transport"]["secret"]["secretName"] == name
-                and status.get("observedGeneration", 0) >= value["metadata"]["generation"]
-                and status.get("updatedReplicas", 0) == replicas
-                and status.get("availableReplicas", 0) == replicas
-                and status.get("replicas", 0) == replicas
-            )
+        deployments = json.loads(oc(entry["kubeconfig"], "get", "deployments",
+                                     "-n", entry["namespace"], "-o", "json"))["items"]
+        consumers = [d for d in deployments if any(v["name"] == "collection-transport"
+                     for v in d["spec"]["template"]["spec"].get("volumes", []))]
+        present = {d["metadata"]["name"] for d in consumers}
+        expected = set(entry.get("expected_consumers", present))
+        complete = bool(consumers) and expected <= present and all(consumer_ready(d, name, allow_terminating) for d in consumers)
         if complete:
             return
         waiter.wait(2)

@@ -20,7 +20,7 @@ def snapshot():
     return {
         "hosts": [{"name": "empty-host", "provider_id": "provider"}],
         "profiles": [{"domain_id": "domain", "providers": ["provider"],
-                      "accepted": True, "enrolled": True}],
+                      "accepted": True, "enrolled": True, "transport": {"blockers": []}}],
     }
 
 
@@ -51,6 +51,14 @@ def test_valid_configuration_is_not_accounting_verification(fleet):
     report = fleet.evaluate(snapshot())
     assert report["ready"] is True
     assert report["scope"] == "configuration_only"
+
+
+def test_expired_or_missing_transport_cannot_pass_fleet_gate(fleet):
+    value = snapshot()
+    value["profiles"][0]["transport"] = {"blockers": ["collector_token_expired"]}
+    assert fleet.evaluate(value)["hosts"][0]["blockers"] == ["collector_token_expired"]
+    del value["profiles"][0]["transport"]
+    assert not fleet.evaluate(value)["ready"]
 
 
 def test_failure_is_reported_without_leaking_command_output(fleet, monkeypatch):

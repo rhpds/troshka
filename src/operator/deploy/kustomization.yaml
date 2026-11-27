@@ -8,6 +8,7 @@ resources:
   - rook-clusterroles.yaml
   - clusterrolebinding.yaml
   - deployment.yaml
+  - collector-maintenance.yaml
   - ../crds/troshkaproject.yaml
   - ../crds/troshkanetwork.yaml
   - ../crds/troshkavm.yaml

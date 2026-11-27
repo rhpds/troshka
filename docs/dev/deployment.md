@@ -8,6 +8,15 @@ images; adoption preserves active overlays until the first rollout is reviewed.
 
 ## Deployment
 
+### Collector transport maintenance
+
+Enable operator-managed [collector maintenance](collector-maintenance.md) to
+renew dedicated credentials before expiry and verify toolbox pod replacements.
+The fleet preflight checks live collector access and expiry as well as enrollment.
+Local operators renew credentials; a dedicated central publisher pod verifies
+and rolls out protected application inputs. Both require explicit configuration;
+an ordinary release does not silently enable maintenance or enroll new domains.
+
 ### Full production release
 
 From a clean, committed checkout, run `./scripts/deploy-full.sh`. It creates a

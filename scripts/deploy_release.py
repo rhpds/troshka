@@ -27,6 +27,7 @@ CLUSTER_ROLLOUT_ROLES = ("operator", "dnsmasq", "gateway", "bmc", "vnc-proxy")
 CRD_RBAC_PATHS = (
     "src/operator/crds/",
     "src/operator/deploy/clusterrole.yaml",
+    "src/operator/deploy/collector-maintenance.yaml",
     "infra/ocpvirt-rbac.yaml",
     "infra/storage-collector-base-rbac.yaml",
     "infra/storage-collector-project-rbac.yaml",

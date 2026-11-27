@@ -14,6 +14,7 @@ on:
       - 'scripts/import_kubevirt_storage.py'
       - 'scripts/native_binding_retirement_cli.py'
       - 'scripts/collect_kubevirt_storage.py'
+      - 'scripts/collector_*.py'
       - '.github/workflows/build-images.yml'
 
 jobs:
@@ -66,7 +67,7 @@ jobs:
           BACKEND=false
           FRONTEND=false
           OPERATOR=false
-          echo "$DIFF" | grep -qE '^src/backend/|^src/troshkad/|^src/troshka-vncd/|^src/operator/crds/|^src/operator/helpers/|^scripts/(import|collect)_kubevirt_storage\.py$|^scripts/native_binding_retirement_cli\.py$|^deploy/containerfiles/Containerfile\.backend' && BACKEND=true || true
+          echo "$DIFF" | grep -qE '^src/backend/|^src/troshkad/|^src/troshka-vncd/|^src/operator/crds/|^src/operator/helpers/|^scripts/(import|collect)_kubevirt_storage\.py$|^scripts/collector_[^/]+\.py$|^scripts/native_binding_retirement_cli\.py$|^deploy/containerfiles/Containerfile\.backend' && BACKEND=true || true
           echo "$DIFF" | grep -qE '^src/frontend/|^CHANGELOG\.md$|^deploy/containerfiles/Containerfile\.frontend' && FRONTEND=true || true
           echo "$DIFF" | grep -qE '^src/operator/|^\.github/workflows/build-images\.yml$' && OPERATOR=true || true
           if [ "$FORCE_ALL" = true ]; then

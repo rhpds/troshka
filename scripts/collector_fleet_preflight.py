@@ -11,9 +11,10 @@ import os
 import subprocess
 from pathlib import Path
 
-PROBE = '''
+PROBE = Path(__file__).with_name("collector_transport_health.py").read_text() + '''
 import json
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 from app.core.config import config
 from app.core.database import SessionLocal
 from app.models.host import Host
@@ -23,6 +24,7 @@ from app.services.native_collection_config import _managed_inputs
 from app.services.native_managed_collector import anchored
 
 result = {"hosts": [], "profiles": [], "blockers": []}
+checks = []
 with SessionLocal() as db:
     for host in db.query(Host).filter_by(host_type="kubevirt-cluster").all():
         provider = db.get(Provider, host.provider_id) if host.provider_id else None
@@ -48,8 +50,12 @@ with SessionLocal() as db:
                 anchored(db, pins)
                 entry["enrolled"] = True
             result["profiles"].append(entry)
+            checks.append((entry, backend))
         except Exception:  # noqa: BLE001 -- client errors may include credentials
             result["blockers"].append("invalid_or_unanchored_profile")
+with ThreadPoolExecutor(max_workers=4) as pool:
+    for (entry, _), health in zip(checks, pool.map(transport_health, [b for _, b in checks])):
+        entry["transport"] = health
 print(json.dumps(result))
 '''
 
@@ -66,6 +72,10 @@ def host_status(host, profiles):
     for field, code in (("accepted", "unapproved_profile"), ("enrolled", "missing_enrollment")):
         if profile.get(field) is not True:
             result["blockers"].append(code)
+    transport = profile.get("transport")
+    result["blockers"].extend(transport["blockers"] if transport else ["collector_transport_unverified"])
+    if transport and "expires_at" in transport:
+        result["credential_expires_at"] = transport["expires_at"]
     return result
 
 

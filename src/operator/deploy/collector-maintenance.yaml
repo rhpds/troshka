@@ -1,0 +1,129 @@
+# Maintenance is disabled until a separately approved config ConfigMap exists.
+# Precreate output objects so reconciliation needs no unrestricted create grant.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: troshka-collector-transport
+  namespace: troshka-operator
+type: Opaque
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: troshka-collector-maintenance-status
+  namespace: troshka-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: troshka-collector-maintenance-output
+  namespace: troshka-operator
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["troshka-collector-transport"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["troshka-collector-maintenance-status"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["troshka-collector-maintenance"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-collector-maintenance-output
+  namespace: troshka-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: troshka-collector-maintenance-output
+subjects:
+  - kind: ServiceAccount
+    name: troshka-operator
+    namespace: troshka-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: troshka-collector-transport-reader
+  namespace: troshka-operator
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["troshka-collector-transport"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-collector-transport-reader
+  namespace: troshka-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: troshka-collector-transport-reader
+subjects:
+  - kind: ServiceAccount
+    name: troshka
+    namespace: troshka
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: troshka-collector-token-issuer
+  namespace: troshka
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["troshka-storage-collector"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-collector-token-issuer
+  namespace: troshka
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: troshka-collector-token-issuer
+subjects:
+  - kind: ServiceAccount
+    name: troshka-operator
+    namespace: troshka-operator
+---
+# This ClusterRole grants nothing until bound in the approved toolbox namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-collector-toolbox-maintenance
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames: ["troshka-storage-collector-toolbox"]
+    verbs: ["get", "patch", "escalate"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["troshka-storage-collector-toolbox"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-collector-toolbox-maintenance
+  namespace: openshift-storage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: troshka-collector-toolbox-maintenance
+subjects:
+  - kind: ServiceAccount
+    name: troshka-operator
+    namespace: troshka-operator
