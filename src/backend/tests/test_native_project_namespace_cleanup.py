@@ -218,6 +218,38 @@ def namespace_adapter(q, monkeypatch):
     return q
 
 
+@pytest.mark.parametrize("changed_ack", [False, True])
+def test_namespace_delete_has_independent_budget_and_rechecks_fence(
+    namespace_case, monkeypatch, changed_ack
+):
+    q = namespace_case
+    q.request()
+    q.advance()
+    delete_namespace = cleanup._delete_namespace
+
+    class ExpiredObservation:
+        def get(self, *args):
+            raise AccountingUnavailable("Native origin inventory budget exceeded")
+
+        def new_observation(self):
+            if changed_ack:
+                q.values["Namespace", q.namespace]["metadata"]["annotations"].pop(ACK)
+            return q.api
+
+    monkeypatch.setattr(
+        cleanup,
+        "_delete_namespace",
+        lambda db, api, work: delete_namespace(db, ExpiredObservation(), work),
+    )
+    if changed_ack:
+        with pytest.raises(AccountingUnavailable, match="acknowledgement unavailable"):
+            q.advance()
+        assert ("Namespace", q.namespace, False) not in q.calls
+    else:
+        assert q.advance().phase == "namespace_delete_requested"
+        assert ("Namespace", q.namespace, False) in q.calls
+
+
 def pending_orphan(q, monkeypatch):
     """Persist the real pre-delete inventory and request, then finish our duties."""
     owned = [v for (kind, _), v in q.values.items() if kind in OWN_KINDS]

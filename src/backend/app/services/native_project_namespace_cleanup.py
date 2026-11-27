@@ -773,6 +773,9 @@ def _own_cr_completion(db, api, work):
 def _delete_namespace(db, api, work):
     from app.services.native_cleanup_storage import require_coverage
 
+    # Final deletion independently re-observes every live prerequisite. Earlier
+    # retention and VM/CR drain must not consume this phase's bounded budget.
+    api = api.new_observation()
     namespace = _namespace(api, work.authority)
     origin.require(
         namespace is not None and _acknowledged(api, work, namespace),
