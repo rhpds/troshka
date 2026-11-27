@@ -571,7 +571,8 @@ def test_vm_persistent_state_is_retained_only_for_persistent_firmware():
     assert not custody.persistent_state(pvc, vm)
 
 
-def test_bmc_drains_before_vm_power_and_rejects_sidecar():
+@pytest.mark.parametrize("later_domain_uuid", ["", "281c12f9-32cb-4f37-a053-db2411e8c522"])
+def test_bmc_drains_before_vm_power_and_rejects_sidecar(later_domain_uuid):
     root = resource("TroshkaProject", "project", spec={"topology": {"nodes": []}})
     vm = resource(
         "TroshkaVM",
@@ -595,12 +596,20 @@ def test_bmc_drains_before_vm_power_and_rejects_sidecar():
     )
     deployment["metadata"].update(uid="bmc-uid", generation=1, resourceVersion="1")
     deployment["status"] = {"observedGeneration": 1}
+    vm.setdefault("status", {})["domainUuid"] = later_domain_uuid
     rs = resource("ReplicaSet", "bmc-rs", deployment, {"replicas": 1})
     pod = resource("Pod", "bmc-pod", rs)
     attest(root, [vm, network, deployment])
     by_uid = {v["metadata"]["uid"]: v for v in [root, vm, network, deployment, rs, pod]}
     assert custody.bmc_shape(deployment, root, by_uid)
     power.verify_chain(deployment, root, by_uid)
+    for field in ("SUSHY_VM_MAP", "SUSHY_SYSTEM_IPS"):
+        changed = deepcopy(deployment)
+        env = next(e for e in changed["spec"]["template"]["spec"]["containers"][0]["env"] if e["name"] == field)
+        mapping = json.loads(env["value"])
+        mapping["foreign-alias"] = mapping.pop("troshka-vm-12345678")
+        env["value"] = json.dumps(mapping)
+        assert not custody.bmc_shape(changed, root, by_uid)
     changed = deepcopy(deployment)
     changed["spec"]["template"]["spec"]["containers"].append(
         {"name": "foreign", "image": "evil"}

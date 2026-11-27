@@ -21,7 +21,7 @@ usage() {
   echo "Default: create vYYYY.MM.DD-HHMMSS (UTC) at HEAD and push HEAD to main plus the tag."
   echo "Resume an existing release with --skip-push --tag vNAME from its clean checkout."
   echo "Hosts come from scripts/deploy-hosts.local.yaml (gitignored); see deploy-hosts.local.yaml.example."
-  echo "Storage verification is optional: --verify-storage checks existing evidence; --fresh-accounting scans all projects; --accounting-project UUID scans selected production projects."
+  echo "Collector fleet coverage is required. Storage accounting is optional: --verify-storage checks existing evidence; --fresh-accounting scans all projects; --accounting-project UUID scans selected production projects."
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -94,10 +94,8 @@ preflight_helper_networks() {
   done
 }
 
-if [ "$VERIFY_STORAGE" = true ]; then
-  COLLECTOR_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-preflight.XXXXXX")
-  echo "Collector configuration report: $COLLECTOR_REPORT"
-fi
+COLLECTOR_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-preflight.XXXXXX")
+echo "Collector configuration report: $COLLECTOR_REPORT"
 
 echo "=== Release $RELEASE_TAG ==="
 if [ "$SKIP_PUSH" = false ]; then
@@ -193,9 +191,9 @@ echo "=== Require dev Argo on named release images ==="
 python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
   --namespace troshka-dev --image-tag "$RELEASE_TAG" --state "$STATE/digests.json" \
   --roles backend,frontend
+python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
+  --output "$STATE/dev-collector-preflight.json"
 if [ "$VERIFY_STORAGE" = true ]; then
-  python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
-    --output "$STATE/dev-collector-preflight.json"
   python3 scripts/collector_release_check.py --application "$DEV_KC" troshka-dev \
     --mode health --output "$STATE/dev-accounting.json"
 fi
@@ -294,9 +292,9 @@ if [ -n "$COLLECTOR_SETUP_PLAN" ]; then
     --application "$KC" troshka --application "$DEV_KC" troshka-dev
   python3 scripts/collector_provision.py --apply --output "$COLLECTOR_STATE/prepared"
 fi
+python3 scripts/collector_fleet_preflight.py \
+  --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
 if [ "$VERIFY_STORAGE" = true ]; then
-  python3 scripts/collector_fleet_preflight.py \
-    --application "$KC" troshka --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
   ACCOUNTING_BASELINE=$(mktemp "${TMPDIR:-/tmp}/troshka-accounting-baseline.XXXXXX")
   echo "Existing accounting baseline will be retained at: $ACCOUNTING_BASELINE"
   python3 scripts/collector_release_check.py \
@@ -323,11 +321,12 @@ oc annotate applications.argoproj.io troshka -n openshift-gitops \
   argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
 python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json" \
   --image-tag "$RELEASE_TAG" --roles backend,frontend
+echo "=== Verify collector configuration across the fleet ==="
+python3 scripts/collector_fleet_preflight.py \
+  --application "$KC" troshka \
+  --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
 if [ "$VERIFY_STORAGE" = true ]; then
-  echo "=== Verify collector configuration and accounting ($ACCOUNTING_MODE) ==="
-  python3 scripts/collector_fleet_preflight.py \
-    --application "$KC" troshka \
-    --application "$DEV_KC" troshka-dev --output "$COLLECTOR_REPORT"
+  echo "=== Verify storage accounting ($ACCOUNTING_MODE) ==="
   ACCOUNTING_REPORT=$(mktemp "${TMPDIR:-/tmp}/troshka-collector-accounting.XXXXXX")
   echo "Accounting evidence will be retained at: $ACCOUNTING_REPORT"
   python3 scripts/collector_release_check.py \
@@ -337,6 +336,6 @@ if [ "$VERIFY_STORAGE" = true ]; then
     --application "$KC" troshka --mode "$ACCOUNTING_MODE" "${ACCOUNTING_PROJECTS[@]}" \
     --output "$ACCOUNTING_REPORT"
 else
-  echo "Storage verification not requested; use --verify-storage or --fresh-accounting to enable it."
+  echo "Storage accounting verification not requested; use --verify-storage or --fresh-accounting to enable it."
 fi
 echo "=== Release $RELEASE_TAG deployed and verified ==="

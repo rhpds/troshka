@@ -621,8 +621,10 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     hosts = [i for i, c in enumerate(calls) if "cluster" in c and "--image-tag" in c and "vtest" in c]
     assert len(hosts) == 7
     assert dev_image < min(hosts) <= max(hosts) < promote
-    assert not any("scripts/collector_release_check.py" in c or
-                   "scripts/collector_fleet_preflight.py" in c for c in calls)
+    assert not any("scripts/collector_release_check.py" in c for c in calls)
+    fleet_checks = [i for i, c in enumerate(calls) if "scripts/collector_fleet_preflight.py" in c]
+    assert any(dev_image < i < promote for i in fleet_checks)
+    assert any(i > promote for i in fleet_checks)
     assert all("--skip-project-pods" in calls[i] for i in hosts)
 
 
@@ -676,10 +678,11 @@ def test_full_deploy_aligns_dev_after_main_build_and_pins_prod_git(shell_command
     assert any(c[:3] == ["gh", "run", "watch"] for c in calls[main_build:stage])
 
 
-def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_commands):
+@pytest.mark.parametrize("flags", [[], ["--verify-storage"]])
+def test_failed_fleet_check_allows_host_upgrade_but_never_promotes(shell_commands, flags):
     env, log = shell_commands
     result = subprocess.run(
-        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest", "--verify-storage"],
+        ["bash", str(PATH.with_name("deploy-full.sh")), "--tag", "vtest", *flags],
         env={**env, "FAIL_FLEET": "1"}, capture_output=True, check=False,
     )
     assert result.returncode != 0

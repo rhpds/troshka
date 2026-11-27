@@ -577,7 +577,7 @@ def persistent_state(value, parent):
     return enabled and (meta["name"] == prefix or generated)
 
 
-def bmc_manifest(root, by_uid):
+def bmc_manifest(root, by_uid, canonical_systems=()):
     from helpers.bmc import build_bmc_deployment
 
     ns = root["metadata"]["namespace"]
@@ -596,6 +596,9 @@ def bmc_manifest(root, by_uid):
     vms = bmc_vms(nodes, by_uid)
     if not vms:
         return None
+    for vm in vms:
+        if "troshka-vm-" + vm["vmId"][:8] in canonical_systems:
+            vm["domainUuid"] = ""
     credentials = next(
         (
             {
@@ -630,13 +633,22 @@ def bmc_vms(nodes, by_uid):
     return result
 
 
+def _bmc_canonical_systems(container):
+    """Select only the builder's VM-name fallback; full manifest checks follow."""
+    import json
+
+    try:
+        raw = next(e["value"] for e in container.get("env", []) if e.get("name") == "SUSHY_VM_MAP")
+        mapping = json.loads(raw)
+    except (StopIteration, KeyError, TypeError, ValueError):
+        return set()
+    return {key for key, target in mapping.items() if key == target} if isinstance(mapping, dict) else set()
+
+
 def bmc_shape(value, root, by_uid):
     from helpers.managed_power import manifest_matches
 
     if value.get("kind") != "Deployment" or value["metadata"].get("ownerReferences"):
-        return False
-    manifest = bmc_manifest(root, by_uid)
-    if manifest is None:
         return False
     ns = root["metadata"]["namespace"]
     actual = value.get("spec", {}).get("template", {}).get("spec", {})
@@ -644,6 +656,11 @@ def bmc_shape(value, root, by_uid):
     if len(containers) != 1 or not containers[0].get("image", "").startswith(
         "quay.io/redhat-gpte/troshka-bmc:"
     ):
+        return False
+    # A Deployment created before domain UUID discovery legitimately keeps the
+    # canonical VM-name IDs. Never accept arbitrary aliases or remapped targets.
+    manifest = bmc_manifest(root, by_uid, _bmc_canonical_systems(containers[0]))
+    if manifest is None:
         return False
     manifest["spec"]["template"]["spec"]["containers"][0]["image"] = containers[0][
         "image"

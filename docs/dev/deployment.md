@@ -51,7 +51,8 @@ Before promotion, the script waits for any image build for the same commit on
 named release. This prevents mutable aliases from changing the selected images.
 It requires dev Argo to run those exact release digests and checks every active
 app worker deployment. A failed dev check exits before changing production image
-tags. Storage verification is optional; selecting `--verify-storage`,
+tags. Collector enrollment and transport coverage are mandatory for every
+configured native host. Storage accounting verification is optional; selecting `--verify-storage`,
 `--fresh-accounting`, or `--accounting-project UUID` also checks existing dev
 readiness and shared/project accounting evidence before promotion. With those
 options, dev collector setup must already be ready, including when a setup plan
@@ -115,12 +116,13 @@ Origin custody verification uses `nativeOrigin.commandTimeoutSeconds` (45) and
 collection job timeouts. These bound repeated CSI, namespace ownership, and clone
 ancestry checks; increasing the window does not bypass any verification.
 
-Routine releases skip collector configuration and storage accounting verification.
+Routine releases verify collector enrollment and transport coverage before and
+after promotion. Storage accounting verification remains optional.
 Application health, exact image digests, schema, operator rollouts, and helper
 network prerequisites remain required. This does not disable runtime accounting,
 change quota enforcement, or weaken storage deletion checks.
 
-Use `--verify-storage` to run collector configuration checks and
+Use `--verify-storage` to additionally run
 `collector_release_check.py --mode health` before and after promotion.
 This reads the latest accepted evidence and blocks on missing or failed
 observations, changed enrollment, conflicts, active cleanup, or changing inventory.
