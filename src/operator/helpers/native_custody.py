@@ -230,7 +230,9 @@ def orphan_ops_config(value, root):
     required = {p + suffix for p in prefixes for suffix in ("agent-config.yaml", "install-config.yaml", "openshift_imagepruner-suspend.yaml")}
     allowed = required | {p + "openshift_itms-pull-through.yaml" for p in prefixes} | {"workdir_pull-secret.json"}
     keys = set(value.get("data", {}))
-    return bool(required) and required <= keys <= allowed
+    # Recert creates these files independently when captured credentials exist.
+    recert = {f"workdir_{c}_{suffix}" for c in clusters for suffix in ("kubeconfig", "kubeadmin-password")}
+    return (bool(required) and required <= keys <= allowed) or (bool(keys) and keys <= recert)
 
 
 def validate_intent(root, request):

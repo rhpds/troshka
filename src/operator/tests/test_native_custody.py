@@ -349,6 +349,22 @@ def test_orphan_installer_config_requires_topology_bound_keys_and_original_uid()
     assert not custody.orphan_ops_config(secret, root)
 
 
+@pytest.mark.parametrize("suffixes", [("kubeconfig",), ("kubeadmin-password",), ("kubeconfig", "kubeadmin-password")])
+def test_orphan_recert_config_keeps_identity_and_topology_boundary(suffixes):
+    root = resource("TroshkaProject", "project", spec={"projectId": "12345678-project", "topology": {"nodes": [{"type": "clusterNode", "data": {"clusterId": "source"}}]}})
+    secret = resource("Secret", "troshka-12345678-ops-config")
+    secret["metadata"]["labels"] = {"app": "troshka-ops-pod", "troshka-project": "12345678"}
+    secret["data"] = {"workdir_source_" + suffix: "private" for suffix in suffixes}
+    attest(root, [secret])
+    index = {root["metadata"]["uid"]: root, secret["metadata"]["uid"]: secret}
+    assert custody.support(secret, index)
+    secret["data"]["workdir_foreign_kubeconfig"] = "private"
+    assert not custody.orphan_ops_config(secret, root)
+    del secret["data"]["workdir_foreign_kubeconfig"]
+    secret["metadata"]["uid"] = "replacement"
+    assert not custody.support(secret, index)
+
+
 def test_route_pair_requires_project_gateway_forward_and_exact_service():
     root = resource("TroshkaProject", "project", spec={"projectId": "12345678-project"})
     gateway = resource("Deployment", "gateway", root, spec={"selector": {"matchLabels": {"app": "troshka-gateway-12345678", "troshka-role": "gateway"}}, "template": {"spec": {"containers": [{"env": [{"name": "PORT_FORWARDS", "value": "6443:10.0.0.4:6443:tcp"}]}]}}})

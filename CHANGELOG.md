@@ -24,6 +24,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   resolving unrelated active projects through enrollment validation.
   Legacy BMC cleanup recognizes the exact VM-name system IDs created before
   domain UUID discovery, retaining strict VM, IP, and workload shape checks.
+  Legacy installer cleanup also recognizes topology-bound recert credential
+  files left after installer pod removal, retaining exact Secret identity checks.
   Full releases require collector enrollment and transport coverage for every
   configured native host; storage accounting scans remain separately opt-in.
   Cancelled deployments can retain cleanup-only storage custody without becoming
