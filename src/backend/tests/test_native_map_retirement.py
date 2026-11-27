@@ -68,6 +68,56 @@ def test_verified_released_map_retires_without_fabricating_collector_report(
         assert work.settled_at is None
 
 
+def test_map_receipt_does_not_resolve_unrelated_active_cleanup(
+    released_case, monkeypatch
+):
+    from uuid import uuid4
+
+    q = released_case
+    sibling_id = str(uuid4())
+    with q.sessions() as db:
+        db.add(
+            Project(
+                id=sibling_id,
+                name="active-cleanup-sibling",
+                owner_id=str(q.work.authority.owner_id),
+                state="cleanup_pending",
+            )
+        )
+        db.commit()
+    sibling = q.work.model_copy(
+        update={
+            "id": str(uuid4()),
+            "phase": "namespace_delete_requested",
+            "authority": q.work.authority.model_copy(update={"project_id": sibling_id}),
+        }
+    )
+    original_states = cleanup.states
+    monkeypatch.setattr(
+        cleanup, "states", lambda db, *args: [*original_states(db, *args), sibling]
+    )
+
+    def active_authority(db, project):
+        # Real origin resolution re-enters enrollment -> settled_root_keys here.
+        raise AssertionError("unrelated active authority resolution")
+
+    monkeypatch.setattr(cleanup.authority, "resolve", active_authority)
+    with q.sessions() as db:
+        retirement.record(
+            db,
+            q.work,
+            q.inventory,
+            q.images,
+            administrator="operator",
+            reason="independent absence proof",
+        )
+        db.commit()
+        assert root_key(q.root) in retirement.settled_keys(db)
+        # Broad callers must still validate active authority, never silently omit it.
+        with pytest.raises(AssertionError, match="unrelated active authority"):
+            cleanup.storage_scopes(db)
+
+
 @pytest.mark.parametrize(
     "fault",
     [

@@ -32,7 +32,9 @@ def _source(db, work):
         if row is None or row.digest != digest(row.payload):
             raise ValueError("Map retirement release evidence unavailable")
         evidence[phase] = row.digest
-    scopes = [s for s in cleanup.storage_scopes(db) if str(s.intent_id) == str(work.id)]
+    # Active siblings may resolve enrollment through settled_keys again. Verify
+    # this retained receipt's scope without traversing unrelated live authority.
+    scopes = cleanup.storage_scopes(db, cleanup_id=work.id)
     require(len(scopes) == 1, "Map retirement storage scope unavailable")
     return scopes[0], evidence
 

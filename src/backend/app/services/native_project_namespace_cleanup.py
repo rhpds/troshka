@@ -977,9 +977,11 @@ def _ensure_teardown_coverage(db, api, work):
     return work
 
 
-def storage_scopes(db, domain_id=None, *, settled_only=False):
+def storage_scopes(db, domain_id=None, *, settled_only=False, cleanup_id=None):
     result = []
     for work in states(db):
+        if cleanup_id is not None and str(work.id) != str(cleanup_id):
+            continue
         if settled_only and work.phase not in {"settled", "finalized"}:
             continue
         selected = work.authority

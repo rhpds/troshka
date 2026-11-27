@@ -20,6 +20,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   indefinitely for acknowledgements because those files are missing.
   Cleanup storage verification tolerates the network resume handler's fenced
   retry schedule while preserving exact ownership, storage, and outcome checks.
+  Retired-map receipts validate their own cleanup scope without recursively
+  resolving unrelated active projects through enrollment validation.
   An explicit map-retirement recovery can independently verify already released
   projects, preserve shared images, and retain absence receipts without inventing
   collector settlement reports or deleting provider resources.
