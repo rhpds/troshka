@@ -1725,7 +1725,14 @@ def test_retention_inventory_keeps_storage_and_producer_status(kind, field):
     assert not _same_inventory([original], [changed])
 
 
-def test_retention_comparison_only_ignores_exact_fenced_retry_schedule():
+@pytest.mark.parametrize(
+    "kind,handler",
+    [
+        ("TroshkaProject", "project_managed_power_resume"),
+        ("TroshkaNetwork", "network_resume"),
+    ],
+)
+def test_retention_comparison_only_ignores_exact_fenced_retry_schedule(kind, handler):
     from app.services.native_cleanup_storage import _same_inventory
 
     progress = dict(
@@ -1738,21 +1745,24 @@ def test_retention_comparison_only_ignores_exact_fenced_retry_schedule():
         retries=1,
     )
     original = dict(
-        kind="TroshkaProject",
+        kind=kind,
         metadata=dict(
             name="root",
             uid="uid",
-            annotations={
-                "kopf.zalando.org/project_managed_power_resume": json.dumps(progress)
-            },
+            annotations={"kopf.zalando.org/" + handler: json.dumps(progress)},
         ),
-        status={"kopf": {"progress": {"project_managed_power_resume": progress}}},
+        status={"kopf": {"progress": {handler: progress}}},
     )
+    retried = deepcopy(original)
+    retry = retried["status"]["kopf"]["progress"][handler]
+    retry.update(delayed="later", retries=2)
+    retried["metadata"]["annotations"]["kopf.zalando.org/" + handler] = json.dumps(
+        retry
+    )
+    assert _same_inventory([original], [retried])
     for key in ("success", "failure", "message", "purpose", "started"):
         changed = deepcopy(original)
-        changed["status"]["kopf"]["progress"]["project_managed_power_resume"][
-            key
-        ] = "changed"
+        changed["status"]["kopf"]["progress"][handler][key] = "changed"
         assert not _same_inventory([original], [changed])
     changed = deepcopy(original)
     changed["metadata"]["annotations"]["kopf.zalando.org/other_handler"] = "changed"

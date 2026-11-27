@@ -148,9 +148,12 @@ def _comparison_object(row):
     meta = value["metadata"]
     meta.pop("resourceVersion", None)
     meta.pop("managedFields", None)
-    if value["kind"] != "TroshkaProject":
+    handler = {
+        "TroshkaProject": "project_managed_power_resume",
+        "TroshkaNetwork": "network_resume",
+    }.get(value["kind"])
+    if handler is None:
         return value
-    handler = "project_managed_power_resume"
     annotation = "kopf.zalando.org/" + handler
     annotations = meta.get("annotations", {})
     if annotation in annotations:
