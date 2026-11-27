@@ -81,17 +81,16 @@ def test_enabled_publisher_uses_backend_image_and_persistent_state_without_runti
 
 
 def test_permissions_are_namespaced_and_cannot_issue_tokens_or_list_secrets():
-    objects = _publisher(_render(
+    rendered = _render(
         "collectorMaintenance.enabled=true", "namespace.name=troshka-test",
         "collectorMaintenance.application=troshka-test-app",
-    ))
+    )
+    assert all(obj["metadata"].get("namespace") != "openshift-gitops" for obj in rendered)
+    objects = _publisher(rendered)
+    assert all(obj["metadata"]["namespace"] == "troshka-test" for obj in objects)
     assert not {"ClusterRole", "ClusterRoleBinding"} & {obj["kind"] for obj in objects}
     roles = {obj["metadata"]["namespace"]: obj for obj in objects if obj["kind"] == "Role"}
-    assert set(roles) == {"troshka-test", "openshift-gitops"}
-    assert roles["openshift-gitops"]["rules"] == [{
-        "apiGroups": ["argoproj.io"], "resources": ["applications"],
-        "resourceNames": ["troshka-test-app"], "verbs": ["get", "patch"],
-    }]
+    assert set(roles) == {"troshka-test"}
     assert roles["troshka-test"]["rules"] == [
         {"apiGroups": [""], "resources": ["configmaps", "secrets"], "verbs": ["get", "create"]},
         {"apiGroups": [""], "resources": ["configmaps"], "resourceNames": [NAME + "-status"],

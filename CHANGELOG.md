@@ -40,6 +40,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   Full releases also verify the enabled maintenance publisher's image digest
   and rollout alongside the application workers, pin the same named release on
   dev before production, and reinstall prerequisites when the operator changes.
+  Publisher access to its named Argo Application is installed by the release
+  workflow, keeping application charts within their permitted namespaces.
 
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic

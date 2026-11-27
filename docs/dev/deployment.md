@@ -1,8 +1,8 @@
 # Deployment (Helm / Kustomize / Ansible) Reference
 
 For Argo setup or adoption of an existing dev Helm release, see
-[Argo bootstrap](argocd-bootstrap.md). Dev follows `main` with `latest` application
-images; adoption preserves active overlays until the first rollout is reviewed.
+[Argo bootstrap](argocd-bootstrap.md). Bootstrap can let dev follow `main` with
+`latest` images; adoption preserves active overlays until the first rollout is reviewed.
 
 The full release workflow explicitly pins dev and production to the same named
 release's Git revision and image digests, including carried images. Existing

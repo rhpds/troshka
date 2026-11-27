@@ -75,31 +75,6 @@ roleRef:
   kind: Role
   name: troshka-collector-maintenance
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
-  namespace: {{ .Values.collectorMaintenance.argoNamespace | quote }}
-rules:
-  - apiGroups: [argoproj.io]
-    resources: [applications]
-    resourceNames: [{{ required "collectorMaintenance.application is required" .Values.collectorMaintenance.application | quote }}]
-    verbs: [get, patch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
-  namespace: {{ .Values.collectorMaintenance.argoNamespace | quote }}
-subjects:
-  - kind: ServiceAccount
-    name: troshka-collector-maintenance
-    namespace: {{ include "troshka.namespace" . }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ printf "%s-collector-maintenance" (include "troshka.namespace" .) }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:

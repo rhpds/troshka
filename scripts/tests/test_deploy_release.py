@@ -70,6 +70,64 @@ def test_checks_every_replica_not_just_first(release):
         )
 
 
+def publisher_application():
+    return {"metadata": {"name": "troshka-dev", "namespace": "openshift-gitops"},
+            "spec": {"destination": {"namespace": "troshka-dev"}, "source": {"helm": {"valuesObject": {
+                "collectorMaintenance": {"enabled": True, "application": "troshka-dev"}}}}}}
+
+
+def test_publisher_grant_is_outside_chart_and_names_one_application(release, monkeypatch):
+    created = []
+    monkeypatch.setattr(release, "oc", lambda kc, verb, kind, *a, **kw: '{"items": []}' if kind == "rolebindings" else "")
+    monkeypatch.setattr(release, "run", lambda args, **kw: created.append(json.loads(kw["stdin"])))
+    release.ensure_publisher_argo_access("kc", publisher_application())
+    assert created[0]["metadata"]["namespace"] == "openshift-gitops"
+    assert created[0]["rules"] == [{"apiGroups": ["argoproj.io"], "resources": ["applications"],
+                                    "resourceNames": ["troshka-dev"], "verbs": ["get", "patch"]}]
+    assert created[1]["subjects"] == [{"kind": "ServiceAccount", "name": "troshka-collector-maintenance", "namespace": "troshka-dev"}]
+    monkeypatch.setattr(release, "oc", lambda kc, verb, kind, *a, **kw: json.dumps(
+        {"items": [created[1]]} if kind == "rolebindings" else next(d for d in created if d["kind"].lower() == kind)))
+    monkeypatch.setattr(release, "run", lambda *a, **kw: pytest.fail("must not rewrite matching grants"))
+    release.ensure_publisher_argo_access("kc", publisher_application())
+
+
+def test_publisher_grant_refuses_drift_and_wrong_application(release, monkeypatch):
+    monkeypatch.setattr(release, "run", lambda *a, **kw: pytest.fail("must not mutate unapproved scope"))
+    monkeypatch.setattr(release, "oc", lambda *a, **kw: json.dumps({"rules": [{"verbs": ["*"]}]}))
+    with pytest.raises(RuntimeError, match="explicit reconciliation"):
+        release.ensure_publisher_argo_access("kc", publisher_application())
+    app = publisher_application()
+    app["spec"]["source"]["helm"]["valuesObject"]["collectorMaintenance"]["application"] = "other"
+    with pytest.raises(RuntimeError, match="scope"):
+        release.ensure_publisher_argo_access("kc", app)
+
+
+def test_publisher_never_activates_a_stale_binding(release, monkeypatch):
+    monkeypatch.setattr(release, "run", lambda *a, **kw: pytest.fail("must inspect all bindings before granting access"))
+    monkeypatch.setattr(release, "oc", lambda kc, verb, kind, *a, **kw: "" if kind == "role" else json.dumps({"subjects": []}))
+    with pytest.raises(RuntimeError, match="explicit reconciliation"):
+        release.ensure_publisher_argo_access("kc", publisher_application())
+    unexpected = {"metadata": {"name": "unexpected"}, "roleRef": {"kind": "Role", "name": "troshka-dev-collector-maintenance"}}
+    monkeypatch.setattr(release, "oc", lambda kc, verb, kind, *a, **kw: json.dumps({"items": [unexpected]}) if kind == "rolebindings" else "")
+    with pytest.raises(RuntimeError, match="Additional"):
+        release.ensure_publisher_argo_access("kc", publisher_application())
+
+
+def test_publisher_honors_parameter_precedence(release, monkeypatch):
+    app = publisher_application()
+    helm = app["spec"]["source"]["helm"]
+    helm["parameters"] = [{"name": "collectorMaintenance.enabled", "value": "false"}]
+    monkeypatch.setattr(release, "oc", lambda *a, **kw: pytest.fail("disabled publisher requires no grants"))
+    release.ensure_publisher_argo_access("kc", app)
+    helm["parameters"] = [{"name": "collectorMaintenance.enabled", "value": "true"},
+                          {"name": "collectorMaintenance.application", "value": "other"}]
+    with pytest.raises(RuntimeError, match="scope"):
+        release.ensure_publisher_argo_access("kc", app)
+    helm["parameters"][0]["forceString"] = True
+    with pytest.raises(RuntimeError, match="boolean"):
+        release.ensure_publisher_argo_access("kc", app)
+
+
 def test_missing_replica_is_not_success(release):
     with pytest.raises(RuntimeError, match="replica"):
         release.verify_deployment(deployment(), [pod("one")], {"backend": "sha256:new"})

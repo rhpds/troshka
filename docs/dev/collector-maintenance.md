@@ -47,6 +47,14 @@ Application's Helm value `collectorMaintenance.enabled=true` after installing
 the operator release and configuration. Set `collectorMaintenance.application`
 to that Application's name. The chart defaults maintenance to disabled.
 
+Run the full release workflow for the intended named release after configuring
+enablement. Its administrator connection installs or verifies the narrowly scoped
+Role/RoleBinding for that named Application in the Argo namespace before pinning
+the release. Existing grants with different rules or subjects stop the workflow
+for review. This grant is deliberately outside the application chart, so the
+AppProject can keep restricting chart resources to the application namespace.
+Before the grant exists, the publisher fails read-only and retries its next cycle.
+
 The dedicated publisher uses existing database provider identities only to read
 the named operator output Secret. It uses the protected collector TLS endpoint
 and CA, never the provider driver's insecure TLS defaults. Provider credentials

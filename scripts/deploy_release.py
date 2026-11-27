@@ -200,6 +200,85 @@ def image_parameter_patch(source, tag, expected):
     return patch
 
 
+def publisher_settings(app):
+    helm = app.get("spec", {}).get("source", {}).get("helm", {})
+    settings = dict(helm.get("valuesObject", {}).get("collectorMaintenance", {}))
+    for parameter in helm.get("parameters", []):
+        field = parameter.get("name", "").removeprefix("collectorMaintenance.")
+        if parameter.get("name") != "collectorMaintenance." + field or field not in {"enabled", "application", "argoNamespace"}:
+            continue
+        value = parameter.get("value")
+        if field == "enabled":
+            if parameter.get("forceString") or not isinstance(value, str) or value.lower() not in {"true", "false"}:
+                raise RuntimeError("Publisher enablement must be a Helm boolean")
+            value = value.lower() == "true"
+        settings[field] = value
+    if type(settings.get("enabled", False)) is not bool:
+        raise RuntimeError("Publisher enablement must be a boolean")
+    return settings
+
+
+def publisher_grants(app):
+    settings = publisher_settings(app)
+    if settings.get("enabled") is not True:
+        return []
+    namespace = app["spec"]["destination"]["namespace"]
+    application = app["metadata"]["name"]
+    argo_namespace = app["metadata"].get("namespace", "openshift-gitops")
+    if (settings.get("application", "troshka") != application
+            or settings.get("argoNamespace", "openshift-gitops") != argo_namespace):
+        raise RuntimeError("Publisher application scope differs from the release target")
+    name = namespace + "-collector-maintenance"
+    metadata = {"name": name, "namespace": argo_namespace}
+    role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata,
+            "rules": [{"apiGroups": ["argoproj.io"], "resources": ["applications"],
+                       "resourceNames": [application], "verbs": ["get", "patch"]}]}
+    binding = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata,
+               "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name},
+               "subjects": [{"kind": "ServiceAccount", "name": "troshka-collector-maintenance", "namespace": namespace}]}
+    return [(role, ("rules",)), (binding, ("roleRef", "subjects"))]
+
+
+def missing_publisher_grants(kc, documents):
+    missing = []
+    for document, fields in documents:
+        name, argo_namespace = document["metadata"]["name"], document["metadata"]["namespace"]
+        existing = oc(kc, "get", document["kind"].lower(), name, "-n", argo_namespace,
+                      "--ignore-not-found", "-o", "json")
+        if existing:
+            current = json.loads(existing)
+            if any(current.get(field) != document[field] for field in fields):
+                raise RuntimeError("Existing publisher grant requires explicit reconciliation")
+            continue
+        missing.append(document)
+    # Creating a Role also activates any preexisting bindings to its name.
+    if documents:
+        metadata = documents[0][0]["metadata"]
+        bindings = json.loads(oc(kc, "get", "rolebindings", "-n", metadata["namespace"], "-o", "json"))["items"]
+        for binding in bindings:
+            ref = binding.get("roleRef", {})
+            if (ref.get("kind") == "Role" and ref.get("name") == metadata["name"]
+                    and unapproved_publisher_binding(binding, documents[1][0])):
+                raise RuntimeError("Additional publisher role binding requires explicit reconciliation")
+    return missing
+
+
+def unapproved_publisher_binding(binding, expected):
+    return (binding["metadata"]["name"] != expected["metadata"]["name"]
+            or any(binding.get(field) != expected[field] for field in ("roleRef", "subjects")))
+
+
+def ensure_publisher_argo_access(kc, app):
+    """Install the named grant as an administrator, outside the app's chart scope."""
+    documents = publisher_grants(app)
+    if not documents:
+        return
+    for document in missing_publisher_grants(kc, documents):
+        run(["oc", f"--kubeconfig={kc}", "--request-timeout=30s", "create", "-f", "-"],
+            stdin=json.dumps(document))
+    print(f"Argo {app['metadata']['name']}: named publisher access verified", flush=True)
+
+
 def pin_application_release(kc, namespace, tag, roles=None):
     if not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", tag):
         raise RuntimeError("A named release tag starting with v is required")
@@ -213,6 +292,7 @@ def pin_application_release(kc, namespace, tag, roles=None):
         raise RuntimeError("Unexpected Argo application target")
     selected = [role for role in (APP_ROLES if roles is None else roles) if role in APP_ROLES]
     expected = {role: digest(role, tag) for role in selected}
+    ensure_publisher_argo_access(kc, app)
     patch = [{"op": "test", "path": "/metadata/resourceVersion", "value": app["metadata"]["resourceVersion"]}]
     if source.get("targetRevision") != tag:
         patch.append({"op": "add", "path": "/spec/source/targetRevision", "value": tag})
