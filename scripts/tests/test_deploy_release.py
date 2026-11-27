@@ -372,6 +372,57 @@ def test_pin_application_preserves_settings_and_overrides_existing_tag_parameter
     assert resolved == [("backend", "vtest")]
 
 
+def test_updater_annotations_pin_only_selected_image(release):
+    key = "argocd-image-updater.argoproj.io/image-list"
+    app = {"metadata": {"annotations": {key: f"backend={release.REGISTRY}backend:vold, frontend={release.REGISTRY}frontend:vold"}}}
+    patch = release.updater_annotation_patch(app, "vnew", ["backend"])
+    assert patch[0]["path"].endswith("argoproj.io~1image-list")
+    assert patch[0]["value"] == f"backend={release.REGISTRY}backend:vnew, frontend={release.REGISTRY}frontend:vold"
+
+
+def test_updater_resource_preserves_other_apps_and_rejects_shared_targets(release):
+    image = {"alias": "backend", "imageName": release.REGISTRY + "backend:vold",
+             "manifestTargets": {"helm": {"name": "backend.image.repository", "tag": "backend.image.tag"}}}
+    updater = {"spec": {"applicationRefs": [{"namePattern": "other", "images": [image]},
+                                           {"namePattern": "troshka-dev", "images": [image]}]}}
+    patch = release.updater_resource_patch(updater, "troshka-dev", "vnew", ["backend"])
+    assert patch == [{"op": "replace", "path": "/spec/applicationRefs/1/images/0/imageName", "value": release.REGISTRY + "backend:vnew"}]
+    updater["spec"]["applicationRefs"][1]["namePattern"] = "troshka*"
+    with pytest.raises(RuntimeError, match="Shared"):
+        release.updater_resource_patch(updater, "troshka-dev", "vnew", ["backend"])
+    updater["spec"]["applicationRefs"][1]["useAnnotations"] = True
+    assert release.updater_resource_patch(updater, "troshka-dev", "vnew", ["backend"]) == []
+
+
+def test_updater_rejects_unexpected_image_repository(release):
+    updater = {"spec": {"applicationRefs": [{"namePattern": "troshka", "images": [
+        {"alias": "backend", "imageName": "other/backend:vold"}]}]}}
+    with pytest.raises(RuntimeError, match="Unexpected"):
+        release.updater_resource_patch(updater, "troshka", "vnew", ["backend"])
+
+
+@pytest.mark.parametrize("mutation", ["uid", "repoURL", "path", "namespace"])
+def test_pin_revalidates_target_after_updater_changes(release, monkeypatch, mutation):
+    import copy
+    app = {"metadata": {"uid": "original", "resourceVersion": "1"}, "spec": {
+        "destination": {"namespace": "troshka"}, "source": {
+            "repoURL": "https://github.com/rhpds/troshka.git", "path": "deploy/helm"}}}
+    changed = copy.deepcopy(app)
+    if mutation == "uid":
+        changed["metadata"][mutation] = "replacement"
+    elif mutation == "namespace":
+        changed["spec"]["destination"][mutation] = "other"
+    else:
+        changed["spec"]["source"][mutation] = "other"
+    reads = iter([app, changed])
+    def oc(kc, *args):
+        assert args[0] == "get", "must not patch changed target"
+        return json.dumps(next(reads))
+    monkeypatch.setattr(release, "oc", oc)
+    with pytest.raises(RuntimeError, match="target|replaced"):
+        release.pin_application_release("kc", "troshka", "vnew", [])
+
+
 @pytest.mark.parametrize("namespace,path", [("other", "deploy/helm"), ("troshka", "other")])
 def test_pin_application_rejects_wrong_target(release, monkeypatch, namespace, path):
     calls = []
@@ -433,7 +484,7 @@ def test_pin_concurrency_conflict_is_not_retried(release, monkeypatch):
     monkeypatch.setattr(release, "oc", oc)
     with pytest.raises(subprocess.CalledProcessError):
         release.pin_application_release("kc", "troshka", "vtest", [])
-    assert len(calls) == 2
+    assert sum(args[0] == "patch" for args in calls) == 1
 
 
 def test_operator_digest_change_forces_rbac_even_after_undeployed_tag(release, monkeypatch):

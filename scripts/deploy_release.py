@@ -1,6 +1,7 @@
 """Release promotion and rollout verification used by deploy-full.sh."""
 
 import argparse
+import fnmatch
 import json
 import re
 import subprocess
@@ -279,21 +280,95 @@ def ensure_publisher_argo_access(kc, app):
     print(f"Argo {app['metadata']['name']}: named publisher access verified", flush=True)
 
 
-def pin_application_release(kc, namespace, tag, roles=None):
-    if not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", tag):
-        raise RuntimeError("A named release tag starting with v is required")
-    app = json.loads(oc(kc, "get", "applications.argoproj.io", namespace,
-                        "-n", "openshift-gitops", "-o", "json"))
+def updater_annotation_patch(app, tag, roles):
+    key = "argocd-image-updater.argoproj.io/image-list"
+    value = app.get("metadata", {}).get("annotations", {}).get(key)
+    if not value or not roles:
+        return []
+    images = [item.strip() for item in value.split(",")]
+    for role in roles:
+        prefix = f"{role}={REGISTRY}{role}:"
+        matches = [i for i, item in enumerate(images) if item.startswith(role + "=")]
+        if len(matches) != 1 or not images[matches[0]].startswith(prefix):
+            raise RuntimeError("Unexpected image updater annotation target")
+        images[matches[0]] = prefix + tag
+    updated = ", ".join(images)
+    return [] if updated == value else [{"op": "replace", "path": "/metadata/annotations/" + key.replace("/", "~1"), "value": updated}]
+
+
+def updater_image_patch(ref, index, tag, role):
+    matches = [(i, image) for i, image in enumerate(ref.get("images", [])) if image.get("alias") == role]
+    if len(matches) != 1:
+        raise RuntimeError("Expected one named updater image per release role")
+    image_index, image = matches[0]
+    expected_helm = {"name": role + ".image.repository", "tag": role + ".image.tag"}
+    if (not image.get("imageName", "").startswith(REGISTRY + role + ":")
+            or image.get("manifestTargets", {}).get("helm") != expected_helm):
+        raise RuntimeError("Unexpected image updater resource target")
+    value = REGISTRY + role + ":" + tag
+    return [] if image["imageName"] == value else [{
+        "op": "replace", "path": f"/spec/applicationRefs/{index}/images/{image_index}/imageName", "value": value}]
+
+
+def updater_resource_patch(updater, namespace, tag, roles):
+    patch = []
+    for index, ref in enumerate(updater.get("spec", {}).get("applicationRefs", [])):
+        pattern = ref.get("namePattern", "")
+        if not fnmatch.fnmatchcase(namespace, pattern) or ref.get("useAnnotations"):
+            continue
+        if pattern != namespace or ref.get("labelSelectors"):
+            raise RuntimeError("Shared image updater selector requires explicit reconciliation")
+        for role in roles:
+            patch.extend(updater_image_patch(ref, index, tag, role))
+    return patch
+
+
+def pin_image_updaters(kc, namespace, tag, roles):
+    if not roles:
+        return
+    resources = oc(kc, "api-resources", "--api-group=argocd-image-updater.argoproj.io", "-o", "name")
+    if "imageupdaters.argocd-image-updater.argoproj.io" not in resources.split():
+        return
+    kind = "imageupdaters.argocd-image-updater.argoproj.io"
+    updaters = json.loads(oc(kc, "get", kind, "-n", "openshift-gitops", "-o", "json"))["items"]
+    # Validate every matching controller before changing any of them.
+    changes = [(item, updater_resource_patch(item, namespace, tag, roles)) for item in updaters]
+    for item, patch in changes:
+        if patch:
+            patch.insert(0, {"op": "test", "path": "/metadata/resourceVersion", "value": item["metadata"]["resourceVersion"]})
+            oc(kc, "patch", kind, item["metadata"]["name"], "-n", "openshift-gitops", "--type=json", "-p", json.dumps(patch))
+
+
+def validate_application_target(app, namespace):
     spec = app.get("spec", {})
     source = spec.get("source", {})
     if (spec.get("destination", {}).get("namespace") != namespace
             or source.get("path") != "deploy/helm"
             or source.get("repoURL") != "https://github.com/rhpds/troshka.git"):
         raise RuntimeError("Unexpected Argo application target")
+
+
+def pin_application_release(kc, namespace, tag, roles=None):
+    if not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", tag):
+        raise RuntimeError("A named release tag starting with v is required")
+    app = json.loads(oc(kc, "get", "applications.argoproj.io", namespace,
+                        "-n", "openshift-gitops", "-o", "json"))
+    validate_application_target(app, namespace)
+    original_uid = app["metadata"].get("uid")
     selected = [role for role in (APP_ROLES if roles is None else roles) if role in APP_ROLES]
     expected = {role: digest(role, tag) for role in selected}
+    updater_annotation_patch(app, tag, selected)
     ensure_publisher_argo_access(kc, app)
+    pin_image_updaters(kc, namespace, tag, selected)
+    # The updater may write Helm parameters after its own target changes.
+    app = json.loads(oc(kc, "get", "applications.argoproj.io", namespace,
+                        "-n", "openshift-gitops", "-o", "json"))
+    validate_application_target(app, namespace)
+    if app["metadata"].get("uid") != original_uid:
+        raise RuntimeError("Argo application was replaced during release preparation")
+    source = app["spec"]["source"]
     patch = [{"op": "test", "path": "/metadata/resourceVersion", "value": app["metadata"]["resourceVersion"]}]
+    patch.extend(updater_annotation_patch(app, tag, selected))
     if source.get("targetRevision") != tag:
         patch.append({"op": "add", "path": "/spec/source/targetRevision", "value": tag})
     patch.extend(image_parameter_patch(source, tag, expected))

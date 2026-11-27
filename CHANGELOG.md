@@ -42,6 +42,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   dev before production, and reinstall prerequisites when the operator changes.
   Publisher access to its named Argo Application is installed by the release
   workflow, keeping application charts within their permitted namespaces.
+  Release pins also update Image Updater references so its reconciliation cannot
+  restore a previous release over the selected images.
 
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic

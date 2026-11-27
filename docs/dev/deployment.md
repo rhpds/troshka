@@ -7,7 +7,9 @@ For Argo setup or adoption of an existing dev Helm release, see
 The full release workflow explicitly pins dev and production to the same named
 release's Git revision and image digests, including carried images. Existing
 Helm image-tag parameters are updated without removing unrelated parameters or
-values. It does not depend on dev following a mutable `latest` alias. Operator
+values. Matching Image Updater resources or Application annotations follow the
+same named tag; shared resource selectors require explicit reconciliation.
+It does not depend on dev following a mutable `latest` alias. Operator
 image changes also reapply prerequisites even if an intervening release tag was
 never promoted.
 
@@ -32,7 +34,7 @@ tag, waits for the tag's image build, upgrades host prerequisites, and
 promotes that release to the existing `production`
 image tags. It also advances the production Argo application's Git revision to
 that named release, preserving its Helm settings. `main` remains the integration
-branch; Argo CD Image Updater still deploys `production` digests.
+branch; Argo CD Image Updater follows the selected named release.
 
 Release hosts are read from gitignored `scripts/deploy-hosts.local.yaml`
 (copy from `scripts/deploy-hosts.local.yaml.example`). Short names expand with
@@ -45,8 +47,8 @@ CRD/RBAC apply when those files are unchanged. Put `[rebuild-all]` in the
 release commit message to force every image rebuild.
 
 Before promotion, the script waits for any image build for the same commit on
-`main`, then aligns backend/frontend `latest` with the named release by digest.
-This prevents concurrent main/tag builds from leaving dev on different images.
+`main`, then pins backend/frontend and their Image Updater references to the
+named release. This prevents mutable aliases from changing the selected images.
 It requires dev Argo to run those exact release digests and checks every active
 app worker deployment. A failed dev check exits before changing production image
 tags. Storage verification is optional; selecting `--verify-storage`,
