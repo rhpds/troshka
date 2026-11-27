@@ -764,12 +764,13 @@ def test_wipe_vm_boot_disk_kubevirt_raises_on_timeout():
             )
 
 
-def test_validate_cancel_rejects_completed_cluster():
+@pytest.mark.parametrize("state", ["active", "stopped"])
+def test_validate_cancel_rejects_completed_cluster(state):
     from app.services.deploy_service import validate_cancel_ocp_cluster_install
 
     project = MagicMock()
     project.id = "proj-1"
-    project.state = "active"
+    project.state = state
     project.deployed_topology = {
         "clusters": [
             {"id": "source", "installOnDeploy": True, "ocpInstallStatus": "ready"}
@@ -789,6 +790,31 @@ def test_validate_cancel_rejects_completed_cluster():
             project, host, project.topology, "source"
         )
     assert err == "Cluster install already completed"
+
+
+def test_validate_cancel_allows_stopped_unfinished_cluster():
+    from app.services.deploy_service import validate_cancel_ocp_cluster_install
+
+    project = MagicMock(id="proj-1", state="stopped")
+    topology = {
+        "clusters": [
+            {"id": "source", "installOnDeploy": True, "ocpInstallStatus": "monitoring"}
+        ]
+    }
+    project.deployed_topology = topology
+    with patch(
+        "app.services.template_loader.ocp_install_via", return_value="pod"
+    ), patch(
+        "app.services.deploy_service._ops_pod_cluster_complete", return_value=False
+    ), patch(
+        "app.services.deploy_service._cluster_install_log_text", return_value=""
+    ):
+        assert (
+            validate_cancel_ocp_cluster_install(
+                project, MagicMock(), topology, "source"
+            )
+            is None
+        )
 
 
 def test_cancel_ocp_cluster_install_stops_pod_and_marks_error():

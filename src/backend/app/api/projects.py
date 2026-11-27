@@ -1779,7 +1779,7 @@ def cancel_ocp_install(
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
-    if project.state != "active":
+    if project.state not in {"active", "stopped"}:
         raise HTTPException(
             status_code=409,
             detail=f"Project is {project.state}, cannot cancel install",

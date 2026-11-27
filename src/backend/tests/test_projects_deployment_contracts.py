@@ -101,10 +101,17 @@ def test_missing_pull_secret_rejected_before_deploy_side_effects(
     db.commit.assert_not_called()
 
 
-@pytest.mark.parametrize("endpoint", [api.restart_ocp_install, api.cancel_ocp_install])
-def test_install_mutations_reject_inactive_project(context, endpoint):
+@pytest.mark.parametrize(
+    "endpoint,state",
+    [
+        (api.restart_ocp_install, "stopped"),
+        (api.cancel_ocp_install, "draft"),
+        (api.cancel_ocp_install, "cleanup_pending"),
+    ],
+)
+def test_install_mutations_reject_inactive_project(context, endpoint, state):
     project, _, db, user = context
-    project.state = "stopped"
+    project.state = state
     with pytest.raises(HTTPException) as exc:
         endpoint("project", user, db, cluster="c")
     assert exc.value.status_code == 409
@@ -184,8 +191,10 @@ def test_install_routes_relay_service_validation(
     assert exc.value.detail == "Cluster install already completed"
 
 
-def test_cancel_marks_pending_before_enqueue(context, monkeypatch):
-    _, _, db, user = context
+@pytest.mark.parametrize("state", ["active", "stopped"])
+def test_cancel_marks_pending_before_enqueue(context, monkeypatch, state):
+    project, _, db, user = context
+    project.state = state
     monkeypatch.setattr(
         "app.services.deploy_service.validate_cancel_ocp_cluster_install",
         lambda *_: None,

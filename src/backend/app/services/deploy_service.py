@@ -5549,7 +5549,7 @@ def validate_cancel_ocp_cluster_install(
 
     from app.services.template_loader import ocp_install_via
 
-    if project.state != "active":
+    if project.state not in {"active", "stopped"}:
         return f"Project is {project.state}, cannot cancel install"
     if ocp_install_via(topology) != "pod":
         return "Cancel install is only supported for pod-based installs"

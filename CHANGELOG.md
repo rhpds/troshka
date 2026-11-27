@@ -44,6 +44,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   workflow, keeping application charts within their permitted namespaces.
   Release pins also update Image Updater references so its reconciliation cannot
   restore a previous release over the selected images.
+  Abandoned pod-based OpenShift installs can also be cancelled while their
+  project is stopped, preserving VM disks and completed-cluster safeguards.
 
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic
