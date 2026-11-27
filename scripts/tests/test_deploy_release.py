@@ -121,6 +121,27 @@ def test_exec_keeps_kubernetes_flags_out_of_remote_command(release, monkeypatch)
     assert command[command.index("--") + 1 :] == ["python3", "-c", "print(1)"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_application_verifies_enabled_collector_publisher(release, monkeypatch, enabled):
+    checked = []
+    schema = (PATH.parents[1] / "src/backend/schemas/troshka-template.schema.json").read_text()
+
+    def oc(_kc, *args):
+        if args[0] == "get":
+            return "deployment/troshka-collector-maintenance" if enabled and args[2] == "troshka-collector-maintenance" else ""
+        if "load_template_schema" in args[-1]:
+            return schema
+        return "200"
+
+    monkeypatch.setattr(release, "oc", oc)
+    monkeypatch.setattr(release, "run", lambda *a, **kw: None)
+    monkeypatch.setattr(release, "wait_rollout", lambda *a: None)
+    monkeypatch.setattr(release, "verify_live", lambda kc, ns, name, expected: checked.append(name))
+    monkeypatch.setattr(release, "ensure_argo_ready", lambda *a: None)
+    release.application("kc", {"backend": "sha256:expected"}, roles=["backend"])
+    assert ("troshka-collector-maintenance" in checked) is enabled
+
+
 @pytest.mark.parametrize("kind", ["queued", "started", "deferred", "scheduled"])
 def test_idle_rejects_every_unfinished_job_registry(release, monkeypatch, kind):
     queue = {"queue": "default", "queued": 0, "started": 0, "deferred": 0, "scheduled": 0}

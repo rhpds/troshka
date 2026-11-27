@@ -37,6 +37,8 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   central publisher updates Argo configuration using verified operator outputs.
   Updates preserve rollback evidence, defer around active jobs,
   verify every consuming deployment, and hold partial attempts for review.
+  Full releases also verify the enabled maintenance publisher's image digest
+  and rollout alongside the application workers.
 
 - Project troubleshooting assistant: opt-in MaaS-backed guidance with explicit
   expiring project consent, separately approved guest checks, scoped diagnostic

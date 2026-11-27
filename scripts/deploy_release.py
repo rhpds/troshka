@@ -547,7 +547,7 @@ def application(kc, expected, namespace="troshka", image_tag="production", roles
         ("worker", "backend"),
         ("tunnel", "backend"),
     ]
-    for name in ("collection-worker", "readiness-worker"):
+    for name in ("collection-worker", "readiness-worker", "collector-maintenance"):
         if oc(kc, "get", "deployment", f"troshka-{name}", "-n", namespace, "--ignore-not-found", "-o", "name"):
             targets.append((name, "backend"))
     targets = [(name, role) for name, role in targets if role in selected]
