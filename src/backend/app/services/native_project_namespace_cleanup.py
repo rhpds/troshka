@@ -29,6 +29,7 @@ from app.services.native_namespace_client import (
 SETTLEMENT_POLL_SECONDS = 10
 # Broader teardown phases (fencing, VM/CR drain, NS terminating).
 CLEANUP_POLL_SECONDS = 60
+CLEANUP_JOB_TIMEOUT = 1200
 
 
 def request_settlement_collection(work):
@@ -59,9 +60,11 @@ def nudge_settlement(project_id):
     count = 0
     for work in with_pending:
         key = "native:namespace-cleanup:" + str(work.id)
+        if redis.get(key + ":executing") is not None:
+            continue
         redis.delete(key)
         if redis.set(key, "nudge", nx=True, ex=SETTLEMENT_POLL_SECONDS):
-            enqueue_job(reconcile, str(work.id))
+            enqueue_job(reconcile, str(work.id), job_timeout=CLEANUP_JOB_TIMEOUT)
             count += 1
     return count
 
@@ -215,7 +218,7 @@ def request(db, project, mode):
     from app.core.redis import mark_cancelled
 
     mark_cancelled(project.id)
-    enqueue_job(reconcile, str(work.id))
+    enqueue_job(reconcile, str(work.id), job_timeout=CLEANUP_JOB_TIMEOUT)
     return dict(
         status="cleanup_pending", id=project.id, mode=mode, cleanup_id=str(work.id)
     )
@@ -1025,6 +1028,28 @@ def storage_scopes(db, domain_id=None, *, settled_only=False, cleanup_id=None):
 
 
 def reconcile(cleanup_id):
+    """One RQ execution per cleanup, including across poll intervals."""
+    from rq import get_current_job
+
+    from app.core.redis import get_redis_raw
+    from app.services.native_collection_jobs import release_lease
+
+    job = get_current_job()
+    if job is None:
+        return _reconcile(cleanup_id)
+    timeout = int(job.timeout or CLEANUP_JOB_TIMEOUT)
+    origin.require(timeout > 0, "Cleanup requires a bounded job timeout")
+    redis = get_redis_raw()
+    key = "native:namespace-cleanup:" + str(cleanup_id) + ":executing"
+    if not redis.set(key, job.id, nx=True, ex=timeout + 60):
+        return
+    try:
+        return _reconcile(cleanup_id)
+    finally:
+        release_lease(redis, key, job.id)
+
+
+def _reconcile(cleanup_id):
     from app.core.database import SessionLocal
     from app.models.provider import Provider
     from app.services.providers.kubevirt import _get_k8s_clients
@@ -1090,12 +1115,14 @@ def dispatch_pending(redis, pending):
     count = 0
     for cleanup_id, phase in pending:
         key = "native:namespace-cleanup:" + cleanup_id
+        if redis.get(key + ":executing") is not None:
+            continue
         ttl = (
             SETTLEMENT_POLL_SECONDS
             if phase in {"namespace_absent", "orphan_reclaim", "settled"}
             else CLEANUP_POLL_SECONDS
         )
         if redis.set(key, "queued", nx=True, ex=ttl):
-            enqueue_job(reconcile, cleanup_id)
+            enqueue_job(reconcile, cleanup_id, job_timeout=CLEANUP_JOB_TIMEOUT)
             count += 1
     return count

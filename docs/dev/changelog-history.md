@@ -10,6 +10,7 @@ Dates below are UTC tag-creation dates (commit dates for lightweight tags). Tags
 
 | Tag | Date (UTC) | Source commit |
 | --- | --- | --- |
+| v2026.11.27-collector-maintenance-r11 | 2026-11-27 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.27-collector-maintenance-r11) |
 | v2026.11.27-collector-maintenance-r10 | 2026-11-27 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.27-collector-maintenance-r10) |
 | v2026.11.27-collector-maintenance-r9 | 2026-11-27 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.27-collector-maintenance-r9) |
 | v2026.11.27-collector-maintenance-r8 | 2026-11-27 | [release source](https://github.com/rhpds/troshka/commit/v2026.11.27-collector-maintenance-r8) |

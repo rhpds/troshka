@@ -481,6 +481,69 @@ def test_settlement_phases_poll_faster_than_teardown():
         assert cleanup.dispatch_pending(redis, [("ns-absent", "namespace_absent")]) == 0
 
 
+def test_cleanup_dispatch_does_not_overlap_active_execution():
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    redis = RedisMemory()
+    redis.set("native:namespace-cleanup:cid:executing", "worker", ex=1200)
+    redis.now = 61
+    with patch("app.core.redis.enqueue_job") as enqueue:
+        assert cleanup.dispatch_pending(redis, [("cid", "fencing")]) == 0
+        enqueue.assert_not_called()
+
+
+def test_duplicate_cleanup_job_never_enters_database(monkeypatch):
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    redis = RedisMemory()
+    redis.set("native:namespace-cleanup:cid:executing", "original", ex=1200)
+    monkeypatch.setattr("app.core.redis.get_redis_raw", lambda: redis)
+    monkeypatch.setattr(
+        "rq.get_current_job", lambda: SimpleNamespace(id="duplicate", timeout=1200)
+    )
+    database = MagicMock(side_effect=AssertionError("duplicate entered database"))
+    monkeypatch.setattr("app.core.database.SessionLocal", database)
+    cleanup.reconcile("cid")
+    database.assert_not_called()
+    assert redis.get("native:namespace-cleanup:cid:executing") == "original"
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "replacement"])
+def test_cleanup_execution_lease_spans_poll_interval_and_releases_only_owner(
+    monkeypatch, outcome
+):
+    from app.services import native_project_namespace_cleanup as cleanup
+
+    redis = RedisMemory()
+    key = "native:namespace-cleanup:cid:executing"
+    monkeypatch.setattr("app.core.redis.get_redis_raw", lambda: redis)
+    monkeypatch.setattr(
+        "rq.get_current_job", lambda: SimpleNamespace(id="owner", timeout=1200)
+    )
+    calls = []
+
+    def work(cleanup_id):
+        calls.append(cleanup_id)
+        redis.now = 61
+        assert redis.get(key) == "owner"
+        cleanup.reconcile(cleanup_id)
+        if outcome == "error":
+            raise RuntimeError("provider unavailable")
+        if outcome == "replacement":
+            redis.now = 1261
+            assert redis.get(key) is None
+            redis.set(key, "replacement", ex=1260)
+
+    monkeypatch.setattr(cleanup, "_reconcile", work)
+    if outcome == "error":
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            cleanup.reconcile("cid")
+    else:
+        cleanup.reconcile("cid")
+    assert calls == ["cid"]
+    assert redis.get(key) == ("replacement" if outcome == "replacement" else None)
+
+
 def test_successful_cleanup_collection_nudges_settlement(monkeypatch):
     redis = RedisMemory()
     nudged = MagicMock(return_value=1)

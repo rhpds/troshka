@@ -32,6 +32,9 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   identities on the collector worker before finalizing. Name-only orphan targets
   remain pending instead of treating image IDs as names or claiming reclamation
   from incomplete reads.
+  Cleanup retries use one bounded execution lease per request, preventing
+  overlapping retention attempts. Fenced VM create/update retry counters and
+  schedules no longer invalidate otherwise unchanged storage observations.
   An explicit map-retirement recovery can independently verify already released
   projects, preserve shared images, and retain absence receipts without inventing
   collector settlement reports or deleting provider resources.

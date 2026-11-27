@@ -1786,17 +1786,21 @@ def test_retention_inventory_keeps_storage_and_producer_status(kind, field):
 
 
 @pytest.mark.parametrize(
-    "kind,handler",
+    "kind,handler,purpose",
     [
-        ("TroshkaProject", "project_managed_power_resume"),
-        ("TroshkaNetwork", "network_resume"),
+        ("TroshkaProject", "project_managed_power_resume", "resume"),
+        ("TroshkaNetwork", "network_resume", "resume"),
+        ("TroshkaVM", "vm_create", "create"),
+        ("TroshkaVM", "vm_update", "update"),
     ],
 )
-def test_retention_comparison_only_ignores_exact_fenced_retry_schedule(kind, handler):
+def test_retention_comparison_only_ignores_exact_fenced_retry_schedule(
+    kind, handler, purpose
+):
     from app.services.native_cleanup_storage import _same_inventory
 
     progress = dict(
-        purpose="resume",
+        purpose=purpose,
         message="namespace_cleanup_production_fenced",
         success=False,
         failure=False,

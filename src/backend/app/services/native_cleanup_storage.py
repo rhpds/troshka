@@ -128,12 +128,12 @@ def _inventory(db, api, work):
     return rows
 
 
-def _retry_progress(value):
+def _retry_progress(value, purpose="resume"):
     origin.require(isinstance(value, dict), "Cleanup handler progress invalid")
     # This handler keeps retrying while the namespace fence rejects production.
     # Only its retry schedule/counter are volatile; lifecycle/outcome stays pinned.
     if (
-        value.get("purpose") == "resume"
+        value.get("purpose") == purpose
         and value.get("message") == "namespace_cleanup_production_fenced"
         and value.get("success") is False
         and value.get("failure") is False
@@ -151,19 +151,21 @@ def _comparison_object(row):
     meta = value["metadata"]
     meta.pop("resourceVersion", None)
     meta.pop("managedFields", None)
-    handler = {
-        "TroshkaProject": "project_managed_power_resume",
-        "TroshkaNetwork": "network_resume",
-    }.get(value["kind"])
-    if handler is None:
-        return value
-    annotation = "kopf.zalando.org/" + handler
+    handlers = {
+        "TroshkaProject": (("project_managed_power_resume", "resume"),),
+        "TroshkaNetwork": (("network_resume", "resume"),),
+        "TroshkaVM": (("vm_create", "create"), ("vm_update", "update")),
+    }.get(value["kind"], ())
     annotations = meta.get("annotations", {})
-    if annotation in annotations:
-        annotations[annotation] = _retry_progress(json.loads(annotations[annotation]))
     progress = value.get("status", {}).get("kopf", {}).get("progress", {})
-    if handler in progress:
-        progress[handler] = _retry_progress(progress[handler])
+    for handler, purpose in handlers:
+        annotation = "kopf.zalando.org/" + handler
+        if annotation in annotations:
+            annotations[annotation] = _retry_progress(
+                json.loads(annotations[annotation]), purpose
+            )
+        if handler in progress:
+            progress[handler] = _retry_progress(progress[handler], purpose)
     return value
 
 
