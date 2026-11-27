@@ -250,6 +250,72 @@ def test_namespace_delete_has_independent_budget_and_rechecks_fence(
         assert ("Namespace", q.namespace, False) in q.calls
 
 
+@pytest.mark.parametrize("phase", ["retention", "vm_drain"])
+@pytest.mark.parametrize("changed_ack", [False, True])
+def test_drain_phases_have_independent_budgets_and_recheck_fence(
+    namespace_case, monkeypatch, phase, changed_ack
+):
+    q = namespace_case
+    q.request()
+    q.advance()
+    expired = [False]
+    get, rows = q.api.get, q.api.rows
+
+    def bounded(method, *args):
+        if expired[0]:
+            raise AccountingUnavailable("Native origin inventory budget exceeded")
+        return method(*args)
+
+    def fresh():
+        if expired[0] and changed_ack:
+            q.values["Namespace", q.namespace]["metadata"]["annotations"].pop(ACK)
+        expired[0] = False
+        return q.api
+
+    monkeypatch.setattr(q.api, "get", lambda *a: bounded(get, *a))
+    monkeypatch.setattr(q.api, "rows", lambda *a: bounded(rows, *a))
+    monkeypatch.setattr(q.api, "new_observation", fresh)
+    name = "_ensure_teardown_coverage" if phase == "retention" else "_remove_vms"
+    preceding = getattr(cleanup, name)
+
+    def slow(*args):
+        result = preceding(*args)
+        expired[0] = True
+        return result
+
+    monkeypatch.setattr(cleanup, name, slow)
+    if changed_ack:
+        with pytest.raises(AccountingUnavailable, match="acknowledgement unavailable"):
+            q.advance()
+        prohibited = {"Namespace", *OWN_KINDS}
+        if phase == "retention":
+            prohibited.add("VirtualMachine")
+        assert not any(kind in prohibited for kind, _, _ in q.calls)
+    else:
+        assert q.advance().phase == "namespace_delete_requested"
+        assert ("Namespace", q.namespace, False) in q.calls
+
+
+def test_cr_drain_rechecks_vm_absence_after_phase_boundary(namespace_case, monkeypatch):
+    q = namespace_case
+    original_vm = deepcopy(
+        next(v for (kind, _), v in q.values.items() if kind == "VirtualMachine")
+    )
+    remove_vms = cleanup._remove_vms
+
+    def recreate(*args):
+        result = remove_vms(*args)
+        q.values["VirtualMachine", original_vm["metadata"]["name"]] = original_vm
+        return result
+
+    q.request()
+    q.advance()
+    monkeypatch.setattr(cleanup, "_remove_vms", recreate)
+    with pytest.raises(AccountingUnavailable, match="VM/VMI remains"):
+        q.advance()
+    assert not any(kind in OWN_KINDS or kind == "Namespace" for kind, _, _ in q.calls)
+
+
 def pending_orphan(q, monkeypatch):
     """Persist the real pre-delete inventory and request, then finish our duties."""
     owned = [v for (kind, _), v in q.values.items() if kind in OWN_KINDS]

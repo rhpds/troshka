@@ -623,7 +623,19 @@ def _diagnostic(row):
     )
 
 
+def _drain_observation(api, work):
+    """Start one bounded drain phase only after independently rechecking its fence."""
+    api = api.new_observation()
+    namespace = _namespace(api, work.authority)
+    origin.require(
+        namespace is not None and _acknowledged(api, work, namespace),
+        "Namespace fence acknowledgement unavailable",
+    )
+    return api
+
+
 def _remove_vms(db, api, work):
+    api = _drain_observation(api, work)
     targets = _targets(api, work, ("VirtualMachine",))
     previous = {t.name: t.uid for t in work.vm_targets}
     origin.require(
@@ -655,6 +667,12 @@ def _remove_vms(db, api, work):
 
 def _remove_own_crs(db, api, work):
     """Finish only our finalizers before namespace GC removes their RBAC."""
+    api = _drain_observation(api, work)
+    origin.require(
+        not api.rows("VirtualMachine", work.authority.namespace)
+        and not api.rows("VirtualMachineInstance", work.authority.namespace),
+        "Project VM/VMI remains",
+    )
     targets = _targets(api, work, OWN_KINDS)
     previous = {(t.kind, t.name): t.uid for t in work.cr_targets}
     origin.require(
