@@ -1,7 +1,7 @@
 """Terminal whole-project storage proof and map-based orphan reclaim.
 
-Project rows are released after namespace absence. Known private images are
-reclaimed asynchronously on the durable cleanup row without collector settlement.
+Project rows are released after namespace absence. Retained storage identities
+are verified asynchronously by the collector worker without fabricating reports.
 """
 
 from typing import TYPE_CHECKING
@@ -214,8 +214,7 @@ def load_work(db, cleanup_id):
 
 
 def reclaim_orphans(db, cleanup_id, *, core_api=None):
-    """Bounded known-ID / soft-target reclaim; finalize when the map is clear."""
-    from app.models.provider import Provider
+    """Dispatch identity-based absence verification on the credentialed worker."""
     from app.services import native_orphan_reclaim as orphans
     from app.services import native_project_namespace_cleanup as cleanup
     from app.services.native_teardown_map import reclaim_targets
@@ -230,21 +229,15 @@ def reclaim_orphans(db, cleanup_id, *, core_api=None):
     if not private and not soft:
         return orphans.finalize_if_clear(db, work, [])
 
-    client = None
-    if core_api is None:
-        from app.services.providers.kubevirt import _get_k8s_clients
-
-        provider = db.get(Provider, str(work.authority.provider_id))
-        db.commit()
-        core_api, _, client = _get_k8s_clients(provider)
-        _, work = cleanup._locked(db, cleanup_id)
-    try:
-        remaining = orphans.attempt(db, work, core_api=core_api)
-    finally:
-        if client is not None and hasattr(client, "close"):
-            client.close()
-    _, work = cleanup._locked(db, cleanup_id)
-    return orphans.finalize_if_clear(db, work, remaining)
+    origin.require(
+        not soft
+        and work.authority.domain_id is not None
+        and work.authority.root is not None,
+        "Verified storage identities required for orphan retirement",
+    )
+    db.commit()
+    cleanup.request_settlement_collection(work)
+    return work
 
 
 def settle(db, cleanup_id, api=None, *, core_api=None):

@@ -2,9 +2,12 @@
 
 Prefer the automatic map-based delete path: metering stops when delete is
 accepted, the Project row is released after namespace absence, and known private
-RBD images are reclaimed asynchronously on the durable cleanup row
-(`orphan_reclaim` → `finalized`). Collector settlement reports are optional
-audit, not a gate.
+RBD image IDs are verified asynchronously on the collector worker
+(`orphan_reclaim` → `finalized`). Completion requires independent namespace,
+private-image directory/trash absence, and shared-ancestry survival evidence.
+Active private images and name-only targets remain pending for investigation;
+an image ID is never treated as an image name. Collector settlement reports
+remain optional audit and are not fabricated by this path.
 
 Use this recovery only when an authorized manual deletion already removed the
 Project row and left a finalized `NativeProjectNamespaceCleanup` record with

@@ -213,7 +213,7 @@ def verify_namespace(kube, root, *, expected=None, accounting_only=False):
     )
 
 
-def verify_namespace_ownership(kube, root, *, producers=()):
+def verify_namespace_ownership(kube, root, *, producers=(), require_mounts=False):
     """Scoped retention checks ownership, without claiming settled runtime custody."""
     from app.services.native_managed_power import helpers
     from app.services.quota_cleanup import _namespace_rows
@@ -243,6 +243,8 @@ def verify_namespace_ownership(kube, root, *, producers=()):
         )
         if module.cleanup_bootstrap(value, by_uid) is None:
             module.verify_chain(value, live, by_uid)
+    if require_mounts:
+        module.verify_mounts(full)
     return pins
 
 

@@ -31,7 +31,10 @@ def validate_state(db, intent, mode, expected):
     """Only the exact pre-delete cancelled request may acquire initial custody."""
     from app.services import native_project_namespace_cleanup as cleanup
 
-    origin.require(mode == "complete", "Cleanup custody requires complete verification")
+    origin.require(
+        mode in {"complete", "cleanup"},
+        "Cleanup custody requires complete storage verification",
+    )
     custody._active_identity(db, intent)
     # Publication already holds all enrollment identities in canonical order.
     # Do not re-enter cleanup.fence here: it would lock the target identity
@@ -181,7 +184,7 @@ def recover(db, api, work):
     expected = work.model_dump(mode="json")
     inventory = _inventory(db, api, work)
     prepared = custody.prepare(
-        db, str(work.authority.source_id), mode="complete", cleanup_read_state=expected
+        db, str(work.authority.source_id), mode="cleanup", cleanup_read_state=expected
     )
     db.commit()
     verified = custody.verify_configured(prepared)

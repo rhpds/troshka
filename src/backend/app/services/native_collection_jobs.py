@@ -274,7 +274,30 @@ def _invoke_runtime(domain_id, project_id, readiness, *, observation_only=False)
 
     if observation_only:
         return run_collection(domain_id, project_id, observation_only=True)
+    job = get_current_job()
+    if project_id is not None and job is not None and job.origin == "native_cleanup":
+        retired = _retire_released_project(domain_id, project_id)
+        if retired is not None:
+            return retired
     return run_collection(domain_id, project_id)
+
+
+def _retire_released_project(domain_id, project_id):
+    from app.services.native_map_retirement import reconcile_configured
+    from app.services.native_project_namespace_cleanup import states_for_project
+
+    pending = [w for w in states_for_project(project_id) if w.phase == "orphan_reclaim"]
+    if not pending:
+        return None
+    if len(pending) != 1 or str(pending[0].authority.domain_id) != str(domain_id):
+        raise ValueError("Released cleanup scope is ambiguous or changed")
+    reconcile_configured(
+        str(pending[0].id),
+        administrator="troshka-cleanup-worker",
+        reason="Durable project release followed by independent namespace and storage absence proof",
+        apply=True,
+    )
+    return "retired"
 
 
 def _run_collection_job(

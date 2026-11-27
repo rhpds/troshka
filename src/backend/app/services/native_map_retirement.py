@@ -11,16 +11,22 @@ PHASE = "map-storage-verified"
 
 
 def _source(db, work):
+    from app.services.native_teardown_map import reclaim_targets
+
     require(
-        work.mode == "delete"
+        work.mode in {"delete", "undeploy"}
         and work.phase in {"orphan_reclaim", "finalized"}
         and work.namespace_delete_at is not None
         and not work.liabilities.unresolved,
         "Map retirement requires released cleanup with resolved identities",
     )
     require(
-        db.get(Project, str(work.authority.project_id)) is None,
+        work.mode == "undeploy"
+        or db.get(Project, str(work.authority.project_id)) is None,
         "Map retirement project still exists",
+    )
+    require(
+        not reclaim_targets(db, work), "Unresolved name-only storage targets remain"
     )
     evidence = {}
     for phase in ("namespace_absent", "project-released"):
@@ -32,6 +38,13 @@ def _source(db, work):
         if row is None or row.digest != digest(row.payload):
             raise ValueError("Map retirement release evidence unavailable")
         evidence[phase] = row.digest
+        if phase == "project-released" and work.mode == "undeploy":
+            require(
+                row.payload.get("mode") == "undeploy"
+                and row.payload.get("project_id") == str(work.authority.project_id)
+                and row.payload.get("liability_digest") == work.liability_digest,
+                "Undeploy release evidence changed",
+            )
     # Active siblings may resolve enrollment through settled_keys again. Verify
     # this retained receipt's scope without traversing unrelated live authority.
     scopes = cleanup.storage_scopes(db, cleanup_id=work.id)
@@ -91,6 +104,7 @@ def settled_keys(db):
 
 def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
     from app.core.database import SessionLocal
+    from app.services.native_collection_jobs import assert_collection_lease
     from app.services.native_managed_collector import anchored
 
     with SessionLocal() as db:
@@ -107,6 +121,7 @@ def reconcile_configured(cleanup_id, *, administrator, reason, apply=False):
         )
         if not apply:
             return {"status": "verified_dry_run", "root_key": root_key(scope.root)}
+        assert_collection_lease()
         key = record(
             db, work, inventory, images, administrator=administrator, reason=reason
         )

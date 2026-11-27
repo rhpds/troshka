@@ -8,6 +8,11 @@ fixes. Remaining deletion acceptance and release gates stay in
 
 ## Map-based delete (November 20, 2026)
 
+November 27 correction: released delete and undeploy requests now dispatch
+immutable-ID absence verification to the credentialed collector worker.
+Name-only targets and still-present private images remain pending; the lifecycle
+worker does not infer absence from a failed lookup or directly reclaim by name.
+
 Implemented: stop meter on delete request; seal a teardown map before NS drain;
 release the Project after namespace absence; reclaim known private images on
 `orphan_reclaim` without collector settlement. Soft coverage debts no longer

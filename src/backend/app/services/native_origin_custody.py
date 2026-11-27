@@ -232,12 +232,22 @@ def prepare(
     *,
     domain_id=None,
     mode: Literal[
-        "enroll", "removal", "complete", "retirement", "producer", "snapshot-reconcile"
+        "enroll",
+        "removal",
+        "complete",
+        "cleanup",
+        "retirement",
+        "producer",
+        "snapshot-reconcile",
     ] = "complete",
     pvc_uids=(),
     producer=None,
     cleanup_read_state=None,
 ):
+    require(
+        mode != "cleanup" or cleanup_read_state is not None,
+        "Cleanup custody requires retained cancellation fence",
+    )
     row = db.get(NativeDeploymentOriginIntent, str(intent_id))
     require(row is not None, "Origin intent missing")
     intent = origin._validated(row, OriginIntent)
@@ -373,6 +383,8 @@ def _storage(kube, prepared):
         len({v["metadata"]["uid"] for v in pvcs}) == len(pvcs),
         "Origin duplicate claim identity",
     )
+    if prepared.mode == "cleanup":
+        _cleanup_claim_coverage(pvcs, pvs, prepared.root.namespace)
     selected = set(prepared.pvc_uids)
     if prepared.mode in {"removal", "producer"}:
         pvcs = [v for v in pvcs if v["metadata"]["uid"] in selected]
@@ -405,6 +417,17 @@ def _storage(kube, prepared):
         )
         bindings.append(binding)
     return sorted(bindings, key=digest), sorted(pending, key=digest), names
+
+
+def _cleanup_claim_coverage(pvcs, pvs, namespace):
+    claims = {p["metadata"]["uid"]: p["metadata"]["name"] for p in pvcs}
+    for pv in pvs:
+        ref = pv.get("spec", {}).get("claimRef", {})
+        if ref.get("namespace") == namespace:
+            require(
+                ref.get("uid") in claims and claims[ref["uid"]] == ref.get("name"),
+                "Cleanup PV references a missing or replaced claim",
+            )
 
 
 def _claim_volume(pvc, pvs, namespace):
@@ -461,11 +484,12 @@ def verify(request, kube_readers, backend):
     _live_root(kube, prepared)
     bindings, pending, names, objects, ancestry = [], [], {}, [], []
     facts = snapshots.prepare_facts(prepared, None, "observation")
+    ownership_checks = {"require_mounts": True} if prepared.mode == "cleanup" else {}
     if prepared.mode != "enroll":
         bindings, pending, names = _storage(kube, prepared)
         facts = snapshots.observe(prepared, kube, backend, bindings)
         objects = online.verify_namespace_ownership(
-            kube, prepared.root, producers=facts.producers
+            kube, prepared.root, producers=facts.producers, **ownership_checks
         )
         _claim_coverage(prepared, objects, names)
         if bindings:
@@ -487,7 +511,7 @@ def verify(request, kube_readers, backend):
         require(
             objects
             == online.verify_namespace_ownership(
-                kube, prepared.root, producers=facts.producers
+                kube, prepared.root, producers=facts.producers, **ownership_checks
             ),
             "Origin namespace changed during verification",
         )
@@ -497,14 +521,15 @@ def verify(request, kube_readers, backend):
             "Origin snapshot facts changed during verification",
         )
         facts = rechecked
-    if prepared.mode == "complete":
+    if prepared.mode in {"complete", "cleanup"}:
         require(not pending, "Origin unresolved claims prevent complete custody")
         require(
             not snapshots.outstanding(facts),
             "Origin snapshot debt prevents complete custody",
         )
-        objects = online.verify_namespace(kube, prepared.root)
-        online.verify_namespace(kube, prepared.root, expected=objects)
+        if prepared.mode == "complete":
+            objects = online.verify_namespace(kube, prepared.root)
+            online.verify_namespace(kube, prepared.root, expected=objects)
         require(
             (bindings, pending, names) == _storage(kube, prepared),
             "Origin storage changed during namespace verification",
@@ -542,7 +567,7 @@ def _claim_coverage(prepared, objects, names):
         all(observed.get(uid) == name for uid, name in names.items()),
         "Origin namespace storage identity changed",
     )
-    if prepared.mode == "complete":
+    if prepared.mode in {"complete", "cleanup"}:
         require(observed == names, "Origin namespace claim coverage incomplete")
 
 
@@ -839,7 +864,7 @@ def _combined(db, value, previous, enrollment_id):
         "Origin retained PVC name changed",
     )
     names.update(value.pvc_names)
-    if value.prepared.mode == "complete":
+    if value.prepared.mode in {"complete", "cleanup"}:
         retired = _retired_uids(db, old) if old else set()
         require(
             {digest(_binding_identity(b)) for b in bindings if b.pvc_uid not in retired}

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, model_serializer
+from pydantic import Field, model_serializer, model_validator
 
 from app.schemas.kubevirt_storage import (
     BindingRetirementReference,
@@ -47,11 +47,23 @@ class OriginCustodyRequest(SnapshotFacts):
     profile_digest: str
     admission_digest: str
     mode: Literal[
-        "enroll", "removal", "complete", "retirement", "producer", "snapshot-reconcile"
+        "enroll",
+        "removal",
+        "complete",
+        "cleanup",
+        "retirement",
+        "producer",
+        "snapshot-reconcile",
     ]
     pvc_uids: list[Text] = Field(default_factory=list, max_length=100)
     snapshot_read_state: dict | None = None
     cleanup_read_state: dict | None = None
+
+    @model_validator(mode="after")
+    def cleanup_requires_fence(self):
+        if self.mode == "cleanup" and self.cleanup_read_state is None:
+            raise ValueError("Cleanup custody requires retained cancellation fence")
+        return self
 
     @model_serializer(mode="wrap")
     def legacy(self, handler):

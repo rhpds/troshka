@@ -26,6 +26,12 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   domain UUID discovery, retaining strict VM, IP, and workload shape checks.
   Full releases require collector enrollment and transport coverage for every
   configured native host; storage accounting scans remain separately opt-in.
+  Cancelled deployments can retain cleanup-only storage custody without becoming
+  eligible to run; missing claims, ownership changes, and producer fences still
+  block teardown. Released delete and undeploy requests verify immutable storage
+  identities on the collector worker before finalizing. Name-only orphan targets
+  remain pending instead of treating image IDs as names or claiming reclamation
+  from incomplete reads.
   An explicit map-retirement recovery can independently verify already released
   projects, preserve shared images, and retain absence receipts without inventing
   collector settlement reports or deleting provider resources.

@@ -1478,6 +1478,66 @@ def legacy_missing_custody(q, monkeypatch):
     return q.advance()
 
 
+def test_cleanup_rejects_referenced_claim_and_pv_missing_before_fence(
+    origin_namespace_case, monkeypatch
+):
+    q = origin_namespace_case
+    vm = next(v for (k, _), v in q.values.items() if k == "VirtualMachine")
+    name = next(
+        v["metadata"]["name"]
+        for (k, _), v in q.values.items()
+        if k == "PersistentVolumeClaim"
+    )
+    vm["spec"]["template"]["spec"]["volumes"].append(
+        {"name": "retained-disk", "persistentVolumeClaim": {"claimName": name}}
+    )
+    pvc = q.values.pop(("PersistentVolumeClaim", name))
+    remaining = [
+        p
+        for p in q.reader.pvs()
+        if p.get("spec", {}).get("claimRef", {}).get("uid") != pvc["metadata"]["uid"]
+    ]
+    monkeypatch.setattr(q.reader, "pvs", lambda: remaining)
+    q.values.pop(("PersistentVolume", "retained-pv"))
+    q.request()
+    from app.services.native_managed_power import helpers
+
+    with pytest.raises(helpers().ManagedPowerError, match="managed_claim_missing"):
+        q.advance()
+        q.advance()
+    assert not q.calls
+
+
+@pytest.mark.parametrize("unsettled", ["project", "child"])
+def test_cancelled_cleanup_retains_storage_without_runtime_custody(
+    origin_namespace_case, unsettled
+):
+    from app.models.native_origin_custody import NativeOriginCustodyReceipt
+    from app.schemas.native_origin_custody import OriginCustodyReceipt
+    from app.services import native_origin_custody as custody
+    from app.services.native_managed_power import helpers
+
+    q = origin_namespace_case
+    kind = "TroshkaProject" if unsettled == "project" else "TroshkaVM"
+    resource = next(v for (k, _), v in q.values.items() if k == kind)
+    if unsettled == "project":
+        resource["status"]["phase"] = "Deploying"
+    else:
+        resource["status"]["observedGeneration"] = 0
+    with pytest.raises(helpers().ManagedPowerError):
+        custody.verify(origin_support.prepare(q), q.readers, q.backend)
+    with pytest.raises(ValueError, match="cancellation fence"):
+        origin_support.prepare(q, mode="cleanup")
+    q.request()
+    q.advance()
+    q.advance()
+    with q.sessions() as db:
+        row = db.query(NativeOriginCustodyReceipt).one()
+        receipt = OriginCustodyReceipt.model_validate(row.payload)
+        assert receipt.bindings
+        assert receipt.complete is False
+
+
 def test_cancelled_missing_custody_recovers_atomically_and_reacks(
     origin_namespace_case, monkeypatch
 ):

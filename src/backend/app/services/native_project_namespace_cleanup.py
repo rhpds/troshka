@@ -1059,6 +1059,10 @@ def reconcile(cleanup_id):
 
             db.rollback()
             _, work = _locked(db, cleanup_id)
+            if work.phase == "finalized":
+                # A collector may have recorded immutable retirement evidence
+                # while this worker was waiting on provider I/O.
+                return
             reason = (
                 str(error)
                 if isinstance(error, AccountingUnavailable)
