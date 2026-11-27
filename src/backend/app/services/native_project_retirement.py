@@ -140,6 +140,10 @@ def release_after_namespace(db, cleanup_id, api=None):
         _, _, client = _get_k8s_clients(provider)
         api = NamespaceClient(client)
         project, work = cleanup._locked(db, cleanup_id)
+    else:
+        # Settlement independently checks absence after the preceding drain.
+        # Never inherit that phase's exhausted observation budget.
+        api = api.new_observation()
     try:
         origin.require(
             api.get("Namespace", None, work.authority.namespace) is None,

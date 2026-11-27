@@ -26,7 +26,7 @@ commits are preserved in the [historical index](docs/dev/changelog-history.md).
   domain UUID discovery, retaining strict VM, IP, and workload shape checks.
   Legacy installer cleanup also recognizes topology-bound recert credential
   files left after installer pod removal, retaining exact Secret identity checks.
-  VM drain, CR drain, and final namespace deletion use separate bounded
+  VM drain, CR drain, final namespace deletion, and project release use separate bounded
   observation phases, rechecking the fence and resource absence after slower
   retention and earlier drain work.
   Full releases require collector enrollment and transport coverage for every

@@ -316,6 +316,47 @@ def test_cr_drain_rechecks_vm_absence_after_phase_boundary(namespace_case, monke
     assert not any(kind in OWN_KINDS or kind == "Namespace" for kind, _, _ in q.calls)
 
 
+@pytest.mark.parametrize("namespace_reappeared", [False, True])
+@pytest.mark.parametrize("pv_leftover", [False, True])
+def test_settlement_reobserves_absence_with_independent_budget(
+    namespace_case, namespace_reappeared, pv_leftover
+):
+    from app.services.native_project_retirement import settle
+
+    q = namespace_case
+    original_namespace = deepcopy(q.values["Namespace", q.namespace])
+    q.request()
+    q.advance()
+    q.advance()
+    assert q.advance().phase == "namespace_absent"
+    if not pv_leftover:
+        for key in list(q.values):
+            if key[0] == "PersistentVolume":
+                q.values.pop(key)
+
+    class ExpiredObservation:
+        def get(self, *args):
+            raise AccountingUnavailable("Native origin inventory budget exceeded")
+
+        def new_observation(self):
+            if namespace_reappeared:
+                q.values["Namespace", q.namespace] = original_namespace
+            return q.api
+
+    with q.sessions() as db:
+        if namespace_reappeared or pv_leftover:
+            message = (
+                "Namespace still present" if namespace_reappeared else "PV leftovers"
+            )
+            with pytest.raises(AccountingUnavailable, match=message):
+                settle(db, q.cleanup_id, api=ExpiredObservation())
+            assert db.get(Project, q.project_id).state == "cleanup_pending"
+        else:
+            assert (
+                settle(db, q.cleanup_id, api=ExpiredObservation()).phase == "finalized"
+            )
+
+
 def pending_orphan(q, monkeypatch):
     """Persist the real pre-delete inventory and request, then finish our duties."""
     owned = [v for (kind, _), v in q.values.items() if kind in OWN_KINDS]
