@@ -287,10 +287,14 @@ def test_stage_dev_rejects_destination_digest_mismatch(release, monkeypatch):
         release.stage_dev_images("vtest")
 
 
-def test_pin_application_changes_only_git_revision_with_concurrency_guard(release, monkeypatch):
+def test_pin_application_preserves_settings_and_overrides_existing_tag_parameters(release, monkeypatch):
     app = {"metadata": {"resourceVersion": "123"}, "spec": {
         "destination": {"namespace": "troshka"},
-        "source": {"path": "deploy/helm", "targetRevision": "vold", "helm": {"parameters": [{"name": "worker.replicas", "value": "100"}]}},
+        "source": {"repoURL": "https://github.com/rhpds/troshka.git", "path": "deploy/helm", "targetRevision": "vtest",
+                   "helm": {"valuesObject": {"secret": "SENTINEL_VALUES", "backend": {"image": {"tag": "latest"}}}, "parameters": [  # pragma: allowlist secret
+                       {"name": "secret.override", "value": "SENTINEL_PARAMETER"},
+                       {"name": "backend.image.tag", "value": "vold", "forceString": True},
+                       {"name": "frontend.image.tag", "value": "vold"}]}},
     }}
     calls = []
 
@@ -299,13 +303,15 @@ def test_pin_application_changes_only_git_revision_with_concurrency_guard(releas
         return json.dumps(app)
 
     monkeypatch.setattr(release, "oc", oc)
-    release.pin_application_release("kc", "troshka", "vtest")
+    resolved = []
+    monkeypatch.setattr(release, "digest", lambda role, tag: resolved.append((role, tag)) or "sha256:new")
+    release.pin_application_release("kc", "troshka", "vtest", ["backend"])
     patch_call = calls[-1]
     patch = json.loads(patch_call[patch_call.index("-p") + 1])
-    assert patch == [
-        {"op": "test", "path": "/metadata/resourceVersion", "value": "123"},
-        {"op": "replace", "path": "/spec/source/targetRevision", "value": "vtest"},
-    ]
+    assert patch[0] == {"op": "test", "path": "/metadata/resourceVersion", "value": "123"}
+    assert patch[1:] == [{"op": "add", "path": "/spec/source/helm/parameters/1/value", "value": "vtest@sha256:new"}]
+    assert "SENTINEL" not in json.dumps(patch)
+    assert resolved == [("backend", "vtest")]
 
 
 @pytest.mark.parametrize("namespace,path", [("other", "deploy/helm"), ("troshka", "other")])
@@ -320,6 +326,63 @@ def test_pin_application_rejects_wrong_target(release, monkeypatch, namespace, p
     with pytest.raises(RuntimeError, match="target"):
         release.pin_application_release("kc", "troshka", "vtest")
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("roles", [None, []])
+def test_pin_creates_missing_helm_parameters_and_honors_empty_roles(release, monkeypatch, roles):
+    app = {"metadata": {"resourceVersion": "9"}, "spec": {"destination": {"namespace": "troshka-dev"},
+        "source": {"repoURL": "https://github.com/rhpds/troshka.git", "path": "deploy/helm", "targetRevision": "main"}}}
+    calls = []
+    monkeypatch.setattr(release, "oc", lambda kc, *args: calls.append(args) or json.dumps(app))
+    resolved = []
+    monkeypatch.setattr(release, "digest", lambda role, tag: resolved.append(role) or "sha256:new")
+    release.pin_application_release("dev", "troshka-dev", "vtest", roles)
+    patch = json.loads(calls[-1][-1])
+    assert patch[1] == {"op": "add", "path": "/spec/source/targetRevision", "value": "vtest"}
+    assert resolved == (["backend", "frontend"] if roles is None else [])
+    assert any(p["path"] == "/spec/source/helm" for p in patch) is (roles is None)
+
+
+def test_pin_rejects_wrong_repository_before_resolving_images(release, monkeypatch):
+    monkeypatch.setattr(release, "oc", lambda *a: json.dumps({"spec": {
+        "destination": {"namespace": "troshka"}, "source": {"path": "deploy/helm", "repoURL": "https://other"}}}))
+    monkeypatch.setattr(release, "digest", lambda *a: pytest.fail("resolved unapproved target"))
+    with pytest.raises(RuntimeError, match="target"):
+        release.pin_application_release("kc", "troshka", "vtest")
+
+
+def test_stage_dev_with_cluster_pins_application_without_latest_copy(release, monkeypatch):
+    from types import SimpleNamespace
+    args = SimpleNamespace(tag="vtest", roles="backend", action="stage-dev", kubeconfig="dev", namespace="troshka-dev")
+    pinned = []
+    monkeypatch.setattr(release, "pin_application_release", lambda *a: pinned.append(a))
+    monkeypatch.setattr(release, "stage_dev_images", lambda *a: pytest.fail("latest mutation"))
+    release.application_release_action(args, None)
+    assert pinned == [("dev", "troshka-dev", "vtest", ["backend"])]
+
+
+def test_pin_concurrency_conflict_is_not_retried(release, monkeypatch):
+    app = {"metadata": {"resourceVersion": "9"}, "spec": {"destination": {"namespace": "troshka"},
+        "source": {"repoURL": "https://github.com/rhpds/troshka.git", "path": "deploy/helm", "targetRevision": "vold"}}}
+    calls = []
+    def oc(kc, *args):
+        calls.append(args)
+        if args[0] == "patch":
+            patch = json.loads(args[-1])
+            assert patch[0] == {"op": "test", "path": "/metadata/resourceVersion", "value": "9"}
+            raise subprocess.CalledProcessError(1, "oc patch")
+        return json.dumps(app)
+    monkeypatch.setattr(release, "oc", oc)
+    with pytest.raises(subprocess.CalledProcessError):
+        release.pin_application_release("kc", "troshka", "vtest", [])
+    assert len(calls) == 2
+
+
+def test_operator_digest_change_forces_rbac_even_after_undeployed_tag(release, monkeypatch):
+    monkeypatch.setattr(release, "previous_release_tag", lambda *a: "vundeployed")
+    monkeypatch.setattr(release, "roles_changed_since", lambda *a: ({}, ["operator"]))
+    monkeypatch.setattr(release, "git_paths_changed", lambda *a: False)
+    assert release.release_plan("vtest")["apply_crds_rbac"] is True
 
 
 @pytest.fixture
@@ -444,7 +507,7 @@ def test_full_deploy_pushes_main_and_release_then_checks_tagged_build(shell_comm
     assert any(c[0] == "python3" and "promote" in c and "vtest" in c for c in calls)
     assert len([c for c in calls if c[0] == "python3" and "cluster" in c]) == 14
     promote = next(i for i, c in enumerate(calls) if c[0] == "python3" and "promote" in c)
-    dev_image = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
+    dev_image = next(i for i, c in enumerate(calls) if "application" in c and "troshka-dev" in c)
     assert dev_image < promote
     hosts = [i for i, c in enumerate(calls) if "cluster" in c and "--image-tag" in c and "vtest" in c]
     assert len(hosts) == 7
@@ -491,12 +554,16 @@ def test_full_deploy_aligns_dev_after_main_build_and_pins_prod_git(shell_command
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     main_build = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "run", "list"] and "main" in c)
     stage = next(i for i, c in enumerate(calls) if "stage-dev" in c)
-    dev = next(i for i, c in enumerate(calls) if "application" in c and "latest" in c)
+    dev = next(i for i, c in enumerate(calls) if "application" in c and "troshka-dev" in c)
     promote = next(i for i, c in enumerate(calls) if "promote" in c)
     pin = next(i for i, c in enumerate(calls) if "pin-application" in c)
-    prod = next(i for i, c in enumerate(calls) if "application" in c and "latest" not in c)
+    prod = next(i for i, c in enumerate(calls) if "application" in c and "troshka-dev" not in c)
     assert main_build < stage < dev < promote < pin < prod
     assert calls[pin][calls[pin].index("--tag") + 1] == "vtest"
+    assert "--kubeconfig" in calls[stage] and "troshka-dev" in calls[stage]
+    for index in (dev, prod):
+        assert calls[index][calls[index].index("--image-tag") + 1] == "vtest"
+    assert not any("latest" in c for c in calls)
     assert any(c[:3] == ["gh", "run", "watch"] for c in calls[main_build:stage])
 
 

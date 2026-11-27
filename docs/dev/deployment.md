@@ -4,6 +4,13 @@ For Argo setup or adoption of an existing dev Helm release, see
 [Argo bootstrap](argocd-bootstrap.md). Dev follows `main` with `latest` application
 images; adoption preserves active overlays until the first rollout is reviewed.
 
+The full release workflow explicitly pins dev and production to the same named
+release's Git revision and image digests, including carried images. Existing
+Helm image-tag parameters are updated without removing unrelated parameters or
+values. It does not depend on dev following a mutable `latest` alias. Operator
+image changes also reapply prerequisites even if an intervening release tag was
+never promoted.
+
 > Extracted from the top-level `CLAUDE.md` to keep it lean. Read this file when working on the topics below.
 
 ## Deployment

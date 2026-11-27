@@ -186,15 +186,13 @@ echo "Apply CRDs/RBAC: $APPLY_CRDS_RBAC"
 # Fail closed on helper-network gaps before staging/mutating workloads.
 preflight_helper_networks
 
-if [ "${#APP_ROLES[@]}" -gt 0 ]; then
-  python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG" --roles "$(join_roles "${APP_ROLES[@]}")"
-  echo "=== Require dev Argo on changed app images ==="
-  python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
-    --namespace troshka-dev --image-tag latest --state "$STATE/digests.json" \
-    --roles "$(join_roles "${APP_ROLES[@]}")"
-else
-  echo "Skipping dev stage/app waits (no changed app images)."
-fi
+# Pin carried app images too: chart-only releases must pass the same dev gate.
+python3 scripts/deploy_release.py stage-dev --tag "$RELEASE_TAG" --roles backend,frontend \
+  --kubeconfig "$DEV_KC" --namespace troshka-dev
+echo "=== Require dev Argo on named release images ==="
+python3 scripts/deploy_release.py application --kubeconfig "$DEV_KC" \
+  --namespace troshka-dev --image-tag "$RELEASE_TAG" --state "$STATE/digests.json" \
+  --roles backend,frontend
 if [ "$VERIFY_STORAGE" = true ]; then
   python3 scripts/collector_fleet_preflight.py --application "$DEV_KC" troshka-dev \
     --output "$STATE/dev-collector-preflight.json"
@@ -312,7 +310,7 @@ if [ "${#CHANGED_ROLES[@]}" -gt 0 ]; then
 else
   echo "Skipping promote (all production digests already match $RELEASE_TAG)."
 fi
-python3 scripts/deploy_release.py pin-application --kubeconfig "$KC" --tag "$RELEASE_TAG"
+python3 scripts/deploy_release.py pin-application --kubeconfig "$KC" --tag "$RELEASE_TAG" --roles backend,frontend
 if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ] && [ "${#CLUSTER_ROLES[@]}" -gt 0 ]; then
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     python3 scripts/deploy_release.py cluster --kubeconfig "$kc" --state "$STATE/digests.json" \
@@ -321,14 +319,10 @@ if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ] && [ "${#CL
 fi
 
 echo "=== Verify Argo application, workers, tunnels, runtime schema and health ==="
-if [ "${#APP_ROLES[@]}" -gt 0 ]; then
-  oc annotate applications.argoproj.io troshka -n openshift-gitops \
-    argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
-  python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json" \
-    --roles "$(join_roles "${APP_ROLES[@]}")"
-else
-  echo "Skipping production app waits (no changed app images)."
-fi
+oc annotate applications.argoproj.io troshka -n openshift-gitops \
+  argocd.argoproj.io/refresh=normal --overwrite --kubeconfig="$KC" --request-timeout=30s
+python3 scripts/deploy_release.py application --kubeconfig "$KC" --state "$STATE/digests.json" \
+  --image-tag "$RELEASE_TAG" --roles backend,frontend
 if [ "$VERIFY_STORAGE" = true ]; then
   echo "=== Verify collector configuration and accounting ($ACCOUNTING_MODE) ==="
   python3 scripts/collector_fleet_preflight.py \

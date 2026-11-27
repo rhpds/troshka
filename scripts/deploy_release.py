@@ -176,7 +176,31 @@ def stage_dev_images(tag, roles=None):
         print(f"  {role}: dev latest aligned with {tag}", flush=True)
 
 
-def pin_application_release(kc, namespace, tag):
+def image_parameter_patch(source, tag, expected):
+    """Change only selected image fields; never copy unrelated secret values."""
+    if not expected:
+        return []
+    patch = []
+    helm = source.get("helm", {})
+    parameters = helm.get("parameters", [])
+    if "helm" not in source:
+        patch.append({"op": "add", "path": "/spec/source/helm", "value": {"parameters": []}})
+    elif "parameters" not in helm:
+        patch.append({"op": "add", "path": "/spec/source/helm/parameters", "value": []})
+    for role, image_digest in expected.items():
+        name = f"{role}.image.tag"
+        matches = [i for i, p in enumerate(parameters) if p.get("name") == name]
+        if len(matches) > 1:
+            raise RuntimeError(f"Duplicate Argo image parameter: {name}")
+        value = f"{tag}@{image_digest}"
+        if not matches:
+            patch.append({"op": "add", "path": "/spec/source/helm/parameters/-", "value": {"name": name, "value": value}})
+        elif parameters[matches[0]].get("value") != value:
+            patch.append({"op": "add", "path": f"/spec/source/helm/parameters/{matches[0]}/value", "value": value})
+    return patch
+
+
+def pin_application_release(kc, namespace, tag, roles=None):
     if not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", tag):
         raise RuntimeError("A named release tag starting with v is required")
     app = json.loads(oc(kc, "get", "applications.argoproj.io", namespace,
@@ -184,17 +208,20 @@ def pin_application_release(kc, namespace, tag):
     spec = app.get("spec", {})
     source = spec.get("source", {})
     if (spec.get("destination", {}).get("namespace") != namespace
-            or source.get("path") != "deploy/helm"):
+            or source.get("path") != "deploy/helm"
+            or source.get("repoURL") != "https://github.com/rhpds/troshka.git"):
         raise RuntimeError("Unexpected Argo application target")
-    if source.get("targetRevision") == tag:
+    selected = [role for role in (APP_ROLES if roles is None else roles) if role in APP_ROLES]
+    expected = {role: digest(role, tag) for role in selected}
+    patch = [{"op": "test", "path": "/metadata/resourceVersion", "value": app["metadata"]["resourceVersion"]}]
+    if source.get("targetRevision") != tag:
+        patch.append({"op": "add", "path": "/spec/source/targetRevision", "value": tag})
+    patch.extend(image_parameter_patch(source, tag, expected))
+    if len(patch) == 1:
         return
-    patch = [
-        {"op": "test", "path": "/metadata/resourceVersion", "value": app["metadata"]["resourceVersion"]},
-        {"op": "replace", "path": "/spec/source/targetRevision", "value": tag},
-    ]
     oc(kc, "patch", "applications.argoproj.io", namespace, "-n", "openshift-gitops",
        "--type=json", "-p", json.dumps(patch))
-    print(f"Argo {namespace}: Git revision pinned to {tag}", flush=True)
+    print(f"Argo {namespace}: Git and selected app images pinned to {tag}", flush=True)
 
 
 def matching_pods(dep, pods):
@@ -681,10 +708,12 @@ def application_release_action(args, parser):
     if not args.tag or not re.fullmatch(r"v[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}", args.tag):
         parser.error("a named release --tag starting with v is required")
     roles = parse_roles(args.roles) if args.roles is not None else None
-    if args.action == "stage-dev":
+    if args.action == "stage-dev" and not args.kubeconfig:
         stage_dev_images(args.tag, roles)
     else:
-        pin_application_release(args.kubeconfig, args.namespace, args.tag)
+        if not args.kubeconfig:
+            parser.error("--kubeconfig is required to pin an application")
+        pin_application_release(args.kubeconfig, args.namespace, args.tag, roles)
 
 
 def release_plan(tag, baseline="production"):
@@ -704,7 +733,7 @@ def release_plan(tag, baseline="production"):
         "cluster_roles_changed": [
             role for role in changed if role in CLUSTER_ROLLOUT_ROLES
         ],
-        "apply_crds_rbac": git_paths_changed(previous, "HEAD", CRD_RBAC_PATHS),
+        "apply_crds_rbac": "operator" in changed or git_paths_changed(previous, "HEAD", CRD_RBAC_PATHS),
     }
 
 
